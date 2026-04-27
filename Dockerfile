@@ -32,17 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Heavy chem stack via conda-forge — these are notoriously hard to pip-install
-# cleanly across architectures, so let mamba resolve them.
-#
-# Meeko < 0.6 imports the removed rdkit.six module, which crashes against
-# RDKit 2024+. Pinning meeko>=0.6 keeps the runtime check
-# (_real_pipeline_available) passing in production. Without this pin,
-# conda-forge picked up an older meeko build and the runner silently
-# fell back to placeholder mode, producing fake-looking instant scores.
+# cleanly across architectures, so let mamba resolve them. Meeko stays out of
+# this list because conda-forge's meeko build (0.5.x) imports the removed
+# `rdkit.six` module against modern RDKit 2024+ — it gets pip-installed below
+# at >=0.6, where that import was dropped.
 RUN mamba install -y -n base -c conda-forge \
         python=3.12 \
         rdkit \
-        "meeko>=0.6" \
         openmm \
         pdbfixer \
         prolif \
@@ -50,7 +46,9 @@ RUN mamba install -y -n base -c conda-forge \
         biopython \
     && mamba clean -afy
 
-# Pure-Python web/server deps.
+# Pure-Python web/server deps. Meeko ships here too — pinned >=0.6 so the
+# rdkit.six import that broke prod is out of the picture, and pip pulls the
+# current PyPI release (1.x as of 2025) which is the maintained line.
 RUN pip install --no-cache-dir \
         "fastapi>=0.115" \
         "uvicorn[standard]>=0.32" \
@@ -61,7 +59,8 @@ RUN pip install --no-cache-dir \
         "httpx>=0.27" \
         "requests>=2.32" \
         "psycopg2-binary>=2.9.9" \
-        "boto3>=1.35"
+        "boto3>=1.35" \
+        "meeko>=0.6"
 
 # Vendor the FoldX binary. The user drops their licensed FoldX into
 # backend/vendor/foldx/ before `fly deploy`. The directory is in .gitignore
