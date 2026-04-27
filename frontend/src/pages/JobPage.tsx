@@ -1,0 +1,637 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job } from "../api";
+import SelectivityMatrix from "../components/SelectivityMatrix";
+import PoseDetail from "../components/PoseDetail";
+import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
+
+type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
+
+/** Cell key used everywhere subset selection touches: `${compound_id}.${variant}`.
+ *  The variant may legitimately contain "+" (e.g. "T790M+C797S"), so we always
+ *  encode/decode through encodeURIComponent on the variant half. */
+function cellKey(compoundId: number, variant: string): string {
+  return `${compoundId}.${variant}`;
+}
+function encodeCells(keys: Set<string>): string {
+  // Encode each key — only the variant contains characters that need escaping
+  // (the integer compound_id never does), but encoding the whole key is safe.
+  return [...keys].map((k) => encodeURIComponent(k)).join(",");
+}
+function decodeCells(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => decodeURIComponent(s).trim())
+      .filter((s) => /^\d+\..+/.test(s)),
+  );
+}
+
+export default function JobPage() {
+  const { id } = useParams();
+  // `id` is now a share_id (random URL-safe token) for new jobs, OR a legacy
+  // integer ID for old bookmarks — backend resolves either. Pass the raw
+  // string through so we don't coerce a token like "VXrA3kF9zY1" into NaN.
+  const jobKey = id ?? "";
+  const [pick, setPick] = useState<Pick | null>(null);
+
+  // Subset sharing — when the URL has `?cells=...`, the page renders ONLY
+  // those compound × variant cells (a "curated view" the sender hand-picked).
+  // Without `?cells=`, `selected` is the user's working selection that powers
+  // the Share-selected button. Two distinct concepts, both live in the URL
+  // and component state respectively.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const subsetKeys = useMemo(() => decodeCells(searchParams.get("cells")), [searchParams]);
+  const inSubsetView = subsetKeys.size > 0;
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Reset working selection if the user navigates between jobs.
+  useEffect(() => { setSelected(new Set()); }, [jobKey]);
+
+  const { data: job, isLoading, error } = useQuery({
+    queryKey: ["job", jobKey],
+    queryFn: () => api.getJob(jobKey),
+    refetchInterval: (q) => {
+      const status = q.state.data?.status;
+      return status === "completed" || status === "failed" ? false : 1500;
+    },
+    enabled: !!jobKey,
+  });
+
+  // Pull catalog so we can find the pocket box for known targets
+  const { data: catalog } = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const target: CatalogTarget | undefined = useMemo(
+    () => catalog?.find((t) => t.pdb_id === job?.pdb_id),
+    [catalog, job?.pdb_id],
+  );
+
+  // When the URL pins a curated subset, project the job down so the matrix
+  // shows ONLY the chosen cells. Filter rules:
+  //   - compounds = those that have at least one selected cell
+  //   - mutations = non-WT variants that appear in any selected cell
+  //   - results   = only the (compound, variant) pairs in subsetKeys
+  // The original `job` object is unchanged; everything below this line that
+  // renders the matrix uses `viewJob`.
+  const viewJob: Job | undefined = useMemo(() => {
+    if (!job) return undefined;
+    if (!inSubsetView) return job;
+    const compoundIds = new Set<number>();
+    const variants = new Set<string>();
+    for (const k of subsetKeys) {
+      const dot = k.indexOf(".");
+      if (dot < 0) continue;
+      const cid = Number(k.slice(0, dot));
+      const v = k.slice(dot + 1);
+      if (Number.isFinite(cid)) compoundIds.add(cid);
+      variants.add(v);
+    }
+    const filteredCompounds = job.compounds.filter((c) => compoundIds.has(c.id));
+    const filteredMutations = job.mutations.filter((m) => variants.has(m));
+    const filteredResults: DockingResult[] = job.results.filter((r) =>
+      subsetKeys.has(cellKey(r.compound_id, r.variant)),
+    );
+    return {
+      ...job,
+      compounds: filteredCompounds,
+      mutations: filteredMutations,
+      results: filteredResults,
+    };
+  }, [job, inSubsetView, subsetKeys]);
+
+  // Build a code → metadata lookup so the matrix can show "T790M (gatekeeper —
+  // 1st-gen TKI resistance)" instead of just the bare code. We merge mutations
+  // from every target so user-typed mutations from a related catalog entry
+  // still get a friendly subtitle.
+  const mutationInfo: Record<string, CatalogMutation> = useMemo(() => {
+    const out: Record<string, CatalogMutation> = {};
+    if (!catalog) return out;
+    for (const t of catalog) {
+      for (const m of t.mutations) {
+        // First definition wins; later targets are reference-only context.
+        if (!out[m.code]) out[m.code] = m;
+      }
+    }
+    return out;
+  }, [catalog]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-32 text-slate-500 dark:text-slate-400">
+        <Spinner size={20} className="mr-2" /> Loading job…
+      </div>
+    );
+  }
+  // 404 deserves a real "not found" card, not a generic error blob. Anything
+  // else (network, 5xx) keeps the existing inline error treatment.
+  if (error) {
+    const e = error as ApiError | Error;
+    const is404 = e instanceof ApiError && e.status === 404;
+    return (
+      <div className="card max-w-xl mx-auto text-center">
+        <div className="text-6xl mb-3">{is404 ? "⌕" : "⚠"}</div>
+        <h1 className="text-2xl font-bold text-ink dark:text-white">
+          {is404 ? `Job not found` : "Couldn't load job"}
+        </h1>
+        <p className="muted mt-2">
+          {is404
+            ? "The job may have been deleted, or this URL has a typo."
+            : e.message}
+        </p>
+        <div className="mt-5 flex items-center justify-center gap-2">
+          <Link to="/" className="btn-secondary btn-sm">Go home</Link>
+          <Link to="/new" className="btn-primary btn-sm">Start a new job</Link>
+        </div>
+      </div>
+    );
+  }
+  if (!job || !viewJob) return null;
+
+  // Toggle a cell's membership in the working selection. No-op while the user
+  // is viewing a pinned subset — they should clear the URL first to curate a
+  // different view (otherwise the matrix would offer cells the URL has hidden).
+  const onToggleSelect = (key: string) => {
+    if (inSubsetView) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const onClearSelection = () => setSelected(new Set());
+  // "Select all" picks every cell that has a real result (excluding empty /
+  // pending cells). Failure cells are still selectable so users can share a
+  // failure with context if they want.
+  const onSelectAll = () => {
+    const all = new Set<string>();
+    for (const r of job.results) all.add(cellKey(r.compound_id, r.variant));
+    setSelected(all);
+  };
+  // Drop the `?cells=...` param to return to the full matrix view.
+  const onClearSubset = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("cells");
+    setSearchParams(next, { replace: true });
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <Header
+        job={job}
+        selected={selected}
+        inSubsetView={inSubsetView}
+        subsetCount={subsetKeys.size}
+      />
+      {inSubsetView && (
+        <div className="card flex items-center justify-between gap-3 bg-delta-50/60 ring-1 ring-delta-200/70 dark:bg-delta-900/15 dark:ring-delta-700/40">
+          <div className="text-sm text-slate-700 dark:text-slate-200">
+            <span className="font-semibold text-delta-700 dark:text-delta-300">
+              Viewing a curated subset
+            </span>{" "}
+            <span className="text-slate-500 dark:text-slate-400">
+              · {subsetKeys.size} cell{subsetKeys.size === 1 ? "" : "s"} from a {job.compounds.length}×{job.mutations.length + 1} matrix
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClearSubset}
+            className="text-xs font-semibold text-delta-700 dark:text-delta-300 hover:underline"
+          >
+            View full matrix →
+          </button>
+        </div>
+      )}
+      {job.error_message && (
+        <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40 text-sm">
+          <div className="font-semibold mb-1">Job failed</div>
+          <div>{job.error_message}</div>
+        </div>
+      )}
+
+      {/* Live progress banner — stays visible until the job finishes, while the
+          matrix below renders cells incrementally as each docking commits.
+          Suppress in subset view: the streaming UI is misleading when most of
+          the matrix has been intentionally hidden. */}
+      {!inSubsetView && job.status !== "completed" && job.status !== "failed" && (
+        <StreamingBanner job={job} />
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className={pick ? "lg:col-span-2" : "lg:col-span-3"}>
+          <SelectivityMatrix
+            compounds={viewJob.compounds}
+            mutations={viewJob.mutations}
+            results={viewJob.results}
+            mutationInfo={mutationInfo}
+            onPick={setPick}
+            isStreaming={!inSubsetView && (job.status === "running" || job.status === "pending")}
+            // Selection is hidden in subset view — the matrix is already
+            // curated; offering checkboxes there would invite confusion.
+            selected={inSubsetView ? undefined : selected}
+            onToggleSelect={inSubsetView ? undefined : onToggleSelect}
+            onSelectAll={inSubsetView ? undefined : onSelectAll}
+            onClearSelection={inSubsetView ? undefined : onClearSelection}
+          />
+          {/* Insights only meaningful once data is in — wait for completion.
+              When the user clicks a cell, the cards switch to context for
+              that specific compound × variant; otherwise they show the
+              job-wide summary. In subset view, insights are scoped to the
+              filtered job so they describe the curated view, not the full run. */}
+          {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
+        </div>
+        {pick && (
+          <div className="lg:col-span-1">
+            <PoseDetail
+              pick={pick}
+              pdbId={job.pdb_id}
+              chain={job.chain}
+              pocketCenter={target?.pocket.center}
+              // Pass share_id so the pose-fetch URL stays unguessable. Falls
+              // back to the integer id for legacy jobs that predate share_id
+              // (those still resolve via the backend's dual-lookup).
+              jobId={job.share_id || job.id}
+              onClose={() => setPick(null)}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Header ────────────────────────────────────────────────────────── */
+
+function Header({
+  job, selected, inSubsetView, subsetCount,
+}: {
+  job: Job;
+  selected: Set<string>;
+  inSubsetView: boolean;
+  subsetCount: number;
+}) {
+  return (
+    <header className="card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div>
+        <Link to="/new" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
+          <ArrowRight size={11} className="rotate-180" /> Back to new job
+        </Link>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex items-center gap-3">
+          <span className="font-mono text-delta-700 dark:text-delta-300">{job.pdb_id}</span>
+          <span className="text-sm font-normal text-slate-500 dark:text-slate-400">chain {job.chain}</span>
+        </h1>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Stat icon={<Target />} label="Compounds" value={job.compounds.length} />
+          <Stat icon={<Beaker />} label="Variants" value={job.mutations.length + 1} hint={["WT", ...job.mutations].join(", ")} />
+          <Stat icon={null} label="Job #" value={job.id} />
+        </div>
+      </div>
+      <div className="flex items-center gap-2 sm:flex-col sm:items-end">
+        <StatusPill status={job.status} />
+        <ShareButton job={job} selected={selected} inSubsetView={inSubsetView} subsetCount={subsetCount} />
+      </div>
+    </header>
+  );
+}
+
+/** Share button — copies a shareable URL to clipboard. On mobile, tries the
+ *  native Web Share sheet first. The URL shape changes with context:
+ *
+ *    - In subset view (`?cells=...` already in URL): share the same subset URL.
+ *    - With cells selected: share `/jobs/{id}?cells=...` so the receiver lands
+ *      on a curated view of just those cells.
+ *    - With nothing selected: share the full job URL.
+ *
+ *  The button label flips to "Share N" when there's a selection so the user
+ *  can see at a glance what they're about to share. */
+function ShareButton({
+  job, selected, inSubsetView, subsetCount,
+}: {
+  job: Job;
+  selected: Set<string>;
+  inSubsetView: boolean;
+  subsetCount: number;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  // Effective scope for this share:
+  //   - inSubsetView    → re-share the curated URL the user is currently looking at
+  //   - selected.size>0 → share that specific selection
+  //   - else            → share the full job
+  const isSubset = inSubsetView || selected.size > 0;
+  const effectiveCount = inSubsetView ? subsetCount : selected.size;
+
+  async function onShare() {
+    // Always build the URL from share_id so we never accidentally share the
+    // legacy integer ID (which is guessable by anyone who can count).
+    const base = `${window.location.origin}/jobs/${job.share_id || job.id}`;
+    let url = base;
+    if (inSubsetView) {
+      // Preserve whatever ?cells= the URL already encodes.
+      url = `${base}?${window.location.search.replace(/^\?/, "")}`;
+    } else if (selected.size > 0) {
+      url = `${base}?cells=${encodeCells(selected)}`;
+    }
+
+    // The compound × variant headline auto-generated below makes for a
+    // nice native-share preview when the user picks Mail / Messages / etc.
+    const compoundList = job.compounds.map((c) => c.name || "compound").slice(0, 2).join(" + ");
+    const variantList = ["WT", ...job.mutations].slice(0, 3).join(" / ");
+    const title = isSubset
+      ? `Liganx · ${effectiveCount} curated cell${effectiveCount === 1 ? "" : "s"} from ${job.pdb_id}`
+      : `Liganx · ${compoundList} vs ${job.pdb_id}`;
+    const text = isSubset
+      ? `A curated view of ${effectiveCount} docking${effectiveCount === 1 ? "" : "s"} on ${job.pdb_id} — mutation-aware results on Liganx.`
+      : `${compoundList} docked against ${job.pdb_id} (${variantList}). Mutation-aware results on Liganx.`;
+
+    // Try the native Web Share API first — best UX on mobile + supported
+    // browsers, gracefully falls back to clipboard copy elsewhere.
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ title, text, url });
+        return;
+      } catch {
+        // User cancelled or share unsupported — fall through to copy
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Old-browser fallback: temporary input + execCommand
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* give up */ }
+      document.body.removeChild(ta);
+    }
+  }
+
+  const label = isSubset
+    ? `Share ${effectiveCount}`
+    : "Share";
+  const titleAttr = copied
+    ? "Link copied to clipboard"
+    : isSubset
+      ? `Copy a link that shows just ${effectiveCount} curated cell${effectiveCount === 1 ? "" : "s"}`
+      : "Copy a shareable link to this job";
+
+  return (
+    <button
+      type="button"
+      onClick={onShare}
+      title={titleAttr}
+      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition-colors ${
+        copied
+          ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:ring-emerald-700/50"
+          : isSubset
+            ? "bg-delta-600 text-white ring-delta-700 hover:bg-delta-700 dark:bg-delta-500 dark:ring-delta-400/40 dark:hover:bg-delta-400"
+            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 hover:text-delta-700 hover:ring-delta-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-700 dark:hover:text-delta-300 dark:hover:ring-delta-600"
+      }`}
+    >
+      {copied ? (
+        <>
+          <span aria-hidden>✓</span> Copied
+        </>
+      ) : (
+        <>
+          {/* Inline link/share icon — keeps us off another icon dependency */}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+          {label}
+        </>
+      )}
+    </button>
+  );
+}
+
+function Stat({ icon, label, value, hint }: { icon: React.ReactNode; label: string; value: number; hint?: string }) {
+  return (
+    <span
+      className="badge bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
+      title={hint}
+    >
+      {icon} <span className="text-slate-500 dark:text-slate-400">{label}:</span> <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const styles: Record<string, { bg: string; dot: string; label: string }> = {
+    pending:   { bg: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",       dot: "bg-slate-400 dark:bg-slate-500", label: "Pending" },
+    running:   { bg: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",     dot: "bg-amber-500 animate-pulse-soft", label: "Running" },
+    completed: { bg: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300", dot: "bg-emerald-500", label: "Completed" },
+    failed:    { bg: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",         dot: "bg-rose-500", label: "Failed" },
+  };
+  const s = styles[status] ?? styles.pending;
+  return (
+    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold ${s.bg}`}>
+      <span className={`w-2 h-2 rounded-full ${s.dot}`} /> {s.label}
+    </span>
+  );
+}
+
+/* ─── Streaming banner shown above the matrix while results arrive ─── */
+
+function StreamingBanner({ job }: { job: Job }) {
+  const total = job.compounds.length * (job.mutations.length + 1);
+  const done = job.results.length;
+  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  return (
+    <div className="card">
+      <div className="flex items-center gap-3 mb-3">
+        <Spinner size={16} className="text-delta-600 dark:text-delta-400" />
+        <div className="flex-1">
+          <div className="font-semibold text-ink dark:text-slate-100 text-sm">
+            {job.status === "pending" ? "Queued for execution" : "Docking in progress"}
+          </div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+            {done} of {total} dockings complete · cells fill in below as each pose finishes
+          </div>
+        </div>
+        <span className="text-sm font-semibold text-delta-600 dark:text-delta-300 tabular-nums">{pct}%</span>
+      </div>
+      <div className="h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-delta-500 to-accent-500 transition-all duration-500"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ─── Insights bar (under the matrix) ──────────────────────────────── */
+
+type Insight = { tag: string; tone: "good" | "bad" | "neutral"; body: string };
+
+function Insights({ job, pick }: { job: Job; pick: Pick | null }) {
+  // When the user has selected a cell, the cards reshape to describe that
+  // specific compound × variant. Otherwise, fall back to the job-wide summary.
+  const { insights, scope } = useMemo(
+    () => pick
+      ? { insights: computePickInsights(job, pick), scope: pickName(pick) }
+      : { insights: computeJobInsights(job), scope: "job summary" },
+    [job, pick],
+  );
+  if (insights.length === 0) return null;
+  return (
+    <div className="mt-5">
+      <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-2">
+        {pick ? `Insights for ${scope}` : "Job summary"}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {insights.map((ins, i) => (
+          <div key={i} className="card">
+            <div className={`badge mb-2 ${
+              ins.tone === "good" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" :
+              ins.tone === "bad"  ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" :
+                                    "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            }`}>
+              {ins.tag}
+            </div>
+            <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{ins.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function pickName(pick: Pick): string {
+  const compound = pick.compound.name ?? `Compound #${pick.compound.id}`;
+  return `${compound} × ${pick.variant}`;
+}
+
+/** Job-wide stats — shown when nothing is picked. */
+function computeJobInsights(job: Job): Insight[] {
+  const out: Insight[] = [];
+  const byCompound: Record<number, Record<string, number>> = {};
+  for (const r of job.results) {
+    byCompound[r.compound_id] ??= {};
+    byCompound[r.compound_id][r.variant] = r.best_score;
+  }
+  // Best mutant-selective compound (lowest delta)
+  let bestSel: { name: string; variant: string; delta: number } | null = null;
+  // Worst resistance hit (largest positive delta)
+  let worstRes: { name: string; variant: string; delta: number } | null = null;
+  for (const c of job.compounds) {
+    const scores = byCompound[c.id] ?? {};
+    const wt = scores["WT"];
+    if (wt == null) continue;
+    for (const m of job.mutations) {
+      const s = scores[m];
+      if (s == null) continue;
+      const d = s - wt;
+      if (d < (bestSel?.delta ?? Infinity)) bestSel = { name: c.name ?? `Compound #${c.id}`, variant: m, delta: d };
+      if (d > (worstRes?.delta ?? -Infinity)) worstRes = { name: c.name ?? `Compound #${c.id}`, variant: m, delta: d };
+    }
+  }
+  if (bestSel && bestSel.delta < -0.4) {
+    out.push({
+      tag: "Mutant-selective hit",
+      tone: "good",
+      body: `${bestSel.name} binds ${bestSel.variant} ${Math.abs(bestSel.delta).toFixed(2)} kcal/mol better than WT — strongest selectivity gain in the matrix.`,
+    });
+  }
+  if (worstRes && worstRes.delta > 0.4) {
+    out.push({
+      tag: "Resistance signature",
+      tone: "bad",
+      body: `${worstRes.name} loses ${worstRes.delta.toFixed(2)} kcal/mol against ${worstRes.variant} — consistent with this mutation conferring resistance.`,
+    });
+  }
+  // Mean WT score
+  const wts = Object.values(byCompound).map((s) => s["WT"]).filter((v): v is number => v != null);
+  if (wts.length) {
+    const meanWt = wts.reduce((a, b) => a + b, 0) / wts.length;
+    out.push({
+      tag: "WT baseline",
+      tone: "neutral",
+      body: `Mean wild-type binding affinity across ${wts.length} compound${wts.length === 1 ? "" : "s"} is ${meanWt.toFixed(2)} kcal/mol.`,
+    });
+  }
+  return out;
+}
+
+/** Per-cell context cards — shown when the user clicks a docking row.
+ *  Reshapes the same data into stats about THIS pick: its score, its delta
+ *  vs WT, and where it ranks among other variants for the same compound. */
+function computePickInsights(job: Job, pick: Pick): Insight[] {
+  const out: Insight[] = [];
+  const compoundName = pick.compound.name ?? `Compound #${pick.compound.id}`;
+
+  // 1) Score card — always show the absolute affinity for this pick.
+  out.push({
+    tag: pick.variant === "WT" ? "Wild-type binding" : `${pick.variant} binding`,
+    tone: "neutral",
+    body: `${compoundName} against ${pick.variant} scored ${pick.score.toFixed(2)} kcal/mol. Lower is stronger predicted binding.`,
+  });
+
+  // 2) Delta-vs-WT card — only meaningful for mutant variants.
+  if (pick.variant !== "WT" && pick.deltaWt != null) {
+    const dWt = pick.deltaWt;
+    const tone: Insight["tone"] = dWt > 0.4 ? "bad" : dWt < -0.4 ? "good" : "neutral";
+    const verb =
+      dWt > 0.4 ? `loses ${dWt.toFixed(2)} kcal/mol against ${pick.variant} — likely resistance signal`
+      : dWt < -0.4 ? `gains ${Math.abs(dWt).toFixed(2)} kcal/mol on ${pick.variant} — possible mutant-selective hit`
+      : `is essentially flat against ${pick.variant} (Δ ${dWt.toFixed(2)} kcal/mol — within noise)`;
+    out.push({
+      tag: tone === "bad" ? "Resistance hint" : tone === "good" ? "Selectivity hint" : "No selectivity",
+      tone,
+      body: `${compoundName} ${verb}.`,
+    });
+  } else if (pick.variant === "WT") {
+    // When the user picked the WT cell, give them a cross-mutant snapshot for
+    // the same compound so the second card still does useful work.
+    const sameCompound = job.results.filter((r) => r.compound_id === pick.compound.id);
+    const mutantRows = sameCompound.filter((r) => r.variant !== "WT");
+    if (mutantRows.length) {
+      const deltas = mutantRows.map((r) => ({
+        variant: r.variant,
+        delta: r.best_score - pick.score,
+      }));
+      const worst = deltas.reduce((a, b) => (b.delta > a.delta ? b : a), deltas[0]);
+      const best = deltas.reduce((a, b) => (b.delta < a.delta ? b : a), deltas[0]);
+      const tone: Insight["tone"] =
+        worst.delta > 0.4 ? "bad" : best.delta < -0.4 ? "good" : "neutral";
+      out.push({
+        tag: "Mutation profile",
+        tone,
+        body:
+          tone === "bad"
+            ? `${compoundName} loses the most ground against ${worst.variant} (Δ +${worst.delta.toFixed(2)} kcal/mol).`
+            : tone === "good"
+            ? `${compoundName} gains the most on ${best.variant} (Δ ${best.delta.toFixed(2)} kcal/mol vs WT).`
+            : `${compoundName} is roughly flat across all tested mutants (max |Δ| ${Math.max(Math.abs(best.delta), Math.abs(worst.delta)).toFixed(2)} kcal/mol).`,
+      });
+    }
+  }
+
+  // 3) Rank card — show where this docking sits among all rows for the same
+  // compound. Helps the user place the score in context without scrolling.
+  const sameCompoundRows = job.results
+    .filter((r) => r.compound_id === pick.compound.id)
+    .map((r) => r.best_score)
+    .sort((a, b) => a - b); // ascending = strongest first
+  if (sameCompoundRows.length > 1) {
+    const rank = sameCompoundRows.indexOf(pick.score) + 1;
+    out.push({
+      tag: "Rank for this compound",
+      tone: "neutral",
+      body: `Among the ${sameCompoundRows.length} variants tested for ${compoundName}, this docking ranks #${rank} (1 = strongest predicted binder).`,
+    });
+  }
+
+  return out;
+}

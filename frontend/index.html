@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Liganx — mutation-aware structural biology. Compare wild-type vs. mutant binding for any protein, any compound." />
+    <title>Liganx — Mutation-aware structural biology</title>
+    <!-- Inline theme bootstrap: runs before React mounts so the .dark class
+         is set on <html> before first paint. Prevents flash-of-wrong-theme
+         when user has dark mode saved. Falls back to system preference. -->
+    <script>
+      (function () {
+        try {
+          // Read the new key first; fall back to the legacy `deltadock-theme`
+          // so a user's saved choice survives the rebrand on first load.
+          var saved = localStorage.getItem("liganx-theme") || localStorage.getItem("deltadock-theme");
+          var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var dark = saved === "dark" || (!saved && prefersDark);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (_) { /* localStorage unavailable — silently default to light */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

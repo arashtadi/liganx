@@ -1,0 +1,110 @@
+"""Database models for jobs, compounds, and results."""
+
+import secrets
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from sqlmodel import Field, Relationship, SQLModel
+
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+def _new_share_id() -> str:
+    """Random URL-safe token used as the public job ID.
+
+    11 characters from the base64url alphabet (a-zA-Z0-9_-) — about 65 bits of
+    entropy, enough that guessing is computationally infeasible. Short enough
+    that links stay copy-pasteable (`/jobs/VXrA3kF9zY1`).
+    """
+    return secrets.token_urlsafe(8)
+
+
+class Job(SQLModel, table=True):
+    """A docking job: dock a list of compounds against WT and a set of mutants."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # share_id is the PUBLIC, unguessable identifier for a job — used in every
+    # /jobs/{...} URL the frontend or share links exposes. The integer `id`
+    # stays for internal foreign-key relationships (Compound.job_id, etc.) so
+    # we don't have to reshape the relational graph. Existing integer URLs
+    # still resolve via a backward-compat lookup in routers/jobs.py.
+    share_id: str = Field(
+        default_factory=_new_share_id,
+        index=True,
+        unique=True,
+        max_length=32,
+    )
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Target
+    uniprot_id: Optional[str] = Field(default=None, index=True)
+    pdb_id: str = Field(index=True)
+    chain: str = "A"
+
+    # Mutations: comma-separated list of e.g. "T790M,L858R" — empty = WT only
+    mutations: str = ""
+
+    # Search depth for the docking engine. Vina-style "exhaustiveness" maps
+    # roughly to: 8 = fast (~3 s/cell GPU), 16 = balanced, 32 = thorough.
+    # Higher = more reliable convergence on the global minimum at the cost of
+    # GPU time. Default 8 matches Vina's default and is good enough for most
+    # screening; bump to 16 or 32 when pose quality matters.
+    exhaustiveness: int = Field(default=8)
+
+    # Whether to dock against wild-type as well. Default True — users almost
+    # always want a WT baseline to compute Δ. Set False when the user only
+    # cares about absolute mutant binding.
+    include_wt: bool = Field(default=True)
+
+    # Status
+    status: JobStatus = Field(default=JobStatus.PENDING, index=True)
+    error_message: Optional[str] = None
+
+    # Owner — null for anonymous Phase 1 jobs, hooked up to users in Phase 4
+    user_id: Optional[int] = Field(default=None, index=True)
+
+    compounds: list["Compound"] = Relationship(back_populates="job")
+    results: list["DockingResult"] = Relationship(back_populates="job")
+
+
+class Compound(SQLModel, table=True):
+    """One ligand to dock — provided as SMILES, optionally with a friendly name."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="job.id", index=True)
+
+    name: Optional[str] = None
+    smiles: str
+
+    job: Optional[Job] = Relationship(back_populates="compounds")
+
+
+class DockingResult(SQLModel, table=True):
+    """One docking score: (job, compound, variant) → score in kcal/mol."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="job.id", index=True)
+    compound_id: int = Field(foreign_key="compound.id", index=True)
+
+    # "WT" or a mutation string like "T790M"
+    variant: str = Field(index=True)
+
+    # Best Vina score across poses, kcal/mol (lower = stronger binding)
+    best_score: float
+
+    # Path/key into object storage for the pose file (PDBQT). Null in Phase 1 if local.
+    pose_uri: Optional[str] = None
+
+    # Free-form metadata: rmsd, num_poses, engine version, etc.
+    extra: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    job: Optional[Job] = Relationship(back_populates="results")

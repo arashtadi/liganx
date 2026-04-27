@@ -1,0 +1,65 @@
+# Fly.io app config for the Liganx backend.
+#
+# Region 'iad' (Ashburn, VA) — close to Supabase's us-east-2 cluster and the
+# RunPod GPU Pod (eu-2 / us cluster, latency-tolerant). Single-machine deploy
+# is fine for v1; the matrix workload is bursty per-job, not high-RPS.
+#
+# Deploy: from repo root, run `fly deploy --config fly.toml`. Secrets must
+# already be set via `fly secrets set DATABASE_URL=... POD_DOCK_URL=...` etc.
+
+app = "liganx-api"
+primary_region = "iad"
+
+[build]
+  # Build context is the repo root (so /backend and /pipeline are both visible
+  # to COPY). Dockerfile lives next to this fly.toml.
+  dockerfile = "Dockerfile"
+
+# Public HTTPS service on port 8000 inside the container.
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Don't scale to zero: cold starts pay the conda-env startup cost (10-15s)
+  # and the FastAPI warm-up. Always keeping one machine on costs ~$5/mo and
+  # gives instant first requests.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+# Health check: hits /health which always returns 200 when the app is alive.
+# 15s grace at start covers the conda env load.
+[[http_service.checks]]
+  grace_period = "15s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+# Single process group, default uvicorn command from Dockerfile CMD.
+[processes]
+  app = ""
+
+# Non-secret env. Real secrets (DATABASE_URL, POD_DOCK_URL, R2_*) live in
+# `fly secrets` — never commit them here.
+[env]
+  APP_ENV = "production"
+  LOG_LEVEL = "info"
+  CORS_ORIGINS = "https://liganx.com,https://www.liganx.com"
+
+# Resources — shared CPU is plenty for the orchestration layer; the heavy
+# lifting (docking, ProLIF) happens off-machine on the Pod GPU. Bumping RAM
+# to 1024 MB so RDKit + ProLIF subprocess have headroom during validation.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1
+
+# Optional persistent volume for the local pose cache fallback. R2 is the
+# primary store; this volume only matters if R2 creds are missing or fail.
+# Comment out the [mounts] block if you don't want a volume (poses then live
+# on ephemeral disk and disappear on restart).
+[[mounts]]
+  source = "liganx_pose_cache"
+  destination = "/var/lib/liganx/poses"
+  initial_size = "1gb"

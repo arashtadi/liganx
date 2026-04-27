@@ -1,0 +1,80 @@
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+.next/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Pipeline working files
+pipeline/work/
+pipeline/output/
+pipeline/.cache/
+
+# Secrets
+*.pem
+*.key
+secrets/
+
+# Vendored binaries — license-restricted, distributed separately into the
+# Docker image build context. The README.md inside the dir IS committed so
+# anyone setting up a fresh clone knows what to drop in.
+backend/vendor/foldx/foldx
+backend/vendor/foldx/rotabase.txt
+backend/vendor/foldx/*.tar*
+
+# Frontend build outputs
+frontend/dist/
+frontend/.vercel/
+
+# Backend cache dirs (poses, receptors, foldx outputs) — local dev only,
+# regenerated on each run.
+backend/.deltadock/
+.deltadock/
+~/.deltadock/
+
+# Fly.io artefacts
+.fly/
+
+# Supabase / DB dumps
+*.sql.gz

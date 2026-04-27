@@ -1,0 +1,42 @@
+# Trim the build context — anything Docker doesn't need stays out so the
+# `docker build` upload stays under a few hundred MB.
+
+# Local dev artefacts (huge)
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/dist/
+**/build/
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Frontend lives in its own deploy (Vercel) — don't bundle it into the API image
+frontend/
+
+# Local databases / scratch state
+**/*.db
+**/dev.db
+**/dev.db-journal
+backend/.deltadock/
+
+# Secrets — only injected at runtime via Fly secrets, never baked
+**/.env
+**/.env.local
+**/.env.production
+backend/.env
+
+# Tests + research artefacts (image only needs runtime code)
+**/tests/
+research/
+
+# Git / CI plumbing
+.git/
+.github/
+*.log
