@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, type CatalogTarget } from "../api";
@@ -37,15 +37,28 @@ export default function NewJobPage() {
   const [exhaustiveness, setExhaustiveness] = useState<8 | 16 | 32>(8);
   const [includeWt, setIncludeWt] = useState(true);
 
-  // When the target changes, repopulate everything from its catalog entry.
+  // First-target-pick guard. Auto-loading the catalog's default compounds +
+  // mutations is great on the FIRST target pick (saves typing), but if the
+  // user then adds their own compound and switches targets to compare, we
+  // shouldn't blow their work away. So we only auto-fill once per session;
+  // subsequent target switches just update the structural fields (pdb_id /
+  // chain / uniprot). The user can still click "Load all reference" in
+  // step 3 to opt back into the new target's catalog compounds.
+  const autoFilledRef = useRef(false);
+
+  // When the target changes, update the structural fields. Auto-populate the
+  // compound + mutation lists on the very first pick only.
   useEffect(() => {
     if (!target) return;
     setPdbId(target.pdb_id);
     setChain(target.chain);
     setUniprot(target.uniprot);
-    setSelectedMutations(target.mutations.slice(0, 3).map((m) => m.code));
-    setCustomMutations("");
-    setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
+    if (!autoFilledRef.current) {
+      setSelectedMutations(target.mutations.slice(0, 3).map((m) => m.code));
+      setCustomMutations("");
+      setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
+      autoFilledRef.current = true;
+    }
   }, [target]);
 
   // Strict mutation-code validation. Accepts:

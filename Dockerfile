@@ -33,10 +33,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Heavy chem stack via conda-forge — these are notoriously hard to pip-install
 # cleanly across architectures, so let mamba resolve them.
+#
+# Meeko < 0.6 imports the removed rdkit.six module, which crashes against
+# RDKit 2024+. Pinning meeko>=0.6 keeps the runtime check
+# (_real_pipeline_available) passing in production. Without this pin,
+# conda-forge picked up an older meeko build and the runner silently
+# fell back to placeholder mode, producing fake-looking instant scores.
 RUN mamba install -y -n base -c conda-forge \
         python=3.12 \
         rdkit \
-        meeko \
+        "meeko>=0.6" \
         openmm \
         pdbfixer \
         prolif \
