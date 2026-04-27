@@ -555,7 +555,7 @@ export default function NewJobPage() {
       </Step>
 
       {/* ── Run options ────────────────────────────────────────────────── */}
-      <Step n={4} title="Run options" subtitle="Trade speed for pose quality, or skip the WT baseline.">
+      <Step n={4} icon={<Sparkles />} title="Run options" subtitle="Trade speed for pose quality, or skip the WT baseline.">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Exhaustiveness picker — three buttons, single-select */}
           <div>
