@@ -3,15 +3,19 @@
 Why we don't just point the viewer at RCSB: for mutants, the only place the
 FoldX-built structure exists is on the local disk. Plus, having a single endpoint
 shape lets us swap to R2-backed storage in Phase B without changing the frontend.
+
+Both PDB_CACHE (WT cleaned PDBs) and RECEPTOR_CACHE (mutant FoldX builds) are
+imported from runner.py so the env-configurable cache root flows through to
+this router automatically. In production these point at the Fly volume so the
+3D viewer keeps working across redeploys.
 """
 
 import re
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from ..services.runner import RECEPTOR_CACHE
+from ..services.runner import PDB_CACHE, RECEPTOR_CACHE
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 
@@ -47,10 +51,9 @@ def get_structure(pdb_id: str, chain: str, variant: str) -> str:
     if variant.upper() == "WT":
         variant = "WT"
 
-    pdb_root = Path.home() / ".deltadock" / "pdb"
     if variant == "WT":
-        path = pdb_root / f"{pdb_id}_{chain}.clean.pdb"
-        allowed_root = pdb_root.resolve()
+        path = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
+        allowed_root = PDB_CACHE.resolve()
     else:
         path = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{variant}.clean.pdb"
         allowed_root = RECEPTOR_CACHE.resolve()

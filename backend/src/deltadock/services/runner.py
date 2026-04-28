@@ -35,17 +35,26 @@ from ..models import Compound, DockingResult, Job, JobStatus
 log = logging.getLogger(__name__)
 settings = get_settings()
 
-# Persistent receptor cache so we don't re-prep the same PDB across jobs
-RECEPTOR_CACHE = Path.home() / ".deltadock" / "receptors"
-PDB_CACHE = Path.home() / ".deltadock" / "pdb"
-FOLDX_CACHE = Path.home() / ".deltadock" / "foldx-cache"
+# Cache roots — env-overridable so production can put them on the mounted
+# Fly volume (/var/lib/liganx) instead of the OverlayFS upper layer (~/.deltadock).
+# When LIGANX_CACHE_ROOT is unset (dev), files land under ~/.deltadock as
+# before. When set (prod), all cleaned receptors and FoldX scratch live on
+# the persistent volume so they survive redeploys. The 3D viewer at
+# GET /structures/{pdb}/{chain}/{variant} reads from the same root.
+_CACHE_ROOT = Path(settings.cache_root) if settings.cache_root else Path.home() / ".deltadock"
+RECEPTOR_CACHE = _CACHE_ROOT / "receptors"
+PDB_CACHE = _CACHE_ROOT / "pdb"
+FOLDX_CACHE = _CACHE_ROOT / "foldx-cache"
 # Persistent pose cache — runner's tmpdir gets cleaned, but the API needs poses
 # to outlive the run so users can re-open jobs and the 3D viewer still works.
 # In production this is overridden by `pose_cache_dir` (Fly.io volume mount);
 # in dev it stays under ~/.deltadock so existing rows keep resolving without
 # a data migration. See also services/pose_store.py for the R2 abstraction
 # that supersedes this directory when R2 is configured.
-POSE_CACHE = Path(settings.pose_cache_dir) if settings.pose_cache_dir else Path.home() / ".deltadock" / "poses"
+POSE_CACHE = (
+    Path(settings.pose_cache_dir) if settings.pose_cache_dir
+    else _CACHE_ROOT / "poses"
+)
 FOLDX_PATH = os.environ.get("FOLDX_PATH", str(Path.home() / ".local" / "bin" / "foldx"))
 
 

@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # preferred when configured.
     pose_cache_dir: str = ""
 
+    # Override the on-disk root for cleaned WT PDBs, FoldX-mutated receptors,
+    # and the FoldX scratch dir. In dev these all live under ~/.deltadock and
+    # are fine ephemeral. In production (Fly.io) they MUST live on a mounted
+    # volume — otherwise every redeploy wipes them, and any job that tries to
+    # reuse a previously-cleaned receptor (3D viewer, re-rendering pose) fails
+    # with a 404. Set LIGANX_CACHE_ROOT=/var/lib/liganx in Fly secrets.
+    cache_root: str = ""
+
     # RunPod serverless docking — when both api_key and endpoint_id are set,
     # the runner dispatches Vina jobs to a RunPod worker instead of running
     # locally. Falls back to local automatically on transient failures.
