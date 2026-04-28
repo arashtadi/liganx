@@ -448,22 +448,36 @@ def _run_real(session: Session, job: Job) -> None:
     cleaned_pdb = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
     if _is_stale(cleaned_pdb):
         log.info("Cleaning %s with PDBFixer (prep %s)", pdb_id, PREP_VERSION)
-        try:
-            fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
-            _stamp(cleaned_pdb)
-        except Exception as e:
-            # Self-heal: ANY failure inside fix_pdb suggests the cached raw
-            # or cleaned files are in a bad state — could be:
-            #   - "No ATOM lines kept": empty/truncated download
-            #   - IndexError from PDBFixer: corrupt residue records
-            #   - PrepError from obabel/PDBFixer: malformed coordinates
-            #   - ValueError parsing coordinate fields
-            # In all cases the cure is the same: nuke both the raw cached
-            # file (forces refetch from RCSB) and any partial cleaned
-            # output (forces re-clean). Cleanup is best-effort — failures
-            # to unlink are silently ignored. USR_ uploads are exempt
-            # from raw-file deletion since we can't refetch user uploads.
-            if not pdb_id.startswith("USR_"):
+        # Two-attempt loop. First attempt may use a cached raw_pdb that's
+        # truncated (RCSB CloudFront has flaky cold-cache hits) or partially
+        # cleaned. On failure we nuke ALL related files and re-fetch +
+        # re-clean from scratch. If the second attempt also fails, it's a
+        # real PDB-level problem (DNA-only entry, malformed structure, etc.)
+        # and we surface the error to the user.
+        last_err: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
+                _stamp(cleaned_pdb)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                # Self-heal: ANY failure inside fix_pdb suggests the cached
+                # raw or cleaned files are in a bad state — could be:
+                #   - "No ATOM lines kept": empty/truncated download
+                #   - IndexError from PDBFixer: corrupt residue records
+                #   - PrepError from obabel/PDBFixer: malformed coordinates
+                #   - ValueError parsing coordinate fields
+                #   - "Misaligned residue name": malformed ATOM records
+                # In all cases the cure is the same: nuke both the raw
+                # cached file (forces refetch from RCSB) and any partial
+                # cleaned output (forces re-clean). USR_ uploads are exempt
+                # from raw-file deletion since we can't refetch user uploads.
+                if pdb_id.startswith("USR_"):
+                    # Custom uploads can't be re-fetched, so a single
+                    # failure is terminal. Skip the retry.
+                    break
                 for stale_path in (raw_pdb, cleaned_pdb,
                                    cleaned_pdb.with_suffix(cleaned_pdb.suffix + ".prep_version"),
                                    cleaned_pdb.with_suffix(".prestrip.pdb")):
@@ -472,15 +486,24 @@ def _run_real(session: Session, job: Job) -> None:
                             stale_path.unlink()
                     except OSError:
                         pass
-                log.warning(
-                    "fix_pdb failed for %s — deleted raw + cleaned caches "
-                    "so the next attempt rebuilds from a fresh RCSB fetch. "
-                    "Original error: %s",
-                    pdb_id, str(e)[:160],
-                )
+                if attempt == 1:
+                    log.warning(
+                        "fix_pdb failed for %s on attempt 1 — re-fetching from "
+                        "RCSB and retrying once. Original error: %s",
+                        pdb_id, str(e)[:160],
+                    )
+                    # Re-fetch the raw PDB before the second attempt.
+                    raw_pdb = fetch_pdb(pdb_id, PDB_CACHE)
+                else:
+                    log.error(
+                        "fix_pdb failed for %s on retry — surfacing to user. "
+                        "Error: %s", pdb_id, str(e)[:160],
+                    )
+        if last_err is not None:
             raise RuntimeError(
-                f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
-            ) from e
+                f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: "
+                f"{type(last_err).__name__}: {last_err}"
+            ) from last_err
 
     # Step 2: prep WT receptor once. Cached across jobs. The WT receptor is
     # derived from cleaned_pdb so when the latter gets re-built (stale
