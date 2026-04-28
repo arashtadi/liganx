@@ -94,6 +94,97 @@ def _admet_for(smiles: str) -> dict | None:
         return None
 
 
+def _validate_mutations_for_submit(
+    pdb_id: str,
+    chain: str,
+    mutations: list[str],
+    uniprot_id: str | None,
+) -> list[dict]:
+    """Pre-flight: are these mutations buildable on this PDB+chain?
+
+    Fast path uses the cleaned WT PDB if it's already cached on the Fly
+    volume (typical for catalog targets and any PDB this user has hit
+    before). Otherwise we fetch the raw RCSB PDB — also cached, so the
+    second submit against the same target is free.
+
+    We deliberately do NOT trigger a full PDBFixer prep here — that's the
+    slow step (~10-20s) and is only needed for actual docking. Residue
+    presence + identity is preserved bit-for-bit between raw RCSB and
+    cleaned PDB, so the cheaper file is fine for this check.
+
+    Returns a list of issue dicts (see prep.validate_mutations); each one
+    that's a `residue_not_resolved` is enriched with `alternatives` —
+    other PDB structures of the same UniProt that DO contain the residue.
+
+    Returns empty list (no issues) on import errors so dev environments
+    without the bio deps don't fail-closed.
+    """
+    try:
+        from deltadock_pipeline.prep import validate_mutations
+        from deltadock_pipeline.fetch import fetch_pdb
+    except ImportError:
+        return []
+
+    # User uploads (USR_ prefix) — the upload router already wrote a clean
+    # PDB to PDB_CACHE. For RCSB IDs we either reuse the cleaned PDB if
+    # one exists, or fetch the raw PDB straight from RCSB.
+    from ..services.runner import PDB_CACHE, RECEPTOR_CACHE  # avoid circular at import time
+
+    pid = pdb_id if pdb_id.startswith("USR_") else pdb_id.upper()
+    ch = (chain or "A").upper()
+
+    # 1) Cleaned WT in the WT cache (most catalog targets land here)
+    cleaned = PDB_CACHE / f"{pid}_{ch}.clean.pdb"
+    pdb_for_check: Path | None = None
+    if cleaned.exists() and cleaned.stat().st_size > 0:
+        pdb_for_check = cleaned
+    else:
+        # 2) Cleaned WT in the receptor cache (legacy path)
+        alt = RECEPTOR_CACHE / f"{pid}_{ch}.clean.pdb"
+        if alt.exists() and alt.stat().st_size > 0:
+            pdb_for_check = alt
+
+    if pdb_for_check is None:
+        # 3) Fetch the raw PDB from RCSB. Residue numbering is preserved by
+        # our prep pipeline (we deliberately don't renumber), so checking
+        # against the raw file gives the same answer as checking against
+        # the cleaned one — without paying the PDBFixer cost.
+        try:
+            pdb_for_check = fetch_pdb(pid, PDB_CACHE)
+        except Exception:
+            # Couldn't get the structure at all. Don't block submit on this
+            # — let the runner discover the same problem and surface it as
+            # a job-level error with a normal failure path.
+            return []
+
+    issues = validate_mutations(pdb_for_check, ch, pid, mutations)
+
+    # Enrich `residue_not_resolved` issues with alternative PDB suggestions.
+    # We only call out to RCSB for the residue-missing case; wildtype_mismatch
+    # is usually a numbering issue where another PDB won't help (it'll have
+    # the same numbering convention), and `chain_empty` / `unparseable` are
+    # not residue-coverage problems.
+    if issues and uniprot_id:
+        try:
+            from ..services.rcsb_alternatives import find_alternative_pdbs
+            for issue in issues:
+                if issue.get("code") == "residue_not_resolved" and issue.get("residue"):
+                    alts = find_alternative_pdbs(
+                        uniprot_id=uniprot_id,
+                        residue=int(issue["residue"]),
+                        exclude_pdb=pid,
+                    )
+                    if alts:
+                        issue["alternatives"] = alts
+        except Exception as e:
+            # Suggestions are nice-to-have. Failing here would block submit
+            # for an issue the user already needs to fix anyway.
+            log = __import__("logging").getLogger(__name__)
+            log.warning("alternative-PDB enrichment failed: %s", e)
+
+    return issues
+
+
 def _pdb_quality_for(pdb_id: str, chain: str) -> dict | None:
     """Look up the cached cross-docking sanity-check result for this
     (pdb_id, chain). Returns None if the background job hasn't run yet
@@ -158,6 +249,35 @@ def create_job(
                 "invalid_compounds": invalid,
             },
         )
+
+    # Pre-flight mutation residue check. The runner can now verify that
+    # every requested mutation maps to a residue that's actually modeled
+    # in the user's chosen PDB chain — and that the wildtype letter
+    # matches what the structure has at that position. Catching these
+    # *before* dispatching means the user isn't waiting 30s for a FoldX
+    # fail with a cryptic mutant_build badge; they get specific guidance
+    # at submit time, plus alternative PDBs that DO contain the residue.
+    #
+    # Skipped when there are no mutations (WT-only run) or when the
+    # pipeline isn't importable in this environment (dev without bio deps).
+    if payload.mutations:
+        mut_issues = _validate_mutations_for_submit(
+            pdb_id=payload.pdb_id,
+            chain=payload.chain,
+            mutations=list(payload.mutations),
+            uniprot_id=payload.uniprot_id,
+        )
+        if mut_issues:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        f"{len(mut_issues)} mutation(s) can't be built on "
+                        f"{payload.pdb_id} chain {payload.chain}"
+                    ),
+                    "mutation_issues": mut_issues,
+                },
+            )
 
     job = Job(
         pdb_id=payload.pdb_id,

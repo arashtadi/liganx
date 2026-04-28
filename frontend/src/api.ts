@@ -122,9 +122,49 @@ export interface JobCreatePayload {
   tags?: string[];
 }
 
-/** Custom error so callers can branch on HTTP status without parsing strings. */
+/** A single mutation-validation issue surfaced by the /jobs pre-flight check.
+ *  See backend `prep.validate_mutations`. The shape is open-ended so we can
+ *  evolve issue codes without forcing a frontend release. */
+export interface MutationIssue {
+  mutation: string;
+  code: "residue_not_resolved" | "wildtype_mismatch" | "unparseable" | "chain_empty";
+  pdb_id: string;
+  chain: string;
+  residue: number | null;
+  expected_wt?: string;
+  actual_wt?: string;
+  chain_range?: [number, number] | null;
+  message: string;
+  /** Other PDB structures of the same UniProt that DO contain this residue.
+   *  Populated for `residue_not_resolved` issues when the backend has the
+   *  UniProt accession; otherwise omitted. */
+  alternatives?: AlternativePdb[];
+}
+
+export interface AlternativePdb {
+  pdb_id: string;
+  chain: string;
+  title: string;
+  resolution_A: number | null;
+}
+
+/** Structured validation failure body returned by the backend on 422. */
+export interface ValidationDetail {
+  message?: string;
+  invalid_compounds?: { index: number; name: string | null; reason: string }[];
+  mutation_issues?: MutationIssue[];
+}
+
+/** Custom error so callers can branch on HTTP status without parsing strings.
+ *  When the response body had a structured `detail` object, it's exposed via
+ *  `.detail` so the UI can render rich validation panels (per-mutation
+ *  explanations, alternative-PDB suggestions, etc.). */
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public detail?: ValidationDetail | unknown,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -142,14 +182,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!r.ok) {
     // Prefer the FastAPI `detail` field — that's the human message we wrote.
     let detail: string | undefined;
+    let detailObj: unknown;
     try {
       const body = await r.json();
       if (typeof body?.detail === "string") detail = body.detail;
-      else if (body?.detail) detail = JSON.stringify(body.detail);
+      else if (body?.detail) {
+        // Keep the raw object available on the error so callers can render
+        // structured panels (e.g. mutation_issues with alternatives).
+        detailObj = body.detail;
+        // For the message string, prefer a human-readable summary if present;
+        // otherwise stringify so plain logging still yields something useful.
+        if (typeof body.detail.message === "string") detail = body.detail.message;
+        else detail = JSON.stringify(body.detail);
+      }
     } catch {
       // body wasn't JSON
     }
-    throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`);
+    throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`, detailObj);
   }
   return r.json();
 }

@@ -375,29 +375,42 @@ function ScoreCell({
     // but we refuse to render that as if it were a real docking — show
     // "Failed" + the reason on hover so the user can act on it (fix the
     // SMILES, retry, etc.).
+    // mutant_build is amber (a structural-biology fact — the residue isn't
+    // modeled in this PDB, the wildtype letter doesn't match, or some other
+    // input/structure mismatch) rather than red (a system error). Different
+    // cause, different remedy: the user needs a different PDB or to fix the
+    // mutation code, NOT to retry.
+    const isAmber = ext.failure.kind === "mutant_build";
+    // For mutant_build, deliberately avoid words like "Build failed" which
+    // sound like our software broke. The reason here is biological: the
+    // structure doesn't have what's needed to model this substitution. The
+    // pre-flight check at submit time should normally catch this before a
+    // job runs, so the matrix only sees these in race conditions or when
+    // a custom PDB upload turns out to be missing the residue.
     const kindLabel = ext.failure.kind === "ligand_prep"
       ? "Ligand prep failed"
       : ext.failure.kind === "docking"
         ? "Docking failed"
-        : ext.failure.kind === "mutant_build"
-          ? "Mutation build failed"
+        : isAmber
+          ? "Mutation not buildable on this structure"
           : "Failed";
-    // mutant_build is amber (user-input issue — wrong residue/PDB) rather
-    // than red (system error). Different cause, different remedy: the user
-    // probably picked the wrong PDB or typed a residue that doesn't exist.
-    const isAmber = ext.failure.kind === "mutant_build";
     const badgeClass = isAmber
       ? "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:ring-amber-800/50"
       : "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800/50";
     const subtitleClass = isAmber
       ? "text-amber-700 dark:text-amber-300/80"
       : "text-rose-700 dark:text-rose-300/80";
+    const badgeText = ext.failure.kind === "ligand_prep" || ext.failure.kind === "docking"
+      ? "Failed"
+      : isAmber
+        ? "Residue not in structure"
+        : "Failed";
     const subtitle = ext.failure.kind === "ligand_prep"
       ? "ligand prep"
       : ext.failure.kind === "docking"
         ? "docking"
-        : ext.failure.kind === "mutant_build"
-          ? "residue not in PDB"
+        : isAmber
+          ? "see hover for details"
           : "error";
     return (
       <td
@@ -407,7 +420,7 @@ function ScoreCell({
         {Checkbox}
         <div className="inline-flex items-center justify-end gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${badgeClass}`}>
-            <span aria-hidden>{isAmber ? "⚠" : "⚠"}</span> {isAmber ? "Build failed" : "Failed"}
+            <span aria-hidden>⚠</span> {badgeText}
           </span>
         </div>
         <div className={`text-[10px] mt-1 max-w-[160px] truncate ${subtitleClass}`}>

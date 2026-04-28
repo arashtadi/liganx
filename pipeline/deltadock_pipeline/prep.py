@@ -99,6 +99,193 @@ _AA3_TO_1 = {
 }
 
 
+def chain_residue_map(pdb_path: Path | str, chain: str) -> dict[int, str]:
+    """Parse a PDB file and return {residue_number: 3-letter-aa} for one chain.
+
+    Reads ATOM records only (HETATM is skipped — we don't want bound ligands or
+    waters showing up as "residues" in the chain). Multiple ATOM lines for the
+    same residue (e.g. each backbone atom) all carry the same residue number,
+    so the dict is keyed by resnum and we keep the first 3-letter name we see.
+
+    This is a *fast* operation (one pass over a file usually <1 MB), so it's
+    cheap enough to run synchronously inside POST /jobs as a pre-flight check
+    before kicking off the 30-second FoldX build.
+
+    Args:
+        pdb_path: Path to a raw RCSB PDB or a cleaned/chain-filtered one.
+        chain: Single-letter chain ID (case-sensitive — must match the PDB).
+
+    Returns:
+        Dict mapping residue number → 3-letter amino-acid code, e.g.
+        {1058: "MET", 1059: "ASP", ...}. Empty when the chain has no ATOM
+        records (chain doesn't exist OR wasn't modeled).
+    """
+    p = Path(pdb_path)
+    residues: dict[int, str] = {}
+    if not p.exists():
+        return residues
+    try:
+        with p.open() as fh:
+            for line in fh:
+                if not line.startswith("ATOM"):
+                    continue
+                if len(line) < 27:
+                    continue
+                if line[21] != chain:
+                    continue
+                aa = line[17:20].strip()
+                try:
+                    rn = int(line[22:26].strip())
+                except ValueError:
+                    continue
+                # First write wins — keeps it deterministic for residues with
+                # alt-locs or duplicated rows.
+                residues.setdefault(rn, aa)
+    except OSError:
+        pass
+    return residues
+
+
+def validate_mutations(
+    pdb_path: Path | str,
+    chain: str,
+    pdb_id: str,
+    mutations: list[str],
+) -> list[dict]:
+    """Pre-flight check: every requested mutation has a residue we can build at.
+
+    For each mutation code (e.g. "Y1230H" or "T790M+C797S"), confirms two
+    things in the structure:
+
+      1. The numbered residue actually exists in the chain. Crystal structures
+         routinely omit flexible loops / disordered tails, so a residue that
+         exists in the protein sequence may not exist in the PDB file.
+      2. The wildtype letter the user typed matches the residue actually at
+         that position. Some PDBs use construct numbering or shifted ranges,
+         which makes "Y1230H" silently apply to the wrong residue if not
+         caught.
+
+    Returns a list of issue dicts — empty list means every mutation is buildable.
+    Each issue is JSON-serializable so it can ride on a 422 response body and
+    drive a structured UI panel on the frontend.
+
+    Issue shape:
+        {
+            "mutation": "Y1230H",        # original code as the user typed it
+            "code": "residue_not_resolved" | "wildtype_mismatch"
+                    | "unparseable" | "chain_empty",
+            "pdb_id": "2WGJ",
+            "chain": "A",
+            "residue": 1230,             # int, when a residue number was parsed
+            "expected_wt": "Y",          # one-letter, on wildtype_mismatch
+            "actual_wt": "H",            # one-letter, on wildtype_mismatch
+            "chain_range": [1058, 1247], # min/max resnum present, when known
+            "message": "human-readable explanation"
+        }
+    """
+    issues: list[dict] = []
+
+    residues = chain_residue_map(pdb_path, chain)
+    chain_range: list[int] | None = (
+        [min(residues), max(residues)] if residues else None
+    )
+
+    if not residues:
+        # Chain genuinely has no ATOM records in this PDB. Could be a typo
+        # (chain B vs A) or a chain that's modeled but only as HETATM (rare).
+        # All requested mutations fail for the same reason.
+        for mut in mutations:
+            issues.append({
+                "mutation": mut,
+                "code": "chain_empty",
+                "pdb_id": pdb_id,
+                "chain": chain,
+                "residue": None,
+                "chain_range": None,
+                "message": (
+                    f"Chain {chain} has no protein atoms in {pdb_id}. "
+                    f"Check the chain ID, or pick a different structure."
+                ),
+            })
+        return issues
+
+    for mut_code in mutations:
+        # Multi-residue codes like "T790M+C797S" must each individually validate.
+        parts = [c.strip().upper() for c in mut_code.split("+") if c.strip()]
+        for code in parts:
+            if len(code) < 3 or not code[1:-1].isdigit():
+                issues.append({
+                    "mutation": mut_code,
+                    "code": "unparseable",
+                    "pdb_id": pdb_id,
+                    "chain": chain,
+                    "residue": None,
+                    "chain_range": chain_range,
+                    "message": f"Couldn't parse mutation code {code!r}.",
+                })
+                continue
+            wt_one = code[0]
+            try:
+                resnum = int(code[1:-1])
+            except ValueError:
+                issues.append({
+                    "mutation": mut_code,
+                    "code": "unparseable",
+                    "pdb_id": pdb_id,
+                    "chain": chain,
+                    "residue": None,
+                    "chain_range": chain_range,
+                    "message": f"Bad residue number in {code!r}.",
+                })
+                continue
+
+            if resnum not in residues:
+                # Residue isn't modeled. This is the common case — flexible
+                # loops, terminal tails, etc. Surface the chain's actual range
+                # so the UI can suggest a better-coverage structure.
+                issues.append({
+                    "mutation": mut_code,
+                    "code": "residue_not_resolved",
+                    "pdb_id": pdb_id,
+                    "chain": chain,
+                    "residue": resnum,
+                    "chain_range": chain_range,
+                    "message": (
+                        f"Residue {resnum} is not modeled in {pdb_id} "
+                        f"chain {chain} (resolved range: "
+                        f"{chain_range[0]}–{chain_range[1]}). "
+                        f"Disordered loops and termini are commonly "
+                        f"missing from crystal structures."
+                    ),
+                })
+                continue
+
+            actual_three = residues[resnum]
+            actual_one = _AA3_TO_1.get(actual_three, "?")
+            if actual_one != wt_one:
+                # Wildtype letter mismatch — usually means the PDB uses
+                # construct numbering or the user typed a code from a
+                # different isoform.
+                issues.append({
+                    "mutation": mut_code,
+                    "code": "wildtype_mismatch",
+                    "pdb_id": pdb_id,
+                    "chain": chain,
+                    "residue": resnum,
+                    "expected_wt": wt_one,
+                    "actual_wt": actual_one,
+                    "chain_range": chain_range,
+                    "message": (
+                        f"Residue {chain}{resnum} in {pdb_id} is "
+                        f"{actual_three} ({actual_one}), not {wt_one} "
+                        f"as your code {code} expects. The structure may "
+                        f"use different numbering than UniProt."
+                    ),
+                })
+                continue
+    return issues
+
+
 def verify_mutation_applied(
     receptor_pdbqt: Path | str,
     chain: str,

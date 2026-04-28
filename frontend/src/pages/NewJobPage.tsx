@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, type CatalogTarget } from "../api";
+import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIssue, type ValidationDetail } from "../api";
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
 
@@ -1085,9 +1085,24 @@ export default function NewJobPage() {
 
       {/* ── Submit bar ─────────────────────────────────────────────────── */}
       {submit.isError && (
-        <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40">
-          <p className="text-sm">Couldn't submit: {(submit.error as Error).message}</p>
-        </div>
+        <SubmitErrorPanel
+          err={submit.error}
+          onPickAlternative={(alt) => {
+            // Apply the suggested PDB to the form. We turn off catalog mode
+            // (alternatives come from RCSB direct, not our curated list) and
+            // populate Custom mode with the new ID + chain. The user can
+            // re-submit immediately — their compound list and mutations
+            // are preserved.
+            setSelectedIds([]);
+            setCustomMode(true);
+            setPdbId(alt.pdb_id);
+            setChain(alt.chain);
+            // Reset the upstream submit error so the panel collapses on the
+            // next render — the user has effectively acknowledged the
+            // suggestion by clicking it.
+            submit.reset();
+          }}
+        />
       )}
 
       <div className="sticky bottom-4 z-10">
@@ -1125,6 +1140,135 @@ export default function NewJobPage() {
 }
 
 /* ─── Helpers ───────────────────────────────────────────────────────── */
+
+/** Render a structured submit-error panel.
+ *
+ *  Three shapes to cover:
+ *    1. SMILES validation failure (`invalid_compounds`) — reuses the
+ *       legacy plain-text path; user fixes the SMILES and retries.
+ *    2. Mutation residue validation failure (`mutation_issues`) — the
+ *       biology-flavored case. We render one card per issue so the user
+ *       can see exactly which mutation can't be built and why, plus
+ *       alternative-PDB chips when the backend was able to find them.
+ *    3. Anything else — bare error message in a single line.
+ *
+ *  This component is intentionally local to NewJobPage because the only
+ *  place we render a structured submit error is here. If a second page
+ *  ever needs this, lift it.
+ */
+function SubmitErrorPanel({
+  err,
+  onPickAlternative,
+}: {
+  err: unknown;
+  onPickAlternative: (alt: AlternativePdb) => void;
+}) {
+  const apiErr = err instanceof ApiError ? err : null;
+  const detail = apiErr?.detail as ValidationDetail | undefined;
+  const issues = detail?.mutation_issues || [];
+
+  if (issues.length > 0) {
+    return (
+      <div className="card border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-900/15 dark:text-amber-100 dark:border-amber-700/40">
+        <h3 className="text-sm font-semibold mb-1">
+          {detail?.message || "Some mutations can't be built on this structure"}
+        </h3>
+        <p className="text-xs text-amber-800 dark:text-amber-200/80 mb-3">
+          We checked your structure before submitting. Crystal structures often omit flexible loops or terminal residues, so a residue that exists in the protein sequence may not be modeled in the PDB file. Below is what we found, and where to look instead.
+        </p>
+        <ul className="space-y-3">
+          {issues.map((it, i) => (
+            <MutationIssueCard
+              key={`${it.mutation}-${i}`}
+              issue={it}
+              onPickAlternative={onPickAlternative}
+            />
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // Fallback: plain message (covers SMILES failures and other 4xx/5xx).
+  return (
+    <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40">
+      <p className="text-sm">Couldn't submit: {(err as Error)?.message ?? String(err)}</p>
+    </div>
+  );
+}
+
+function MutationIssueCard({
+  issue,
+  onPickAlternative,
+}: {
+  issue: MutationIssue;
+  onPickAlternative: (alt: AlternativePdb) => void;
+}) {
+  const range = issue.chain_range
+    ? `${issue.chain_range[0]}–${issue.chain_range[1]}`
+    : null;
+  // Headline label depends on the issue code — a missing residue and a
+  // wildtype mismatch are different conversations with the user.
+  const headline =
+    issue.code === "residue_not_resolved"
+      ? `Residue ${issue.residue} not modeled in ${issue.pdb_id} chain ${issue.chain}`
+      : issue.code === "wildtype_mismatch"
+        ? `${issue.pdb_id} ${issue.chain}${issue.residue} is ${issue.actual_wt}, not ${issue.expected_wt}`
+        : issue.code === "chain_empty"
+          ? `Chain ${issue.chain} is empty in ${issue.pdb_id}`
+          : `Couldn't validate ${issue.mutation}`;
+
+  return (
+    <li className="rounded-md bg-white/70 dark:bg-slate-900/40 border border-amber-200 dark:border-amber-700/30 p-3">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-xs font-semibold rounded bg-amber-100 text-amber-900 dark:bg-amber-800/40 dark:text-amber-100 px-1.5 py-0.5">
+          {issue.mutation}
+        </span>
+        <span className="text-sm font-semibold text-ink dark:text-slate-100">
+          {headline}
+        </span>
+      </div>
+      <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5">
+        {issue.message}
+      </p>
+      {range && (
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+          Modeled residue range in this chain: {range}.
+        </p>
+      )}
+      {issue.alternatives && issue.alternatives.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+            Structures that contain residue {issue.residue}
+          </div>
+          <ul className="flex flex-wrap gap-1.5">
+            {issue.alternatives.map((alt) => (
+              <li key={`${alt.pdb_id}_${alt.chain}`}>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] hover:border-delta-400 hover:bg-delta-50 dark:bg-slate-900 dark:border-slate-700 dark:hover:border-delta-500 dark:hover:bg-slate-800 transition-colors"
+                  onClick={() => onPickAlternative(alt)}
+                  title={alt.title}
+                >
+                  <span className="font-mono font-semibold">{alt.pdb_id}</span>
+                  <span className="text-slate-500 dark:text-slate-400">/{alt.chain}</span>
+                  {alt.resolution_A != null && (
+                    <span className="text-slate-400 dark:text-slate-500">
+                      · {alt.resolution_A.toFixed(2)} Å
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5">
+            Sourced from RCSB. Click to swap your target — your compounds and other settings stay.
+          </p>
+        </div>
+      )}
+    </li>
+  );
+}
 
 function Step({
   n, icon, title, subtitle, action, children,
