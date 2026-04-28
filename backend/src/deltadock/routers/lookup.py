@@ -74,6 +74,61 @@ async def lookup_compound(q: str) -> dict:
     }
 
 
+@router.post("/pdb/upload")
+async def upload_pdb_file(file: UploadFile = File(...)) -> dict:
+    """Accept a user-uploaded PDB file. Stores it as USR_<8 hex>.pdb in the
+    same cache directory the runner reads from for RCSB downloads, so the
+    rest of the pipeline (PDBFixer cleanup, pocket detection, receptor prep,
+    docking, validation) works unchanged.
+
+    Returns the synthetic pdb_id ("USR_xxxxxxxx") + the list of chain IDs
+    we found in the file so the UI can populate a chain dropdown without
+    making the user guess.
+    """
+    import secrets as _secrets
+    from pathlib import Path as _Path
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty file")
+    if len(raw) > 10_000_000:
+        raise HTTPException(413, "PDB file too large (max 10 MB)")
+
+    text = raw.decode("utf-8", errors="replace")
+    # Quick sanity-check: a PDB has ATOM/HETATM lines. If neither is present,
+    # the upload is almost certainly mislabelled (PDBQT, mmCIF, garbage).
+    if "ATOM  " not in text and "HETATM" not in text:
+        raise HTTPException(400, "File doesn't look like a PDB (no ATOM/HETATM records)")
+
+    # Extract chain IDs from ATOM record column 22 (1-indexed) for the dropdown.
+    chains: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        if line.startswith(("ATOM  ", "HETATM")):
+            if len(line) >= 22:
+                ch = line[21:22].strip()
+                if ch and ch not in seen:
+                    seen.add(ch)
+                    chains.append(ch)
+        if len(chains) >= 26:
+            break  # PDBs cap at 26 chain IDs anyway
+    if not chains:
+        chains = ["A"]  # Default to A so the UI doesn't show an empty dropdown
+
+    pdb_id = "USR_" + _secrets.token_hex(4)  # 8 hex chars
+    pdb_root = _Path.home() / ".deltadock" / "pdb"
+    pdb_root.mkdir(parents=True, exist_ok=True)
+    out_path = pdb_root / f"{pdb_id}.pdb"
+    out_path.write_text(text)
+    log.info("Stored uploaded PDB %s (%d bytes, chains=%s)", pdb_id, len(raw), ",".join(chains))
+
+    return {
+        "pdb_id": pdb_id,
+        "chains": chains,
+        "size_bytes": len(raw),
+    }
+
+
 @router.post("/compounds/parse")
 async def parse_compounds_file(file: UploadFile = File(...)) -> dict:
     """Parse an uploaded compound file (.sdf, .smi, .csv, .txt) and return

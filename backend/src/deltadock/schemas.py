@@ -8,8 +8,11 @@ from pydantic import BaseModel, Field, field_validator
 from .models import JobStatus
 
 
-# Strict format: standard 4-char PDB ID. Mirrors the frontend regex.
-PDB_ID_RE = re.compile(r"^[A-Za-z0-9]{4}$")
+# Standard 4-char RCSB PDB ID (e.g. "2RGP") OR a user-uploaded structure
+# tagged "USR_xxxxxxxx" (8 hex chars from POST /upload/pdb). Both forms get
+# stored as the job's pdb_id in the DB; the runner branches on the prefix to
+# decide whether to fetch from RCSB or read the upload from disk.
+PDB_ID_RE = re.compile(r"^([A-Za-z0-9]{4}|USR_[0-9a-f]{8})$")
 # Mutations: T790M, L858R, G12C, T790M+C797S, E746_A750del, V559insT
 MUTATION_RE = re.compile(r"^[A-Z][0-9]+[A-Z]([+_][A-Za-z0-9]+)*(del|ins[A-Z]+)?$")
 # Chain ID: usually a single letter, sometimes two.
@@ -22,7 +25,7 @@ class CompoundIn(BaseModel):
 
 
 class JobCreate(BaseModel):
-    pdb_id: str = Field(..., min_length=4, max_length=4)
+    pdb_id: str = Field(..., min_length=4, max_length=12)
     chain: str = "A"
     uniprot_id: str | None = Field(default=None, max_length=20)
     # Empty list = WT only. Otherwise list of mutations like ["T790M", "L858R"]
@@ -43,8 +46,10 @@ class JobCreate(BaseModel):
     @classmethod
     def _v_pdb(cls, v: str) -> str:
         if not PDB_ID_RE.match(v):
-            raise ValueError("pdb_id must be 4 alphanumeric characters")
-        return v.upper()
+            raise ValueError("pdb_id must be 4 alphanumeric chars or USR_<8 hex>")
+        # User-uploaded IDs carry a "USR_" prefix (case-significant) — only
+        # standard RCSB IDs get upper-cased to match RCSB's canonical casing.
+        return v if v.startswith("USR_") else v.upper()
 
     @field_validator("chain")
     @classmethod

@@ -369,6 +369,11 @@ def _run_real(session: Session, job: Job) -> None:
                                 pose_pdbqt=result.pose_pdbqt,
                                 receptor_pdb=receptor_pdb,
                                 work_dir=run_dir,
+                                # Pass the original SMILES so ProLIF can re-template
+                                # bond orders that obabel's PDBQT round-trip drops.
+                                # This is the difference between "no interactions"
+                                # and a real contact list on aromatic-rich ligands.
+                                ligand_smiles=compound.smiles,
                             )
                             parts.append(v.to_extra_string())
                         except Exception as ve:

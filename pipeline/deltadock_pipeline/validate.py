@@ -74,9 +74,17 @@ def validate_pose(
     *,
     receptor_pdb: Path | str | None = None,
     work_dir: Path | str | None = None,
+    ligand_smiles: str | None = None,
 ) -> Validation:
     """Run PoseBusters + ProLIF on a single docked pose. Best-effort: any failure
     gracefully degrades to an "unknown" confidence rather than blowing up the job.
+
+    `ligand_smiles` is the user-provided SMILES that was originally docked. When
+    supplied, ProLIF uses it as a bond-order template via
+    Chem.AssignBondOrdersFromTemplate, which recovers the aromatic / multiple
+    bonds that get lost in the obabel PDBQT→PDB round-trip. Without this,
+    ProLIF often returns "no interactions" on aromatic-rich ligands because
+    every bond looks single to RDKit and H-bonds via aromatic N are missed.
 
     Pass the *original* cleaned PDB (from PDBFixer) as `receptor_pdb` if you have
     it — ProLIF/MDAnalysis fails on receptors back-converted from PDBQT because
@@ -157,7 +165,7 @@ def validate_pose(
     # both with prolif_status="empty" so the UI can show a hint instead of
     # just suppressing the contacts panel silently.
     try:
-        v.interactions = _run_prolif_safe(pose_pdb, receptor_pdb_path)
+        v.interactions = _run_prolif_safe(pose_pdb, receptor_pdb_path, ligand_smiles=ligand_smiles)
         if not v.interactions:
             v.prolif_status = "empty"
     except Exception as e:
@@ -347,11 +355,18 @@ def _confidence_from_bust(passed: int, failed: int) -> str:
 
 # ────────────────────── ProLIF ──────────────────────
 
-def _run_prolif_safe(pose_pdb: Path, receptor_pdb: Path, timeout: float = 60.0) -> list[dict]:
+def _run_prolif_safe(
+    pose_pdb: Path,
+    receptor_pdb: Path,
+    timeout: float = 60.0,
+    ligand_smiles: str | None = None,
+) -> list[dict]:
     """Run ProLIF in a SUBPROCESS so a SIGSEGV (RDKit batchRemoveAtoms crash on
     certain receptors) doesn't kill the parent uvicorn worker.
 
     Returns the same shape as `_run_prolif`. Empty list on any failure.
+    `ligand_smiles` (when provided) is forwarded as argv[3] to the inline
+    runner so the subprocess can use it as a bond-order template.
     """
     import json as _json
     import subprocess as _subprocess
@@ -361,15 +376,17 @@ def _run_prolif_safe(pose_pdb: Path, receptor_pdb: Path, timeout: float = 60.0) 
     # Inline runner: import + run + dump JSON to stdout. Lives here as a string
     # so we don't have to ship a separate file. Uses real newlines because
     # try/except can't be expressed in a one-liner with semicolons.
-    # _run_prolif uses Path methods, so we wrap str args in Path().
+    # argv shape: [pose_pdb, receptor_pdb, ligand_smiles?]. The third is
+    # optional — empty string means "no template, infer from geometry".
     runner_code = "\n".join([
         "import sys, json, logging, traceback",
         "logging.disable(logging.CRITICAL)",
         "from pathlib import Path",
         "from deltadock_pipeline.validate import _run_prolif",
         "pose, rec = Path(sys.argv[1]), Path(sys.argv[2])",
+        "smi = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None",
         "try:",
-        "    out = _run_prolif(pose, rec)",
+        "    out = _run_prolif(pose, rec, ligand_smiles=smi)",
         "    print('@@JSON@@' + json.dumps(out))",
         "except Exception as e:",
         "    sys.stderr.write('PROLIF_ERR: ' + repr(e) + chr(10))",
@@ -382,9 +399,13 @@ def _run_prolif_safe(pose_pdb: Path, receptor_pdb: Path, timeout: float = 60.0) 
     pipeline_dir = str(Path(__file__).parent.parent)
     env["PYTHONPATH"] = pipeline_dir + _os.pathsep + env.get("PYTHONPATH", "")
 
+    argv = [_sys.executable, "-c", runner_code, str(pose_pdb), str(receptor_pdb)]
+    if ligand_smiles:
+        argv.append(ligand_smiles)
+
     try:
         result = _subprocess.run(
-            [_sys.executable, "-c", runner_code, str(pose_pdb), str(receptor_pdb)],
+            argv,
             capture_output=True, text=True, env=env,
             timeout=timeout, check=False,
         )
@@ -427,7 +448,7 @@ def _run_prolif_safe(pose_pdb: Path, receptor_pdb: Path, timeout: float = 60.0) 
     return []
 
 
-def _run_prolif(pose_pdb: Path, receptor_pdb: Path) -> list[dict]:
+def _run_prolif(pose_pdb: Path, receptor_pdb: Path, *, ligand_smiles: str | None = None) -> list[dict]:
     """Compute the protein–ligand interaction fingerprint and return the contacts.
 
     Called inside the subprocess in `_run_prolif_safe` — never call this directly
@@ -436,6 +457,12 @@ def _run_prolif(pose_pdb: Path, receptor_pdb: Path) -> list[dict]:
     ProLIF needs explicit hydrogens. Our PDBFixer pipeline omits them (because
     Meeko adds them itself for receptor prep), so we add them here on the fly
     with obabel and pass `force=True` to skip MDAnalysis' inferrer.
+
+    `ligand_smiles` is the original input SMILES. When supplied, we build a
+    template molecule from it and use Chem.AssignBondOrdersFromTemplate to
+    overwrite the ligand-pose bond orders that obabel mangles in the
+    PDBQT→PDB→SDF round-trip. Without this, aromatic rings come back as
+    Kekulé singles and ProLIF misses every π-stacking + aromatic-N H-bond.
     """
     import prolif as plf
     import MDAnalysis as mda
@@ -479,22 +506,63 @@ def _run_prolif(pose_pdb: Path, receptor_pdb: Path) -> list[dict]:
     except TypeError:
         rec = plf.Molecule.from_mda(u_rec)
 
-    # Ligand: prefer SDF (which carries explicit bond orders) over PDB. PDB
-    # loses bond information, forcing MDAnalysis/RDKit to *infer* aromaticity
-    # from geometry — this fails on tricky scaffolds (Osimertinib's indole
-    # raises KekulizeException on atoms 16-24, for example). When we have an
-    # SDF sibling next to the pose PDB, load directly via RDKit instead.
+    # Ligand load order, best-quality first:
+    #   1. SDF (carries explicit bond orders from meeko) → re-template with
+    #      SMILES if available (catches the ~10% of cases where obabel still
+    #      drops aromaticity even from SDF).
+    #   2. PDB → re-template with SMILES (the heavy lift — PDB has zero
+    #      bond-order info, every bond comes back single).
+    #   3. PDB via MDAnalysis with force=True (final fallback; no template).
     pose_sdf = pose_pdb.with_suffix(".sdf")
     lig = None
+
+    from rdkit import Chem as _Chem
+    from rdkit.Chem import AllChem as _AllChem
+
+    template_mol = None
+    if ligand_smiles:
+        try:
+            template_mol = _Chem.MolFromSmiles(ligand_smiles)
+            if template_mol is None:
+                log.warning("Could not build template from SMILES: %s", ligand_smiles[:40])
+        except Exception as e:
+            log.warning("SMILES template build failed (%s); proceeding without", e)
+
+    def _retemplate(pose_mol: "_Chem.Mol") -> "_Chem.Mol":
+        """Copy bond orders from template_mol onto pose_mol if both are valid.
+        AssignBondOrdersFromTemplate requires identical atom sets — meeko's PDBQT
+        export usually preserves heavy-atom counts so this matches the docked
+        pose. Falls through silently to the un-templated mol on mismatch."""
+        if template_mol is None:
+            return pose_mol
+        try:
+            return _AllChem.AssignBondOrdersFromTemplate(template_mol, pose_mol)
+        except Exception as e:
+            log.info("AssignBondOrdersFromTemplate failed (%s); using inferred bonds", str(e)[:80])
+            return pose_mol
+
     if pose_sdf.exists() and pose_sdf.stat().st_size > 0:
         try:
-            from rdkit import Chem as _Chem
             suppl = _Chem.SDMolSupplier(str(pose_sdf), removeHs=False, sanitize=True)
             mol = next((m for m in suppl if m is not None), None)
             if mol is not None:
+                mol = _retemplate(mol)
                 lig = plf.Molecule(mol)
         except Exception as e:
-            log.warning("SDF→ProLIF ligand load failed (%s); falling back to PDB", e)
+            log.warning("SDF→ProLIF ligand load failed (%s); trying PDB", e)
+
+    if lig is None:
+        # Re-templating PDB is the bigger win — PDB strips ALL bond orders.
+        # RDKit needs removeHs=False so atom indices match the SMILES template.
+        try:
+            mol = _Chem.MolFromPDBFile(str(pose_pdb), removeHs=False, sanitize=False)
+            if mol is not None and template_mol is not None:
+                mol = _retemplate(mol)
+                _Chem.SanitizeMol(mol)
+                lig = plf.Molecule(mol)
+        except Exception as e:
+            log.info("PDB+template ligand load failed (%s); falling back to MDAnalysis", e)
+
     if lig is None:
         u_lig = mda.Universe(str(pose_pdb))
         try:

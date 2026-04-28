@@ -151,6 +151,21 @@ export const api = {
     }
     return r.json();
   },
+  /** Upload a user-supplied PDB file (AlphaFold model, in-house crystal,
+   *  predicted complex, etc.). Returns a synthetic pdb_id of the form
+   *  `USR_<8 hex>` plus the chain IDs we found in the file so the UI can
+   *  populate the chain selector without making the user guess. */
+  uploadPdb: async (file: File): Promise<{ pdb_id: string; chains: string[]; size_bytes: number }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`${BASE}/lookup/pdb/upload`, { method: "POST", body: fd });
+    if (!r.ok) {
+      let detail: string | undefined;
+      try { detail = (await r.json())?.detail; } catch { /* */ }
+      throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`);
+    }
+    return r.json();
+  },
   structure: async (pdbId: string, chain: string, variant: string): Promise<string> => {
     // encode the variant — "T790M+C797S" needs the "+" escaped or it becomes a space
     const v = encodeURIComponent(variant);

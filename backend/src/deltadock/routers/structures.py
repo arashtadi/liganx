@@ -16,8 +16,9 @@ from ..services.runner import RECEPTOR_CACHE
 router = APIRouter(prefix="/structures", tags=["structures"])
 
 # Format guards. URL params get baked into filesystem paths below, so anything
-# that could escape the cache directory must be rejected here.
-_PDB_RE = re.compile(r"^[A-Za-z0-9]{4}$")
+# that could escape the cache directory must be rejected here. Accepts either
+# standard 4-char RCSB IDs or user-uploaded "USR_xxxxxxxx" tokens.
+_PDB_RE = re.compile(r"^([A-Za-z0-9]{4}|USR_[0-9a-f]{8})$")
 _CHAIN_RE = re.compile(r"^[A-Za-z0-9]{1,2}$")
 _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|ins[A-Za-z]+)?)$")
 
@@ -37,7 +38,10 @@ def get_structure(pdb_id: str, chain: str, variant: str) -> str:
     if not _VARIANT_RE.match(variant):
         raise HTTPException(status_code=400, detail="invalid variant format")
 
-    pdb_id = pdb_id.upper()
+    # User uploads keep their case-significant USR_ prefix; only standard
+    # RCSB IDs get upper-cased.
+    if not pdb_id.startswith("USR_"):
+        pdb_id = pdb_id.upper()
     chain = chain.upper()
     # Don't uppercase variant fully — "del"/"ins" suffixes are case-significant.
     if variant.upper() == "WT":

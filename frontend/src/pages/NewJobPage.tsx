@@ -287,15 +287,23 @@ export default function NewJobPage() {
         )}
 
         {/* Custom-PDB heads-up: pocket box auto-detected from co-crystal HETATM,
-            falls back to origin (LIKELY WRONG). Set expectations clearly. */}
+            falls back to origin (LIKELY WRONG). Set expectations clearly.
+            Also expose the file upload path here so users with non-RCSB
+            structures (AlphaFold, in-house crystals, predicted complexes)
+            can dock without putting their data in a public repository. */}
         {!target && (
-          <div className="mt-4 p-4 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 leading-relaxed dark:bg-amber-900/20 dark:border-amber-800/40 dark:text-amber-200">
-            <div className="font-semibold mb-1">Heads-up: custom PDB</div>
-            We'll fetch your structure from RCSB and auto-detect the pocket from any
-            bound ligand in the file. If the structure has no co-crystal ligand, the
-            docking box defaults to the origin and results will be unreliable —
-            consider a curated target above for your first run.
-          </div>
+          <>
+            <div className="mt-4 p-4 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 leading-relaxed dark:bg-amber-900/20 dark:border-amber-800/40 dark:text-amber-200">
+              <div className="font-semibold mb-1">Heads-up: custom PDB</div>
+              Type a 4-character RCSB ID below (we'll fetch + clean it for you), or
+              upload a .pdb file from disk. Either way we strip waters/heterogens, add
+              missing residues + hydrogens, and auto-detect the pocket from any bound
+              ligand. With no co-crystal ligand the docking box defaults to the
+              centroid and results get unreliable — pick a curated target above for
+              your first run if you're new.
+            </div>
+            <PdbUpload onUploaded={(r) => { setPdbId(r.pdb_id); if (r.chains[0]) setChain(r.chains[0]); }} />
+          </>
         )}
 
         <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -715,6 +723,94 @@ function SummaryRow({ children }: { children: React.ReactNode }) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600 bg-slate-50 rounded-md px-3 py-2 border border-slate-200 dark:text-slate-300 dark:bg-slate-800/60 dark:border-slate-700">
       {children}
+    </div>
+  );
+}
+
+/** Drag-and-drop / click-to-pick PDB file uploader. Shown only in the
+ *  custom-PDB ("Other PDB") branch. On success, fills the PDB ID + chain
+ *  fields above with the upload's USR_xxxxxxxx token. */
+function PdbUpload({ onUploaded }: {
+  onUploaded: (resp: { pdb_id: string; chains: string[]; size_bytes: number }) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ pdb_id: string; chains: string[]; bytes: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [drag, setDrag] = useState(false);
+
+  async function handle(file: File) {
+    setError(null);
+    if (file.size > 10 * 1024 * 1024) {
+      setError("File too large (max 10 MB).");
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".pdb") && !file.name.toLowerCase().endsWith(".ent")) {
+      // Soft-warn but still try — many users name structures with .txt or no extension
+      // and the backend's content sniff will catch true mis-uploads.
+    }
+    setBusy(true);
+    try {
+      const r = await api.uploadPdb(file);
+      setDone({ pdb_id: r.pdb_id, chains: r.chains, bytes: r.size_bytes });
+      onUploaded(r);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className={`mt-3 border-2 border-dashed rounded-lg p-4 text-sm transition-colors ${
+        drag
+          ? "border-delta-500 bg-delta-50 dark:bg-delta-900/20"
+          : done
+          ? "border-emerald-300 bg-emerald-50/40 dark:border-emerald-700/50 dark:bg-emerald-900/10"
+          : "border-slate-300 bg-slate-50/60 hover:border-delta-400 dark:border-slate-700 dark:bg-slate-800/40 dark:hover:border-delta-500"
+      }`}
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDrag(false);
+        const f = e.dataTransfer.files?.[0];
+        if (f) handle(f);
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-slate-700 dark:text-slate-300">
+          {busy ? (
+            <span className="inline-flex items-center gap-2"><Spinner size={13} /> Uploading…</span>
+          ) : done ? (
+            <span className="text-emerald-700 dark:text-emerald-300">
+              ✓ Uploaded <span className="font-mono">{done.pdb_id}</span> · {(done.bytes / 1024).toFixed(0)} KB
+              · chains: {done.chains.join(", ")}
+            </span>
+          ) : (
+            <span>
+              <span className="font-semibold text-ink dark:text-slate-200">Or upload a .pdb file</span>
+              <span className="text-slate-500 dark:text-slate-400"> — drop here, or </span>
+              <label className="text-delta-600 dark:text-delta-400 hover:underline cursor-pointer">
+                browse
+                <input
+                  type="file"
+                  accept=".pdb,.ent,chemical/x-pdb"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handle(f); }}
+                />
+              </label>
+              <span className="text-slate-500 dark:text-slate-400"> · max 10 MB · waters/heterogens cleaned automatically</span>
+            </span>
+          )}
+        </div>
+      </div>
+      {error && (
+        <div className="mt-2 text-xs text-rose-700 dark:text-rose-400">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
