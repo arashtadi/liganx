@@ -398,12 +398,14 @@ export default function NewJobPage() {
           </div>
         )}
 
-        {/* Custom-PDB heads-up: pocket box auto-detected from co-crystal HETATM,
-            falls back to origin (LIKELY WRONG). Set expectations clearly.
-            Also expose the file upload path here so users with non-RCSB
-            structures (AlphaFold, in-house crystals, predicted complexes)
-            can dock without putting their data in a public repository. */}
-        {!target && (
+        {/* Custom-PDB inputs — ONLY shown when "Other PDB" mode is on.
+            When the user has picked one or more catalog targets, the PDB ID,
+            chain, and UniProt are determined by the catalog entry; allowing
+            edits here would create inconsistent state (typing 4XUF while
+            EGFR is selected would silently dock against EGFR's pocket box
+            with 4XUF's structure — nonsense). The inputs are now physically
+            unreachable unless customMode is true, eliminating that footgun. */}
+        {customMode && (
           <>
             <div className="mt-4 p-4 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 leading-relaxed dark:bg-amber-900/20 dark:border-amber-800/40 dark:text-amber-200">
               <div className="font-semibold mb-1">Heads-up: custom PDB</div>
@@ -415,40 +417,40 @@ export default function NewJobPage() {
               your first run if you're new.
             </div>
             <PdbUpload onUploaded={(r) => { setPdbId(r.pdb_id); if (r.chains[0]) setChain(r.chains[0]); }} />
+
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="label">PDB ID</label>
+                <AutocompleteInput
+                  value={pdbId}
+                  onChange={setPdbId}
+                  fetchSuggestions={async (q) => {
+                    const r = await api.suggestPdb(q);
+                    return r.suggestions;
+                  }}
+                  getValue={(item) => item.pdb_id}
+                  renderItem={(item) => (
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono font-semibold text-delta-700 shrink-0">{item.pdb_id}</span>
+                      <span className="text-[11px] text-slate-500 truncate">{item.title}</span>
+                    </div>
+                  )}
+                  placeholder="e.g. 2ITY, or search 'EGFR'"
+                  minChars={2}
+                  inputProps={{ required: true }}
+                />
+              </div>
+              <div>
+                <label className="label">Chain</label>
+                <input className="input" value={chain} onChange={(e) => setChain(e.target.value)} maxLength={2} />
+              </div>
+              <div>
+                <label className="label">UniProt (optional)</label>
+                <input className="input" value={uniprot} onChange={(e) => setUniprot(e.target.value)} />
+              </div>
+            </div>
           </>
         )}
-
-        <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div>
-            <label className="label">PDB ID</label>
-            <AutocompleteInput
-              value={pdbId}
-              onChange={setPdbId}
-              fetchSuggestions={async (q) => {
-                const r = await api.suggestPdb(q);
-                return r.suggestions;
-              }}
-              getValue={(item) => item.pdb_id}
-              renderItem={(item) => (
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono font-semibold text-delta-700 shrink-0">{item.pdb_id}</span>
-                  <span className="text-[11px] text-slate-500 truncate">{item.title}</span>
-                </div>
-              )}
-              placeholder="e.g. 2ITY, or search 'EGFR'"
-              minChars={2}
-              inputProps={{ required: true }}
-            />
-          </div>
-          <div>
-            <label className="label">Chain</label>
-            <input className="input" value={chain} onChange={(e) => setChain(e.target.value)} maxLength={2} />
-          </div>
-          <div>
-            <label className="label">UniProt (optional)</label>
-            <input className="input" value={uniprot} onChange={(e) => setUniprot(e.target.value)} />
-          </div>
-        </div>
       </Step>
 
       {/* ── Step 2: Mutations ──────────────────────────────────────────── */}
