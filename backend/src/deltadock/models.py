@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import Column, String
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -71,8 +73,28 @@ class Job(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.PENDING, index=True)
     error_message: Optional[str] = None
 
-    # Owner — null for anonymous Phase 1 jobs, hooked up to users in Phase 4
-    user_id: Optional[int] = Field(default=None, index=True)
+    # Owner — UUID referencing auth.users(id) in Supabase. Nullable so legacy
+    # rows survive an account deletion (FK is ON DELETE SET NULL). The runner
+    # never reads this field; it's used by the API layer to scope GET /jobs
+    # (list) to the requesting user and to authorize POST /jobs/{key}/cancel.
+    # Public share-link GETs intentionally don't filter on user_id.
+    user_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), index=True, nullable=True),
+    )
+
+    # Optional human title — "EGFR resistance scan", "ABL kinome panel". Used
+    # in the History page for search + display. Null = render the auto title
+    # ("EGFR · 4 compounds · T790M+C797S").
+    title: Optional[str] = None
+
+    # Free-form tags for grouping in History — ["egfr-project", "draft"].
+    # Stored as Postgres TEXT[] so we can index/filter efficiently if it
+    # becomes a power-user feature.
+    tags: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(ARRAY(String()), nullable=False, server_default="{}"),
+    )
 
     compounds: list["Compound"] = Relationship(back_populates="job")
     results: list["DockingResult"] = Relationship(back_populates="job")

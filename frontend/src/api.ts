@@ -1,6 +1,18 @@
 // API client. Hits the dev proxy at /api/* in dev, the deployed backend in prod.
 
+import { supabase } from "./lib/supabase";
+
 const BASE = import.meta.env.VITE_API_URL || "/api";
+
+/** Pull the current Supabase access_token (if any) and return it as an
+ *  Authorization header. Read fresh on every request so refreshed tokens
+ *  flow through automatically. Returns an empty object when signed out so
+ *  public endpoints (catalog, share-link GETs) keep working unauthenticated. */
+async function authHeader(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -79,6 +91,14 @@ export interface Job {
   /** Whether WT was docked alongside the requested mutants. When false the
    *  matrix has no REF column and no Δ values. */
   include_wt: boolean;
+  /** Owner — UUID of auth.users(id). Null for legacy/anonymous jobs. The
+   *  frontend uses this to decide whether to render the Cancel/Edit Title
+   *  buttons (only the owner sees them). */
+  user_id: string | null;
+  /** User-editable display title. Falls back to a synthesized label
+   *  ("EGFR · 4 compounds · T790M+C797S") when null. */
+  title: string | null;
+  tags: string[];
   compounds: Compound[];
   results: DockingResult[];
   /** Cross-docking sanity check result. Null until the background job
@@ -96,6 +116,10 @@ export interface JobCreatePayload {
   exhaustiveness?: number;
   /** Optional. Backend defaults to true. Set false to skip the WT row. */
   include_wt?: boolean;
+  /** Optional human-readable title shown in the History page. */
+  title?: string | null;
+  /** Optional tags for grouping in the History page. */
+  tags?: string[];
 }
 
 /** Custom error so callers can branch on HTTP status without parsing strings. */
@@ -108,7 +132,11 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(await authHeader()),
+      ...(init?.headers || {}),
+    },
     ...init,
   });
   if (!r.ok) {

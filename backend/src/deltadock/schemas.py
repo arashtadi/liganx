@@ -28,9 +28,12 @@ class JobCreate(BaseModel):
     pdb_id: str = Field(..., min_length=4, max_length=12)
     chain: str = "A"
     uniprot_id: str | None = Field(default=None, max_length=20)
-    # Empty list = WT only. Otherwise list of mutations like ["T790M", "L858R"]
-    mutations: list[str] = Field(default_factory=list, max_length=20)
-    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=100)
+    # Empty list = WT only. Free-tier cap: max 2 mutations per submit.
+    # Frontend disables adding past 2; this is the server-side guard so direct
+    # API callers (curl, scripts) can't exceed it either.
+    mutations: list[str] = Field(default_factory=list, max_length=2)
+    # Free-tier cap: max 5 compounds per submit.
+    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=5)
     # Search depth — Vina-style: 8 fast / 16 balanced / 32 thorough. We cap at
     # 64 because anything higher gives diminishing returns and risks tying up
     # the GPU. Anything below 4 is useless.
@@ -38,6 +41,10 @@ class JobCreate(BaseModel):
     # Whether to also dock against wild-type. Default True (most users want a
     # baseline for Δ); set False to skip WT and just dock the listed mutants.
     include_wt: bool = True
+    # Optional user-provided title for the History page. Defaults to a
+    # synthesized label ("EGFR · 3 compounds · T790M") when null.
+    title: str | None = Field(default=None, max_length=200)
+    tags: list[str] = Field(default_factory=list, max_length=10)
 
     # Server-side validators mirror the frontend regex. Catches anyone
     # bypassing the form (curl, postman, malicious actors), and keeps the
@@ -107,6 +114,13 @@ class JobOut(BaseModel):
     # legacy behaviour for jobs created before these fields existed.
     exhaustiveness: int = 8
     include_wt: bool = True
+    # Owner — UUID of auth.users(id). Null for anonymous legacy jobs (none
+    # remain after the wipe, but kept nullable so account deletion sets to
+    # NULL rather than cascading the data away). The frontend uses this to
+    # decide whether to render the Cancel + Edit Title buttons.
+    user_id: str | None = None
+    title: str | None = None
+    tags: list[str] = Field(default_factory=list)
     compounds: list[CompoundOut] = Field(default_factory=list)
     results: list[DockingResultOut] = Field(default_factory=list)
     # Cross-docking sanity-check result for this (pdb_id, chain). When

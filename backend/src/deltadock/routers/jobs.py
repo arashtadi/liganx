@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlmodel import Session, select
 
+from ..auth import CurrentUser, current_user, current_user_or_none, verified_user
 from ..db import get_session
 from ..models import Compound, DockingResult, Job, JobStatus
 from ..schemas import (
@@ -60,6 +61,9 @@ def _to_out(job: Job) -> JobOut:
         updated_at=job.updated_at,
         exhaustiveness=job.exhaustiveness,
         include_wt=job.include_wt,
+        user_id=job.user_id,
+        title=job.title,
+        tags=list(job.tags or []),
         compounds=[
             CompoundOut(id=c.id, name=c.name, smiles=c.smiles, admet=_admet_for(c.smiles))
             for c in job.compounds
@@ -110,6 +114,7 @@ def _pdb_quality_for(pdb_id: str, chain: str) -> dict | None:
 def create_job(
     payload: JobCreate,
     background: BackgroundTasks,
+    user: CurrentUser = Depends(verified_user),
     session: Session = Depends(get_session),
 ) -> JobOut:
     # Schema validator already normalized the pdb_id (uppercase for RCSB IDs,
@@ -162,6 +167,9 @@ def create_job(
         exhaustiveness=payload.exhaustiveness,
         include_wt=payload.include_wt,
         status=JobStatus.PENDING,
+        user_id=user.id,
+        title=payload.title,
+        tags=list(payload.tags or []),
     )
     session.add(job)
     session.commit()
@@ -190,7 +198,11 @@ def get_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
 
 
 @router.post("/{job_key}/cancel", response_model=JobOut)
-def cancel_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
+def cancel_job(
+    job_key: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> JobOut:
     """Cancel a running or pending job.
 
     The runner cooperatively checks job.status between cells and bails out
@@ -202,9 +214,15 @@ def cancel_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
     Idempotent on terminal statuses: cancelling an already-completed or
     already-failed job is a no-op (returns 200 with the existing state).
     Cancelling an already-cancelled job is also a no-op.
+
+    Authorization: only the job's owner can cancel. Returns 404 (not 403) for
+    non-owners so a stranger with a guessed share-link can't probe whether a
+    job exists.
     """
     job = _resolve_job(session, job_key)
     if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != user.id:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
         # Terminal — nothing to cancel. Return current state without
@@ -224,10 +242,20 @@ def cancel_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
 def list_jobs(
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
     offset: int = Query(0, ge=0, description="Skip this many jobs (for pagination)"),
+    user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> list[JobOut]:
+    """List the requesting user's jobs (newest first).
+
+    Auth required — anonymous viewers can still see individual jobs by
+    share-link (GET /jobs/{share_id}), but the bulk list is per-user only.
+    Filtering is done in app code (not RLS) because the backend connects as
+    the privileged postgres role which bypasses RLS. The DB-side RLS policies
+    are still in place as defense-in-depth.
+    """
     stmt = (
         select(Job)
+        .where(Job.user_id == user.id)
         .order_by(Job.created_at.desc())
         .offset(offset)
         .limit(limit)

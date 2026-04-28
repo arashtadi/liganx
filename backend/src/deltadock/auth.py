@@ -1,0 +1,191 @@
+"""Supabase Auth — JWT verification + FastAPI dependencies.
+
+The Supabase project signs user JWTs with an ES256 asymmetric key. Verification
+uses the public JWKS at:
+
+    https://<project>.supabase.co/auth/v1/.well-known/jwks.json
+
+We cache the JWKS in-process (PyJWKClient handles refresh on key rotation —
+on a `kid` miss it re-fetches automatically). No shared secret is involved,
+so there's nothing to put in Fly secrets.
+
+Three dependencies are exposed:
+
+  * `current_user`        — required, returns the authenticated user or 401.
+  * `current_user_or_none` — optional, returns None if no token (used for
+                             public-by-share-id endpoints that adapt their
+                             behaviour when the viewer happens to be logged in).
+  * `verified_user`       — required + email_confirmed_at must be set. Apply
+                             this on POST /jobs to prevent burner accounts
+                             from queueing GPU work before email-verifying.
+
+The current dataclass exposes:
+  * id           — UUID, the auth.users.id (use this as Job.user_id).
+  * email        — the user's email (display only).
+  * email_verified — bool, derived from `email_confirmed_at` claim.
+  * raw          — the full decoded payload, in case other claims are useful.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from typing import Annotated
+
+import jwt
+from fastapi import Depends, Header, HTTPException, status
+from jwt import PyJWKClient
+
+log = logging.getLogger(__name__)
+
+
+# ── Settings ──────────────────────────────────────────────────────────────
+
+# Inferred from DATABASE_URL by extract_supabase_url() at startup, but can be
+# explicitly overridden via env. Keep this lazy so unit tests don't need a
+# real Supabase project to import the module.
+_SUPABASE_URL = os.environ.get("SUPABASE_URL")
+_AUDIENCE = os.environ.get("SUPABASE_JWT_AUD", "authenticated")
+
+
+def _supabase_url() -> str:
+    """Resolve the Supabase project URL. Cached after first lookup.
+
+    Env var SUPABASE_URL takes precedence. Otherwise we extract the project ref
+    from DATABASE_URL (which has the form
+    `postgresql://postgres.<project_ref>:...@aws-0-us-east-2.pooler.supabase.com`
+    on Supabase pooled connections) and synthesize the URL.
+    """
+    global _SUPABASE_URL
+    if _SUPABASE_URL:
+        return _SUPABASE_URL
+    db_url = os.environ.get("DATABASE_URL", "")
+    # postgresql+psycopg2://postgres.<ref>:password@host:5432/dbname
+    import re
+    m = re.search(r"postgres\.([a-z0-9]+):", db_url)
+    if not m:
+        raise RuntimeError(
+            "Cannot determine Supabase project URL — set SUPABASE_URL or ensure "
+            "DATABASE_URL contains a Supabase pooler connection string."
+        )
+    _SUPABASE_URL = f"https://{m.group(1)}.supabase.co"
+    return _SUPABASE_URL
+
+
+# Lazy PyJWKClient — first request triggers JWKS fetch; thereafter it's cached
+# and only refreshes on a kid miss (key rotation).
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        url = _supabase_url() + "/auth/v1/.well-known/jwks.json"
+        _jwks_client = PyJWKClient(url, cache_jwk_set=True, lifespan=3600)
+    return _jwks_client
+
+
+# ── User type ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class CurrentUser:
+    id: str             # UUID — use as Job.user_id
+    email: str
+    email_verified: bool
+    raw: dict
+
+
+def _decode(token: str) -> CurrentUser:
+    """Decode and verify a Supabase JWT. Raises HTTPException(401) on failure."""
+    try:
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token).key
+        payload = jwt.decode(
+            token,
+            signing_key,
+            algorithms=["ES256"],
+            audience=_AUDIENCE,
+            options={"require": ["sub", "exp"]},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired — sign in again")
+    except jwt.InvalidAudienceError:
+        raise HTTPException(status_code=401, detail="Token audience mismatch")
+    except jwt.PyJWTError as e:
+        log.warning("JWT verification failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except Exception as e:
+        # Network failure fetching JWKS, etc. — fail closed.
+        log.exception("JWKS lookup failed: %s", e)
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token missing subject")
+    email = payload.get("email") or ""
+    # Supabase encodes verification status in `user_metadata` and/or
+    # `email_confirmed_at`; the JWT carries the latter as a top-level claim
+    # in newer projects.
+    confirmed_at = payload.get("email_confirmed_at") or payload.get("confirmed_at")
+    return CurrentUser(
+        id=str(sub),
+        email=email,
+        email_verified=bool(confirmed_at),
+        raw=payload,
+    )
+
+
+# ── FastAPI dependencies ──────────────────────────────────────────────────
+
+def _extract_bearer(authorization: str | None) -> str | None:
+    """Return the bearer token if the header is well-formed, else None."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
+
+
+def current_user(
+    authorization: Annotated[str | None, Header()] = None,
+) -> CurrentUser:
+    """Hard-required authenticated user. Apply to endpoints that must have
+    an owner — POST /jobs, GET /jobs (list), POST /jobs/{key}/cancel, etc."""
+    token = _extract_bearer(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _decode(token)
+
+
+def current_user_or_none(
+    authorization: Annotated[str | None, Header()] = None,
+) -> CurrentUser | None:
+    """Optional auth. Endpoints that are public-by-default (e.g. share-link
+    GET /jobs/{share_id}) but want to know who's viewing for personalization
+    or analytics use this. Returns None if no token; never raises 401."""
+    token = _extract_bearer(authorization)
+    if not token:
+        return None
+    try:
+        return _decode(token)
+    except HTTPException:
+        # Bad/expired token on a public endpoint shouldn't break the page.
+        return None
+
+
+def verified_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
+    """Auth + email-confirmed gate. Apply to expensive operations like
+    POST /jobs so unverified accounts can't burn GPU credit."""
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Confirm your email before submitting docking jobs. "
+                   "Check your inbox for the verification link, or visit "
+                   "/account to resend it.",
+        )
+    return user
