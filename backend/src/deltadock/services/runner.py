@@ -519,13 +519,63 @@ def _run_real(session: Session, job: Job) -> None:
                 mut_receptor_out = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
                 if _is_stale(mut_receptor_out):
                     log.info("PDBFixer mutation: %s on %s chain %s", mut, pdb_id, chain)
+                    log.info("  cleaned_pdb=%s exists=%s", cleaned_pdb, cleaned_pdb.exists())
                     build_mutant_pdbfixer(
                         pdb_path=cleaned_pdb,
                         chain=chain,
                         mutation_code=mut,
                         out_path=mut_pdb_out,
                     )
+                    # DIAGNOSTIC: did PDBFixer produce a file with the right residue?
+                    try:
+                        max_res_in_chain = -1
+                        residue_at_target = None
+                        target_resnum = int("".join(c for c in mut.split("+")[0] if c.isdigit()))
+                        with mut_pdb_out.open() as fh:
+                            for line in fh:
+                                if not line.startswith("ATOM") or len(line) < 27:
+                                    continue
+                                if line[21] != chain:
+                                    continue
+                                try:
+                                    rn = int(line[22:26].strip())
+                                except ValueError:
+                                    continue
+                                if rn > max_res_in_chain:
+                                    max_res_in_chain = rn
+                                if rn == target_resnum and residue_at_target is None:
+                                    residue_at_target = line[17:20].strip()
+                        log.info(
+                            "  post-PDBFixer mut_pdb chain=%s max_residue=%s residue_at_%s=%s",
+                            chain, max_res_in_chain, target_resnum, residue_at_target,
+                        )
+                    except Exception as diag_e:
+                        log.warning("  diagnostic read failed: %s", diag_e)
                     prepare_receptor(mut_pdb_out, mut_receptor_out, chain=chain)
+                    # DIAGNOSTIC: what does the final PDBQT look like?
+                    try:
+                        max_res_pdbqt = -1
+                        residue_pdbqt = None
+                        with mut_receptor_out.open() as fh:
+                            for line in fh:
+                                if not line.startswith("ATOM") or len(line) < 27:
+                                    continue
+                                if line[21] != chain:
+                                    continue
+                                try:
+                                    rn = int(line[22:26].strip())
+                                except ValueError:
+                                    continue
+                                if rn > max_res_pdbqt:
+                                    max_res_pdbqt = rn
+                                if rn == target_resnum and residue_pdbqt is None:
+                                    residue_pdbqt = line[17:20].strip()
+                        log.info(
+                            "  post-prepare_receptor PDBQT chain=%s max_residue=%s residue_at_%s=%s",
+                            chain, max_res_pdbqt, target_resnum, residue_pdbqt,
+                        )
+                    except Exception as diag_e:
+                        log.warning("  diagnostic read failed: %s", diag_e)
                     _stamp(mut_pdb_out)
                     _stamp(mut_receptor_out)
                 # Verify the resulting receptor actually has the substitution
