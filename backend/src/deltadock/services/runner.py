@@ -296,6 +296,12 @@ def _run_real(session: Session, job: Job) -> None:
 
     compounds = session.exec(select(Compound).where(Compound.job_id == job.id)).all()
 
+    # Preserve USR_ upload-id case (lowercase hex tail) — uppercase only
+    # standard RCSB IDs. Forcing .upper() here previously broke uploads
+    # because the lookup-router stored files with lowercase hex.
+    pdb_id = job.pdb_id if job.pdb_id.startswith("USR_") else job.pdb_id.upper()
+    chain = job.chain or "A"
+
     # Cross-docking sanity check: if we don't have a cached self-dock RMSD
     # for this (pdb_id, chain), trigger one in a background thread. It uses
     # the same Vina/QuickVina-GPU path the user's compounds will use, then
@@ -316,12 +322,6 @@ def _run_real(session: Session, job: Job) -> None:
             log.info("Spawned cross-dock sanity check for %s/%s", pdb_id, chain)
     except Exception as e:
         log.info("Could not spawn cross-dock for %s/%s: %s", pdb_id, chain, e)
-
-    # Preserve USR_ upload-id case (lowercase hex tail) — uppercase only
-    # standard RCSB IDs. Forcing .upper() here previously broke uploads
-    # because the lookup-router stored files with lowercase hex.
-    pdb_id = job.pdb_id if job.pdb_id.startswith("USR_") else job.pdb_id.upper()
-    chain = job.chain or "A"
 
     # Step 1: fetch the raw PDB FIRST so pocket auto-detection has it to scan.
     # The cleaned version is what FoldX operates on (it doesn't like raw PDBs
