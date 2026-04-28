@@ -179,8 +179,42 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
           </div>
         )}
 
+        {/* Mutation-out-of-pocket warning. When the mutated residue's CA is
+            >11 Å from the docking box center, single-conformation docking
+            literally cannot see geometric effects of the substitution. We
+            surface this prominently so users don't waste time wondering why
+            their D835V or L858R cell has the same score as WT. */}
+        {variant !== "WT" && ext.outsidePocketA != null && (
+          <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 p-4">
+            <div className="flex items-start gap-2.5">
+              <div className="w-7 h-7 rounded-md bg-white/80 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0 ring-1 ring-amber-300 dark:ring-amber-700/40 text-base">
+                ◌
+              </div>
+              <div className="text-sm text-amber-900 dark:text-amber-100 leading-relaxed">
+                <div className="font-semibold mb-1">Mutation outside the docking pocket</div>
+                <p>
+                  Residue {variant.match(/\d+/)?.[0] ?? variant} sits about {ext.outsidePocketA.toFixed(1)} Å
+                  from the centre of the docking box (Vina searches a 22 Å cube). Single-conformation
+                  docking can't see geometric effects of mutations beyond the box edge — that's why
+                  this cell's Vina score matches WT.
+                </p>
+                <p className="mt-2">
+                  This is a method limitation, not a platform bug. Mutations like FLT3 D835V or
+                  EGFR L858R that confer drug resistance via long-range allosteric / DFG-flip
+                  effects need molecular dynamics or multi-conformation ensemble docking to
+                  capture. The Vinardo number above may show a small (Vina-noise-level) shift
+                  because the side chain still interacts with neighbouring residues, but don't
+                  read too much into it.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Plain-English interpretation — prefers the real ProLIF-grounded
-            sentence from the backend; falls back to a score-only heuristic */}
+            sentence from the backend; falls back to a score-only heuristic.
+            Note: when the mutation is outside the pocket (handled above),
+            we still show this for context but the user has been warned. */}
         <div className="rounded-lg bg-gradient-to-br from-delta-50 to-accent-50/40 border border-delta-100 p-4 dark:from-delta-900/20 dark:to-accent-900/10 dark:border-delta-800/60">
           <div className="flex items-start gap-2.5">
             <div className="w-7 h-7 rounded-md bg-white/80 text-delta-600 flex items-center justify-center shrink-0 ring-1 ring-delta-200 dark:bg-slate-700 dark:text-delta-400 dark:ring-delta-700">
@@ -380,13 +414,24 @@ function interpret(name: string, variant: string, score: number, delta: number |
     return `${name} is predicted to bind ${variant} ${Math.abs(delta).toFixed(2)} kcal/mol better than wild-type — a candidate for mutant-selective activity. Worth flagging for follow-up.`;
   }
   if (delta < -0.2) {
-    return `${name} shows a modest preference for ${variant} (${Math.abs(delta).toFixed(2)} kcal/mol better than WT). Preference is small enough to be within docking noise.`;
+    return `${name} shows a modest preference for ${variant} (${Math.abs(delta).toFixed(2)} kcal/mol better than WT). Preference is small enough to be within docking noise — confirm with the Vinardo column above before drawing conclusions.`;
   }
   if (delta > 0.5) {
     return `${name} loses ${delta.toFixed(2)} kcal/mol of binding affinity at ${variant} — consistent with a resistance mutation against this scaffold.`;
   }
   if (delta > 0.2) {
-    return `${name} binds ${variant} slightly worse than WT (Δ = +${delta.toFixed(2)}). Likely within docking noise — verify with rescoring.`;
+    return `${name} binds ${variant} slightly worse than WT (Δ = +${delta.toFixed(2)}). Likely within docking noise — re-run with Thorough exhaustiveness if the trend matters.`;
   }
-  return `${name} binds ${variant} comparably to WT (Δ = ${delta.toFixed(2)} kcal/mol). The mutation is unlikely to affect this compound's binding.`;
+  // Δ between -0.2 and +0.2 — close enough to call "no detectable effect".
+  // Past versions of this copy said "the mutation is unlikely to affect
+  // binding" which is wrong for activation-loop mutations whose effect
+  // simply isn't visible to single-conformation docking. Be honest about
+  // the three things that could be true:
+  return (
+    `${name} binds ${variant} comparably to WT (Δ = ${delta >= 0 ? "+" : ""}${delta.toFixed(2)} kcal/mol). ` +
+    `Three possibilities for an effectively-zero Δ: (1) the mutation genuinely doesn't affect this compound's binding, ` +
+    `(2) the residue is outside the ~22 Å docking box (check for the "outside pocket" badge above), or ` +
+    `(3) the effect is below Vina's ~1 kcal/mol noise floor at this exhaustiveness — try Thorough mode to discriminate. ` +
+    `Compare the Vinardo refined score for a tighter signal.`
+  );
 }
