@@ -551,17 +551,16 @@ def _run_prolif(pose_pdb: Path, receptor_pdb: Path, *, ligand_smiles: str | None
         except Exception as e:
             log.warning("SDF→ProLIF ligand load failed (%s); trying PDB", e)
 
-    if lig is None:
-        # Re-templating PDB is the bigger win — PDB strips ALL bond orders.
-        # RDKit needs removeHs=False so atom indices match the SMILES template.
-        try:
-            mol = _Chem.MolFromPDBFile(str(pose_pdb), removeHs=False, sanitize=False)
-            if mol is not None and template_mol is not None:
-                mol = _retemplate(mol)
-                _Chem.SanitizeMol(mol)
-                lig = plf.Molecule(mol)
-        except Exception as e:
-            log.info("PDB+template ligand load failed (%s); falling back to MDAnalysis", e)
+    # NOTE: The MolFromPDBFile + AssignBondOrdersFromTemplate path SIGSEGVs
+    # RDKit on certain ligands (osimertinib's indole, kinase inhibitors with
+    # macrocycles, etc.). Since this entire function runs in a subprocess
+    # (_run_prolif_safe wraps it), a SIGSEGV here is recoverable but kills
+    # the whole validation for this pose. We deliberately DON'T attempt the
+    # PDB+template path — it's too crash-prone — and rely on the SDF path
+    # above (which is safer because meeko's SDF preserves bond orders) plus
+    # the MDAnalysis fallback below. If the SDF-load failed, we proceed
+    # without templating; ProLIF reports zero contacts honestly rather than
+    # crashing the worker.
 
     if lig is None:
         u_lig = mda.Universe(str(pose_pdb))

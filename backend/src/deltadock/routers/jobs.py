@@ -75,8 +75,12 @@ def create_job(
     background: BackgroundTasks,
     session: Session = Depends(get_session),
 ) -> JobOut:
+    # Schema validator already normalized the pdb_id (uppercase for RCSB IDs,
+    # case-preserved for USR_ uploads). Re-uppercasing here would corrupt
+    # USR_ tokens since the lookup-router stores files with lowercase hex —
+    # any extra .upper() breaks the runner's file lookup.
     job = Job(
-        pdb_id=payload.pdb_id.upper(),
+        pdb_id=payload.pdb_id,
         chain=payload.chain,
         uniprot_id=payload.uniprot_id,
         mutations=",".join(payload.mutations),
