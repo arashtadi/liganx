@@ -329,8 +329,13 @@ def _run_real(session: Session, job: Job) -> None:
     # Step 1: fetch the raw PDB FIRST so pocket auto-detection has it to scan.
     # The cleaned version is what FoldX operates on (it doesn't like raw PDBs
     # with heterogens) AND what we use to prep the WT receptor.
+    # Each prep step is wrapped to convert a generic "list index out of range"
+    # style traceback into a step-tagged error the user can act on.
     PDB_CACHE.mkdir(parents=True, exist_ok=True)
-    raw_pdb = fetch_pdb(pdb_id, PDB_CACHE)
+    try:
+        raw_pdb = fetch_pdb(pdb_id, PDB_CACHE)
+    except Exception as e:
+        raise RuntimeError(f"prep_step=fetch_pdb pdb={pdb_id}: {type(e).__name__}: {e}") from e
 
     # Pocket box: catalog first, then auto-detect from co-crystal HETATM,
     # finally fall back to origin (won't dock anything sensible — but the job
@@ -342,8 +347,14 @@ def _run_real(session: Session, job: Job) -> None:
     pocket_source = None  # appended to per-result extra string for telemetry
 
     if catalog_target:
-        cx, cy, cz = catalog_target.pocket.center
-        sx, sy, sz = catalog_target.pocket.size
+        try:
+            cx, cy, cz = catalog_target.pocket.center
+            sx, sy, sz = catalog_target.pocket.size
+        except (ValueError, TypeError) as e:
+            raise RuntimeError(
+                f"prep_step=catalog_pocket target={catalog_target.id}: "
+                f"pocket center/size malformed ({type(e).__name__}: {e})"
+            ) from e
         pocket_source = "pocket=catalog"
     else:
         try:
@@ -367,14 +378,24 @@ def _run_real(session: Session, job: Job) -> None:
     cleaned_pdb = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
     if not cleaned_pdb.exists() or cleaned_pdb.stat().st_size == 0:
         log.info("Cleaning %s with PDBFixer", pdb_id)
-        fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
+        try:
+            fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
+        except Exception as e:
+            raise RuntimeError(
+                f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
+            ) from e
 
     # Step 2: prep WT receptor once. Cached across jobs.
     RECEPTOR_CACHE.mkdir(parents=True, exist_ok=True)
     wt_receptor = RECEPTOR_CACHE / f"{pdb_id}_{chain}_WT.pdbqt"
     if not wt_receptor.exists() or wt_receptor.stat().st_size == 0:
         log.info("Prepping WT receptor %s chain %s", pdb_id, chain)
-        prepare_receptor(cleaned_pdb, wt_receptor, chain=chain)
+        try:
+            prepare_receptor(cleaned_pdb, wt_receptor, chain=chain)
+        except Exception as e:
+            raise RuntimeError(
+                f"prep_step=prepare_receptor pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
+            ) from e
 
     # Step 3: build a mutant receptor PDBQT for every requested mutation.
     # Cached on (PDB hash, chain, mutation) — FoldX is the slowest step (~30s).
@@ -387,6 +408,11 @@ def _run_real(session: Session, job: Job) -> None:
     variant_extra: dict[str, str | None] = {"WT": pocket_source}
     variant_ddg: dict[str, float | None] = {"WT": None}
 
+    # Late-import the verification helper — checks each mutant receptor
+    # actually contains the requested substitution before we waste compute
+    # docking against a silently-broken file.
+    from deltadock_pipeline.prep import verify_mutation_applied
+
     FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
     for mut in [m for m in job.mutations.split(",") if m]:
         # PRECACHE FIRST — many mutant receptors were built offline with FoldX
@@ -397,12 +423,25 @@ def _run_real(session: Session, job: Job) -> None:
         # have the same value".
         cached_mut_pdbqt = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
         if cached_mut_pdbqt.exists() and cached_mut_pdbqt.stat().st_size > 0:
-            receptor_for_variant[mut] = cached_mut_pdbqt
-            cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
-            if cached_mut_pdb.exists():
-                receptor_pdb_for_variant[mut] = cached_mut_pdb
-            variant_extra[mut] = "foldx_precached"
-            log.info("Using precached mutant receptor %s", cached_mut_pdbqt.name)
+            # VERIFY the precached receptor actually contains the mutation.
+            # PDBFixer used to silently renumber residues, causing FoldX to
+            # mutate the wrong atom and produce mutant files that look right
+            # but are biophysically WT. If verification fails, we mark this
+            # variant so the per-cell loop writes a loud error instead of
+            # docking against a corrupt receptor.
+            ok, reason = verify_mutation_applied(cached_mut_pdbqt, chain, mut)
+            if ok:
+                receptor_for_variant[mut] = cached_mut_pdbqt
+                cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
+                if cached_mut_pdb.exists():
+                    receptor_pdb_for_variant[mut] = cached_mut_pdb
+                variant_extra[mut] = "foldx_precached"
+                log.info("Using precached mutant receptor %s (verified)", cached_mut_pdbqt.name)
+            else:
+                # Don't dock — the precache is corrupt. Mark for loud failure.
+                log.warning("Precached mutant %s FAILED verification: %s", cached_mut_pdbqt.name, reason)
+                receptor_for_variant[mut] = None  # type: ignore[assignment]
+                variant_extra[mut] = f"mutant_verify_failed: {reason}"
             continue
         if not foldx_on:
             receptor_for_variant[mut] = wt_receptor
@@ -460,6 +499,17 @@ def _run_real(session: Session, job: Job) -> None:
             for variant in variants:
                 receptor = receptor_for_variant.get(variant, wt_receptor)
                 receptor_pdb = receptor_pdb_for_variant.get(variant, cleaned_pdb)
+                # Sentinel: receptor=None means we caught a corrupt precache
+                # upstream. Emit a clear failure row and skip docking entirely.
+                if receptor is None:
+                    fail_reason = variant_extra.get(variant, "mutant_verify_failed")
+                    log.warning("Skipping c%s × %s: %s", compound.id, variant, fail_reason)
+                    session.add(DockingResult(
+                        job_id=job.id, compound_id=compound.id, variant=variant,
+                        best_score=0.0, extra=fail_reason,
+                    ))
+                    session.commit()
+                    continue
                 run_dir = work / f"compound_{compound.id}_{variant}"
                 run_dir.mkdir(exist_ok=True)
                 try:

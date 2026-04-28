@@ -20,9 +20,23 @@ class PrepError(RuntimeError):
 
 
 def fix_pdb(pdb_path: Path | str, out_path: Path | str, *, chain: str | None = None, ph: float = 7.4) -> Path:
-    """Run PDBFixer on a raw PDB to remove heterogens, add missing residues/atoms, add H's.
+    """Clean a PDB for docking while preserving the ORIGINAL residue numbering.
 
     Output is a clean polymer-only PDB ready for receptor prep.
+
+    **Why this is delicate:** PDBFixer's `findMissingResidues()` + `addMissingAtoms()`
+    pipeline inserts gap-filler residues into the topology and re-emits residue IDs
+    starting from 1. That silently breaks every literature-numbered mutation
+    ("D835V", "T790M", "R132C") because the residue the user typed no longer
+    points to where they think it does — and FoldX then mutates whatever atom
+    happens to land at that index, with no error. This caused every precached
+    mutant receptor to be effectively WT (see project_pdbfixer_renumbering_bug.md).
+
+    **Fix:** Use pure-Python HETATM/chain stripping (preserves all original
+    residue IDs from the PDB), then run PDBFixer ONLY for replacing
+    nonstandard residues (MSE → MET, etc.) and adding *missing atoms within
+    existing residues* — but skip `findMissingResidues` so we never insert
+    new residues that would perturb numbering.
     """
     try:
         from pdbfixer import PDBFixer
@@ -34,22 +48,28 @@ def fix_pdb(pdb_path: Path | str, out_path: Path | str, *, chain: str | None = N
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    log.info("PDBFixer: %s → %s (chain=%s, pH=%.1f)", pdb_path.name, out_path.name, chain, ph)
-    fixer = PDBFixer(filename=str(pdb_path))
+    # Step 1: pre-strip HETATMs and non-requested chains in pure Python so we
+    # know the residue IDs are preserved bit-for-bit from the input PDB.
+    pre_stripped = out_path.with_suffix(".prestrip.pdb")
+    strip_hetatm(pdb_path, pre_stripped, chain=chain)
 
-    # Strip everything but the requested chain, then strip non-standard residues/het
-    if chain:
-        kept = []
-        for ch in fixer.topology.chains():
-            if ch.id != chain:
-                kept.append(ch.index)
-        if kept:
-            fixer.removeChains(kept)
+    # Step 2: hand the pre-stripped PDB to PDBFixer for chemistry repairs ONLY.
+    # We deliberately do NOT call findMissingResidues — that's the call that
+    # inserts gap residues and renumbers everything.
+    log.info("PDBFixer (numbering-preserving): %s → %s (chain=%s, pH=%.1f)",
+             pre_stripped.name, out_path.name, chain, ph)
+    fixer = PDBFixer(filename=str(pre_stripped))
 
-    fixer.findMissingResidues()
+    # Replace selenomethionine/etc with their standard counterparts (in-place
+    # in the existing residue, no renumbering).
     fixer.findNonstandardResidues()
     fixer.replaceNonstandardResidues()
-    fixer.removeHeterogens(keepWater=False)
+
+    # Add missing heavy atoms within existing residues (e.g., disordered
+    # side chains in flexible loops). Critically: with missingResidues set
+    # to {} explicitly, addMissingAtoms only fills WITHIN-residue gaps and
+    # never adds new residues to the topology.
+    fixer.missingResidues = {}
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
     # NOTE: Don't add hydrogens here — Meeko adds them itself with chemistry-aware
@@ -57,7 +77,103 @@ def fix_pdb(pdb_path: Path | str, out_path: Path | str, *, chain: str | None = N
 
     with out_path.open("w") as fh:
         PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
+
+    # Tidy up the intermediate file
+    try:
+        pre_stripped.unlink()
+    except FileNotFoundError:
+        pass
     return out_path
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Mutation verification — guard against silently-wrong precaches.
+# ──────────────────────────────────────────────────────────────────────
+
+# Map 3-letter ↔ 1-letter for verification messages.
+_AA3_TO_1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+}
+
+
+def verify_mutation_applied(
+    receptor_pdbqt: Path | str,
+    chain: str,
+    mutation_code: str,
+) -> tuple[bool, str]:
+    """Confirm a mutant receptor file actually contains the requested mutation.
+
+    Reads the PDBQT/PDB and looks for a residue at (chain, resnum) whose
+    3-letter name matches the *new* amino acid. Returns (True, "ok") on
+    success, or (False, reason) with a human-readable diagnosis.
+
+    For combo mutations like "T790M+C797S", every individual substitution
+    must be present.
+
+    Why this exists: PDBFixer historically renumbered residues, causing FoldX
+    to mutate the wrong atom and produce mutant receptors that look correct
+    but are biophysically WT. This function catches that class of bug at the
+    last possible moment — right before the file is sent to Vina — so the
+    failing cell shows an honest error instead of a fake-equal score.
+    """
+    receptor = Path(receptor_pdbqt)
+    if not receptor.exists():
+        return False, f"receptor file missing: {receptor.name}"
+
+    # Build set of (chain, resnum, 3-letter-aa) tuples actually in the file.
+    residues: set[tuple[str, int, str]] = set()
+    chain_max: dict[str, int] = {}
+    try:
+        with receptor.open() as fh:
+            for line in fh:
+                if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                    continue
+                if len(line) < 27:
+                    continue
+                ch = line[21]
+                aa = line[17:20].strip()
+                try:
+                    rn = int(line[22:26].strip())
+                except ValueError:
+                    continue
+                residues.add((ch, rn, aa))
+                if rn > chain_max.get(ch, -1):
+                    chain_max[ch] = rn
+    except OSError as e:
+        return False, f"could not read receptor: {e}"
+
+    # Parse "T790M" or "T790M+C797S" into [(orig, resnum, new), ...]
+    individual = [c.strip().upper() for c in mutation_code.split("+") if c.strip()]
+    for code in individual:
+        if len(code) < 3 or not code[1:-1].isdigit():
+            return False, f"unparseable mutation code: {code!r}"
+        new_one = code[-1]
+        try:
+            resnum = int(code[1:-1])
+        except ValueError:
+            return False, f"bad residue number in {code!r}"
+
+        # Find what's actually at (chain, resnum)
+        present = [aa for (ch, rn, aa) in residues if ch == chain and rn == resnum]
+        if not present:
+            max_in_chain = chain_max.get(chain, -1)
+            return False, (
+                f"residue {chain}{resnum} (from {code}) not found in receptor "
+                f"(chain {chain} max residue: {max_in_chain}). "
+                "PDB likely uses different numbering, OR the prep pipeline "
+                "renumbered residues — check fix_pdb."
+            )
+        # The new amino acid should match the one specified
+        actual_one = _AA3_TO_1.get(present[0], "?")
+        if actual_one != new_one:
+            return False, (
+                f"residue {chain}{resnum} is {present[0]} ({actual_one}) — "
+                f"expected {new_one} (from {code}). FoldX mutation didn't apply correctly."
+            )
+    return True, "ok"
 
 
 def strip_hetatm(pdb_path: Path | str, out_path: Path | str, *, chain: str | None = None) -> Path:
