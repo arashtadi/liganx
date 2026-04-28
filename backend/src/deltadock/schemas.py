@@ -71,6 +71,13 @@ class CompoundOut(BaseModel):
     id: int
     name: str | None
     smiles: str
+    # ADMET / drug-likeness descriptors. Computed from SMILES via RDKit on
+    # job fetch (cached by SMILES). None if RDKit isn't available or if the
+    # SMILES failed to parse — frontend renders an em-dash in that case.
+    # Schema is intentionally loose (dict[str, Any]) so we can grow the
+    # descriptor set without forcing schema bumps; see admet.compute_admet
+    # for the current shape.
+    admet: dict | None = None
 
 
 class DockingResultOut(BaseModel):

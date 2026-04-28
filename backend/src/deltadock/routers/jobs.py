@@ -42,6 +42,10 @@ def _resolve_job(session: Session, key: str) -> Job | None:
 
 
 def _to_out(job: Job) -> JobOut:
+    # ADMET is computed lazily here (not at job submit) so any SMILES that
+    # snuck in before the descriptor module shipped still gets enriched on
+    # next read. compute_admet is LRU-cached by SMILES so the second job
+    # using the same compound costs ~0ms.
     return JobOut(
         id=job.id,
         share_id=job.share_id,
@@ -55,7 +59,10 @@ def _to_out(job: Job) -> JobOut:
         updated_at=job.updated_at,
         exhaustiveness=job.exhaustiveness,
         include_wt=job.include_wt,
-        compounds=[CompoundOut(id=c.id, name=c.name, smiles=c.smiles) for c in job.compounds],
+        compounds=[
+            CompoundOut(id=c.id, name=c.name, smiles=c.smiles, admet=_admet_for(c.smiles))
+            for c in job.compounds
+        ],
         results=[
             DockingResultOut(
                 compound_id=r.compound_id,
@@ -67,6 +74,18 @@ def _to_out(job: Job) -> JobOut:
             for r in job.results
         ],
     )
+
+
+def _admet_for(smiles: str) -> dict | None:
+    """Wrap admet.compute_admet so an import-time failure (RDKit missing in
+    a stripped-down environment) doesn't take the whole jobs router down —
+    the frontend just sees admet=null and renders an em-dash for that
+    compound's chip row."""
+    try:
+        from deltadock_pipeline.admet import compute_admet
+        return compute_admet(smiles)
+    except Exception:
+        return None
 
 
 @router.post("", response_model=JobOut, status_code=201)

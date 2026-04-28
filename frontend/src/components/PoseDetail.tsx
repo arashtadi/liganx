@@ -4,6 +4,7 @@ import { Close, Sparkles } from "./Icons";
 import MutationOverlayViewer from "./MutationOverlayViewer";
 import ConfidenceRibbon from "./ConfidenceRibbon";
 import InteractionDiagram from "./InteractionDiagram";
+import AdmetChips from "./AdmetChips";
 import { parseExtra } from "../lib/parseExtra";
 
 interface Props {
@@ -124,6 +125,18 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
             tone={stronger ? "good" : weaker ? "bad" : undefined}
           />
         </div>
+
+        {/* Drug-likeness card — RDKit descriptors (MW/LogP/QED, Lipinski/Veber,
+            PAINS) so the user can triage compound chemistry without leaving
+            the pose drilldown. */}
+        {compound.admet && (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900/40">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-2">
+              Drug-likeness
+            </div>
+            <AdmetChips admet={compound.admet} layout="card" />
+          </div>
+        )}
 
         {/* Plain-English interpretation — prefers the real ProLIF-grounded
             sentence from the backend; falls back to a score-only heuristic */}

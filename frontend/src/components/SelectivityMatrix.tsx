@@ -3,6 +3,7 @@ import type { CatalogMutation, Compound, DockingResult } from "../api";
 import { Spinner } from "./Icons";
 import ConfidenceRibbon from "./ConfidenceRibbon";
 import CsvExportButton from "./CsvExportButton";
+import AdmetChips from "./AdmetChips";
 import { parseExtra } from "../lib/parseExtra";
 
 interface Props {
@@ -249,10 +250,10 @@ export default function SelectivityMatrix({
                 onMouseLeave={() => setHoverRow(null)}
               >
                 <td className="py-2.5 px-4 sticky left-0 bg-white dark:bg-slate-900 z-[5]">
-                  <div className="font-medium text-ink dark:text-slate-100 truncate max-w-[200px]">
+                  <div className="font-medium text-ink dark:text-slate-100 truncate max-w-[260px]">
                     {compound.name ?? <span className="text-slate-400 dark:text-slate-500 italic">unnamed</span>}
                   </div>
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[200px]">
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[260px]">
                     {compound.smiles}
                   </div>
                   {bestDelta != null && (
@@ -264,6 +265,10 @@ export default function SelectivityMatrix({
                       best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}
                     </div>
                   )}
+                  {/* Drug-likeness chips — compact strip directly under the SMILES.
+                      Lets users triage compounds by chemistry quality (QED, Ro5)
+                      without leaving the matrix. */}
+                  <AdmetChips admet={compound.admet} layout="compact" />
                 </td>
                 {variants.map((v) => {
                   const cellId = `${compound.id}.${v}`;

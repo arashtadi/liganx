@@ -4,10 +4,34 @@ const BASE = import.meta.env.VITE_API_URL || "/api";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
+/** ADMET / drug-likeness descriptors served alongside each compound.
+ *  Computed from SMILES via RDKit on the backend, cached. Null when
+ *  RDKit isn't available or the SMILES failed to parse — in that case
+ *  the UI renders an em-dash for the compound's chip row. */
+export interface Admet {
+  mw: number;
+  logp: number;
+  hba: number;
+  hbd: number;
+  tpsa: number;
+  rot_bonds: number;
+  rings: number;
+  aromatic_rings: number;
+  heavy_atoms: number;
+  qed: number | null;
+  lipinski_violations: number;
+  lipinski_pass: boolean;
+  veber_violations: number;
+  veber_pass: boolean;
+  pains: string[];
+  pains_count: number;
+}
+
 export interface Compound {
   id: number;
   name: string | null;
   smiles: string;
+  admet?: Admet | null;
 }
 
 export interface DockingResult {
