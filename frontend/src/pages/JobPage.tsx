@@ -274,8 +274,8 @@ function Header({
   return (
     <header className="card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
       <div>
-        <Link to="/new" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
-          <ArrowRight size={11} className="rotate-180" /> Back to new job
+        <Link to="/history" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
+          <ArrowRight size={11} className="rotate-180" /> Back to history
         </Link>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex items-center gap-3">
           <span className="font-mono text-delta-700 dark:text-delta-300">{job.pdb_id}</span>
