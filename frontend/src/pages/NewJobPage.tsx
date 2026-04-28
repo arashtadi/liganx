@@ -83,9 +83,13 @@ export default function NewJobPage() {
   const previousTargetIdRef = useRef<string | null>(null);
 
   // When the SINGLE target changes (single-target mode only), update the
-  // structural fields. Auto-populate the compound + mutation lists on the
-  // very first pick only. Per-target mutation state is keyed by target id
-  // so switching back-and-forth doesn't lose chip selections.
+  // structural fields. On the first target pick, also auto-populate the
+  // compound list with this target's reference inhibitors (a "show me an
+  // example to start from" affordance). Mutations are NEVER auto-checked —
+  // they're shown as clickable chips in Step 2 so the user can see what's
+  // available, but the user explicitly picks which to dock. Pre-selecting
+  // 3 mutations was confusing because users didn't realise they'd quietly
+  // signed up for 4× the docking work (WT + 3 mutants) without choosing.
   useEffect(() => {
     if (!target) return;
     if (!customMode) {
@@ -96,11 +100,8 @@ export default function NewJobPage() {
       setUniprot(target.uniprot);
     }
     if (!autoFilledRef.current) {
-      // First target pick — load defaults for THIS target's id key.
-      setSelectedMutationsByTarget((prev) => ({
-        ...prev,
-        [target.id]: target.mutations.slice(0, 3).map((m) => m.code),
-      }));
+      // First target pick — load reference compounds only. No mutation
+      // pre-selection: chips render unchecked and the user opts in.
       setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
       autoFilledRef.current = true;
     }
