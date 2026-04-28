@@ -163,8 +163,13 @@ export default function NewJobPage() {
   function toggleMutation(targetId: string, code: string) {
     setSelectedMutationsByTarget((prev) => {
       const cur = prev[targetId] ?? [];
-      const next = cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code];
-      return { ...prev, [targetId]: next };
+      // Free-tier cap: enforce max-2 by ignoring the click when at cap and the
+      // user is trying to ADD a chip. Removing chips is always allowed.
+      if (cur.includes(code)) {
+        return { ...prev, [targetId]: cur.filter((c) => c !== code) };
+      }
+      if (cur.length >= MAX_MUTATIONS_PER_TARGET) return prev;
+      return { ...prev, [targetId]: [...cur, code] };
     });
   }
   function setCustomMutationsFor(targetId: string, value: string) {
@@ -173,7 +178,17 @@ export default function NewJobPage() {
   function setCompound(i: number, patch: Partial<CompoundRow>) {
     setCompounds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
   }
-  function addCompound()    { setCompounds((cs) => [...cs, { name: "", smiles: "" }]); }
+  // Free-tier caps. Backend enforces in JobCreate (max_length=5 compounds,
+  // max_length=2 mutations); these UI guards just stop the user from typing
+  // into a void and getting a confusing 422 on submit.
+  const MAX_COMPOUNDS = 5;
+  const MAX_MUTATIONS_PER_TARGET = 2;
+  const MAX_TARGETS = 2;
+  function addCompound() {
+    setCompounds((cs) =>
+      cs.length >= MAX_COMPOUNDS ? cs : [...cs, { name: "", smiles: "" }],
+    );
+  }
   function removeCompound(i: number) { setCompounds((cs) => cs.filter((_, idx) => idx !== i)); }
   function loadAllCompounds() {
     if (!target) return;
@@ -378,27 +393,39 @@ export default function NewJobPage() {
         n={1}
         icon={<Target />}
         title="Choose target(s)"
-        subtitle="Click one for full mutation analysis · click multiple for kinase-selectivity mode."
+        subtitle={`Click one for full mutation analysis · click multiple for kinase-selectivity mode. Free tier: max ${MAX_TARGETS} targets.`}
       >
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {catalog?.map((t) => {
             const picked = selectedIds.includes(t.id);
+            // Hit cap = catalog tile that's NOT picked is disabled (clicking
+            // a picked tile still works — that's how you deselect). The
+            // cap counts catalog targets + the custom-PDB row when active.
+            const atCap = totalTargets >= MAX_TARGETS && !picked;
             return (
               <button
                 key={t.id}
                 type="button"
+                disabled={atCap}
+                title={atCap ? `Free tier: max ${MAX_TARGETS} targets` : undefined}
                 onClick={() => {
                   // Toggle this catalog target. Custom PDB mode can coexist
                   // with catalog picks — the user might want to dock against
                   // EGFR + ABL + their-own-AlphaFold-structure in one run.
                   setSelectedIds((ids) =>
-                    ids.includes(t.id) ? ids.filter((x) => x !== t.id) : [...ids, t.id],
+                    ids.includes(t.id)
+                      ? ids.filter((x) => x !== t.id)
+                      : ids.length < MAX_TARGETS - (customCounts ? 1 : 0)
+                        ? [...ids, t.id]
+                        : ids,
                   );
                 }}
                 className={`relative text-left p-3 rounded-xl border transition-all ${
                   picked
                     ? "border-delta-500 bg-delta-50 shadow-glow dark:bg-delta-900/30 dark:border-delta-400"
-                    : "border-slate-200 bg-white hover:border-delta-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400 dark:hover:bg-slate-700/50"
+                    : atCap
+                      ? "border-slate-200 bg-white opacity-40 cursor-not-allowed dark:border-slate-700 dark:bg-slate-800"
+                      : "border-slate-200 bg-white hover:border-delta-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400 dark:hover:bg-slate-700/50"
                 }`}
               >
                 {/* Picked-state checkmark — small but unmissable, helps users
@@ -960,9 +987,20 @@ export default function NewJobPage() {
             </div>
           ))}
         </div>
-        <button type="button" onClick={addCompound} className="btn-ghost btn-sm mt-3">
-          <Plus size={14} /> Add compound
-        </button>
+        <div className="flex items-center gap-3 mt-3">
+          <button
+            type="button"
+            onClick={addCompound}
+            disabled={compounds.length >= MAX_COMPOUNDS}
+            className="btn-ghost btn-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            title={compounds.length >= MAX_COMPOUNDS ? `Free tier: max ${MAX_COMPOUNDS} compounds` : undefined}
+          >
+            <Plus size={14} /> Add compound
+          </button>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            {compounds.length} / {MAX_COMPOUNDS} free-tier compounds
+          </span>
+        </div>
       </Step>
 
       {/* ── Run options ────────────────────────────────────────────────── */}
