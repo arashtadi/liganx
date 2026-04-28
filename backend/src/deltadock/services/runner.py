@@ -187,7 +187,10 @@ def _run_real(session: Session, job: Job) -> None:
 
     compounds = session.exec(select(Compound).where(Compound.job_id == job.id)).all()
 
-    pdb_id = job.pdb_id.upper()
+    # Preserve USR_ upload-id case (lowercase hex tail) — uppercase only
+    # standard RCSB IDs. Forcing .upper() here previously broke uploads
+    # because the lookup-router stored files with lowercase hex.
+    pdb_id = job.pdb_id if job.pdb_id.startswith("USR_") else job.pdb_id.upper()
     chain = job.chain or "A"
 
     # Step 1: fetch the raw PDB FIRST so pocket auto-detection has it to scan.
