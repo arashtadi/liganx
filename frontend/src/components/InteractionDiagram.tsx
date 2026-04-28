@@ -38,7 +38,13 @@ interface Props {
 
 /* ───────────────────── Interaction type styling ──────────────────── */
 
+// Both forms of each interaction-type code are mapped because the backend's
+// `to_extra_string` truncates ProLIF's full name to its first 4 chars to keep
+// the `extra` field compact (e.g. "Hydrophobic" → "Hydr", "HBAcceptor" →
+// "HBAc", "VdWContact" → "VdWC"). The 4-char form is what actually arrives
+// from the API today; the long forms stay for any direct ProLIF caller.
 const COLOR: Record<string, string> = {
+  // Full ProLIF names
   HBDonor:       "#10b981",
   HBAcceptor:    "#10b981",
   Hydrophobic:   "#eab308",
@@ -52,6 +58,14 @@ const COLOR: Record<string, string> = {
   MetalDonor:    "#94a3b8",
   MetalAcceptor: "#94a3b8",
   VdWContact:    "#cbd5e1",
+  // 4-char API forms (what we actually receive)
+  HBDo: "#10b981", HBAc: "#10b981",
+  Hydr: "#eab308",
+  PiSt: "#a855f7", PiCa: "#a855f7", Cati: "#a855f7",  // Cati matches Cation*
+  Anio: "#f97316",
+  XBDo: "#06b6d4", XBAc: "#06b6d4",
+  Meta: "#94a3b8",
+  VdWC: "#cbd5e1",
 };
 
 const LABEL: Record<string, string> = {
@@ -64,31 +78,43 @@ const LABEL: Record<string, string> = {
   Cationic:      "salt bridge (+)",
   Anionic:       "salt bridge (−)",
   XBDonor:       "halogen donor",
-  XBAcceptor:   "halogen acceptor",
+  XBAcceptor:    "halogen acceptor",
   MetalDonor:    "metal coord.",
   MetalAcceptor: "metal coord.",
   VdWContact:    "van der Waals",
+  HBDo: "H-bond donor",
+  HBAc: "H-bond acceptor",
+  Hydr: "hydrophobic",
+  PiSt: "π-stacking",
+  PiCa: "π-cation",
+  Cati: "cation-π",
+  Anio: "salt bridge (−)",
+  XBDo: "halogen donor",
+  XBAc: "halogen acceptor",
+  Meta: "metal coord.",
+  VdWC: "van der Waals",
 };
 
-/** Per-type line style — Maestro convention. */
+/** Per-type line style — Maestro convention. Accepts both the full ProLIF
+ *  name and the 4-char API form (Hydr, HBAc, VdWC, …). */
 function lineStyleFor(type: string): { dash?: string; width: number } {
   switch (type) {
-    case "HBDonor":
-    case "HBAcceptor":
+    case "HBDonor": case "HBDo":
+    case "HBAcceptor": case "HBAc":
       return { dash: "5 3", width: 2.5 };          // dashed
-    case "Hydrophobic":
+    case "Hydrophobic": case "Hydr":
       return { dash: "1 4", width: 2.0 };          // dotted
-    case "PiStacking":
-    case "PiCation":
-    case "CationPi":
+    case "PiStacking": case "PiSt":
+    case "PiCation": case "PiCa":
+    case "CationPi": case "Cati":
       return { dash: "10 2 2 2", width: 2.5 };     // dash-dot for π
     case "Cationic":
-    case "Anionic":
+    case "Anionic": case "Anio":
       return { dash: undefined, width: 3.5 };      // thick solid for salt
-    case "XBDonor":
-    case "XBAcceptor":
+    case "XBDonor": case "XBDo":
+    case "XBAcceptor": case "XBAc":
       return { dash: "8 2", width: 2.5 };          // long dash for halogen
-    case "VdWContact":
+    case "VdWContact": case "VdWC":
       return { dash: "1 5", width: 1.5 };          // very faint dotted
     default:
       return { dash: undefined, width: 2.0 };
