@@ -1,19 +1,29 @@
 /**
- * 2D interaction diagram — radial spoke layout.
+ * Interactive 2D ligand-interaction diagram (Maestro-style).
  *
- * Ligand sits at the center as a labeled disk. Each contacting residue is a
- * label arranged around it on an invisible circle, with a colored line drawn
- * between them. Color encodes interaction type (matching the 3D viewer).
+ * Layout: central ligand disk + radial spokes to each contacting residue.
+ * Residue dots are colored by amino-acid CHEMISTRY (hydrophobic, polar,
+ * charged±, aromatic, special), not by interaction type — so a single
+ * glance tells you both the chemistry of the binding pocket residues AND
+ * the type of contact they make (encoded by line color + style).
  *
- * Pure SVG, no extra deps. Uses the same parsed contacts the 3D viewer uses.
+ * Interactivity:
+ *   - Hover a residue          → highlight all its contacts; show tooltip
+ *                                 with full residue name + chemistry class +
+ *                                 list of interactions made
+ *   - Hover a contact line     → tooltip with type + distance
+ *   - Click a residue          → fires onResidueClick(residue); parent (e.g.
+ *                                 PoseDetail) can sync the 3D viewer
+ *
+ * Pure SVG + a single floating tooltip div. No extra deps.
  */
+
+import { useState } from "react";
 
 interface Contact {
   residue: string;
   type: string;
-  /** Closest atom-pair distance in Å, when ProLIF reported it. Older runs
-   *  before the distance plumbing landed will be undefined and the diagram
-   *  silently omits the distance label for those rows. */
+  /** Closest atom-pair distance in Å, when ProLIF reported it. */
   distance?: number;
 }
 
@@ -21,7 +31,12 @@ interface Props {
   ligandLabel: string;
   contacts: Contact[];
   className?: string;
+  /** Fired when the user clicks a residue dot. Parent can wire this to
+   *  focus / highlight the same residue in the 3D viewer. */
+  onResidueClick?: (residue: string) => void;
 }
+
+/* ───────────────────── Interaction type styling ──────────────────── */
 
 const COLOR: Record<string, string> = {
   HBDonor:       "#10b981",
@@ -40,27 +55,122 @@ const COLOR: Record<string, string> = {
 };
 
 const LABEL: Record<string, string> = {
-  HBDonor:     "H-bond",
-  HBAcceptor:  "H-bond",
-  Hydrophobic: "hydrophobic",
-  PiStacking:  "π-stack",
-  PiCation:    "π-cation",
-  CationPi:    "cation-π",
-  Cationic:    "salt bridge",
-  Anionic:     "salt bridge",
-  XBDonor:     "halogen",
-  XBAcceptor:  "halogen",
-  VdWContact:  "vdW",
+  HBDonor:       "H-bond donor",
+  HBAcceptor:    "H-bond acceptor",
+  Hydrophobic:   "hydrophobic",
+  PiStacking:    "π-stacking",
+  PiCation:      "π-cation",
+  CationPi:      "cation-π",
+  Cationic:      "salt bridge (+)",
+  Anionic:       "salt bridge (−)",
+  XBDonor:       "halogen donor",
+  XBAcceptor:   "halogen acceptor",
+  MetalDonor:    "metal coord.",
+  MetalAcceptor: "metal coord.",
+  VdWContact:    "van der Waals",
 };
+
+/** Per-type line style — Maestro convention. */
+function lineStyleFor(type: string): { dash?: string; width: number } {
+  switch (type) {
+    case "HBDonor":
+    case "HBAcceptor":
+      return { dash: "5 3", width: 2.5 };          // dashed
+    case "Hydrophobic":
+      return { dash: "1 4", width: 2.0 };          // dotted
+    case "PiStacking":
+    case "PiCation":
+    case "CationPi":
+      return { dash: "10 2 2 2", width: 2.5 };     // dash-dot for π
+    case "Cationic":
+    case "Anionic":
+      return { dash: undefined, width: 3.5 };      // thick solid for salt
+    case "XBDonor":
+    case "XBAcceptor":
+      return { dash: "8 2", width: 2.5 };          // long dash for halogen
+    case "VdWContact":
+      return { dash: "1 5", width: 1.5 };          // very faint dotted
+    default:
+      return { dash: undefined, width: 2.0 };
+  }
+}
+
+/* ─────────────────── Residue chemistry classification ──────────────── */
+
+type ResChem = {
+  /** Full English name. */
+  full: string;
+  /** Chemistry class — drives the dot color. */
+  cls: "hydrophobic" | "polar" | "positive" | "negative" | "aromatic" | "special" | "unknown";
+};
+
+// Three-letter → (full name, chemistry class). HIS classed as positive
+// because at physiological pH it can carry +1; tag separately if needed.
+const AMINO: Record<string, ResChem> = {
+  ALA: { full: "Alanine",       cls: "hydrophobic" },
+  GLY: { full: "Glycine",       cls: "special" },
+  VAL: { full: "Valine",        cls: "hydrophobic" },
+  LEU: { full: "Leucine",       cls: "hydrophobic" },
+  ILE: { full: "Isoleucine",    cls: "hydrophobic" },
+  MET: { full: "Methionine",    cls: "hydrophobic" },
+  PRO: { full: "Proline",       cls: "special" },
+  PHE: { full: "Phenylalanine", cls: "aromatic" },
+  TRP: { full: "Tryptophan",    cls: "aromatic" },
+  TYR: { full: "Tyrosine",      cls: "aromatic" },
+  SER: { full: "Serine",        cls: "polar" },
+  THR: { full: "Threonine",     cls: "polar" },
+  ASN: { full: "Asparagine",    cls: "polar" },
+  GLN: { full: "Glutamine",     cls: "polar" },
+  CYS: { full: "Cysteine",      cls: "special" },
+  HIS: { full: "Histidine",     cls: "positive" },
+  LYS: { full: "Lysine",        cls: "positive" },
+  ARG: { full: "Arginine",      cls: "positive" },
+  ASP: { full: "Aspartate",     cls: "negative" },
+  GLU: { full: "Glutamate",     cls: "negative" },
+};
+
+const CHEM_COLOR: Record<ResChem["cls"], string> = {
+  hydrophobic: "#84cc16",   // green
+  polar:       "#06b6d4",   // cyan
+  positive:    "#3b82f6",   // blue
+  negative:    "#ef4444",   // red
+  aromatic:    "#a855f7",   // purple
+  special:     "#94a3b8",   // grey (Gly, Pro, Cys)
+  unknown:     "#cbd5e1",   // light grey fallback
+};
+
+const CHEM_LABEL: Record<ResChem["cls"], string> = {
+  hydrophobic: "hydrophobic",
+  polar:       "polar (uncharged)",
+  positive:    "positively charged",
+  negative:    "negatively charged",
+  aromatic:    "aromatic",
+  special:     "special (Gly/Pro/Cys)",
+  unknown:     "—",
+};
+
+/** Parse "MET793" or "Met793.A" into 3-letter + number. */
+function parseResidue(res: string): { code: string; num: string } {
+  const m = res.match(/^([A-Za-z]{3})(\d+.*)$/);
+  if (!m) return { code: res, num: "" };
+  return { code: m[1].toUpperCase(), num: m[2] };
+}
+
+function residueChem(res: string): ResChem {
+  const { code } = parseResidue(res);
+  return AMINO[code] ?? { full: code || res, cls: "unknown" };
+}
 
 function dominantType(types: string[]): string {
   return types.find((t) => t !== "VdWContact") ?? types[0] ?? "VdWContact";
 }
 
-export default function InteractionDiagram({ ligandLabel, contacts, className = "" }: Props) {
-  // Collapse contacts to one entry per residue: dominant type wins, and we
-  // keep the SHORTEST distance across all interactions for that residue (the
-  // closest atom-pair tells the most useful story when multiple types coexist).
+/* ────────────────────────── component ────────────────────────────── */
+
+export default function InteractionDiagram({
+  ligandLabel, contacts, className = "", onResidueClick,
+}: Props) {
+  // Aggregate contacts per residue (closest distance wins; collect all types)
   type Agg = { types: string[]; distance: number | undefined };
   const byRes = new Map<string, Agg>();
   for (const c of contacts) {
@@ -76,7 +186,16 @@ export default function InteractionDiagram({ ligandLabel, contacts, className = 
     type: dominantType(agg.types),
     types: agg.types,
     distance: agg.distance,
+    chem: residueChem(residue),
   }));
+
+  // Hover state for highlighting + tooltip
+  const [hover, setHover] = useState<{
+    kind: "residue" | "contact";
+    index: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
   if (items.length === 0) {
     return (
@@ -86,90 +205,151 @@ export default function InteractionDiagram({ ligandLabel, contacts, className = 
     );
   }
 
-  // Layout — ligand disk in the centre, residues on a ring around it
+  // Layout
   const cx = 200;
   const cy = 160;
   const r = 110;
   const ligandRadius = 32;
   const N = items.length;
 
-  // Distinct colors used → legend
+  // Distinct interaction types in this view → line legend
   const usedTypes = Array.from(new Set(items.map((i) => i.type)));
+  // Distinct residue chemistry classes → dot legend
+  const usedChems = Array.from(new Set(items.map((i) => i.chem.cls)));
+
+  // Build the tooltip content for whichever element is hovered.
+  let tip: { title: string; lines: string[] } | null = null;
+  if (hover) {
+    const item = items[hover.index];
+    if (hover.kind === "residue") {
+      tip = {
+        title: `${item.residue} — ${item.chem.full}`,
+        lines: [
+          `Class: ${CHEM_LABEL[item.chem.cls]}`,
+          `Interactions: ${Array.from(new Set(item.types)).map((t) => LABEL[t] ?? t).join(", ")}`,
+          ...(item.distance != null ? [`Closest contact: ${item.distance.toFixed(2)} Å`] : []),
+        ],
+      };
+    } else {
+      tip = {
+        title: `${item.residue} ↔ ligand`,
+        lines: [
+          `${LABEL[item.type] ?? item.type}`,
+          ...(item.distance != null ? [`Distance: ${item.distance.toFixed(2)} Å`] : []),
+          ...(item.types.length > 1
+            ? [`Other interactions at this residue: ${item.types
+                .filter((t) => t !== item.type)
+                .map((t) => LABEL[t] ?? t)
+                .join(", ")}`]
+            : []),
+        ],
+      };
+    }
+  }
 
   return (
-    <div className={`bg-white rounded-lg border border-slate-200 p-3 dark:bg-slate-800 dark:border-slate-700 ${className}`}>
-      <svg viewBox="0 0 400 320" className="w-full" style={{ maxHeight: 320 }}>
-        {/* Spokes */}
+    <div className={`relative bg-white rounded-lg border border-slate-200 p-3 dark:bg-slate-800 dark:border-slate-700 ${className}`}>
+      <svg
+        viewBox="0 0 400 320"
+        className="w-full"
+        style={{ maxHeight: 340 }}
+        onMouseLeave={() => setHover(null)}
+      >
+        {/* Spokes (rendered first so dots + labels stack on top) */}
         {items.map((item, i) => {
           const angle = (i / N) * 2 * Math.PI - Math.PI / 2;
           const x = cx + r * Math.cos(angle);
           const y = cy + r * Math.sin(angle);
           const stroke = COLOR[item.type] ?? "#cbd5e1";
-          // Pull the line back from the centre disk so it doesn't punch through
           const x0 = cx + ligandRadius * Math.cos(angle);
           const y0 = cy + ligandRadius * Math.sin(angle);
-          // Dashed for VdW (least informative), solid otherwise
-          const dash = item.type === "VdWContact" ? "4 3" : undefined;
+          const style = lineStyleFor(item.type);
+          // Dim other lines when something is hovered
+          const isHighlighted = hover && hover.index === i;
+          const isFaded = hover && hover.index !== i;
           return (
-            <line key={`L${i}`}
-              x1={x0} y1={y0} x2={x} y2={y}
-              stroke={stroke} strokeWidth={2.5} strokeDasharray={dash}
-              opacity={0.85}
-            />
+            <g key={`L${i}`}>
+              {/* Wider invisible hit target so tooltips fire on near-misses */}
+              <line
+                x1={x0} y1={y0} x2={x} y2={y}
+                stroke="transparent"
+                strokeWidth={14}
+                onMouseMove={(e) => setHover({ kind: "contact", index: i, x: e.clientX, y: e.clientY })}
+                onMouseEnter={(e) => setHover({ kind: "contact", index: i, x: e.clientX, y: e.clientY })}
+                style={{ cursor: "help" }}
+              />
+              {/* Visible line */}
+              <line
+                x1={x0} y1={y0} x2={x} y2={y}
+                stroke={stroke}
+                strokeWidth={style.width}
+                strokeDasharray={style.dash}
+                opacity={isHighlighted ? 1 : isFaded ? 0.2 : 0.85}
+                style={{ pointerEvents: "none", transition: "opacity .12s" }}
+              />
+              {/* H-bond gets an arrowhead on the residue end (acceptor → donor convention) */}
+              {(item.type === "HBDonor" || item.type === "HBAcceptor") && (
+                <circle
+                  cx={x - (x - x0) * 0.12}
+                  cy={y - (y - y0) * 0.12}
+                  r={2.5}
+                  fill={stroke}
+                  opacity={isHighlighted ? 1 : isFaded ? 0.2 : 0.85}
+                  style={{ pointerEvents: "none" }}
+                />
+              )}
+            </g>
           );
         })}
 
-        {/* Residue labels (and distance below the residue, when available).
-            Layout rule: for residues at the top/bottom of the ring (where the
-            text would otherwise center on the dot and let the spoke punch
-            through the glyphs), we stack the residue name + distance ABOVE
-            the dot for top positions and BELOW for bottom. For left/right
-            positions we keep the side-anchored layout. */}
+        {/* Residue labels + chemistry-colored dots */}
         {items.map((item, i) => {
           const angle = (i / N) * 2 * Math.PI - Math.PI / 2;
           const x = cx + r * Math.cos(angle);
           const y = cy + r * Math.sin(angle);
-          const fill = COLOR[item.type] ?? "#cbd5e1";
+          const dotFill = CHEM_COLOR[item.chem.cls];
 
-          // Side-anchored layout for non-pole positions (left/right). At the
-          // poles (top/bottom) we use middle alignment but offset vertically
-          // so the spoke line never crosses the text.
+          // Same anti-collision layout as before
           const isPole = Math.abs(Math.cos(angle)) < 0.3;
           const anchor = isPole ? "middle" : Math.cos(angle) > 0 ? "start" : "end";
           const dx = anchor === "start" ? 10 : anchor === "end" ? -10 : 0;
-
-          // Vertical offsets: residue text first, then distance text below it
-          // (or above, when at the top of the ring, so the stack reads
-          // "distance / residue / dot").
           const showDist = typeof item.distance === "number";
           let resY: number;
           let distY: number;
           if (isPole && Math.sin(angle) < 0) {
-            // Top of the ring: stack labels ABOVE the dot
-            //   distance (smaller, higher)
-            //   residue  (closer to the dot)
-            //   ⬤
             resY = y - 12;
             distY = y - 24;
           } else if (isPole && Math.sin(angle) > 0) {
-            // Bottom of the ring: stack BELOW the dot
-            //   ⬤
-            //   residue
-            //   distance
             resY = y + 18;
             distY = y + 30;
           } else {
-            // Left/right side: text next to the dot (existing layout)
             resY = y + 4;
             distY = y + 16;
           }
 
+          const isHighlighted = hover && hover.index === i;
+          const isFaded = hover && hover.index !== i;
+
           return (
-            <g key={`R${i}`}>
-              <circle cx={x} cy={y} r={6} fill={fill} stroke="white" strokeWidth={1.5} />
+            <g
+              key={`R${i}`}
+              onMouseMove={(e) => setHover({ kind: "residue", index: i, x: e.clientX, y: e.clientY })}
+              onMouseEnter={(e) => setHover({ kind: "residue", index: i, x: e.clientX, y: e.clientY })}
+              onClick={() => onResidueClick?.(item.residue)}
+              style={{
+                cursor: onResidueClick ? "pointer" : "help",
+                opacity: isFaded ? 0.35 : 1,
+                transition: "opacity .12s",
+              }}
+            >
+              {/* Halo on hover */}
+              {isHighlighted && (
+                <circle cx={x} cy={y} r={11} fill="none" stroke={dotFill} strokeWidth={1.5} opacity={0.6} />
+              )}
+              <circle cx={x} cy={y} r={7} fill={dotFill} stroke="white" strokeWidth={1.5} />
               <text
                 x={x + dx} y={resY}
-                textAnchor={anchor as any}
+                textAnchor={anchor as "start" | "middle" | "end"}
                 fontFamily="ui-monospace, monospace"
                 fontSize={11}
                 fontWeight={600}
@@ -181,7 +361,7 @@ export default function InteractionDiagram({ ligandLabel, contacts, className = 
               {showDist && (
                 <text
                   x={x + dx} y={distY}
-                  textAnchor={anchor as any}
+                  textAnchor={anchor as "start" | "middle" | "end"}
                   fontFamily="ui-monospace, monospace"
                   fontSize={9.5}
                   fontWeight={500}
@@ -211,17 +391,57 @@ export default function InteractionDiagram({ ligandLabel, contacts, className = 
         </text>
       </svg>
 
-      {/* Legend */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600 mt-2 pt-2 border-t border-slate-100 dark:text-slate-400 dark:border-slate-700">
-        {usedTypes.map((t) => (
-          <span key={t} className="inline-flex items-center gap-1.5">
-            <span className="inline-block w-3 h-0.5" style={{ background: COLOR[t] ?? "#cbd5e1" }} />
-            {LABEL[t] ?? t.toLowerCase()}
-          </span>
-        ))}
-        <span className="ml-auto italic text-slate-400 dark:text-slate-500">
-          distance = closest atom-pair (Å)
-        </span>
+      {/* Floating tooltip — uses fixed positioning so it escapes the SVG and any parent overflow:hidden */}
+      {tip && (
+        <div
+          className="fixed z-50 pointer-events-none rounded-md bg-slate-900 text-white text-[11px] leading-snug px-2.5 py-1.5 shadow-lg ring-1 ring-slate-700 max-w-[260px] dark:bg-slate-100 dark:text-slate-900 dark:ring-slate-300"
+          style={{
+            left: hover!.x + 14,
+            top: hover!.y + 14,
+          }}
+        >
+          <div className="font-semibold mb-0.5">{tip.title}</div>
+          {tip.lines.map((l, i) => (
+            <div key={i} className="opacity-90">{l}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Two-row legend: residue chemistry, then interaction-line styles */}
+      <div className="mt-3 pt-2 border-t border-slate-100 dark:border-slate-700 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600 dark:text-slate-400">
+          <span className="font-semibold text-slate-500 dark:text-slate-400 mr-1">Residue:</span>
+          {usedChems.map((c) => (
+            <span key={c} className="inline-flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: CHEM_COLOR[c] }} />
+              {CHEM_LABEL[c]}
+            </span>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600 dark:text-slate-400">
+          <span className="font-semibold text-slate-500 dark:text-slate-400 mr-1">Contact:</span>
+          {usedTypes.map((t) => {
+            const style = lineStyleFor(t);
+            return (
+              <span key={t} className="inline-flex items-center gap-1.5">
+                <svg width={20} height={6} className="shrink-0">
+                  <line
+                    x1={0} y1={3} x2={20} y2={3}
+                    stroke={COLOR[t] ?? "#cbd5e1"}
+                    strokeWidth={style.width}
+                    strokeDasharray={style.dash}
+                  />
+                </svg>
+                {LABEL[t] ?? t.toLowerCase()}
+              </span>
+            );
+          })}
+        </div>
+        <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+          {onResidueClick
+            ? "Hover any line for details · click a residue to focus it in the 3D view"
+            : "Hover any line for details"}
+        </div>
       </div>
     </div>
   );

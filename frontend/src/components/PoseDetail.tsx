@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Compound } from "../api";
 import { Close, Sparkles } from "./Icons";
@@ -46,6 +47,12 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
   const weaker = deltaWt != null && deltaWt > 0.3;
   const mutationResidue = residueOf(variant);
   const ext = parseExtra(extra);
+
+  // Refs for the 2D-map → 3D-viewer scroll sync. When the user clicks a
+  // residue in the InteractionDiagram, we smooth-scroll the 3D viewer
+  // into view and flash its border so the spatial connection is obvious.
+  const diagramRef = useRef<HTMLDivElement | null>(null);
+  const viewerRef = useRef<HTMLDivElement | null>(null);
 
   // Fetch the WT and mutant PDBs from the backend so the overlay viewer can
   // render the actual FoldX-built mutant geometry next to the WT side chain.
@@ -229,19 +236,36 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
           </div>
         )}
 
-        {/* 2D interaction diagram — radial spoke view of the ProLIF contacts */}
+        {/* 2D interaction diagram — radial spoke view of the ProLIF contacts.
+            Clicking a residue scrolls the 3D viewer into view + flashes its
+            border so the user can pick out the same residue spatially. */}
         {ext.contacts && ext.contacts.length > 0 && (
-          <div>
+          <div ref={diagramRef}>
             <div className="label">2D interaction map</div>
             <InteractionDiagram
               ligandLabel={compound.name ?? "Ligand"}
               contacts={ext.contacts}
+              onResidueClick={() => {
+                viewerRef.current?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "center",
+                });
+                // Brief border flash on the viewer container so the user
+                // gets visual confirmation the click did something.
+                const el = viewerRef.current;
+                if (el) {
+                  el.classList.add("ring-2", "ring-delta-400");
+                  setTimeout(() => el.classList.remove("ring-2", "ring-delta-400"), 1400);
+                }
+              }}
             />
           </div>
         )}
 
-        {/* 3D viewer — overlays the FoldX-mutated side chain on the WT structure */}
-        <div>
+        {/* 3D viewer — overlays the FoldX-mutated side chain on the WT structure.
+            Wrapped in a ref so the 2D contact map's residue clicks can scroll
+            it into view + flash its border for the spatial-link cue. */}
+        <div ref={viewerRef} className="rounded-lg transition-all">
           <div className="label flex items-center justify-between">
             <span>WT vs mutant overlay</span>
             {mutationResidue != null && (
