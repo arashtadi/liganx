@@ -32,8 +32,14 @@ export interface ParsedExtra {
    *    embedding failure, Meeko crash, etc.). Often unsalvageable input data.
    *  - `docking`: ligand prepped fine, but Vina/QuickVina-GPU itself errored
    *    (rare — usually means the box is malformed or the receptor is broken).
+   *  - `mutant_build`: PDBFixer couldn't introduce the requested point mutation
+   *    — typically because the residue number/chain doesn't exist in the PDB
+   *    (e.g. user typed C481S but selected a non-BTK structure). The runner
+   *    currently falls back to docking against the WT receptor, so any raw
+   *    score matches WT byte-for-byte; rendering that as a "real" mutant
+   *    score is misleading. Show "Mutation build failed" instead.
    *  - `other`: anything else the runner explicitly recorded as a failure. */
-  failure?: { kind: "ligand_prep" | "docking" | "other"; reason: string };
+  failure?: { kind: "ligand_prep" | "docking" | "mutant_build" | "other"; reason: string };
   /** Conformational strain of the docked pose. Backend writes
    *  `strain=<verdict>:<kcal>` where verdict ∈ {ok, mild, high} and kcal is
    *  the MMFF94s energy difference between the docked geometry and the
@@ -65,13 +71,27 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
   const out: ParsedExtra = { raw: extra };
 
   // Failure markers don't follow the key=value format — the runner writes them
-  // as bare prefixes like "ligand_prep_failed: <reason>". Detect them up front
-  // so the UI knows the row's score is a placeholder, not a real docking.
-  const failureMatch = extra.match(/^(ligand_prep_failed|docking_failed):\s*(.*)$/);
+  // as bare prefixes like "ligand_prep_failed: <reason>" or
+  // "mutant_build_failed:MutateError:Residue ... not found ...|engine=...".
+  // Detect them up front so the UI knows the row's score is a placeholder,
+  // not a real docking. Trailing `|key=value` fields (engine, vinardo, etc.)
+  // are allowed after the failure prefix — the runner sometimes attaches
+  // those alongside even when the row is fundamentally a failure.
+  const failureMatch = extra.match(
+    /^(ligand_prep_failed|docking_failed|mutant_build_failed):([^|]*)/,
+  );
   if (failureMatch) {
-    const kind = failureMatch[1] === "ligand_prep_failed" ? "ligand_prep" : "docking";
+    const tag = failureMatch[1];
+    const kind: "ligand_prep" | "docking" | "mutant_build" =
+      tag === "ligand_prep_failed" ? "ligand_prep"
+        : tag === "docking_failed" ? "docking"
+          : "mutant_build";
     out.failure = { kind, reason: failureMatch[2].trim() };
-    return out;
+    // Don't `return` early for mutant_build_failed — the runner may have
+    // attached useful side-info (engine, vinardo from the WT-fallback dock,
+    // contacts) that we still want available for the PoseDetail drawer.
+    // For ligand_prep / docking the remainder is meaningless, so bail.
+    if (kind !== "mutant_build") return out;
   }
 
   for (const part of extra.split("|")) {

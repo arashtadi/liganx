@@ -68,7 +68,7 @@ export default function SelectivityMatrix({
   const scoreOf = useMemo(() => {
     const m: Record<number, Record<string, number>> = {};
     for (const r of results) {
-      const failed = r.extra && /^(ligand_prep_failed|docking_failed):/.test(r.extra);
+      const failed = r.extra && /^(ligand_prep_failed|docking_failed|mutant_build_failed):/.test(r.extra);
       if (failed) continue;
       m[r.compound_id] ??= {};
       m[r.compound_id][r.variant] = r.best_score;
@@ -379,7 +379,26 @@ function ScoreCell({
       ? "Ligand prep failed"
       : ext.failure.kind === "docking"
         ? "Docking failed"
-        : "Failed";
+        : ext.failure.kind === "mutant_build"
+          ? "Mutation build failed"
+          : "Failed";
+    // mutant_build is amber (user-input issue — wrong residue/PDB) rather
+    // than red (system error). Different cause, different remedy: the user
+    // probably picked the wrong PDB or typed a residue that doesn't exist.
+    const isAmber = ext.failure.kind === "mutant_build";
+    const badgeClass = isAmber
+      ? "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:ring-amber-800/50"
+      : "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800/50";
+    const subtitleClass = isAmber
+      ? "text-amber-700 dark:text-amber-300/80"
+      : "text-rose-700 dark:text-rose-300/80";
+    const subtitle = ext.failure.kind === "ligand_prep"
+      ? "ligand prep"
+      : ext.failure.kind === "docking"
+        ? "docking"
+        : ext.failure.kind === "mutant_build"
+          ? "residue not in PDB"
+          : "error";
     return (
       <td
         className={`relative text-right py-2.5 ${selectable ? "pl-6 pr-4" : "px-4"} align-top ${isWT ? "border-r border-slate-200 dark:border-slate-800" : ""} ${selectionRing}`}
@@ -387,12 +406,12 @@ function ScoreCell({
       >
         {Checkbox}
         <div className="inline-flex items-center justify-end gap-1.5">
-          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800/50">
-            <span aria-hidden>⚠</span> Failed
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${badgeClass}`}>
+            <span aria-hidden>{isAmber ? "⚠" : "⚠"}</span> {isAmber ? "Build failed" : "Failed"}
           </span>
         </div>
-        <div className="text-[10px] text-rose-700 dark:text-rose-300/80 mt-1 max-w-[160px] truncate">
-          {ext.failure.kind === "ligand_prep" ? "ligand prep" : ext.failure.kind === "docking" ? "docking" : "error"}
+        <div className={`text-[10px] mt-1 max-w-[160px] truncate ${subtitleClass}`}>
+          {subtitle}
         </div>
       </td>
     );
