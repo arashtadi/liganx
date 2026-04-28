@@ -462,11 +462,13 @@ def _run_real(session: Session, job: Job) -> None:
             pass
         return None
 
-    # Half the box edge — if a mutation is farther than this from box center,
-    # docking can't see geometric effect of the substitution. Box is 22 Å
-    # so half-edge is 11 Å; we use 13 Å to allow a small safety margin
-    # since the mutated SIDE CHAIN extends a few Å past the CA.
-    POCKET_RADIUS_A = 13.0
+    # The Vina box only "sees" atoms within ~half-edge of box center. Box
+    # is 22 Å so half-edge is 11 Å. ANY mutation residue whose CA is more
+    # than that distance away can't influence the dock — even FLT3 D835V
+    # at 12.6 Å (just outside the box) reproducibly produces identical WT
+    # and mutant scores. We use the strict 11 Å so we honestly tag every
+    # such case rather than mislead the user with apparent "no effect".
+    POCKET_RADIUS_A = 11.0
 
     FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
     # Pre-compute pocket-distance for each mutation. Outside-pocket mutations

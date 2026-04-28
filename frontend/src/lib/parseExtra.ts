@@ -46,6 +46,17 @@ export interface ParsedExtra {
    *  When present, the matrix shows it as a small subtitle under the
    *  primary Vina score; PoseDetail surfaces it as a top-level Metric. */
   vinardo?: number;
+  /** When the mutation residue lies outside the Vina docking box (typically
+   *  >11 Å from box center), single-conformation docking can't capture the
+   *  geometric effect of the substitution — the mutated atoms are simply
+   *  outside Vina's search space. The cell will reproducibly show the same
+   *  Vina score as WT, NOT because the platform is broken but because
+   *  docking-as-a-method has this fundamental limitation. The matrix UI
+   *  surfaces this as an "outside pocket" badge so the user knows to
+   *  interpret a zero delta as "method can't tell" rather than
+   *  "mutation has no effect". The number is the CA-to-pocket-center
+   *  distance in Å. */
+  outsidePocketA?: number;
   raw: string;
 }
 
@@ -119,6 +130,13 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         if ((verdict === "ok" || verdict === "mild" || verdict === "high") && Number.isFinite(k)) {
           out.strain = { verdict, kcal: k };
         }
+        break;
+      }
+      case "mutation_outside_pocket": {
+        // Format: "12.3A" — distance from CA to pocket center
+        const m = v.match(/^([\d.]+)A?$/);
+        const dist = m ? parseFloat(m[1]) : NaN;
+        if (Number.isFinite(dist)) out.outsidePocketA = dist;
         break;
       }
       // ignore err, validate_err, foldx_failed prefixes etc.

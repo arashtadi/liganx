@@ -467,6 +467,22 @@ function ScoreCell({
           <span className="opacity-60">v⁺</span> {ext.vinardo.toFixed(2)}
         </div>
       )}
+      {/* "Mutation outside pocket" badge — shown when the mutated residue is
+          farther from the docking box center than Vina can see. Without this
+          tag, the user would interpret an identical WT/mutant score as "the
+          mutation has no effect", when really it's "Vina can't tell because
+          the box doesn't reach that far". This is biology limitation, not a
+          bug, but the user deserves to know which one they're looking at. */}
+      {!isWT && ext.outsidePocketA != null && (
+        <div className="mt-1 flex justify-end">
+          <span
+            title={`Mutation residue is ${ext.outsidePocketA.toFixed(1)} Å from the docking box center. Single-conformation Vina docking can't see geometric effects of mutations more than ~11 Å from the pocket — try molecular dynamics or pick a different reference structure where this residue is closer to the active site.`}
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ring-1 ring-inset bg-amber-50 text-amber-900 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-200 dark:ring-amber-700/40"
+          >
+            <span aria-hidden>◌</span> outside pocket
+          </span>
+        </div>
+      )}
       {(ext.confidence && ext.confidence !== "unknown") || ext.strain ? (
         <div className="mt-1 flex justify-end items-center gap-1">
           {/* Strain warning chip — only visible for mild/high to keep the
