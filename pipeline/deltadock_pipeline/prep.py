@@ -200,7 +200,22 @@ def strip_hetatm(pdb_path: Path | str, out_path: Path | str, *, chain: str | Non
                     continue
                 kept += 1
                 fout.write(line)
-            elif rec in {"TER", "END", "HEADER", "TITLE", "CRYST1", "REMARK", "SEQRES"}:
+            elif rec == "TER":
+                # TER lines also have a chain ID at column 22 — must filter
+                # the same way as ATOM, otherwise PDBFixer sees TER records
+                # for chains we deleted and emits malformed coordinates
+                # while trying to "complete" the missing chain. This caused
+                # the 2HYY ValueError ("could not convert string to float").
+                if chain and len(line) > 21 and line[21] != chain:
+                    continue
+                fout.write(line)
+            elif rec == "SEQRES":
+                # SEQRES has chain ID at column 12 (1-indexed) — filter so
+                # PDBFixer doesn't believe other chains exist.
+                if chain and len(line) > 11 and line[11] != chain:
+                    continue
+                fout.write(line)
+            elif rec in {"END", "HEADER", "TITLE", "CRYST1", "REMARK"}:
                 fout.write(line)
     log.info("Cleaned %s → %s (%d ATOM lines, dropped %d HETATM)", pdb_path.name, out_path.name, kept, skipped_het)
     if kept == 0:
