@@ -1,6 +1,7 @@
 """FastAPI application entrypoint."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,11 @@ from . import __version__
 from .config import get_settings
 from .db import init_db
 from .routers import catalog, jobs, lookup, structures, suggest
+
+# Git SHA of the deployed image — injected by the GH Actions workflow as a
+# build arg / env var. Lets us verify which commit is actually live without
+# having to read Fly logs. Defaults to "dev" for local runs.
+GIT_SHA = os.environ.get("GIT_SHA", "dev")
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level.upper())
@@ -48,4 +54,9 @@ app.include_router(suggest.router)
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
-    return {"status": "ok", "version": __version__, "env": settings.app_env}
+    return {
+        "status": "ok",
+        "version": __version__,
+        "env": settings.app_env,
+        "git_sha": GIT_SHA,
+    }
