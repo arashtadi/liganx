@@ -450,17 +450,20 @@ def _run_real(session: Session, job: Job) -> None:
         # scores per row — the bug reported as "WT and mutation always
         # have the same value".
         cached_mut_pdbqt = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
+        cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
         # Skip the precache lookup if the file is missing OR stale (built with
         # the old renumbering-broken prep). In the stale case, fall through
         # to the PDBFixer mutation builder which will produce a v2 file.
         if cached_mut_pdbqt.exists() and cached_mut_pdbqt.stat().st_size > 0 and not _is_stale(cached_mut_pdbqt):
-            # VERIFY the precached receptor actually contains the mutation.
-            # PDBFixer used to silently renumber residues, causing FoldX to
-            # mutate the wrong atom and produce mutant files that look right
-            # but are biophysically WT. If verification fails, we mark this
-            # variant so the per-cell loop writes a loud error instead of
-            # docking against a corrupt receptor.
-            ok, reason = verify_mutation_applied(cached_mut_pdbqt, chain, mut)
+            # VERIFY the precached mutant actually contains the substitution.
+            # We check the sibling .clean.pdb (preserved numbering), not the
+            # PDBQT (which obabel renumbers). If the sibling PDB doesn't exist
+            # we conservatively treat the precache as unverifiable and force
+            # a fresh rebuild via the PDBFixer fallback below.
+            if cached_mut_pdb.exists():
+                ok, reason = verify_mutation_applied(cached_mut_pdb, chain, mut)
+            else:
+                ok, reason = False, f"sibling .clean.pdb missing for {cached_mut_pdbqt.name} — cannot verify"
             if ok:
                 receptor_for_variant[mut] = cached_mut_pdbqt
                 cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
@@ -488,7 +491,9 @@ def _run_real(session: Session, job: Job) -> None:
                     prepare_receptor(fresh_pdb, fresh_pdbqt, chain=chain)
                     _stamp(fresh_pdbqt)
                     _stamp(fresh_pdb)
-                    ok2, reason2 = verify_mutation_applied(fresh_pdbqt, chain, mut)
+                    # Verify against the PDB (preserves residue numbering);
+                    # the PDBQT obabel writes is renumbered.
+                    ok2, reason2 = verify_mutation_applied(fresh_pdb, chain, mut)
                     if ok2:
                         receptor_for_variant[mut] = fresh_pdbqt
                         receptor_pdb_for_variant[mut] = fresh_pdb
@@ -587,7 +592,13 @@ def _run_real(session: Session, job: Job) -> None:
                 # Stash diagnostics in variant_extra so they reach the API response
                 _diag_str = "diag=" + ",".join(_diag_parts) if _diag_parts else ""
                 # Verify the resulting receptor actually has the substitution
-                ok, reason = verify_mutation_applied(mut_receptor_out, chain, mut)
+                # Verify against the PDB (mut_pdb_out), not the PDBQT.
+                # obabel renumbers residues when writing PDBQT (collapses
+                # 600-947 → 1-N), so the residue numbers we typed only
+                # survive in the PDB. Vina/QuickVina doesn't care about
+                # residue numbers — it only reads atomic coordinates — so
+                # this discrepancy doesn't affect docking, only verification.
+                ok, reason = verify_mutation_applied(mut_pdb_out, chain, mut)
                 if ok:
                     receptor_for_variant[mut] = mut_receptor_out
                     receptor_pdb_for_variant[mut] = mut_pdb_out
