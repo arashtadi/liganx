@@ -18,13 +18,18 @@ export default function NewJobPage() {
     queryFn: api.catalog,
   });
 
-  // Pre-select the target from ?target=xxx if present (e.g. coming from Library).
-  // selectedIds is now an ARRAY — pick multiple to enter "selectivity mode"
-  // and dock the same compound list against several kinases in parallel.
-  // Single-target use is the special case selectedIds.length === 1; the rest
-  // of the form behaves exactly as before in that case.
-  const initialTarget = searchParams.get("target")?.toLowerCase() ?? "egfr";
-  const [selectedIds, setSelectedIds] = useState<string[]>([initialTarget]);
+  // Pre-select the target from ?target=xxx if present (e.g. coming from Library
+  // or a marketing link). Otherwise start with NO target selected — we used to
+  // default to EGFR, but that primed the form with EGFR's compounds + mutation
+  // chips before the user expressed any intent, which felt presumptuous and
+  // confused users who actually wanted ABL or KRAS. Empty start = clean slate.
+  // selectedIds is an ARRAY — pick multiple to enter "selectivity mode" and
+  // dock the same compound list against several kinases in parallel. Single-
+  // target use is the special case selectedIds.length === 1.
+  const initialTarget = searchParams.get("target")?.toLowerCase();
+  const [selectedIds, setSelectedIds] = useState<string[]>(
+    initialTarget ? [initialTarget] : [],
+  );
   const [customMode, setCustomMode] = useState(false);
 
   const [pdbId, setPdbId] = useState("");
