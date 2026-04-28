@@ -438,10 +438,40 @@ def _run_real(session: Session, job: Job) -> None:
                 variant_extra[mut] = "foldx_precached"
                 log.info("Using precached mutant receptor %s (verified)", cached_mut_pdbqt.name)
             else:
-                # Don't dock — the precache is corrupt. Mark for loud failure.
-                log.warning("Precached mutant %s FAILED verification: %s", cached_mut_pdbqt.name, reason)
-                receptor_for_variant[mut] = None  # type: ignore[assignment]
-                variant_extra[mut] = f"mutant_verify_failed: {reason}"
+                # Precache is corrupt (was built with the old PDBFixer-renumbering
+                # bug). Don't give up — try the PDBFixer mutation builder as a
+                # second chance. If THAT works, we get a real mutant; if it
+                # fails too, then we mark the cell with both reasons.
+                log.warning("Precached mutant %s FAILED verification (%s) — trying PDBFixer fallback",
+                            cached_mut_pdbqt.name, reason)
+                try:
+                    from deltadock_pipeline.mutate import build_mutant_pdbfixer
+                    fresh_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.fresh.clean.pdb"
+                    fresh_pdbqt = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.fresh.pdbqt"
+                    build_mutant_pdbfixer(
+                        pdb_path=cleaned_pdb,
+                        chain=chain,
+                        mutation_code=mut,
+                        out_path=fresh_pdb,
+                    )
+                    prepare_receptor(fresh_pdb, fresh_pdbqt, chain=chain)
+                    ok2, reason2 = verify_mutation_applied(fresh_pdbqt, chain, mut)
+                    if ok2:
+                        receptor_for_variant[mut] = fresh_pdbqt
+                        receptor_pdb_for_variant[mut] = fresh_pdb
+                        variant_extra[mut] = "pdbfixer_mutated_after_bad_precache"
+                        log.info("Recovered %s via PDBFixer fallback", mut)
+                    else:
+                        receptor_for_variant[mut] = None  # type: ignore[assignment]
+                        variant_extra[mut] = (
+                            f"mutant_verify_failed: precache={reason} pdbfixer={reason2}"
+                        )
+                except Exception as me:
+                    receptor_for_variant[mut] = None  # type: ignore[assignment]
+                    variant_extra[mut] = (
+                        f"mutant_verify_failed: precache={reason} "
+                        f"pdbfixer_err={type(me).__name__}:{str(me)[:60]}"
+                    )
             continue
         if not foldx_on:
             # NEW: PDBFixer-based mutation building. We can't use FoldX in prod
