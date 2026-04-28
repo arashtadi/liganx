@@ -3,6 +3,8 @@ import HomePage from "./pages/HomePage";
 import NewJobPage from "./pages/NewJobPage";
 import JobPage from "./pages/JobPage";
 import LibraryPage from "./pages/LibraryPage";
+import PrivacyPage from "./pages/PrivacyPage";
+import TermsPage from "./pages/TermsPage";
 import { LogoMark } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 
@@ -16,6 +18,8 @@ export default function App() {
           <Route path="/new" element={<NewJobPage />} />
           <Route path="/jobs/:id" element={<JobPage />} />
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
           {/* Catch-all 404 — used to leak through as a blank page */}
           <Route path="*" element={<NotFound />} />
         </Routes>
@@ -68,6 +72,8 @@ function Footer() {
           <span>© {new Date().getFullYear()} Liganx — mutation-aware structural biology.</span>
         </div>
         <div className="flex items-center gap-4">
+          <Link to="/privacy" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Privacy</Link>
+          <Link to="/terms" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Terms</Link>
           <span className="text-slate-400 dark:text-slate-500">v0.0.1 · Phase 1</span>
         </div>
       </div>
