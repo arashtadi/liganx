@@ -120,11 +120,14 @@ def _run_crossdock_in_background(pdb_id: str, chain: str) -> None:
             return
 
         # Box: 22.5 Å cube centred on the ligand centroid, matching what the
-        # main runner uses for auto-detected pockets.
-        box = {
-            "center": list(pocket.center),
-            "size": [22.5, 22.5, 22.5],
-        }
+        # main runner uses for auto-detected pockets. dock_one expects a
+        # PocketBox dataclass (center_x/y/z + size_x/y/z) — passing a dict
+        # silently AttributeErrors deep inside the Vina argv builder.
+        from deltadock_pipeline.dock import PocketBox
+        box = PocketBox(
+            center_x=pocket.center[0], center_y=pocket.center[1], center_z=pocket.center[2],
+            size_x=22.5, size_y=22.5, size_z=22.5,
+        )
 
         with tempfile.TemporaryDirectory(prefix=f"xdock-{pdb_id}-") as td:
             work = _Path(td)
