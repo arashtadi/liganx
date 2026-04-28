@@ -564,33 +564,86 @@ def _run_prolif(pose_pdb: Path, receptor_pdb: Path, *, ligand_smiles: str | None
             log.info("AssignBondOrdersFromTemplate failed (%s); using inferred bonds", str(e)[:80])
             return pose_mol
 
+    # Track which load path succeeded for the diagnostic-when-empty log below
+    load_path = "none"
     if pose_sdf.exists() and pose_sdf.stat().st_size > 0:
+        # Path 1: strict SDF + retemplate. The default path; works for most
+        # ligands with clean meeko-generated SDFs.
         try:
             suppl = _Chem.SDMolSupplier(str(pose_sdf), removeHs=False, sanitize=True)
             mol = next((m for m in suppl if m is not None), None)
             if mol is not None:
                 mol = _retemplate(mol)
                 lig = plf.Molecule(mol)
+                load_path = "sdf_strict"
         except Exception as e:
-            log.warning("SDF→ProLIF ligand load failed (%s); trying PDB", e)
+            log.warning("SDF→ProLIF strict load failed (%s); trying lenient SDF", e)
 
-    # NOTE: The MolFromPDBFile + AssignBondOrdersFromTemplate path SIGSEGVs
-    # RDKit on certain ligands (osimertinib's indole, kinase inhibitors with
-    # macrocycles, etc.). Since this entire function runs in a subprocess
-    # (_run_prolif_safe wraps it), a SIGSEGV here is recoverable but kills
-    # the whole validation for this pose. We deliberately DON'T attempt the
-    # PDB+template path — it's too crash-prone — and rely on the SDF path
-    # above (which is safer because meeko's SDF preserves bond orders) plus
-    # the MDAnalysis fallback below. If the SDF-load failed, we proceed
-    # without templating; ProLIF reports zero contacts honestly rather than
-    # crashing the worker.
+    if lig is None and pose_sdf.exists() and pose_sdf.stat().st_size > 0:
+        # Path 2: lenient SDF — disable RDKit sanitization, which is what
+        # rejects unusual valence states meeko sometimes emits for kinase
+        # inhibitors with N-aromatic rings, S=O sulfonamides, etc. We then
+        # apply MIN_PROPS sanitize manually so ProLIF still gets a usable
+        # molecule. This is the path that catches Afatinib/Osimertinib
+        # /Erlotinib/Gefitinib + MET (2WGJ) where strict mode rejected
+        # everything.
+        try:
+            suppl = _Chem.SDMolSupplier(str(pose_sdf), removeHs=False, sanitize=False)
+            mol = next((m for m in suppl if m is not None), None)
+            if mol is not None:
+                # Manual partial sanitization — skip kekulization/aromaticity
+                # if they fail, but make sure ring info + valences are set.
+                try:
+                    _Chem.SanitizeMol(
+                        mol,
+                        sanitizeOps=_Chem.SanitizeFlags.SANITIZE_ALL
+                        ^ _Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                        ^ _Chem.SanitizeFlags.SANITIZE_SETAROMATICITY,
+                    )
+                except Exception:
+                    pass
+                mol = _retemplate(mol)
+                lig = plf.Molecule(mol)
+                load_path = "sdf_lenient"
+        except Exception as e:
+            log.warning("SDF→ProLIF lenient load also failed (%s); trying PDB+template", e)
 
     if lig is None:
-        u_lig = mda.Universe(str(pose_pdb))
+        # Path 3: load the pose PDB with RDKit and re-template. Historically
+        # SIGSEGV-prone, but we're already in a subprocess so a crash just
+        # kills this one job and the parent recovers cleanly.
         try:
-            lig = plf.Molecule.from_mda(u_lig, force=True)
-        except TypeError:
-            lig = plf.Molecule.from_mda(u_lig)
+            mol_pdb = _Chem.MolFromPDBFile(str(pose_pdb), removeHs=False, sanitize=False)
+            if mol_pdb is not None:
+                try:
+                    _Chem.SanitizeMol(
+                        mol_pdb,
+                        sanitizeOps=_Chem.SanitizeFlags.SANITIZE_ALL
+                        ^ _Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                        ^ _Chem.SanitizeFlags.SANITIZE_SETAROMATICITY,
+                    )
+                except Exception:
+                    pass
+                mol_pdb = _retemplate(mol_pdb)
+                lig = plf.Molecule(mol_pdb)
+                load_path = "pdb_template"
+        except Exception as e:
+            log.warning("PDB+template load failed (%s); falling back to MDAnalysis", e)
+
+    if lig is None:
+        # Path 4: MDAnalysis with bond inference. No bond orders, but at least
+        # ProLIF gets atom positions + element types. Distance-based contacts
+        # (hydrophobic, vdW) work; aromatic interactions don't.
+        try:
+            u_lig = mda.Universe(str(pose_pdb))
+            try:
+                lig = plf.Molecule.from_mda(u_lig, force=True)
+            except TypeError:
+                lig = plf.Molecule.from_mda(u_lig)
+            load_path = "mda_fallback"
+        except Exception as e:
+            log.warning("All ligand-load paths failed: %s", e)
+            return []
 
     fp = plf.Fingerprint()
     fp.run_from_iterable([lig], rec, progress=False)
@@ -624,6 +677,41 @@ def _run_prolif(pose_pdb: Path, receptor_pdb: Path, *, ligand_smiles: str | None
                 })
     except Exception as e:
         log.warning("Could not extract ProLIF interactions: %s", e)
+
+    # Diagnostic when zero contacts are found — helps triage user reports of
+    # "ProLIF found no interactions". Logs the ligand atom count, residue
+    # count near the ligand, and which load path was used. This information
+    # appears in fly logs and helps distinguish: ligand atoms missing /
+    # bond-order issue / pose actually outside the pocket / receptor missing
+    # H atoms / other.
+    if not contacts:
+        try:
+            lig_n_heavy = sum(1 for a in lig.GetAtoms() if a.GetAtomicNum() > 1)
+            tmpl_n_heavy = (sum(1 for a in template_mol.GetAtoms() if a.GetAtomicNum() > 1)
+                            if template_mol is not None else None)
+            # Distance from ligand centroid to nearest receptor residue CA
+            try:
+                lig_coords = lig.GetConformer().GetPositions()
+                lig_cx = float(lig_coords[:, 0].mean())
+                lig_cy = float(lig_coords[:, 1].mean())
+                lig_cz = float(lig_coords[:, 2].mean())
+                rec_cas = u_rec.select_atoms("name CA")
+                if len(rec_cas) > 0:
+                    dx = rec_cas.positions[:, 0] - lig_cx
+                    dy = rec_cas.positions[:, 1] - lig_cy
+                    dz = rec_cas.positions[:, 2] - lig_cz
+                    dists = (dx * dx + dy * dy + dz * dz) ** 0.5
+                    min_ca_dist = float(dists.min())
+                else:
+                    min_ca_dist = -1.0
+            except Exception:
+                min_ca_dist = -2.0
+            log.warning(
+                "ProLIF zero contacts | path=%s | lig_heavy=%d tmpl_heavy=%s | nearest_CA=%.1fA",
+                load_path, lig_n_heavy, str(tmpl_n_heavy), min_ca_dist,
+            )
+        except Exception as diag_e:
+            log.warning("ProLIF zero contacts (and diagnostic failed: %s)", diag_e)
 
     return contacts
 
