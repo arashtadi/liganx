@@ -46,8 +46,14 @@ export default function NewJobPage() {
   // fan out N parallel jobs, redirect to a suite view.
   const isMultiTarget = totalTargets > 1;
   const target: CatalogTarget | undefined = isMultiTarget ? undefined : targets[0];
-  const [selectedMutations, setSelectedMutations] = useState<string[]>([]);
-  const [customMutations, setCustomMutations] = useState("");
+  // Per-target mutation state. Keys are catalog target IDs (e.g. "egfr").
+  // In single-target mode we only ever populate one key; in multi-target
+  // (selectivity) mode each selected kinase gets its own chip selection,
+  // so the user can run e.g. "EGFR + T790M, ABL + T315I, KIT WT-only"
+  // in one suite. Custom PDB doesn't get mutations — there's no curated
+  // mutation library for an arbitrary user-supplied structure.
+  const [selectedMutationsByTarget, setSelectedMutationsByTarget] = useState<Record<string, string[]>>({});
+  const [customMutationsByTarget, setCustomMutationsByTarget] = useState<Record<string, string>>({});
   const [compounds, setCompounds] = useState<CompoundRow[]>([]);
   // Run-time options. Defaults match Vina's defaults + the historical "always
   // include WT" behaviour, so existing users see no change unless they opt in.
@@ -65,28 +71,30 @@ export default function NewJobPage() {
   const autoFilledRef = useRef(false);
   const previousTargetIdRef = useRef<string | null>(null);
 
-  // When the target changes, update the structural fields. Auto-populate the
-  // compound + mutation lists on the very first pick only; clear chip-based
-  // mutations on every subsequent target change.
+  // When the SINGLE target changes (single-target mode only), update the
+  // structural fields. Auto-populate the compound + mutation lists on the
+  // very first pick only. Per-target mutation state is keyed by target id
+  // so switching back-and-forth doesn't lose chip selections.
   useEffect(() => {
     if (!target) return;
-    setPdbId(target.pdb_id);
-    setChain(target.chain);
-    setUniprot(target.uniprot);
+    if (!customMode) {
+      // Only sync structural fields from catalog when NOT in custom mode —
+      // otherwise we'd stomp the user's custom-PDB inputs every render.
+      setPdbId(target.pdb_id);
+      setChain(target.chain);
+      setUniprot(target.uniprot);
+    }
     if (!autoFilledRef.current) {
-      // First target pick — load defaults.
-      setSelectedMutations(target.mutations.slice(0, 3).map((m) => m.code));
-      setCustomMutations("");
+      // First target pick — load defaults for THIS target's id key.
+      setSelectedMutationsByTarget((prev) => ({
+        ...prev,
+        [target.id]: target.mutations.slice(0, 3).map((m) => m.code),
+      }));
       setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
       autoFilledRef.current = true;
-    } else if (previousTargetIdRef.current !== target.id) {
-      // Subsequent switch to a different target — clear chip selections so
-      // they don't ghost into the dock summary. Custom-typed mutations
-      // (user explicitly authored) and compounds are preserved.
-      setSelectedMutations([]);
     }
     previousTargetIdRef.current = target.id;
-  }, [target]);
+  }, [target, customMode]);
 
   // Strict mutation-code validation. Accepts:
   //   * Standard codes:  T790M, L858R, G12C
@@ -95,24 +103,36 @@ export default function NewJobPage() {
   // Anything else (lowercase, gibberish, special chars) gets dropped silently
   // so it never reaches the backend. Keeps the bad-input surface small.
   const MUTATION_RE = /^[A-Z][0-9]+[A-Z]([+_][A-Za-z0-9]+)*(del|ins[A-Z]+)?$/;
-  const allMutations = useMemo(() => {
-    const fromCustom = customMutations
-      .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
-      // Be permissive about case on input but normalize to uppercase
-      .map((s) => (s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1")))
-      .filter((s) => MUTATION_RE.test(s));
-    return Array.from(new Set([...selectedMutations, ...fromCustom]));
-  }, [selectedMutations, customMutations]);
 
-  // Visible warning for invalid mutation tokens — silently dropping them is
-  // worse than telling the user "we ignored XYZ because it doesn't look like
-  // a mutation code".
-  const invalidMutationTokens = useMemo(() => {
-    return customMutations
+  // Combine chip-selected + free-typed mutations for a single target id.
+  // Returns the deduplicated, validated list ready to send to the backend.
+  function mutationsForTarget(tid: string): string[] {
+    const chips = selectedMutationsByTarget[tid] ?? [];
+    const typed = (customMutationsByTarget[tid] ?? "")
+      .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+      .map((s) => s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1"))
+      .filter((s) => MUTATION_RE.test(s));
+    return Array.from(new Set([...chips, ...typed]));
+  }
+
+  // Tokens the user typed that don't match the mutation grammar — surfaced
+  // as a friendly "ignored: XYZ" warning so silent-drop doesn't leave the
+  // user wondering why their entry didn't take.
+  function invalidTokensForTarget(tid: string): string[] {
+    return (customMutationsByTarget[tid] ?? "")
       .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
       .map((s) => s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1"))
       .filter((s) => !MUTATION_RE.test(s));
-  }, [customMutations]);
+  }
+
+  // Single-target compatibility shim used by Step 4's count summary
+  // (variantCount = WT? + total chosen mutations across all currently-
+  // visible target cards).
+  const allMutations = useMemo(
+    () => targets.flatMap((t) => mutationsForTarget(t.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [targets, selectedMutationsByTarget, customMutationsByTarget],
+  );
 
   const submit = useMutation({
     mutationFn: api.createJob,
@@ -122,10 +142,15 @@ export default function NewJobPage() {
     onSuccess: (job) => navigate(`/jobs/${job.share_id || job.id}`),
   });
 
-  function toggleMutation(code: string) {
-    setSelectedMutations((prev) =>
-      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
-    );
+  function toggleMutation(targetId: string, code: string) {
+    setSelectedMutationsByTarget((prev) => {
+      const cur = prev[targetId] ?? [];
+      const next = cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code];
+      return { ...prev, [targetId]: next };
+    });
+  }
+  function setCustomMutationsFor(targetId: string, value: string) {
+    setCustomMutationsByTarget((prev) => ({ ...prev, [targetId]: value }));
   }
   function setCompound(i: number, patch: Partial<CompoundRow>) {
     setCompounds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -262,7 +287,10 @@ export default function NewJobPage() {
           pdb_id: t.pdb_id,
           chain: t.chain,
           uniprot_id: t.uniprot,
-          mutations: [] as string[],
+          // Per-target mutations from Step 2's per-target chip cards. Each
+          // catalog kinase keeps its own selection so the suite can run
+          // e.g. EGFR+T790M alongside ABL+T315I in one go.
+          mutations: mutationsForTarget(t.id),
           compounds: compoundPayload,
           exhaustiveness,
           include_wt: true,
@@ -272,6 +300,8 @@ export default function NewJobPage() {
               pdb_id: pdbId.trim().toUpperCase(),
               chain: chain || "A",
               uniprot_id: uniprot.trim() || null,
+              // Custom PDB has no per-target mutation chips (no curated
+              // library). It always docks WT-only in selectivity mode.
               mutations: [] as string[],
               compounds: compoundPayload,
               exhaustiveness,
@@ -368,7 +398,20 @@ export default function NewJobPage() {
           })}
           <button
             type="button"
-            onClick={() => setCustomMode((v) => !v)}
+            onClick={() => {
+              // When TURNING ON Custom PDB, clear the structural inputs so
+              // the user starts with empty fields instead of stale values
+              // from a previously-selected catalog target. (The catalog
+              // useEffect would have populated pdbId/chain/uniprot from
+              // whichever kinase was active.)
+              const turningOn = !customMode;
+              setCustomMode(turningOn);
+              if (turningOn) {
+                setPdbId("");
+                setChain("A");
+                setUniprot("");
+              }
+            }}
             className={`relative text-left p-3 rounded-xl border-2 border-dashed transition-all ${
               customMode
                 ? "border-delta-500 bg-delta-50 dark:bg-delta-900/30"
@@ -484,84 +527,138 @@ export default function NewJobPage() {
       </Step>
 
       {/* ── Step 2: Mutations ──────────────────────────────────────────── */}
-      {/* Selectivity (multi-target) mode skips this step entirely — testing
-          one compound against many WT kinases is the canonical kinome
-          selectivity question, and per-target mutation spread would make
-          the matrix unreadable. The "selectivity-mode" banner in Step 1
-          tells the user this is happening. */}
-      {!isMultiTarget && (
-      <Step n={2} icon={<Beaker />} title="Pick mutations" subtitle="Click any to toggle. We always dock against WT in addition to what you select.">
-        {target && target.mutations.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-3">
-            {target.mutations.map((m) => {
-              const active = selectedMutations.includes(m.code);
+      {/* Step 2 — Mutations.
+          Renders a per-target sub-card so multi-target mode can have e.g.
+          "EGFR T790M, ABL T315I, KIT WT-only" in the same selectivity run.
+          Each catalog target gets its own chip strip + custom-mutation
+          textarea, scoped to that target's id in selectedMutationsByTarget /
+          customMutationsByTarget. Custom PDB doesn't get a card — there's
+          no curated mutation library for an arbitrary structure. If the
+          user has only Custom PDB selected (zero catalog targets), the
+          step renders an info note instead of disappearing. */}
+      <Step
+        n={2}
+        icon={<Beaker />}
+        title={isMultiTarget ? "Pick mutations per target" : "Pick mutations"}
+        subtitle={
+          isMultiTarget
+            ? "Each target has its own mutation list. Skip a target's chips to keep it WT-only."
+            : "Click any to toggle. We always dock against WT in addition to what you select."
+        }
+      >
+        {targets.length === 0 ? (
+          <div className="text-sm text-slate-500 dark:text-slate-400 italic">
+            {customMode
+              ? "Custom PDB has no curated mutation library — your custom structure will dock WT-only. Pick a catalog target above to add mutations."
+              : "Pick a target above first."}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {targets.map((t) => {
+              const tid = t.id;
+              const chipSelected = selectedMutationsByTarget[tid] ?? [];
+              const customStr = customMutationsByTarget[tid] ?? "";
+              const all = mutationsForTarget(tid);
+              const invalid = invalidTokensForTarget(tid);
               return (
-                <button
-                  key={m.code}
-                  type="button"
-                  onClick={() => toggleMutation(m.code)}
-                  className={active ? "chip-active" : "chip-clickable"}
-                  title={m.significance}
+                <div
+                  key={tid}
+                  className={
+                    isMultiTarget
+                      ? "rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white/60 dark:bg-slate-800/40"
+                      : ""
+                  }
                 >
-                  {active && <Close size={11} />}
-                  <span className="font-mono">{m.code}</span>
-                  <span className="hidden sm:inline text-slate-500 font-normal">
-                    — {m.significance.split(",")[0]}
-                  </span>
-                </button>
+                  {/* Target header — only when multi (one card visually
+                      separated per target). Single-target mode gets the
+                      original headerless layout for visual continuity. */}
+                  {isMultiTarget && (
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
+                        {t.id.toUpperCase()}
+                      </span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{t.name}</span>
+                    </div>
+                  )}
+                  {t.mutations.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {t.mutations.map((m) => {
+                        const active = chipSelected.includes(m.code);
+                        return (
+                          <button
+                            key={m.code}
+                            type="button"
+                            onClick={() => toggleMutation(tid, m.code)}
+                            className={active ? "chip-active" : "chip-clickable"}
+                            title={m.significance}
+                          >
+                            {active && <Close size={11} />}
+                            <span className="font-mono">{m.code}</span>
+                            <span className="hidden sm:inline text-slate-500 font-normal">
+                              — {m.significance.split(",")[0]}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div>
+                    <label className="label">Custom mutations (comma-separated)</label>
+                    <AutocompleteInput
+                      value={customStr}
+                      onChange={(v) => setCustomMutationsFor(tid, v)}
+                      mode="tokens"
+                      fetchSuggestions={async (q) => {
+                        const r = await api.suggestMutations(q, t.id.toUpperCase());
+                        return r.suggestions;
+                      }}
+                      getValue={(item) => item.code}
+                      renderItem={(item) => (
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
+                          <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+                        </div>
+                      )}
+                      placeholder="e.g. T790M, L858R — start typing for suggestions"
+                      inputClassName="input font-mono"
+                      openOnFocus
+                      minChars={0}
+                    />
+                  </div>
+                  <SummaryRow>
+                    <span>
+                      {all.length === 0
+                        ? `Will dock WT only.`
+                        : `Will dock WT + ${all.length} mutant${all.length === 1 ? "" : "s"}: `}
+                    </span>
+                    {all.length > 0 && (
+                      <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
+                    )}
+                  </SummaryRow>
+                  {invalid.length > 0 && (
+                    <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-md px-3 py-2">
+                      <span className="font-semibold">Ignored:</span>{" "}
+                      <span className="font-mono">{invalid.join(", ")}</span>
+                      {" — "}
+                      <span className="text-amber-600 dark:text-amber-400/80">
+                        expected codes like <code className="font-mono">T790M</code>,{" "}
+                        <code className="font-mono">G12C</code>, or <code className="font-mono">T790M+C797S</code>.
+                      </span>
+                    </div>
+                  )}
+                </div>
               );
             })}
-          </div>
-        )}
-        <div>
-          <label className="label">Custom mutations (comma-separated)</label>
-          <AutocompleteInput
-            value={customMutations}
-            onChange={setCustomMutations}
-            mode="tokens"
-            fetchSuggestions={async (q) => {
-              // Pass the selected target's gene (uppercased) so on-target
-              // mutations rank first. For custom PDBs we just suggest by code.
-              const gene = target?.id?.toUpperCase() ?? null;
-              const r = await api.suggestMutations(q, gene);
-              return r.suggestions;
-            }}
-            getValue={(item) => item.code}
-            renderItem={(item) => (
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
-                <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+            {customMode && pdbId.trim().length > 0 && isMultiTarget && (
+              <div className="text-xs text-slate-500 dark:text-slate-400 italic px-1">
+                Custom PDB <span className="font-mono">{pdbId.trim().toUpperCase()}</span> will
+                dock WT-only — no curated mutation library available.
               </div>
             )}
-            placeholder="e.g. T790M, L858R — start typing for suggestions"
-            inputClassName="input font-mono"
-            openOnFocus
-            minChars={0}
-          />
-        </div>
-        <SummaryRow>
-          <span>{allMutations.length === 0 ? "Will dock WT only." : `Will dock WT + ${allMutations.length} mutant${allMutations.length === 1 ? "" : "s"}: `}</span>
-          {allMutations.length > 0 && (
-            <span className="font-mono text-ink dark:text-slate-100">{allMutations.join(", ")}</span>
-          )}
-        </SummaryRow>
-
-        {/* Surface invalid mutation tokens we silently dropped — opaque
-            silent-drop is worse than a friendly heads-up. */}
-        {invalidMutationTokens.length > 0 && (
-          <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-md px-3 py-2">
-            <span className="font-semibold">Ignored:</span>{" "}
-            <span className="font-mono">{invalidMutationTokens.join(", ")}</span>
-            {" — "}
-            <span className="text-amber-600 dark:text-amber-400/80">
-              expected codes like <code className="font-mono">T790M</code>,{" "}
-              <code className="font-mono">G12C</code>, or <code className="font-mono">T790M+C797S</code>.
-            </span>
           </div>
         )}
       </Step>
-      )}
 
       {/* ── Step 3: Compounds ──────────────────────────────────────────── */}
       <Step
