@@ -55,9 +55,10 @@ def smina_rescore(
 
     Args:
         receptor_pdbqt: Prepared receptor PDBQT used in the original Vina dock.
-        pose_pdbqt: The docked pose PDBQT (single mode, output of Vina). If a
-                    multi-MODEL Vina output is passed in, smina rescores the
-                    first model only — fine for our "best mode" flow.
+        pose_pdbqt: The docked pose PDBQT. Vina outputs a multi-MODEL file
+                    (modes 1-9 concatenated); smina --score_only rejects this
+                    with "Unexpected multi-MODEL input", so we extract just
+                    the best mode (MODEL 1) into a temp file before calling.
         scoring: smina scoring function name. "vinardo" is the default and our
                  recommended choice; "vina" / "ad4" are supported for
                  cross-checks.
@@ -73,10 +74,21 @@ def smina_rescore(
     if not receptor_pdbqt.exists() or not pose_pdbqt.exists():
         return None
 
+    # Extract just MODEL 1 (best-scoring pose) into a single-mode PDBQT so
+    # smina is happy. Cache the extracted file next to the original — cheap
+    # and gives us idempotency on retries within the same job dir.
+    best_only = pose_pdbqt.with_suffix(".best.pdbqt")
+    if not best_only.exists() or best_only.stat().st_size == 0:
+        try:
+            _extract_best_mode(pose_pdbqt, best_only)
+        except Exception as e:
+            log.info("smina rescore: best-mode extraction failed (%s)", e)
+            return None
+
     cmd = [
         "smina",
         "--receptor", str(receptor_pdbqt),
-        "--ligand", str(pose_pdbqt),
+        "--ligand", str(best_only),
         "--score_only",
         "--scoring", scoring,
     ]
@@ -106,3 +118,40 @@ def smina_rescore(
         return float(m.group(1))
     except ValueError:
         return None
+
+
+def _extract_best_mode(vina_pdbqt: Path, out_pdbqt: Path) -> None:
+    """Strip a Vina multi-MODEL PDBQT down to MODEL 1 (best-scoring pose).
+
+    Vina output looks like::
+
+        MODEL 1
+        ...atoms...
+        ENDMDL
+        MODEL 2
+        ...
+
+    Smina --score_only chokes on multi-MODEL input, so we keep just the first
+    model's atom block (no MODEL/ENDMDL wrappers, since smina is happy with
+    bare atoms). Mirrors validate.py's same helper.
+    """
+    out_lines: list[str] = []
+    in_first = False
+    with vina_pdbqt.open() as fh:
+        for line in fh:
+            if line.startswith("MODEL"):
+                if in_first:
+                    break
+                in_first = True
+                continue
+            if line.startswith("ENDMDL"):
+                if in_first:
+                    break
+                continue
+            if in_first:
+                out_lines.append(line)
+    if not out_lines:
+        # No MODEL header — assume the file is already a single pose.
+        out_pdbqt.write_text(vina_pdbqt.read_text())
+    else:
+        out_pdbqt.write_text("".join(out_lines))
