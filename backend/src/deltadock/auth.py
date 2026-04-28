@@ -123,14 +123,43 @@ def _decode(token: str) -> CurrentUser:
     if not sub:
         raise HTTPException(status_code=401, detail="Token missing subject")
     email = payload.get("email") or ""
-    # Supabase encodes verification status in `user_metadata` and/or
-    # `email_confirmed_at`; the JWT carries the latter as a top-level claim
-    # in newer projects.
-    confirmed_at = payload.get("email_confirmed_at") or payload.get("confirmed_at")
+
+    # Email-verified determination — has to handle BOTH password-flow and
+    # OAuth-flow users:
+    #
+    # 1. Password flow: user clicks the email-confirmation link, Supabase
+    #    sets `email_confirmed_at` on the auth.users row. Some Supabase
+    #    projects propagate this to the JWT as a top-level claim, others
+    #    don't — depends on JWT template settings.
+    #
+    # 2. OAuth flow (Google, GitHub, etc.): the provider has already
+    #    verified the email at the source, so Supabase auto-sets the
+    #    confirmed timestamp at signup. The JWT's `app_metadata.provider`
+    #    field will be "google"/"github"/etc instead of "email", and
+    #    `user_metadata.email_verified` is set to true.
+    #
+    # We treat the user as verified if ANY of these signals are true.
+    # Falling back to "no" only when the user used password signup AND
+    # hasn't clicked the link yet — exactly the case where the email-
+    # verification gate is meaningful.
+    app_md = payload.get("app_metadata") or {}
+    user_md = payload.get("user_metadata") or {}
+    provider = app_md.get("provider") or ""
+    providers = app_md.get("providers") or []
+    has_oauth_provider = (
+        (provider and provider != "email")
+        or any(p and p != "email" for p in providers)
+    )
+    email_verified = bool(
+        payload.get("email_confirmed_at")
+        or payload.get("confirmed_at")
+        or user_md.get("email_verified") is True
+        or has_oauth_provider
+    )
     return CurrentUser(
         id=str(sub),
         email=email,
-        email_verified=bool(confirmed_at),
+        email_verified=email_verified,
         raw=payload,
     )
 
