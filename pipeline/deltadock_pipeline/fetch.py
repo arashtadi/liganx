@@ -56,9 +56,30 @@ def fetch_pdb(pdb_id: str, cache_dir: Path | str) -> Path:
 
     out = cache_dir / f"{pdb_id}.pdb"
 
-    if out.exists() and out.stat().st_size > 0:
+    # Cache validity check: file must (a) exist, (b) be non-empty, (c) actually
+    # contain ATOM records on at least one chain. Without this, a previous
+    # 404 / HTTP error / partial download saved as "1T0L.pdb" silently sticks
+    # around forever and breaks every job for that PDB. Seen in prod for 1T0L.
+    def _looks_like_valid_pdb(p: Path) -> bool:
+        try:
+            with p.open() as fh:
+                for line in fh:
+                    if line.startswith("ATOM"):
+                        return True
+        except OSError:
+            pass
+        return False
+
+    if out.exists() and out.stat().st_size > 0 and _looks_like_valid_pdb(out):
         log.debug("PDB %s already cached at %s", pdb_id, out)
         return out
+
+    if out.exists():
+        log.warning("Cached %s exists but is invalid (no ATOM records) — refetching", out.name)
+        try:
+            out.unlink()
+        except OSError:
+            pass
 
     url = RCSB_URL.format(pdb_id=pdb_id)
     log.info("Fetching %s from %s", pdb_id, url)
@@ -67,5 +88,17 @@ def fetch_pdb(pdb_id: str, cache_dir: Path | str) -> Path:
         raise FetchError(f"RCSB returned {resp.status_code} for {pdb_id}: {resp.text[:200]}")
 
     out.write_bytes(resp.content)
+
+    # Validate what we just wrote — RCSB occasionally returns a 200 with an
+    # error body during maintenance windows.
+    if not _looks_like_valid_pdb(out):
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        raise FetchError(
+            f"Downloaded {pdb_id} from RCSB but content has no ATOM records "
+            f"(first 200 chars: {resp.content[:200]!r}). Cache cleared."
+        )
     log.info("Cached %s (%d bytes)", out, len(resp.content))
     return out

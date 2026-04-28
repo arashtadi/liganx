@@ -209,14 +209,18 @@ def strip_hetatm(pdb_path: Path | str, out_path: Path | str, *, chain: str | Non
 
 
 def prepare_receptor(pdb_path: Path | str, out_pdbqt: Path | str, *, chain: str | None = None) -> Path:
-    """Prepare a receptor PDBQT from a PDB file.
+    """Convert a cleaned PDB to a receptor PDBQT via Open Babel.
 
-    Pipeline:
-      1. PDBFixer: strip heterogens, add missing atoms (no hydrogens — obabel does those).
-      2. Open Babel: convert to receptor PDBQT (`-xr` flag = rigid receptor).
+    Caller's contract: pdb_path is ALREADY cleaned (HETATMs stripped, single
+    chain, no nonstandard residues). Both common callers (runner.py and
+    mutate.py) pass output of fix_pdb directly. Calling fix_pdb a second
+    time here was a bug — it would (a) re-strip non-A chains using a chain
+    ID that PDBFixer may have rewritten ("No ATOM lines kept" for IDH1)
+    and (b) try to re-parse PDBFixer's output which sometimes has empty
+    coordinate fields when an atom couldn't be placed (4WO5 ValueError).
 
-    Open Babel handles raw PDBs robustly. Meeko's receptor prep is finicky on
-    real-world structures; we use it for ligand prep where it shines.
+    Now we just hand the file straight to obabel which is robust on
+    real-world PDBs.
     """
     pdb_path = Path(pdb_path)
     out_pdbqt = Path(out_pdbqt)
@@ -225,10 +229,7 @@ def prepare_receptor(pdb_path: Path | str, out_pdbqt: Path | str, *, chain: str 
     if not shutil.which("obabel"):
         raise PrepError("obabel not on PATH. Install Open Babel: brew install open-babel")
 
-    fixed = out_pdbqt.with_suffix(".fixed.pdb")
-    fix_pdb(pdb_path, fixed, chain=chain)
-
-    cmd = ["obabel", str(fixed), "-O", str(out_pdbqt), "-xr", "-p", "7.4"]
+    cmd = ["obabel", str(pdb_path), "-O", str(out_pdbqt), "-xr", "-p", "7.4"]
     log.info("Preparing receptor: %s", " ".join(cmd))
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
