@@ -114,6 +114,44 @@ def create_job(
     # case-preserved for USR_ uploads). Re-uppercasing here would corrupt
     # USR_ tokens since the lookup-router stores files with lowercase hex —
     # any extra .upper() breaks the runner's file lookup.
+
+    # Eager SMILES validation. Catches typos and garbage at submit time so the
+    # user gets immediate field-level feedback instead of a 30-second wait
+    # followed by a cryptic "ligand_prep_failed" cell. We use the pipeline's
+    # resilient parser (the same one the runner uses) so anything that would
+    # actually dock gets accepted, and anything truly broken gets rejected.
+    invalid: list[dict] = []
+    try:
+        from deltadock_pipeline.prep import _parse_smiles_resilient
+        for i, c in enumerate(payload.compounds):
+            smi = (c.smiles or "").strip()
+            if not smi:
+                invalid.append({"index": i, "name": c.name, "reason": "empty SMILES"})
+                continue
+            if len(smi) > 1000:
+                invalid.append({"index": i, "name": c.name, "reason": f"SMILES too long ({len(smi)} chars; max 1000)"})
+                continue
+            try:
+                mol = _parse_smiles_resilient(smi)
+            except Exception as e:
+                invalid.append({"index": i, "name": c.name, "reason": f"parse error: {type(e).__name__}"})
+                continue
+            if mol is None:
+                invalid.append({"index": i, "name": c.name, "reason": "RDKit could not parse SMILES (not a valid molecule)"})
+    except ImportError:
+        # If the pipeline isn't importable in this environment (dev without
+        # bio deps), skip eager validation so we don't fail-closed in dev.
+        pass
+
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"{len(invalid)} of {len(payload.compounds)} compound SMILES failed validation",
+                "invalid_compounds": invalid,
+            },
+        )
+
     job = Job(
         pdb_id=payload.pdb_id,
         chain=payload.chain,
