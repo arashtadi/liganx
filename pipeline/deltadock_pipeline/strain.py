@@ -80,9 +80,14 @@ def compute_strain(
     # AddHs(addCoords=True) is a no-op when they're present so this is safe.
     pose_mol = Chem.AddHs(pose_mol, addCoords=True)
 
-    # 2. MMFF94s energy at docked coords — no minimization, just energy at
-    # the geometry Vina handed us.
-    e_pose = _mmff_energy(pose_mol, conf_id=0)
+    # 2. MMFF94s energy at docked coords. Critical detail: AddHs places the
+    # new H atoms based on simple geometric heuristics, which routinely
+    # generates H-H or H-heavy clashes that swamp the energy with junk
+    # (we measured ~260 kcal/mol on a clean Gefitinib pose this way).
+    # Mitigation: do a brief CONSTRAINED minimization where heavy atoms
+    # are pinned (so the docked geometry is preserved) and only Hs relax.
+    # This is the standard pre-strain-eval move in CSD-style work.
+    e_pose = _mmff_energy_constrained(pose_mol, conf_id=0)
     if e_pose is None:
         return None
 
@@ -143,6 +148,33 @@ def _mmff_energy(mol, conf_id: int = 0, minimize: bool = False) -> float | None:
             return None
         if minimize:
             ff.Minimize(maxIts=200)
+        return ff.CalcEnergy()
+    except Exception:
+        return None
+
+
+def _mmff_energy_constrained(mol, conf_id: int = 0) -> float | None:
+    """MMFF94s energy with heavy-atom positions PINNED — only hydrogens
+    relax. Used for the docked-pose energy so that artifacts from AddHs'
+    heuristic H-placement don't swamp the strain measurement.
+
+    The heavy-atom skeleton stays exactly where Vina put it; we just clean
+    up the hydrogens, then read the energy. This is the standard CSD-style
+    pre-strain pass.
+    """
+    from rdkit.Chem import AllChem
+    try:
+        props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
+        if props is None:
+            return None
+        ff = AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id)
+        if ff is None:
+            return None
+        # Pin every heavy atom (Z != 1). Hs stay free.
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 1:
+                ff.AddFixedPoint(atom.GetIdx())
+        ff.Minimize(maxIts=200)
         return ff.CalcEnergy()
     except Exception:
         return None
