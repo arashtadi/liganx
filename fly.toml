@@ -47,18 +47,24 @@ primary_region = "iad"
   LOG_LEVEL = "info"
   CORS_ORIGINS = "https://liganx.com,https://www.liganx.com"
 
-# Resources — shared CPU is plenty for the orchestration layer; the heavy
-# lifting (docking, ProLIF) happens off-machine on the Pod GPU. Bumping RAM
-# to 1024 MB so RDKit + ProLIF subprocess have headroom during validation.
+# Resources — performance-2x because the receptor-prep step (PDBFixer +
+# OpenMM) is single-threaded CPU-heavy and takes 2-3 min on shared-cpu-1x for
+# a typical kinase domain (~330 residues). On performance-2x the same prep
+# completes in ~20-40s. Docking itself dispatches to the GPU Pod so machine
+# CPU still doesn't bottleneck the matrix throughput. ProLIF/PoseBusters
+# subprocesses also run more reliably with 4 GB RAM headroom.
+#
+# Cost ≈ $30/mo. If you outgrow this, bump to performance-4x (4 vCPU/8 GB).
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
-  cpus = 1
+  size = "performance-2x"
+  memory = "4gb"
+  cpus = 2
 
-# Optional persistent volume for the local pose cache fallback. R2 is the
-# primary store; this volume only matters if R2 creds are missing or fail.
-# Comment out the [mounts] block if you don't want a volume (poses then live
-# on ephemeral disk and disappear on restart).
+# Persistent volume for the pose store (R2 fallback). Receptor / FoldX cache
+# lives on ephemeral disk — it survives within a deploy lifetime (which is
+# what matters for the second user hitting the same target) and rebuilds on
+# the next deploy. Pose files are durable here because their URIs are stored
+# in the DB and have to survive deploys.
 [[mounts]]
   source = "liganx_pose_cache"
   destination = "/var/lib/liganx/poses"

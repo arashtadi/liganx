@@ -88,6 +88,17 @@ RUN pip install --no-cache-dir -e /app/backend -e /app/pipeline
 RUN mkdir -p /var/lib/liganx/poses
 ENV POSE_CACHE_DIR=/var/lib/liganx/poses
 
+# Receptor cache lives at ~/.deltadock on ephemeral disk. PDBFixer outputs
+# survive within a deploy lifetime (so the second user on the same target
+# gets an instant prep), but rebuild after deploys. To make first-hit
+# latency fast for catalog targets, we pre-bake the cleaned PDBs and
+# receptor PDBQTs at image-build time from backend/precache/ — committed
+# to the repo because PDBFixer alone takes 30-60s per target on the build
+# machine and 10x that on cold prod machines.
+RUN mkdir -p /root/.deltadock/pdb /root/.deltadock/receptors /root/.deltadock/foldx-cache
+COPY backend/precache/pdb/        /root/.deltadock/pdb/
+COPY backend/precache/receptors/  /root/.deltadock/receptors/
+
 EXPOSE 8000
 
 # Healthcheck — Fly.io reads this for rolling deploys + restart triggers.
