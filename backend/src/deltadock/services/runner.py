@@ -444,8 +444,39 @@ def _run_real(session: Session, job: Job) -> None:
                 variant_extra[mut] = f"mutant_verify_failed: {reason}"
             continue
         if not foldx_on:
-            receptor_for_variant[mut] = wt_receptor
-            variant_extra[mut] = "no_foldx_dock_against_wt"
+            # NEW: PDBFixer-based mutation building. We can't use FoldX in prod
+            # (license-restricted Linux binary not vendored), but PDBFixer's
+            # applyMutations() does a perfectly serviceable side-chain swap
+            # using its built-in rotamer library. We lose the ΔΔG number but
+            # GAIN correct mutant geometry — a much better deal than silently
+            # docking against WT and pretending it's the mutant.
+            try:
+                from deltadock_pipeline.mutate import build_mutant_pdbfixer, MutateError
+                mut_pdb_out = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
+                mut_receptor_out = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
+                if not mut_receptor_out.exists() or mut_receptor_out.stat().st_size == 0:
+                    log.info("PDBFixer mutation: %s on %s chain %s", mut, pdb_id, chain)
+                    build_mutant_pdbfixer(
+                        pdb_path=cleaned_pdb,
+                        chain=chain,
+                        mutation_code=mut,
+                        out_path=mut_pdb_out,
+                    )
+                    prepare_receptor(mut_pdb_out, mut_receptor_out, chain=chain)
+                # Verify the resulting receptor actually has the substitution
+                ok, reason = verify_mutation_applied(mut_receptor_out, chain, mut)
+                if ok:
+                    receptor_for_variant[mut] = mut_receptor_out
+                    receptor_pdb_for_variant[mut] = mut_pdb_out
+                    variant_extra[mut] = "pdbfixer_mutated"
+                else:
+                    log.warning("PDBFixer mutation %s verification failed: %s", mut, reason)
+                    receptor_for_variant[mut] = None  # type: ignore[assignment]
+                    variant_extra[mut] = f"mutant_verify_failed: {reason}"
+            except Exception as me:
+                log.warning("PDBFixer mutation %s failed: %s — docking against WT", mut, me)
+                receptor_for_variant[mut] = wt_receptor
+                variant_extra[mut] = f"mutant_build_failed:{type(me).__name__}:{str(me)[:60]}"
             continue
         try:
             log.info("FoldX BuildModel: %s on %s chain %s", mut, pdb_id, chain)
