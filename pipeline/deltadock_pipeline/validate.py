@@ -35,11 +35,20 @@ class Validation:
     # ProLIF can fail or return empty without taking down the whole validation.
     # We track that separately so PoseBusters results still show through.
     prolif_status: str = "ok"             # "ok" | "empty" | "err:<reason>"
+    # Conformational strain of the docked ligand (MMFF94s pose energy minus
+    # MMFF94s energy of the lowest-energy ETKDG conformer of the same SMILES).
+    # Empty dict when not computed (e.g. SDF missing) or when RDKit failed.
+    # Shape: {pose_kcal, relaxed_kcal, strain_kcal, verdict in {ok,mild,high}}
+    strain: dict = field(default_factory=dict)
 
     def to_extra_string(self) -> str:
         """Pack the validation into the existing `extra` text field on DockingResult.
         Phase B will give validation its own database columns."""
         parts = [f"confidence={self.confidence}"]
+        if self.strain:
+            # Compact: `strain=ok:1.2` / `strain=mild:5.4` / `strain=high:9.1`.
+            # The verdict drives the matrix chip color; the kcal goes in the tooltip.
+            parts.append(f"strain={self.strain['verdict']}:{self.strain['strain_kcal']}")
         if self.bust_summary:
             parts.append(f"posebusters={self.bust_summary}")
         if self.interactions:
@@ -171,6 +180,20 @@ def validate_pose(
     except Exception as e:
         log.warning("ProLIF failed: %s", e)
         v.prolif_status = f"err:{str(e)[:40]}"
+
+    # Conformational strain: compares the docked geometry's MMFF energy to
+    # the relaxed conformer ensemble for the same SMILES. Cheap (~1-3s) and
+    # filters Vina poses where the ligand is bent into an unphysical shape
+    # to fit a pocket. Only runs when we have the SMILES — without it there's
+    # no template to generate the relaxed reference from.
+    if ligand_smiles:
+        try:
+            from .strain import compute_strain
+            s = compute_strain(pose_sdf, ligand_smiles)
+            if s:
+                v.strain = s
+        except Exception as e:
+            log.warning("Strain calc failed: %s", e)
 
     v.sentence = _make_sentence(v)
     return v

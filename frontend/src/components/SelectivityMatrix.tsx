@@ -459,20 +459,34 @@ function ScoreCell({
           {delta > 0 ? "+" : ""}{delta.toFixed(2)}
         </div>
       )}
-      {ext.confidence && ext.confidence !== "unknown" && (
-        <div className="mt-1 flex justify-end">
-          {/* Suppress the rich popover in the matrix — it appears in every cell
-              and turns into visual noise at scale. Native title attr still
-              gives an at-a-glance hover hint, and the full breakdown shows up
-              in the Pose detail panel when the user clicks a row. */}
-          <ConfidenceRibbon
-            confidence={ext.confidence}
-            detail={ext.poseBusters}
-            size="sm"
-            tooltip={false}
-          />
+      {(ext.confidence && ext.confidence !== "unknown") || ext.strain ? (
+        <div className="mt-1 flex justify-end items-center gap-1">
+          {/* Strain warning chip — only visible for mild/high to keep the
+              matrix quiet; "ok" strain is the common case and would just be
+              visual noise. Tooltip shows the kcal so users can drill in. */}
+          {ext.strain && ext.strain.verdict !== "ok" && (
+            <span
+              title={`Conformational strain: ${ext.strain.kcal.toFixed(1)} kcal/mol (${ext.strain.verdict}). Higher = pose's geometry is energetically unfavorable; >7 kcal/mol often means a Vina junk pose.`}
+              className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[8px] font-bold leading-none ${
+                ext.strain.verdict === "high"
+                  ? "bg-rose-500 text-white"
+                  : "bg-amber-400 text-amber-950"
+              }`}
+              aria-label={`Strain ${ext.strain.verdict}`}
+            >
+              !
+            </span>
+          )}
+          {ext.confidence && ext.confidence !== "unknown" && (
+            <ConfidenceRibbon
+              confidence={ext.confidence}
+              detail={ext.poseBusters}
+              size="sm"
+              tooltip={false}
+            />
+          )}
         </div>
-      )}
+      ) : null}
     </td>
   );
 }

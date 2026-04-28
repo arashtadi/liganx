@@ -34,6 +34,12 @@ export interface ParsedExtra {
    *    (rare — usually means the box is malformed or the receptor is broken).
    *  - `other`: anything else the runner explicitly recorded as a failure. */
   failure?: { kind: "ligand_prep" | "docking" | "other"; reason: string };
+  /** Conformational strain of the docked pose. Backend writes
+   *  `strain=<verdict>:<kcal>` where verdict ∈ {ok, mild, high} and kcal is
+   *  the MMFF94s energy difference between the docked geometry and the
+   *  lowest relaxed conformer of the same SMILES. >7 kcal/mol typically
+   *  flags a Vina junk pose where the ligand is bent unphysically to fit. */
+  strain?: { verdict: "ok" | "mild" | "high"; kcal: number };
   raw: string;
 }
 
@@ -95,6 +101,15 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
       case "engine":
         out.engine = v;
         break;
+      case "strain": {
+        // Format: `<verdict>:<kcal>` — e.g. "ok:1.2", "mild:5.4", "high:9.1"
+        const [verdict, kStr] = v.split(":");
+        const k = parseFloat(kStr);
+        if ((verdict === "ok" || verdict === "mild" || verdict === "high") && Number.isFinite(k)) {
+          out.strain = { verdict, kcal: k };
+        }
+        break;
+      }
       // ignore err, validate_err, foldx_failed prefixes etc.
     }
   }

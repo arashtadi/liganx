@@ -126,6 +126,26 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
           />
         </div>
 
+        {/* Pose-quality row: strain energy verdict. Hidden when the backend
+            didn't compute strain (e.g. SDF unavailable). The kcal value goes
+            in the Metric subtitle so the user sees magnitude, not just verdict. */}
+        {ext.strain && (
+          <div className="grid grid-cols-2 gap-3">
+            <Metric
+              label="Pose strain"
+              value={`${ext.strain.kcal.toFixed(1)} kcal/mol`}
+              tone={ext.strain.verdict === "ok" ? "good" : ext.strain.verdict === "high" ? "bad" : undefined}
+              subtitle={
+                ext.strain.verdict === "ok"
+                  ? "Low strain · pose geometry is energetically reasonable"
+                  : ext.strain.verdict === "mild"
+                  ? "Mild strain · plausible but worth a second look"
+                  : "High strain · likely a Vina junk pose; reduce confidence"
+              }
+            />
+          </div>
+        )}
+
         {/* Drug-likeness card — RDKit descriptors (MW/LogP/QED, Lipinski/Veber,
             PAINS) so the user can triage compound chemistry without leaving
             the pose drilldown. */}
@@ -273,7 +293,14 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "bad" }) {
+function Metric({ label, value, tone, subtitle }: {
+  label: string;
+  value: string;
+  tone?: "good" | "bad";
+  /** Optional secondary line shown under the value, e.g. context for what the
+   *  number means. Free-form short text — not styled by tone. */
+  subtitle?: string;
+}) {
   const toneCls =
     tone === "good" ? "text-emerald-700 bg-emerald-50 ring-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:ring-emerald-800/40"
     : tone === "bad" ? "text-rose-700 bg-rose-50 ring-rose-200 dark:text-rose-300 dark:bg-rose-900/20 dark:ring-rose-800/40"
@@ -282,6 +309,9 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
     <div className={`rounded-lg ring-1 ring-inset px-3 py-2 ${toneCls}`}>
       <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 dark:opacity-60">{label}</div>
       <div className="text-lg font-bold tabular-nums mt-0.5">{value}</div>
+      {subtitle && (
+        <div className="text-[10px] mt-0.5 opacity-75 leading-snug">{subtitle}</div>
+      )}
     </div>
   );
 }
