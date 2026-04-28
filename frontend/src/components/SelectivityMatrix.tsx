@@ -466,7 +466,7 @@ function ScoreCell({
               visual noise. Tooltip shows the kcal so users can drill in. */}
           {ext.strain && ext.strain.verdict !== "ok" && (
             <span
-              title={`Conformational strain: ${ext.strain.kcal.toFixed(1)} kcal/mol (${ext.strain.verdict}). Higher = pose's geometry is energetically unfavorable; >7 kcal/mol often means a Vina junk pose.`}
+              title={`Pose strain: ${ext.strain.kcal.toFixed(2)} Å RMSD to nearest relaxed conformer (${ext.strain.verdict}). >2 Å often means a Vina junk pose where the ligand is bent into an unphysical shape.`}
               className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[8px] font-bold leading-none ${
                 ext.strain.verdict === "high"
                   ? "bg-rose-500 text-white"

@@ -1,27 +1,30 @@
-"""Conformational strain energy of a docked pose.
+"""Conformational strain of a docked pose, via RMSD to nearest relaxed conformer.
 
-Vina (and most fast docking engines) optimize the protein-ligand interaction
-energy without checking whether the ligand itself is sitting in a sane
-conformation. The result is occasional "high-affinity" poses where the
-ligand is bent into a high-strain shape just to fit a pocket — a textbook
-false positive.
+WHY THIS APPROACH:
 
-This module quantifies that strain:
+Vina (and most fast docking engines) optimize protein-ligand interaction energy
+without checking whether the ligand itself is sitting in a sane conformation.
+Result: occasional "high-affinity" poses where the ligand is bent into a
+high-strain shape just to fit a pocket — a textbook false positive.
 
-    strain (kcal/mol) = E_MMFF(docked pose) - min E_MMFF(relaxed conformers)
+We tried MMFF94s absolute energy (E_pose - E_relaxed) first. That methodology
+is theoretically sound but extremely brittle in practice — AddHs heuristics,
+missing force-field parameters, and clash artifacts routinely produced ΔE
+values of 200-300 kcal/mol on perfectly clean poses, making the verdict
+useless.
 
-Where the relaxed reference comes from generating N conformers from the
-input SMILES via ETKDG, MMFF94s-minimizing each, and taking the lowest
-energy. A reasonable rule of thumb (CSD torsion-library based work):
+Switched to a geometry-only metric: heavy-atom RMSD between the docked pose
+and the closest of N relaxed conformers generated from the input SMILES via
+ETKDG + MMFF94s minimization. Bostrom (2007, J. Med. Chem.) showed that
+crystal-bound ligand conformations are typically within ~1 Å of a low-energy
+solution conformer, so:
 
-    < 3 kcal/mol  → OK            (likely a real binding mode)
-    3-7 kcal/mol  → mild strain   (pose plausible but worth a second look)
-    > 7 kcal/mol  → high strain   (likely a Vina junk pose)
+    < 1.0 Å  → OK            (pose matches a relaxed conformer well)
+    1.0-2.0  → mild strain   (geometrically plausible but not common)
+    > 2.0 Å  → high strain   (likely a Vina junk pose)
 
-We deliberately use SDF (which carries bond orders) rather than PDB to
-avoid the AssignBondOrdersFromTemplate path that SIGSEGVs RDKit on certain
-ligands (the same crash that limits our ProLIF re-templating). The SDF
-comes from validate.py's existing PDBQT→SDF conversion, so this is free.
+This metric is robust to force-field parameter coverage and doesn't blow up
+on H-placement artifacts. Costs ~1-3s per pose for the conformer search.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ def compute_strain(
     ligand_smiles: str,
     n_conformers: int = 20,
 ) -> dict[str, Any] | None:
-    """Compute strain energy for a docked pose.
+    """Compute strain (RMSD to nearest relaxed conformer) for a docked pose.
 
     Args:
         pose_sdf: Path to the pose SDF (output of obabel'ing the best mode of
@@ -46,14 +49,12 @@ def compute_strain(
                   pipeline preserves.
         ligand_smiles: Original input SMILES — used to generate the relaxed
                   reference conformer ensemble.
-        n_conformers: How many ETKDG conformers to generate for the reference.
-                  20 is a reasonable trade-off (~1-2s per ligand) between
-                  coverage and speed.
+        n_conformers: How many ETKDG conformers to generate. 20 is enough
+                  coverage for drug-sized molecules without exploding wall-time.
 
     Returns:
-        dict {pose_kcal, relaxed_kcal, strain_kcal, verdict} or None if
-        any RDKit step fails. Caller renders a chip from `verdict` and a
-        tooltip from the kcal numbers.
+        dict {rmsd, verdict, n_conformers_compared} or None on failure.
+        Verdict drives the matrix chip color; rmsd goes in the tooltip.
     """
     try:
         from rdkit import Chem
@@ -66,9 +67,10 @@ def compute_strain(
     if not pose_sdf.exists() or pose_sdf.stat().st_size == 0:
         return None
 
-    # 1. Load the docked pose with bond orders preserved.
+    # 1. Load the docked pose (heavy atoms only — Hs aren't reliable here
+    # and we're measuring heavy-atom geometry).
     try:
-        suppl = Chem.SDMolSupplier(str(pose_sdf), removeHs=False, sanitize=True)
+        suppl = Chem.SDMolSupplier(str(pose_sdf), removeHs=True, sanitize=True)
         pose_mol = next((m for m in suppl if m is not None), None)
     except Exception as e:
         log.info("Strain: SDF load failed (%s)", e)
@@ -76,29 +78,14 @@ def compute_strain(
     if pose_mol is None:
         return None
 
-    # MMFF needs hydrogens; meeko's SDF often already has them, but
-    # AddHs(addCoords=True) is a no-op when they're present so this is safe.
-    pose_mol = Chem.AddHs(pose_mol, addCoords=True)
-
-    # 2. MMFF94s energy at docked coords. Critical detail: AddHs places the
-    # new H atoms based on simple geometric heuristics, which routinely
-    # generates H-H or H-heavy clashes that swamp the energy with junk
-    # (we measured ~260 kcal/mol on a clean Gefitinib pose this way).
-    # Mitigation: do a brief CONSTRAINED minimization where heavy atoms
-    # are pinned (so the docked geometry is preserved) and only Hs relax.
-    # This is the standard pre-strain-eval move in CSD-style work.
-    e_pose = _mmff_energy_constrained(pose_mol, conf_id=0)
-    if e_pose is None:
-        return None
-
-    # 3. Reference relaxed energy: ETKDG conformers from SMILES, MMFF-minimized.
+    # 2. Generate relaxed conformer ensemble from SMILES.
     template = Chem.MolFromSmiles(ligand_smiles)
     if template is None:
         return None
-    template = Chem.AddHs(template)
+    template_h = Chem.AddHs(template)
     try:
-        embed_status = AllChem.EmbedMultipleConfs(
-            template,
+        ids = AllChem.EmbedMultipleConfs(
+            template_h,
             numConfs=n_conformers,
             randomSeed=42,
             pruneRmsThresh=0.5,
@@ -106,82 +93,59 @@ def compute_strain(
     except Exception as e:
         log.info("Strain: ETKDG embed failed (%s)", e)
         return None
-    if not embed_status:
+    if not ids:
         return None
 
-    relaxed_energies: list[float] = []
-    for cid in range(template.GetNumConformers()):
-        e = _mmff_energy(template, conf_id=cid, minimize=True)
-        if e is not None:
-            relaxed_energies.append(e)
-    if not relaxed_energies:
+    # MMFF-minimize each conformer so we're comparing against actual local
+    # minima, not raw ETKDG geometry. MMFFOptimizeMoleculeConfs is much
+    # faster than calling MMFFOptimizeMolecule per-conformer.
+    try:
+        AllChem.MMFFOptimizeMoleculeConfs(template_h, maxIters=200, mmffVariant="MMFF94s")
+    except Exception as e:
+        log.info("Strain: MMFF minimization failed (%s)", e)
+        # Continue — RMSD against unminimized conformers is still informative
+
+    # Strip Hs — RMSD is on heavy atoms only.
+    relaxed = Chem.RemoveHs(template_h)
+
+    # 3. RMSD between docked pose and each relaxed conformer.
+    # GetBestRMS handles atom-mapping automatically (so SMILES atom ordering
+    # vs. PDB atom ordering doesn't matter) and finds the optimal alignment.
+    rmsds: list[float] = []
+    for cid in range(relaxed.GetNumConformers()):
+        try:
+            r = AllChem.GetBestRMS(pose_mol, relaxed, refId=cid, prbId=0)
+            rmsds.append(r)
+        except Exception:
+            # Per-conformer failures are common when atom counts mismatch
+            # (e.g. ligand_smiles doesn't quite match what meeko produced
+            # — tautomer, salt stripping). Skip and try the next.
+            continue
+    if not rmsds:
         return None
 
-    e_relaxed = min(relaxed_energies)
-    strain = e_pose - e_relaxed
+    best_rmsd = min(rmsds)
 
-    if strain < 3.0:
+    if best_rmsd < 1.0:
         verdict = "ok"
-    elif strain < 7.0:
+    elif best_rmsd < 2.0:
         verdict = "mild"
     else:
         verdict = "high"
 
     return {
-        "pose_kcal": round(e_pose, 1),
-        "relaxed_kcal": round(e_relaxed, 1),
-        "strain_kcal": round(strain, 1),
-        "verdict": verdict,
+        "rmsd": round(best_rmsd, 2),                # Å — closest matching relaxed conformer
+        "verdict": verdict,                          # ok | mild | high
+        "n_conformers_compared": len(rmsds),
+        # Kept for API back-compat with the older MMFF version of this
+        # module — the frontend reads `strain.kcal` and falls back to
+        # `strain.rmsd` rendering when present.
+        "strain_kcal": round(best_rmsd, 2),
     }
-
-
-def _mmff_energy(mol, conf_id: int = 0, minimize: bool = False) -> float | None:
-    """Single MMFF94s energy evaluation. Optionally minimize first.
-    Returns None on any failure — caller treats as "couldn't compute"."""
-    from rdkit.Chem import AllChem
-    try:
-        props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
-        if props is None:
-            return None
-        ff = AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id)
-        if ff is None:
-            return None
-        if minimize:
-            ff.Minimize(maxIts=200)
-        return ff.CalcEnergy()
-    except Exception:
-        return None
-
-
-def _mmff_energy_constrained(mol, conf_id: int = 0) -> float | None:
-    """MMFF94s energy with heavy-atom positions PINNED — only hydrogens
-    relax. Used for the docked-pose energy so that artifacts from AddHs'
-    heuristic H-placement don't swamp the strain measurement.
-
-    The heavy-atom skeleton stays exactly where Vina put it; we just clean
-    up the hydrogens, then read the energy. This is the standard CSD-style
-    pre-strain pass.
-    """
-    from rdkit.Chem import AllChem
-    try:
-        props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
-        if props is None:
-            return None
-        ff = AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id)
-        if ff is None:
-            return None
-        # Pin every heavy atom (Z != 1). Hs stay free.
-        for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() != 1:
-                ff.AddFixedPoint(atom.GetIdx())
-        ff.Minimize(maxIts=200)
-        return ff.CalcEnergy()
-    except Exception:
-        return None
 
 
 def to_extra_string(strain: dict[str, Any]) -> str:
     """Pack strain dict into the existing pipe-separated `extra` field.
-    Format: `strain=<verdict>:<kcal>` — short enough to fit alongside the
-    other validation flags without blowing up the field length."""
-    return f"strain={strain['verdict']}:{strain['strain_kcal']}"
+    Format: `strain=<verdict>:<rmsd>` — the frontend treats the second
+    field as a magnitude (Å in this implementation; kcal in older rows)."""
+    return f"strain={strain['verdict']}:{strain.get('rmsd', strain.get('strain_kcal', '?'))}"

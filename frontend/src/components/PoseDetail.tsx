@@ -126,21 +126,24 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
           />
         </div>
 
-        {/* Pose-quality row: strain energy verdict. Hidden when the backend
-            didn't compute strain (e.g. SDF unavailable). The kcal value goes
-            in the Metric subtitle so the user sees magnitude, not just verdict. */}
+        {/* Pose-quality row: strain verdict. Hidden when the backend didn't
+            compute strain (e.g. SDF unavailable). We measure strain as
+            heavy-atom RMSD between the docked pose and the closest of 20
+            ETKDG-generated relaxed conformers — robust to MMFF parameter
+            gaps and clash artifacts. Bostrom 2007 thresholds: <1 Å = a
+            real binding mode, >2 Å = unusual geometry. */}
         {ext.strain && (
           <div className="grid grid-cols-2 gap-3">
             <Metric
               label="Pose strain"
-              value={`${ext.strain.kcal.toFixed(1)} kcal/mol`}
+              value={`${ext.strain.kcal.toFixed(2)} Å`}
               tone={ext.strain.verdict === "ok" ? "good" : ext.strain.verdict === "high" ? "bad" : undefined}
               subtitle={
                 ext.strain.verdict === "ok"
-                  ? "Low strain · pose geometry is energetically reasonable"
+                  ? "Matches a relaxed conformer · pose geometry is plausible"
                   : ext.strain.verdict === "mild"
-                  ? "Mild strain · plausible but worth a second look"
-                  : "High strain · likely a Vina junk pose; reduce confidence"
+                  ? "Mild strain · differs from any relaxed conformer; worth a second look"
+                  : "High strain · pose differs >2 Å from every relaxed conformer; likely a Vina junk pose"
               }
             />
           </div>
