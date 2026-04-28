@@ -95,14 +95,11 @@ export default function HistoryPage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">My history</h1>
-          <p className="muted mt-1">
-            {jobs.length} job{jobs.length === 1 ? "" : "s"} · click any to open
-          </p>
-        </div>
-        <Link to="/new" className="btn-primary btn-sm">New job</Link>
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">My history</h1>
+        <p className="muted mt-1">
+          {jobs.length} job{jobs.length === 1 ? "" : "s"} · click any to open
+        </p>
       </div>
 
       <input
