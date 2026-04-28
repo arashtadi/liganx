@@ -375,23 +375,51 @@ def _run_real(session: Session, job: Job) -> None:
             pocket_source = "pocket=default_origin_LIKELY_WRONG"
 
     box = PocketBox(center_x=cx, center_y=cy, center_z=cz, size_x=sx, size_y=sy, size_z=sz)
+
+    # Prep version stamp. When this changes, all cached cleaned PDBs and
+    # derived receptors get auto-invalidated and rebuilt with the new prep.
+    # v2 = numbering-preserving fix_pdb (skips findMissingResidues that used
+    # to silently renumber every residue). Bumping this is the cleanest way
+    # to force a one-time precache rebuild without manual file deletion.
+    PREP_VERSION = "v2"
+
+    def _is_stale(path: Path) -> bool:
+        """A cache file is stale if its sibling .prep_version marker is missing
+        or doesn't match PREP_VERSION. Used to recover from old precaches that
+        were built with the renumbering bug."""
+        if not path.exists() or path.stat().st_size == 0:
+            return True
+        marker = path.with_suffix(path.suffix + ".prep_version")
+        if not marker.exists():
+            return True
+        return marker.read_text().strip() != PREP_VERSION
+
+    def _stamp(path: Path) -> None:
+        marker = path.with_suffix(path.suffix + ".prep_version")
+        marker.write_text(PREP_VERSION + "\n")
+
     cleaned_pdb = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
-    if not cleaned_pdb.exists() or cleaned_pdb.stat().st_size == 0:
-        log.info("Cleaning %s with PDBFixer", pdb_id)
+    if _is_stale(cleaned_pdb):
+        log.info("Cleaning %s with PDBFixer (prep %s)", pdb_id, PREP_VERSION)
         try:
             fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
+            _stamp(cleaned_pdb)
         except Exception as e:
             raise RuntimeError(
                 f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
             ) from e
 
-    # Step 2: prep WT receptor once. Cached across jobs.
+    # Step 2: prep WT receptor once. Cached across jobs. The WT receptor is
+    # derived from cleaned_pdb so when the latter gets re-built (stale
+    # invalidation), the WT PDBQT must also be rebuilt — otherwise it'd
+    # still reference the old renumbered residues.
     RECEPTOR_CACHE.mkdir(parents=True, exist_ok=True)
     wt_receptor = RECEPTOR_CACHE / f"{pdb_id}_{chain}_WT.pdbqt"
-    if not wt_receptor.exists() or wt_receptor.stat().st_size == 0:
-        log.info("Prepping WT receptor %s chain %s", pdb_id, chain)
+    if _is_stale(wt_receptor):
+        log.info("Prepping WT receptor %s chain %s (prep %s)", pdb_id, chain, PREP_VERSION)
         try:
             prepare_receptor(cleaned_pdb, wt_receptor, chain=chain)
+            _stamp(wt_receptor)
         except Exception as e:
             raise RuntimeError(
                 f"prep_step=prepare_receptor pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
@@ -422,7 +450,10 @@ def _run_real(session: Session, job: Job) -> None:
         # scores per row — the bug reported as "WT and mutation always
         # have the same value".
         cached_mut_pdbqt = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
-        if cached_mut_pdbqt.exists() and cached_mut_pdbqt.stat().st_size > 0:
+        # Skip the precache lookup if the file is missing OR stale (built with
+        # the old renumbering-broken prep). In the stale case, fall through
+        # to the PDBFixer mutation builder which will produce a v2 file.
+        if cached_mut_pdbqt.exists() and cached_mut_pdbqt.stat().st_size > 0 and not _is_stale(cached_mut_pdbqt):
             # VERIFY the precached receptor actually contains the mutation.
             # PDBFixer used to silently renumber residues, causing FoldX to
             # mutate the wrong atom and produce mutant files that look right
@@ -455,6 +486,8 @@ def _run_real(session: Session, job: Job) -> None:
                         out_path=fresh_pdb,
                     )
                     prepare_receptor(fresh_pdb, fresh_pdbqt, chain=chain)
+                    _stamp(fresh_pdbqt)
+                    _stamp(fresh_pdb)
                     ok2, reason2 = verify_mutation_applied(fresh_pdbqt, chain, mut)
                     if ok2:
                         receptor_for_variant[mut] = fresh_pdbqt
@@ -484,7 +517,7 @@ def _run_real(session: Session, job: Job) -> None:
                 from deltadock_pipeline.mutate import build_mutant_pdbfixer, MutateError
                 mut_pdb_out = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
                 mut_receptor_out = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
-                if not mut_receptor_out.exists() or mut_receptor_out.stat().st_size == 0:
+                if _is_stale(mut_receptor_out):
                     log.info("PDBFixer mutation: %s on %s chain %s", mut, pdb_id, chain)
                     build_mutant_pdbfixer(
                         pdb_path=cleaned_pdb,
@@ -493,6 +526,8 @@ def _run_real(session: Session, job: Job) -> None:
                         out_path=mut_pdb_out,
                     )
                     prepare_receptor(mut_pdb_out, mut_receptor_out, chain=chain)
+                    _stamp(mut_pdb_out)
+                    _stamp(mut_receptor_out)
                 # Verify the resulting receptor actually has the substitution
                 ok, reason = verify_mutation_applied(mut_receptor_out, chain, mut)
                 if ok:
