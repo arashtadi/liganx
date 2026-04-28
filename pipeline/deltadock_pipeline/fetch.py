@@ -82,23 +82,52 @@ def fetch_pdb(pdb_id: str, cache_dir: Path | str) -> Path:
             pass
 
     url = RCSB_URL.format(pdb_id=pdb_id)
-    log.info("Fetching %s from %s", pdb_id, url)
-    resp = requests.get(url, timeout=30)
-    if resp.status_code != 200:
-        raise FetchError(f"RCSB returned {resp.status_code} for {pdb_id}: {resp.text[:200]}")
+    # CloudFront in front of RCSB occasionally returns truncated responses
+    # (HEADER + TITLE only, no ATOMs) for clients without a User-Agent or
+    # without accept-encoding negotiation. Setting a real UA + retrying
+    # once on truncation handles this.
+    headers = {
+        "User-Agent": "Liganx/0.1 (https://liganx.com; mutation-aware docking)",
+        "Accept": "text/plain, */*",
+    }
 
-    out.write_bytes(resp.content)
-
-    # Validate what we just wrote — RCSB occasionally returns a 200 with an
-    # error body during maintenance windows.
-    if not _looks_like_valid_pdb(out):
+    last_err = None
+    for attempt in range(3):
+        log.info("Fetching %s from %s (attempt %d)", pdb_id, url, attempt + 1)
         try:
-            out.unlink()
-        except OSError:
-            pass
-        raise FetchError(
-            f"Downloaded {pdb_id} from RCSB but content has no ATOM records "
-            f"(first 200 chars: {resp.content[:200]!r}). Cache cleared."
-        )
-    log.info("Cached %s (%d bytes)", out, len(resp.content))
-    return out
+            resp = requests.get(url, timeout=30, headers=headers)
+        except requests.RequestException as e:
+            last_err = f"network error: {e}"
+            continue
+        if resp.status_code != 200:
+            last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            continue
+
+        # CloudFront sometimes lies about Content-Length — verify we got a
+        # complete-looking PDB by counting ATOM-line occurrences in the body.
+        body = resp.content
+        atom_count = body.count(b"\nATOM ")
+        if atom_count == 0:
+            last_err = (
+                f"truncated response: 200 OK but {len(body)} bytes contains "
+                f"zero ATOM records (first 200 bytes: {body[:200]!r})"
+            )
+            continue
+
+        out.write_bytes(body)
+        # Final on-disk validation — paranoid but cheap
+        if not _looks_like_valid_pdb(out):
+            try:
+                out.unlink()
+            except OSError:
+                pass
+            last_err = "wrote file but on-disk read found no ATOM lines"
+            continue
+
+        log.info("Cached %s (%d bytes, %d ATOM records)", out, len(body), atom_count)
+        return out
+
+    raise FetchError(
+        f"Downloaded {pdb_id} from RCSB but all 3 attempts failed: {last_err}. "
+        "Cache cleared."
+    )
