@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job, type PdbQuality } from "../api";
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
@@ -290,7 +290,10 @@ function Header({
       </div>
       <div className="flex items-center gap-2 sm:flex-col sm:items-end">
         <StatusPill status={job.status} />
-        <ShareButton job={job} selected={selected} inSubsetView={inSubsetView} subsetCount={subsetCount} />
+        <div className="flex items-center gap-2">
+          <CancelButton job={job} />
+          <ShareButton job={job} selected={selected} inSubsetView={inSubsetView} subsetCount={subsetCount} />
+        </div>
       </div>
     </header>
   );
@@ -467,12 +470,71 @@ function StatusPill({ status }: { status: string }) {
     running:   { bg: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",     dot: "bg-amber-500 animate-pulse-soft", label: "Running" },
     completed: { bg: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300", dot: "bg-emerald-500", label: "Completed" },
     failed:    { bg: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",         dot: "bg-rose-500", label: "Failed" },
+    cancelled: { bg: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",       dot: "bg-slate-400", label: "Cancelled" },
   };
   const s = styles[status] ?? styles.pending;
   return (
     <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold ${s.bg}`}>
       <span className={`w-2 h-2 rounded-full ${s.dot}`} /> {s.label}
     </span>
+  );
+}
+
+/**
+ * Cancel button — visible only while a job is in flight (pending/running).
+ * Hits POST /jobs/{share_id}/cancel which sets status=CANCELLED. The runner
+ * checks this between cells and bails out — currently in-flight Pod GPU
+ * call (~3 s) finishes, no further cells dispatch. Idempotent on terminal
+ * statuses, so a stale click won't error.
+ */
+function CancelButton({ job }: { job: Job }) {
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const cancelMut = useMutation({
+    mutationFn: () => api.cancelJob(job.share_id || job.id),
+    onSuccess: () => {
+      // Force the JobPage's polling query to refetch immediately so the
+      // status flips to "cancelled" without waiting for the next 3 s tick.
+      queryClient.invalidateQueries({ queryKey: ["job", job.share_id || String(job.id)] });
+      setConfirming(false);
+    },
+  });
+
+  // Only show for in-flight states. Once a job is terminal there's nothing
+  // to cancel and the button would be misleading.
+  if (job.status !== "pending" && job.status !== "running") return null;
+
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => cancelMut.mutate()}
+          disabled={cancelMut.isPending}
+          className="text-xs font-semibold px-2.5 py-1 rounded-md bg-rose-600 text-white hover:bg-rose-700 transition-colors disabled:opacity-60"
+        >
+          {cancelMut.isPending ? "Cancelling…" : "Confirm"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="text-xs px-2 py-1 rounded-md text-slate-500 hover:text-ink dark:hover:text-slate-100"
+        >
+          Keep
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      title="Cancel this job. The currently in-flight cell finishes (~3 s); no further cells run."
+      className="text-xs font-semibold px-2.5 py-1 rounded-md bg-white text-rose-700 ring-1 ring-rose-200 hover:bg-rose-50 dark:bg-slate-800 dark:text-rose-300 dark:ring-rose-800/40 dark:hover:bg-rose-900/20 transition-colors"
+    >
+      Cancel
+    </button>
   );
 }
 

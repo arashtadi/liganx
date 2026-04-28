@@ -13,6 +13,10 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # User-initiated cancellation. The runner cooperatively checks this
+    # between cells and bails when set. The currently in-flight Pod GPU
+    # call (~3 s) completes; no further cells dispatch.
+    CANCELLED = "cancelled"
 
 
 def _new_share_id() -> str:

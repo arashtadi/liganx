@@ -2,7 +2,7 @@
 
 const BASE = import.meta.env.VITE_API_URL || "/api";
 
-export type JobStatus = "pending" | "running" | "completed" | "failed";
+export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 /** ADMET / drug-likeness descriptors served alongside each compound.
  *  Computed from SMILES via RDKit on the backend, cached. Null when
@@ -161,6 +161,8 @@ export const api = {
   // either form. Typed as `string | number` so callers can pass whichever
   // they have on hand without a manual coerce.
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
+  cancelJob: (key: string | number) =>
+    request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
   listJobs: () => request<Job[]>("/jobs"),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),

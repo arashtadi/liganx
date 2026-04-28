@@ -184,6 +184,24 @@ def _run_crossdock_in_background(pdb_id: str, chain: str) -> None:
         log.warning("crossdock background failed for %s/%s: %s", pdb_id, chain, e)
 
 
+class JobCancelled(Exception):
+    """Raised by the runner's per-cell cancellation check when a user has
+    flipped this job's status to CANCELLED via POST /jobs/{key}/cancel.
+    Propagates up to run_job_in_background, which logs the cancellation
+    and leaves the status as CANCELLED (does NOT overwrite with FAILED)."""
+
+
+def is_cancelled(session: Session, job_id: int) -> bool:
+    """Cheap re-read of the job's status from the DB. Used between cells
+    in the per-cell loop. Refreshes the in-memory copy so callers see the
+    latest status without us needing a Job instance threaded everywhere.
+    """
+    # Fetch a fresh copy via primary key — bypasses any session-cached
+    # stale state from the original `job` object the runner is holding.
+    fresh = session.get(Job, job_id)
+    return bool(fresh and fresh.status == JobStatus.CANCELLED)
+
+
 def run_job_in_background(job_id: int) -> None:
     """Background entrypoint. Pulls the job, runs docking, writes results."""
     log.info("Running job %s", job_id)
@@ -191,6 +209,13 @@ def run_job_in_background(job_id: int) -> None:
         job = session.get(Job, job_id)
         if not job:
             log.error("Job %s not found", job_id)
+            return
+
+        # If the user cancelled before the worker even picked it up, honour
+        # that immediately rather than transitioning to RUNNING just to
+        # check again on the first cell.
+        if job.status == JobStatus.CANCELLED:
+            log.info("Job %s already cancelled before runner started; nothing to do", job_id)
             return
 
         job.status = JobStatus.RUNNING
@@ -207,11 +232,24 @@ def run_job_in_background(job_id: int) -> None:
                 log.warning("Real pipeline unavailable (%s) — falling back to placeholder", reason)
                 _run_placeholder(session, job, reason)
 
-            job.status = JobStatus.COMPLETED
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
-            log.info("Job %s completed", job_id)
+            # Re-read in case the runner loop saw a cancel between cells.
+            # If the user cancelled mid-run, _run_real raised JobCancelled,
+            # which we catch below — but a "natural" completion that
+            # raced with cancel would land here. Either way: don't
+            # clobber a CANCELLED status with COMPLETED.
+            session.refresh(job)
+            if job.status != JobStatus.CANCELLED:
+                job.status = JobStatus.COMPLETED
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
+                log.info("Job %s completed", job_id)
+            else:
+                log.info("Job %s ended in CANCELLED state — preserving it", job_id)
+        except JobCancelled:
+            log.info("Job %s cancelled by user mid-run", job_id)
+            # The cancel endpoint already set status=CANCELLED and the
+            # error_message; no need to overwrite.
         except Exception as e:
             log.exception("Job %s failed", job_id)
             job.status = JobStatus.FAILED
@@ -654,10 +692,17 @@ def _run_real(session: Session, job: Job) -> None:
             receptor_pdb_for_variant[mut] = cleaned_pdb
             variant_extra[mut] = f"foldx_failed: {e}"
 
-    # Step 4+5: prep each ligand and dock against each variant's receptor
+    # Step 4+5: prep each ligand and dock against each variant's receptor.
+    # We check job.status between cells (cooperative cancellation) — if the
+    # user has hit POST /jobs/{key}/cancel via the UI, we bail out as soon
+    # as the currently-in-flight Pod GPU call returns. This stops further
+    # compute spend within ~3 s of the cancel click.
     with tempfile.TemporaryDirectory(prefix=f"deltadock-job{job.id}-") as work_str:
         work = Path(work_str)
         for compound in compounds:
+            if is_cancelled(session, job.id):
+                log.info("Job %s cancelled — skipping remaining compounds", job.id)
+                raise JobCancelled()
             try:
                 lig_pdbqt = work / f"compound_{compound.id}.pdbqt"
                 prepare_ligand(compound.smiles, lig_pdbqt, name=compound.name or f"c{compound.id}")
@@ -672,6 +717,9 @@ def _run_real(session: Session, job: Job) -> None:
                 continue
 
             for variant in variants:
+                if is_cancelled(session, job.id):
+                    log.info("Job %s cancelled — skipping remaining variants", job.id)
+                    raise JobCancelled()
                 receptor = receptor_for_variant.get(variant, wt_receptor)
                 receptor_pdb = receptor_pdb_for_variant.get(variant, cleaned_pdb)
                 # Sentinel: receptor=None means we caught a corrupt precache

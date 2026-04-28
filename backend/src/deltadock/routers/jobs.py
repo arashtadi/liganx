@@ -189,6 +189,37 @@ def get_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
     return _to_out(job)
 
 
+@router.post("/{job_key}/cancel", response_model=JobOut)
+def cancel_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
+    """Cancel a running or pending job.
+
+    The runner cooperatively checks job.status between cells and bails out
+    when it sees CANCELLED. The currently in-flight Pod GPU call (~3 s) will
+    complete and any results-already-computed stay in the DB; no further
+    cells dispatch, so we don't waste compute on a job the user no longer
+    wants.
+
+    Idempotent on terminal statuses: cancelling an already-completed or
+    already-failed job is a no-op (returns 200 with the existing state).
+    Cancelling an already-cancelled job is also a no-op.
+    """
+    job = _resolve_job(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+        # Terminal — nothing to cancel. Return current state without
+        # mutating; this makes the endpoint safe to call from a Cancel
+        # button that might race with normal completion.
+        return _to_out(job)
+    job.status = JobStatus.CANCELLED
+    job.error_message = "Cancelled by user"
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return _to_out(job)
+
+
 @router.get("", response_model=list[JobOut])
 def list_jobs(
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
