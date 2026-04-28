@@ -16,6 +16,7 @@ from ..schemas import (
     JobCreate,
     JobOut,
 )
+from ..services.rate_limit import JOBS_LIMIT
 from ..services.runner import run_job_in_background
 
 # Same shape used in structures.py: variant must look like "WT" or "T790M"
@@ -104,7 +105,8 @@ def _pdb_quality_for(pdb_id: str, chain: str) -> dict | None:
         return None
 
 
-@router.post("", response_model=JobOut, status_code=201)
+@router.post("", response_model=JobOut, status_code=201,
+              dependencies=[Depends(JOBS_LIMIT)])
 def create_job(
     payload: JobCreate,
     background: BackgroundTasks,

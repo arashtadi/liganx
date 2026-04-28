@@ -13,7 +13,9 @@ import logging
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from ..services.rate_limit import UPLOADS_LIMIT
 
 router = APIRouter(prefix="/lookup", tags=["lookup"])
 log = logging.getLogger(__name__)
@@ -74,7 +76,7 @@ async def lookup_compound(q: str) -> dict:
     }
 
 
-@router.post("/pdb/upload")
+@router.post("/pdb/upload", dependencies=[Depends(UPLOADS_LIMIT)])
 async def upload_pdb_file(file: UploadFile = File(...)) -> dict:
     """Accept a user-uploaded PDB file. Stores it as USR_<8 hex>.pdb in the
     same cache directory the runner reads from for RCSB downloads, so the
