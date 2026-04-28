@@ -389,6 +389,21 @@ def _run_real(session: Session, job: Job) -> None:
 
     FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
     for mut in [m for m in job.mutations.split(",") if m]:
+        # PRECACHE FIRST — many mutant receptors were built offline with FoldX
+        # and baked into the Docker image (see backend/precache/receptors/).
+        # Without this check, prod (where FoldX isn't installed) would
+        # silently dock every mutant against WT and produce IDENTICAL
+        # scores per row — the bug reported as "WT and mutation always
+        # have the same value".
+        cached_mut_pdbqt = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.pdbqt"
+        if cached_mut_pdbqt.exists() and cached_mut_pdbqt.stat().st_size > 0:
+            receptor_for_variant[mut] = cached_mut_pdbqt
+            cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
+            if cached_mut_pdb.exists():
+                receptor_pdb_for_variant[mut] = cached_mut_pdb
+            variant_extra[mut] = "foldx_precached"
+            log.info("Using precached mutant receptor %s", cached_mut_pdbqt.name)
+            continue
         if not foldx_on:
             receptor_for_variant[mut] = wt_receptor
             variant_extra[mut] = "no_foldx_dock_against_wt"

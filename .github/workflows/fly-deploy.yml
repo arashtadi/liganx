@@ -1,0 +1,39 @@
+name: Fly Deploy
+
+# Auto-deploys the backend to Fly.io on every push to main that touches the
+# backend, pipeline, Dockerfile, or fly config. Frontend (Vercel) auto-deploys
+# from the same push via Vercel's GitHub integration — no action needed here.
+#
+# Required repo secret:
+#   FLY_API_TOKEN  — generate locally with `fly auth token` and add at
+#                    https://github.com/<org>/<repo>/settings/secrets/actions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "pipeline/**"
+      - "Dockerfile"
+      - "fly.toml"
+      - ".github/workflows/fly-deploy.yml"
+  # Manual trigger from the Actions tab — useful for redeploying without a
+  # code change (e.g., after rotating a secret).
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy backend to Fly
+    runs-on: ubuntu-latest
+    concurrency:
+      # Cancel any in-flight deploy so a fresh push always wins.
+      group: fly-deploy
+      cancel-in-progress: false   # but let the current one finish cleanly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy to Fly
+        run: flyctl deploy --remote-only --app liganx-api
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
