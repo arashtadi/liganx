@@ -53,7 +53,9 @@ class Settings(BaseSettings):
     # volume — otherwise every redeploy wipes them, and any job that tries to
     # reuse a previously-cleaned receptor (3D viewer, re-rendering pose) fails
     # with a 404. Set LIGANX_CACHE_ROOT=/var/lib/liganx in Fly secrets.
-    cache_root: str = ""
+    # Aliased so the env var is namespaced (LIGANX_*) — pydantic's default
+    # would match the bare CACHE_ROOT which is too generic for a shared host.
+    cache_root: str = Field(default="", validation_alias="LIGANX_CACHE_ROOT")
 
     # RunPod serverless docking — when both api_key and endpoint_id are set,
     # the runner dispatches Vina jobs to a RunPod worker instead of running
