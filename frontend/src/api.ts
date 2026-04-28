@@ -42,6 +42,23 @@ export interface DockingResult {
   extra?: string | null;  // pipe-separated key=value blob; parsed by lib/parseExtra
 }
 
+/** Cross-docking sanity check — re-docks the bound co-crystal ligand and
+ *  reports heavy-atom RMSD vs the original crystal pose. <2 Å = pocket
+ *  geometry is well-behaved (typical for any pocket the ligand was
+ *  crystallized in); >4 Å = pocket likely mis-defined or scoring junk.
+ *  Cached per (pdb_id, chain), shown as a badge in the JobPage header. */
+export interface PdbQuality {
+  pdb_id: string;
+  chain: string;
+  ligand_resname: string;          // e.g. "HYZ", "GFB" — the bound drug
+  rmsd_angstroms: number;
+  verdict: "valid" | "uncertain" | "questionable";
+  smiles: string;
+  crystal_atom_count: number;
+  docked_atom_count: number;
+  timestamp?: string;
+}
+
 export interface Job {
   id: number;
   /** Public, unguessable URL identifier. The frontend always navigates by
@@ -64,6 +81,9 @@ export interface Job {
   include_wt: boolean;
   compounds: Compound[];
   results: DockingResult[];
+  /** Cross-docking sanity check result. Null until the background job
+   *  for this (pdb_id, chain) has produced a cached value. */
+  pdb_quality?: PdbQuality | null;
 }
 
 export interface JobCreatePayload {

@@ -109,6 +109,15 @@ class JobOut(BaseModel):
     include_wt: bool = True
     compounds: list[CompoundOut] = Field(default_factory=list)
     results: list[DockingResultOut] = Field(default_factory=list)
+    # Cross-docking sanity-check result for this (pdb_id, chain). When
+    # present, the frontend renders a "PDB quality · RMSD X Å" badge in
+    # the JobPage header. None means we haven't run / cached the check
+    # yet (catalog targets eventually get pre-baked; custom uploads run
+    # lazily in a background thread on first job submission).
+    # Shape: see deltadock_pipeline.crossdock.CrossDockResult — fields:
+    #   ligand_resname, rmsd_angstroms, verdict (valid|uncertain|questionable),
+    #   smiles, crystal_atom_count, docked_atom_count
+    pdb_quality: dict | None = None
 
 
 class HealthOut(BaseModel):

@@ -73,6 +73,7 @@ def _to_out(job: Job) -> JobOut:
             )
             for r in job.results
         ],
+        pdb_quality=_pdb_quality_for(job.pdb_id, job.chain),
     )
 
 
@@ -84,6 +85,21 @@ def _admet_for(smiles: str) -> dict | None:
     try:
         from deltadock_pipeline.admet import compute_admet
         return compute_admet(smiles)
+    except Exception:
+        return None
+
+
+def _pdb_quality_for(pdb_id: str, chain: str) -> dict | None:
+    """Look up the cached cross-docking sanity-check result for this
+    (pdb_id, chain). Returns None if the background job hasn't run yet
+    (catalog targets eventually get pre-baked; custom uploads compute on
+    first job submission)."""
+    # Preserve USR_ case (uploads); uppercase RCSB IDs.
+    pid = pdb_id if pdb_id.startswith("USR_") else pdb_id.upper()
+    ch = (chain or "A").upper()
+    try:
+        from deltadock_pipeline.crossdock import load_cached
+        return load_cached(pid, ch)
     except Exception:
         return None
 

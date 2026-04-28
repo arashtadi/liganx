@@ -72,6 +72,115 @@ def _foldx_available() -> bool:
     return shutil.which(FOLDX_PATH) is not None
 
 
+def _run_crossdock_in_background(pdb_id: str, chain: str) -> None:
+    """Self-dock the bound co-crystal ligand for this (pdb_id, chain) and
+    cache the heavy-atom RMSD-vs-crystal as a 'PDB quality' badge.
+
+    Runs entirely off the request thread so it never blocks user-facing
+    docking. Cached on disk in ~/.deltadock/crossdock-cache/ — every later
+    job for the same (pdb_id, chain) hits the cache instantly.
+
+    On any failure (apo structure, ligand prep crash, etc.) we silently
+    skip; the JobPage header just doesn't show the quality badge — better
+    than a noisy error. The check is informational, not on the critical
+    path of producing a docking score.
+    """
+    try:
+        import tempfile
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+        from deltadock_pipeline.crossdock import (
+            CrossDockResult, extract_cocrystal_ligand, heavy_atom_rmsd,
+            save_cached, verdict_from_rmsd,
+        )
+        from deltadock_pipeline.fetch import fetch_pdb
+        from deltadock_pipeline.prep import fix_pdb, prepare_ligand, prepare_receptor
+        from deltadock_pipeline.dock import dock_one
+        from deltadock_pipeline.pocket import detect_pocket
+
+        raw_pdb = fetch_pdb(pdb_id, PDB_CACHE)
+        info = extract_cocrystal_ligand(raw_pdb, chain=chain)
+        if info is None:
+            log.info("crossdock %s/%s: no co-crystal ligand", pdb_id, chain)
+            return
+
+        # Reuse the existing receptor cache; if it's not there yet, do the
+        # cleanup ourselves. fix_pdb is idempotent on its output path.
+        clean_pdb = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
+        if not clean_pdb.exists():
+            fix_pdb(raw_pdb, clean_pdb, chain=chain)
+        receptor = RECEPTOR_CACHE / f"{pdb_id}_{chain}_WT.pdbqt"
+        if not receptor.exists():
+            RECEPTOR_CACHE.mkdir(parents=True, exist_ok=True)
+            prepare_receptor(clean_pdb, receptor)
+
+        pocket = detect_pocket(raw_pdb, chain=chain)
+        if pocket is None:
+            log.info("crossdock %s/%s: no pocket centroid — skipping", pdb_id, chain)
+            return
+
+        # Box: 22.5 Å cube centred on the ligand centroid, matching what the
+        # main runner uses for auto-detected pockets.
+        box = {
+            "center": list(pocket.center),
+            "size": [22.5, 22.5, 22.5],
+        }
+
+        with tempfile.TemporaryDirectory(prefix=f"xdock-{pdb_id}-") as td:
+            work = _Path(td)
+            lig_pdbqt = work / "ligand.pdbqt"
+            try:
+                prepare_ligand(info["smiles"], lig_pdbqt)
+            except Exception as e:
+                log.info("crossdock %s/%s: ligand prep failed: %s", pdb_id, chain, e)
+                return
+
+            # Cheap exhaustiveness — we just need a position estimate, not
+            # a publication-quality pose. 8 = matches the user's default.
+            settings = get_settings()
+            result = dock_one(
+                receptor_pdbqt=receptor,
+                ligand_pdbqt=lig_pdbqt,
+                box=box,
+                work_dir=work,
+                exhaustiveness=8,
+                num_modes=9,
+                vina_path=settings.vina_path,
+            )
+
+            # Convert best mode of the docked PDBQT to SDF, then RMSD-compare
+            # against the crystal PDB we extracted earlier.
+            from deltadock_pipeline.validate import _convert, _extract_best_mode
+            best = work / "best.pdbqt"
+            _extract_best_mode(result.pose_pdbqt, best)
+            docked_sdf = work / "docked.sdf"
+            _convert(best, docked_sdf)
+
+            rmsd = heavy_atom_rmsd(docked_sdf, _Path(info["lig_pdb_path"]))
+            if rmsd is None:
+                log.info("crossdock %s/%s: RMSD calc failed", pdb_id, chain)
+                return
+
+            res = CrossDockResult(
+                pdb_id=pdb_id,
+                chain=chain,
+                ligand_resname=info["resname"],
+                rmsd_angstroms=round(rmsd, 2),
+                verdict=verdict_from_rmsd(rmsd),
+                smiles=info["smiles"],
+                crystal_atom_count=info["atom_count"],
+                docked_atom_count=info["atom_count"],
+                timestamp=_dt.utcnow().isoformat(),
+            )
+            save_cached(res)
+            log.info(
+                "crossdock %s/%s: %s ligand RMSD=%.2f Å (%s)",
+                pdb_id, chain, info["resname"], rmsd, res.verdict,
+            )
+    except Exception as e:
+        log.warning("crossdock background failed for %s/%s: %s", pdb_id, chain, e)
+
+
 def run_job_in_background(job_id: int) -> None:
     """Background entrypoint. Pulls the job, runs docking, writes results."""
     log.info("Running job %s", job_id)
@@ -186,6 +295,27 @@ def _run_real(session: Session, job: Job) -> None:
     log.info("Docking with exhaustiveness=%d, variants=%s", exhaustiveness, variants)
 
     compounds = session.exec(select(Compound).where(Compound.job_id == job.id)).all()
+
+    # Cross-docking sanity check: if we don't have a cached self-dock RMSD
+    # for this (pdb_id, chain), trigger one in a background thread. It uses
+    # the same Vina/QuickVina-GPU path the user's compounds will use, then
+    # measures heavy-atom RMSD between the docked pose and the original
+    # crystal pose. Cached forever after — surfaces in the JobPage header
+    # via the next /jobs response after it completes. Doesn't block the
+    # user's actual results.
+    try:
+        from deltadock_pipeline.crossdock import load_cached
+        if load_cached(pdb_id, chain) is None:
+            import threading as _th
+            _th.Thread(
+                target=_run_crossdock_in_background,
+                args=(pdb_id, chain),
+                name=f"crossdock-{pdb_id}-{chain}",
+                daemon=True,
+            ).start()
+            log.info("Spawned cross-dock sanity check for %s/%s", pdb_id, chain)
+    except Exception as e:
+        log.info("Could not spawn cross-dock for %s/%s: %s", pdb_id, chain, e)
 
     # Preserve USR_ upload-id case (lowercase hex tail) — uppercase only
     # standard RCSB IDs. Forcing .upper() here previously broke uploads

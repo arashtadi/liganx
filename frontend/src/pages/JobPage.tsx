@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job } from "../api";
+import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job, type PdbQuality } from "../api";
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
@@ -285,6 +285,7 @@ function Header({
           <Stat icon={<Target />} label="Compounds" value={job.compounds.length} />
           <Stat icon={<Beaker />} label="Variants" value={job.mutations.length + 1} hint={["WT", ...job.mutations].join(", ")} />
           <Stat icon={null} label="Job #" value={job.id} />
+          <PdbQualityBadge quality={job.pdb_quality} />
         </div>
       </div>
       <div className="flex items-center gap-2 sm:flex-col sm:items-end">
@@ -422,6 +423,40 @@ function Stat({ icon, label, value, hint }: { icon: React.ReactNode; label: stri
       title={hint}
     >
       {icon} <span className="text-slate-500 dark:text-slate-400">{label}:</span> <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+/** PDB-quality badge: surfaces the cross-docking sanity check.
+ *  - valid       (RMSD < 2 Å)  → green; pocket geometry trustworthy
+ *  - uncertain   (2-4 Å)       → amber; docked in the right neighborhood
+ *  - questionable (> 4 Å)      → rose; pocket likely mis-defined
+ *  - null                      → no badge (background check still pending,
+ *                                or apo structure with no co-crystal ligand) */
+function PdbQualityBadge({ quality }: { quality?: PdbQuality | null }) {
+  if (!quality) return null;
+  const tone =
+    quality.verdict === "valid"
+      ? "bg-emerald-100 text-emerald-800 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40"
+      : quality.verdict === "uncertain"
+        ? "bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700/40"
+        : "bg-rose-100 text-rose-800 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:ring-rose-700/40";
+  const label =
+    quality.verdict === "valid"
+      ? "Pocket validated"
+      : quality.verdict === "uncertain"
+        ? "Pocket uncertain"
+        : "Pocket questionable";
+  const tip =
+    `Cross-docking sanity check: re-docked the bound ${quality.ligand_resname} ligand and ` +
+    `compared the docked pose to the original crystal pose. RMSD = ${quality.rmsd_angstroms.toFixed(2)} Å. ` +
+    `Industry threshold: <2 Å valid, 2-4 Å uncertain, >4 Å questionable.`;
+  return (
+    <span
+      title={tip}
+      className={`badge ring-1 ring-inset ${tone}`}
+    >
+      <span aria-hidden>✓</span> {label} · <span className="font-semibold">{quality.rmsd_angstroms.toFixed(2)} Å</span>
     </span>
   );
 }
