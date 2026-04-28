@@ -60,7 +60,8 @@ RUN pip install --no-cache-dir \
         "requests>=2.32" \
         "psycopg2-binary>=2.9.9" \
         "boto3>=1.35" \
-        "meeko>=0.6"
+        "meeko>=0.6" \
+        "gemmi>=0.6"
 
 # Vendor the FoldX binary. The user drops their licensed FoldX into
 # backend/vendor/foldx/ before `fly deploy`. The directory is in .gitignore
