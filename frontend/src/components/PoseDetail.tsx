@@ -124,6 +124,17 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
             value={deltaWt == null ? "—" : `${deltaWt > 0 ? "+" : ""}${deltaWt.toFixed(2)}`}
             tone={stronger ? "good" : weaker ? "bad" : undefined}
           />
+          {/* Vinardo refined score — second-pass scoring (smina) of the same
+              docked geometry. Often a tighter discriminator of close analogs
+              than raw Vina; lands Liganx in the Glide-SP-equivalent zone for
+              analog-vs-analog ranking. Hidden when smina didn't run. */}
+          {ext.vinardo != null && (
+            <Metric
+              label="Vinardo refined"
+              value={`${ext.vinardo.toFixed(2)} kcal/mol`}
+              subtitle="Smina re-score · sharper for close-analog ranking"
+            />
+          )}
         </div>
 
         {/* Pose-quality row: strain verdict. Hidden when the backend didn't

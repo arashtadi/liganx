@@ -459,6 +459,14 @@ function ScoreCell({
           {delta > 0 ? "+" : ""}{delta.toFixed(2)}
         </div>
       )}
+      {ext.vinardo != null && (
+        <div
+          title={`Vinardo refined score: ${ext.vinardo.toFixed(2)} kcal/mol — second-pass scoring (smina) that discriminates close analogs better than raw Vina.`}
+          className="text-[10px] font-medium text-slate-500 dark:text-slate-400 mt-0.5"
+        >
+          <span className="opacity-60">v⁺</span> {ext.vinardo.toFixed(2)}
+        </div>
+      )}
       {(ext.confidence && ext.confidence !== "unknown") || ext.strain ? (
         <div className="mt-1 flex justify-end items-center gap-1">
           {/* Strain warning chip — only visible for mild/high to keep the

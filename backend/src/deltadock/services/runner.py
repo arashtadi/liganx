@@ -365,6 +365,19 @@ def _run_real(session: Session, job: Job) -> None:
                     # Build the `extra` string by combining variant info + validation
                     parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
                     parts.append(f"engine={engine_used}")
+
+                    # Vinardo rescoring (smina --score_only). Cheap second-pass
+                    # score that often discriminates close analogs better than
+                    # raw Vina. Failure here is silent — the original Vina
+                    # score still ships; we just skip the refined column.
+                    try:
+                        from deltadock_pipeline.rescore import smina_rescore
+                        v_score = smina_rescore(receptor, result.pose_pdbqt, scoring="vinardo")
+                        if v_score is not None:
+                            parts.append(f"vinardo={v_score:.2f}")
+                    except Exception as e:
+                        log.info("Vinardo rescore failed for c%s × %s: %s", compound.id, variant, e)
+
                     if validate_on:
                         try:
                             v = validate_pose(

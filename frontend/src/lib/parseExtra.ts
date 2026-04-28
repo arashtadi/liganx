@@ -40,6 +40,12 @@ export interface ParsedExtra {
    *  lowest relaxed conformer of the same SMILES. >7 kcal/mol typically
    *  flags a Vina junk pose where the ligand is bent unphysically to fit. */
   strain?: { verdict: "ok" | "mild" | "high"; kcal: number };
+  /** Smina/Vinardo refined score (kcal/mol). A second-pass scoring of the
+   *  Vina pose using a tuned function that discriminates close analogs
+   *  better than raw Vina. Same sign convention as Vina (lower = stronger).
+   *  When present, the matrix shows it as a small subtitle under the
+   *  primary Vina score; PoseDetail surfaces it as a top-level Metric. */
+  vinardo?: number;
   raw: string;
 }
 
@@ -101,6 +107,11 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
       case "engine":
         out.engine = v;
         break;
+      case "vinardo": {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) out.vinardo = n;
+        break;
+      }
       case "strain": {
         // Format: `<verdict>:<kcal>` — e.g. "ok:1.2", "mild:5.4", "high:9.1"
         const [verdict, kStr] = v.split(":");

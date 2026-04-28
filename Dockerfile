@@ -36,6 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # this list because conda-forge's meeko build (0.5.x) imports the removed
 # `rdkit.six` module against modern RDKit 2024+ — it gets pip-installed below
 # at >=0.6, where that import was dropped.
+#
+# Smina is here for Vinardo-rescoring of Vina poses — a fast (~1s) re-scoring
+# pass that often discriminates close analogs better than raw Vina, narrowing
+# the gap with commercial Glide XP. Conda-forge ships a pre-built linux64
+# binary so this stays a one-liner.
 RUN mamba install -y -n base -c conda-forge \
         python=3.12 \
         rdkit \
@@ -44,6 +49,7 @@ RUN mamba install -y -n base -c conda-forge \
         prolif \
         posebusters \
         biopython \
+        smina \
     && mamba clean -afy
 
 # Pure-Python web/server deps. Meeko ships here too — pinned >=0.6 so the
