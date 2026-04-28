@@ -65,7 +65,10 @@ def compute_strain(
 
     pose_sdf = Path(pose_sdf)
     if not pose_sdf.exists() or pose_sdf.stat().st_size == 0:
+        log.info("Strain: pose_sdf missing or empty: %s", pose_sdf)
         return None
+    log.info("Strain: computing for %s (smiles=%s, %d conformers)",
+             pose_sdf.name, ligand_smiles[:40], n_conformers)
 
     # 1. Load the docked pose (heavy atoms only — Hs aren't reliable here
     # and we're measuring heavy-atom geometry).
@@ -122,9 +125,12 @@ def compute_strain(
             # — tautomer, salt stripping). Skip and try the next.
             continue
     if not rmsds:
+        log.warning("Strain: GetBestRMS yielded no values for %s", pose_sdf.name)
         return None
 
     best_rmsd = min(rmsds)
+    log.info("Strain: %s → RMSD=%.2f Å (%d conformers compared)",
+             pose_sdf.name, best_rmsd, len(rmsds))
 
     if best_rmsd < 1.0:
         verdict = "ok"
