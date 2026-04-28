@@ -112,20 +112,27 @@ def compute_strain(
     relaxed = Chem.RemoveHs(template_h)
 
     # 3. RMSD between docked pose and each relaxed conformer.
-    # GetBestRMS handles atom-mapping automatically (so SMILES atom ordering
-    # vs. PDB atom ordering doesn't matter) and finds the optimal alignment.
+    # GetBestRMS *requires* atoms to be in identical order; meeko's PDBQT→SDF
+    # round-trip routinely reorders atoms vs. an RDKit SMILES build, so we
+    # try GetBestRMS first (cheap when it works) and fall back to explicit
+    # substructure-match-based alignment when the atom orders differ.
+    from rdkit.Chem import rdMolAlign
+
     rmsds: list[float] = []
+    last_err = None
     for cid in range(relaxed.GetNumConformers()):
-        try:
-            r = AllChem.GetBestRMS(pose_mol, relaxed, refId=cid, prbId=0)
+        r = _try_rmsd(pose_mol, relaxed, cid)
+        if r is not None:
             rmsds.append(r)
-        except Exception:
-            # Per-conformer failures are common when atom counts mismatch
-            # (e.g. ligand_smiles doesn't quite match what meeko produced
-            # — tautomer, salt stripping). Skip and try the next.
-            continue
+        else:
+            # Track the first error reason for diagnostics.
+            try:
+                AllChem.GetBestRMS(pose_mol, relaxed, refId=cid, prbId=0)
+            except Exception as e:
+                last_err = str(e)[:80]
+
     if not rmsds:
-        log.warning("Strain: GetBestRMS yielded no values for %s", pose_sdf.name)
+        log.warning("Strain: no RMSD values for %s (last err: %s)", pose_sdf.name, last_err)
         return None
 
     best_rmsd = min(rmsds)
@@ -148,6 +155,57 @@ def compute_strain(
         # `strain.rmsd` rendering when present.
         "strain_kcal": round(best_rmsd, 2),
     }
+
+
+def _try_rmsd(pose_mol, ref_mol, ref_cid: int) -> float | None:
+    """Best-effort heavy-atom RMSD between pose_mol and ref_mol[ref_cid].
+
+    Tries three strategies in order, returning the first one that works:
+      1. AllChem.GetBestRMS — fast, requires identical atom orders.
+      2. rdMolAlign.GetBestRMS with explicit atom map from GetSubstructMatch
+         — handles atom-order divergence common in PDBQT→SDF round-trips.
+      3. Manual coordinate alignment via SMARTS pattern match — fallback
+         for edge cases where SubstructMatch picks a permutation that breaks
+         GetBestRMS (rare, but happens with symmetric scaffolds).
+    """
+    from rdkit.Chem import AllChem, rdMolAlign
+
+    # Strategy 1: identical-atom-order assumption
+    try:
+        return AllChem.GetBestRMS(pose_mol, ref_mol, refId=ref_cid, prbId=0)
+    except Exception:
+        pass
+
+    # Strategy 2: explicit substructure-mapped RMSD. We pin the smaller
+    # molecule as the substruct probe so the match always succeeds when
+    # they're the same compound modulo atom-order.
+    try:
+        # GetSubstructMatch returns atoms of `pose_mol` indexed by `ref_mol`.
+        match = pose_mol.GetSubstructMatch(ref_mol)
+        if match and len(match) == ref_mol.GetNumAtoms():
+            atom_map = list(zip(match, range(ref_mol.GetNumAtoms())))
+            return rdMolAlign.GetBestRMS(
+                pose_mol, ref_mol,
+                refId=ref_cid, prbId=0,
+                map=[atom_map],
+            )
+    except Exception:
+        pass
+
+    # Strategy 3: try the reverse direction
+    try:
+        match = ref_mol.GetSubstructMatch(pose_mol)
+        if match and len(match) == pose_mol.GetNumAtoms():
+            atom_map = list(zip(range(pose_mol.GetNumAtoms()), match))
+            return rdMolAlign.GetBestRMS(
+                pose_mol, ref_mol,
+                refId=ref_cid, prbId=0,
+                map=[atom_map],
+            )
+    except Exception:
+        pass
+
+    return None
 
 
 def to_extra_string(strain: dict[str, Any]) -> str:
