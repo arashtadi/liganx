@@ -89,7 +89,13 @@ def smina_rescore(
         log.warning("smina rescore timed out after %ss", timeout)
         return None
     if res.returncode != 0:
-        log.info("smina rescore exit %d: %s", res.returncode, (res.stderr or "")[:200])
+        # Log both stderr and stdout — smina sometimes prints errors to stdout.
+        log.info(
+            "smina rescore exit %d | cmd: %s | stderr: %s | stdout: %s",
+            res.returncode, " ".join(cmd),
+            (res.stderr or "").strip()[:300],
+            (res.stdout or "").strip()[:300],
+        )
         return None
 
     m = _SCORE_RE.search(res.stdout)
