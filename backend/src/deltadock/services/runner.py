@@ -441,7 +441,52 @@ def _run_real(session: Session, job: Job) -> None:
     # docking against a silently-broken file.
     from deltadock_pipeline.prep import verify_mutation_applied
 
+    def _residue_distance_to_pocket(pdb_path: Path, ch: str, resnum: int) -> float | None:
+        """Distance from residue's CA atom to the docking box center.
+        Used to flag mutations that are too far from the pocket for
+        single-conformation docking to capture their effect — the user
+        sees a clear "outside_pocket" tag instead of a confusing
+        zero-delta result."""
+        try:
+            with pdb_path.open() as fh:
+                for line in fh:
+                    if not line.startswith("ATOM") or len(line) < 54:
+                        continue
+                    if line[21] != ch or line[22:26].strip() != str(resnum):
+                        continue
+                    if line[12:16].strip() != "CA":
+                        continue
+                    x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+                    return ((x-cx)**2 + (y-cy)**2 + (z-cz)**2) ** 0.5
+        except (OSError, ValueError):
+            pass
+        return None
+
+    # Half the box edge — if a mutation is farther than this from box center,
+    # docking can't see geometric effect of the substitution. Box is 22 Å
+    # so half-edge is 11 Å; we use 13 Å to allow a small safety margin
+    # since the mutated SIDE CHAIN extends a few Å past the CA.
+    POCKET_RADIUS_A = 13.0
+
     FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
+    # Pre-compute pocket-distance for each mutation. Outside-pocket mutations
+    # CAN'T produce a meaningful Vina delta in single-conformation docking
+    # because Vina only sees atoms within ~22 Å of box center. Track per-mut
+    # so we can append a hint to variant_extra.
+    pocket_hints: dict[str, str | None] = {}
+    for mut in [m for m in job.mutations.split(",") if m]:
+        try:
+            first_resnum = int("".join(c for c in mut.split("+")[0] if c.isdigit()))
+            d = _residue_distance_to_pocket(cleaned_pdb, chain, first_resnum)
+            if d is not None and d > POCKET_RADIUS_A:
+                pocket_hints[mut] = f"mutation_outside_pocket={d:.1f}A"
+                log.info("Mutation %s residue %s is %.1f Å from pocket center — Vina won't see it",
+                         mut, first_resnum, d)
+            else:
+                pocket_hints[mut] = None
+        except (ValueError, AttributeError):
+            pocket_hints[mut] = None
+
     for mut in [m for m in job.mutations.split(",") if m]:
         # PRECACHE FIRST — many mutant receptors were built offline with FoldX
         # and baked into the Docker image (see backend/precache/receptors/).
@@ -469,7 +514,8 @@ def _run_real(session: Session, job: Job) -> None:
                 cached_mut_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{mut}.clean.pdb"
                 if cached_mut_pdb.exists():
                     receptor_pdb_for_variant[mut] = cached_mut_pdb
-                variant_extra[mut] = "foldx_precached"
+                hint = pocket_hints.get(mut)
+                variant_extra[mut] = f"foldx_precached|{hint}" if hint else "foldx_precached"
                 log.info("Using precached mutant receptor %s (verified)", cached_mut_pdbqt.name)
             else:
                 # Precache is corrupt (was built with the old PDBFixer-renumbering
@@ -497,7 +543,11 @@ def _run_real(session: Session, job: Job) -> None:
                     if ok2:
                         receptor_for_variant[mut] = fresh_pdbqt
                         receptor_pdb_for_variant[mut] = fresh_pdb
-                        variant_extra[mut] = "pdbfixer_mutated_after_bad_precache"
+                        hint = pocket_hints.get(mut)
+                        variant_extra[mut] = (
+                            f"pdbfixer_mutated_after_bad_precache|{hint}" if hint
+                            else "pdbfixer_mutated_after_bad_precache"
+                        )
                         log.info("Recovered %s via PDBFixer fallback", mut)
                     else:
                         receptor_for_variant[mut] = None  # type: ignore[assignment]
@@ -544,7 +594,8 @@ def _run_real(session: Session, job: Job) -> None:
                 if ok:
                     receptor_for_variant[mut] = mut_receptor_out
                     receptor_pdb_for_variant[mut] = mut_pdb_out
-                    variant_extra[mut] = "pdbfixer_mutated"
+                    hint = pocket_hints.get(mut)
+                    variant_extra[mut] = f"pdbfixer_mutated|{hint}" if hint else "pdbfixer_mutated"
                 else:
                     log.warning("PDBFixer mutation %s verification failed: %s", mut, reason)
                     receptor_for_variant[mut] = None  # type: ignore[assignment]
