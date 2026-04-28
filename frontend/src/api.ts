@@ -261,6 +261,15 @@ export const api = {
     request<{ name: string; cid: number; smiles: string; iupac_name?: string; molecular_formula?: string }>(
       `/lookup/compound?q=${encodeURIComponent(q)}`,
     ),
+  /** Look up basic PDB metadata (title, protein name, organism, UniProt) so
+   *  the JobPage header can show "2WGJ · Hepatocyte growth factor receptor"
+   *  instead of the bare RCSB code. Backend caches for 24h, so repeat calls
+   *  for the same PDB cost ~0ms. Returns at minimum `{pdb_id}` — the rest
+   *  may be missing for user uploads or when RCSB is unreachable. */
+  pdbInfo: (pdbId: string) =>
+    request<{ pdb_id: string; title?: string; protein?: string; organism?: string; uniprot_id?: string; resolution_A?: number | null }>(
+      `/lookup/pdb/${encodeURIComponent(pdbId)}/info`,
+    ),
   suggestCompound: (q: string) =>
     request<{ query: string; suggestions: string[] }>(
       `/lookup/compound/suggest?q=${encodeURIComponent(q)}`,

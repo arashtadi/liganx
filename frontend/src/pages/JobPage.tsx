@@ -263,6 +263,30 @@ export default function JobPage() {
 
 /* ─── Header ────────────────────────────────────────────────────────── */
 
+/** Convert RCSB's all-caps protein descriptions ("HEPATOCYTE GROWTH FACTOR
+ *  RECEPTOR") into Title Case ("Hepatocyte Growth Factor Receptor"). Lowercases
+ *  short connecting words ("of", "the", "and", "to", etc.) so it reads
+ *  naturally rather than looking like a movie title. Already-mixed-case names
+ *  pass through untouched. */
+function prettifyProtein(name: string): string {
+  if (!name) return name;
+  // Already mixed-case (>= 1 lowercase letter present)? Leave as is — RCSB
+  // sometimes returns "Hepatocyte growth factor receptor" already.
+  if (/[a-z]/.test(name)) return name;
+  const small = new Set(["of", "the", "and", "to", "in", "for", "with", "a", "an"]);
+  return name
+    .toLowerCase()
+    .split(/(\s+|-)/)
+    .map((part, i) => {
+      if (/^\s+$/.test(part) || part === "-") return part;
+      // Roman numerals + Greek letters stay upper.
+      if (/^(i{1,3}|iv|vi{0,3}|i?x)$/i.test(part)) return part.toUpperCase();
+      if (i > 0 && small.has(part)) return part;
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join("");
+}
+
 function Header({
   job, selected, inSubsetView, subsetCount,
 }: {
@@ -271,14 +295,35 @@ function Header({
   inSubsetView: boolean;
   subsetCount: number;
 }) {
+  // Look up the protein name for non-uploaded PDBs. The endpoint is cheap and
+  // backend-cached for 24h, so this fires once per session per PDB. Uploads
+  // (USR_*) skip the call — there's no RCSB entry to resolve.
+  const isUpload = job.pdb_id.startsWith("USR_");
+  const { data: pdbInfo } = useQuery({
+    queryKey: ["pdb-info", job.pdb_id],
+    queryFn: () => api.pdbInfo(job.pdb_id),
+    enabled: !isUpload,
+    staleTime: 24 * 3600 * 1000, // 24h — same as backend cache
+    retry: 1,
+  });
+  const proteinLabel = pdbInfo?.protein ? prettifyProtein(pdbInfo.protein) : null;
+
   return (
     <header className="card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
       <div>
         <Link to="/history" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
           <ArrowRight size={11} className="rotate-180" /> Back to history
         </Link>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex items-center gap-3">
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="font-mono text-delta-700 dark:text-delta-300">{job.pdb_id}</span>
+          {proteinLabel && (
+            <span
+              className="text-base font-semibold text-slate-700 dark:text-slate-200"
+              title={pdbInfo?.title}
+            >
+              {proteinLabel}
+            </span>
+          )}
           <span className="text-sm font-normal text-slate-500 dark:text-slate-400">chain {job.chain}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2">

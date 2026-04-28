@@ -76,6 +76,43 @@ async def lookup_compound(q: str) -> dict:
     }
 
 
+@router.get("/pdb/{pdb_id}/info")
+def get_pdb_info(pdb_id: str) -> dict:
+    """Return basic PDB metadata (title, protein name, organism, UniProt).
+
+    Used by the JobPage header to render a protein name next to the PDB ID
+    so a scientist sees `2WGJ · Hepatocyte growth factor receptor · chain A`
+    instead of the bare RCSB code. We hit RCSB's GraphQL Data API once
+    per PDB ID and cache the result in-process for 24h.
+
+    User uploads (USR_xxxxxxxx) skip the call — there's no RCSB entry to
+    look up — and return only the prefixed pdb_id.
+
+    Returns 404 only when the PDB ID is malformed; otherwise we always
+    return a 200 with at least `{pdb_id}` populated, so the frontend can
+    fall back to "PDB ID only" without error-handling complexity.
+    """
+    pid = (pdb_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="missing pdb_id")
+    if pid.startswith("USR_"):
+        # User-uploaded structure — no name to resolve, just echo the id.
+        return {"pdb_id": pid}
+    if len(pid) != 4 or not pid.isalnum():
+        raise HTTPException(status_code=400, detail="invalid pdb_id format")
+
+    try:
+        from ..services.rcsb_info import get_pdb_info as _lookup
+        info = _lookup(pid)
+    except ImportError:
+        info = None
+    if info is None:
+        # Network/RCSB hiccup — return the bare ID so the UI degrades
+        # gracefully (no name shown, no error toast).
+        return {"pdb_id": pid.upper()}
+    return info
+
+
 @router.post("/pdb/upload", dependencies=[Depends(UPLOADS_LIMIT)])
 async def upload_pdb_file(file: UploadFile = File(...)) -> dict:
     """Accept a user-uploaded PDB file. Stores it as USR_<8 hex>.pdb in the
