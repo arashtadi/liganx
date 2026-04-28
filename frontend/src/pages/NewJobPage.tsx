@@ -26,19 +26,26 @@ export default function NewJobPage() {
   const initialTarget = searchParams.get("target")?.toLowerCase() ?? "egfr";
   const [selectedIds, setSelectedIds] = useState<string[]>([initialTarget]);
   const [customMode, setCustomMode] = useState(false);
-  const targets: CatalogTarget[] = useMemo(
-    () => (catalog ?? []).filter((t) => selectedIds.includes(t.id)),
-    [catalog, selectedIds],
-  );
-  // Single-target mode preserves all the existing form UX (mutations, custom
-  // PDB, full per-target tweaking). Multi-target mode is "selectivity mode"
-  // — WT only, fan out N parallel jobs, redirect to a suite view.
-  const isMultiTarget = targets.length > 1;
-  const target: CatalogTarget | undefined = isMultiTarget ? undefined : targets[0];
 
   const [pdbId, setPdbId] = useState("");
   const [chain, setChain] = useState("A");
   const [uniprot, setUniprot] = useState("");
+
+  const targets: CatalogTarget[] = useMemo(
+    () => (catalog ?? []).filter((t) => selectedIds.includes(t.id)),
+    [catalog, selectedIds],
+  );
+  // Total target count = catalog kinases + the custom PDB (if Custom mode is
+  // on AND has a non-empty PDB ID). This lets users mix curated targets with
+  // their own AlphaFold structure or in-house crystal in a single selectivity
+  // suite — e.g. "EGFR + ABL + my-internal-PDB" all in one run.
+  const customCounts = customMode && pdbId.trim().length > 0;
+  const totalTargets = targets.length + (customCounts ? 1 : 0);
+  // Single-target mode preserves all the existing form UX (mutations, full
+  // per-target tweaking). Multi-target mode is "selectivity mode" — WT only,
+  // fan out N parallel jobs, redirect to a suite view.
+  const isMultiTarget = totalTargets > 1;
+  const target: CatalogTarget | undefined = isMultiTarget ? undefined : targets[0];
   const [selectedMutations, setSelectedMutations] = useState<string[]>([]);
   const [customMutations, setCustomMutations] = useState("");
   const [compounds, setCompounds] = useState<CompoundRow[]>([]);
@@ -245,21 +252,34 @@ export default function NewJobPage() {
       // Selectivity mode — fan out N parallel jobs, one per target, WT only.
       // We deliberately ignore allMutations here because the UI hides the
       // mutation panel in this mode; double-defending against any leak.
+      // Build the payload list: catalog targets first, then the custom PDB
+      // if it's been filled (customMode + non-empty pdbId). This lets a
+      // single suite mix curated kinases with a user-supplied structure.
       setSubmitting(true);
       setSubmitErr(null);
-      Promise.all(
-        targets.map((t) =>
-          api.createJob({
-            pdb_id: t.pdb_id,
-            chain: t.chain,
-            uniprot_id: t.uniprot,
-            mutations: [],
-            compounds: compoundPayload,
-            exhaustiveness,
-            include_wt: true,  // selectivity = WT-only by definition
-          }),
-        ),
-      )
+      const payloads = [
+        ...targets.map((t) => ({
+          pdb_id: t.pdb_id,
+          chain: t.chain,
+          uniprot_id: t.uniprot,
+          mutations: [] as string[],
+          compounds: compoundPayload,
+          exhaustiveness,
+          include_wt: true,
+        })),
+        ...(customCounts
+          ? [{
+              pdb_id: pdbId.trim().toUpperCase(),
+              chain: chain || "A",
+              uniprot_id: uniprot.trim() || null,
+              mutations: [] as string[],
+              compounds: compoundPayload,
+              exhaustiveness,
+              include_wt: true,
+            }]
+          : []),
+      ];
+      Promise.all(payloads.map((p) => api.createJob(p)))
         .then((jobs) => {
           // Encode the share IDs in URL for the suite page to pick up.
           const ids = jobs.map((j) => j.share_id || String(j.id)).join(",");
@@ -318,9 +338,9 @@ export default function NewJobPage() {
                 key={t.id}
                 type="button"
                 onClick={() => {
-                  // Toggle this target. Picking a catalog target clears
-                  // "Custom PDB" mode since the two paths can't coexist.
-                  setCustomMode(false);
+                  // Toggle this catalog target. Custom PDB mode can coexist
+                  // with catalog picks — the user might want to dock against
+                  // EGFR + ABL + their-own-AlphaFold-structure in one run.
                   setSelectedIds((ids) =>
                     ids.includes(t.id) ? ids.filter((x) => x !== t.id) : [...ids, t.id],
                   );
@@ -348,41 +368,51 @@ export default function NewJobPage() {
           })}
           <button
             type="button"
-            onClick={() => {
-              // Custom PDB takes over — clear catalog selection so the form
-              // is unambiguous about what's being docked.
-              setSelectedIds([]);
-              setCustomMode(true);
-            }}
-            className={`text-left p-3 rounded-xl border-2 border-dashed transition-all ${
+            onClick={() => setCustomMode((v) => !v)}
+            className={`relative text-left p-3 rounded-xl border-2 border-dashed transition-all ${
               customMode
                 ? "border-delta-500 bg-delta-50 dark:bg-delta-900/30"
                 : "border-slate-200 hover:border-delta-300 text-slate-500 dark:border-slate-700 dark:hover:border-delta-500 dark:text-slate-400"
             }`}
           >
+            {/* Match the catalog-tile checkmark so the Custom toggle has
+                consistent visual feedback when picked. */}
+            {customMode && (
+              <span className="absolute top-1.5 right-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-delta-500 text-white text-[10px] font-bold leading-none">
+                ✓
+              </span>
+            )}
             <div className="text-xs">Custom</div>
             <div className="font-semibold mt-0.5">Other PDB</div>
           </button>
         </div>
 
-        {/* Selectivity-mode banner — only when 2+ catalog targets picked.
-            Mutations are skipped in this mode so the matrix stays focused
-            on cross-kinase selectivity (the actual question multi-target
-            mode answers). */}
+        {/* Selectivity-mode banner — shown when there's more than one target
+            (catalog kinases + custom PDB combined). Mutations are skipped in
+            this mode so the matrix stays focused on cross-kinase selectivity
+            (the actual question multi-target mode answers). */}
         {isMultiTarget && (
           <div className="mt-4 p-4 rounded-lg bg-accent-50 border border-accent-200 dark:bg-accent-900/20 dark:border-accent-800/40">
             <div className="flex items-start gap-2.5">
               <div className="text-accent-700 dark:text-accent-300 text-base shrink-0">⚡</div>
               <div className="text-sm text-accent-900 dark:text-accent-100 leading-relaxed">
-                <div className="font-semibold mb-0.5">Selectivity mode · {targets.length} kinases</div>
+                <div className="font-semibold mb-0.5">
+                  Selectivity mode · {totalTargets} target{totalTargets === 1 ? "" : "s"}
+                </div>
                 <p>
                   Each compound will be docked against the WT structure of every selected
-                  kinase. Per-target mutation analysis is skipped — for that, pick a single
-                  target. Clicking <strong>Run job</strong> submits {targets.length} parallel
+                  target. Per-target mutation analysis is skipped — for that, pick exactly
+                  one target. Clicking <strong>Run selectivity</strong> submits {totalTargets} parallel
                   jobs and takes you to a combined results page.
                 </p>
                 <p className="mt-1.5 text-xs">
-                  Selected: <span className="font-mono">{targets.map((t) => t.id.toUpperCase()).join(", ")}</span>
+                  Selected:{" "}
+                  <span className="font-mono">
+                    {[
+                      ...targets.map((t) => t.id.toUpperCase()),
+                      ...(customCounts ? [`custom:${pdbId.trim().toUpperCase()}/${chain || "A"}`] : []),
+                    ].join(", ")}
+                  </span>
                 </p>
               </div>
             </div>
@@ -601,7 +631,23 @@ export default function NewJobPage() {
               className="input flex-1"
               placeholder='Look up by name (e.g. "imatinib", "aspirin", "GDC-0941")'
               value={lookupQ}
-              onChange={(e) => { setLookupQ(e.target.value); setLookupErr(null); }}
+              onChange={(e) => {
+                const v = e.target.value;
+                setLookupQ(v);
+                setLookupErr(null);
+                // When the user picks a suggestion from the native datalist,
+                // the browser fires onChange with the full suggestion value
+                // in a single event (no per-character typing). If `v` matches
+                // a known suggestion exactly (case-insensitive), treat that as
+                // "user picked it" and fire the lookup immediately — saves the
+                // extra click on the "Look up" button. The same exact-match
+                // condition will fire if the user TYPES a full name letter-by-
+                // letter once the final character matches; that's the desired
+                // UX too (auto-add as soon as the typed name resolves).
+                if (v.trim() && suggestions.some((s) => s.toLowerCase() === v.trim().toLowerCase())) {
+                  runLookup(v.trim());
+                }
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && lookupQ.trim()) {
                   e.preventDefault();
