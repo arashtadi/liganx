@@ -36,6 +36,11 @@ export interface AutocompleteInputProps<T> {
   inputClassName?: string;
   /** Extra props passed to the underlying input (e.g. maxLength). */
   inputProps?: React.InputHTMLAttributes<HTMLInputElement>;
+  /** Optional fallback to render when the dropdown is open but has no items
+   *  and we're not currently loading. Useful for "type it anyway" hints so
+   *  the user doesn't hit a dead-end when their query has no autocomplete
+   *  match. The dropdown stays open so the hint is visible alongside the input. */
+  emptyState?: React.ReactNode;
 }
 
 export default function AutocompleteInput<T>({
@@ -52,6 +57,7 @@ export default function AutocompleteInput<T>({
   openOnFocus = false,
   inputClassName = "input",
   inputProps,
+  emptyState,
 }: AutocompleteInputProps<T>) {
   const [items, setItems] = useState<T[]>([]);
   const [open, setOpen] = useState(false);
@@ -203,6 +209,15 @@ export default function AutocompleteInput<T>({
       {open && loading && items.length === 0 && currentToken.length >= minChars && (
         <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">
           Searching…
+        </div>
+      )}
+      {/* Empty-state hint: open, not loading, no items, and the user has
+          actually typed something (or focus-opened with no min). Rendered
+          inside the same dropdown shell so it visually replaces the list. */}
+      {open && !loading && items.length === 0 && emptyState !== undefined &&
+       (currentToken.length >= minChars || (openOnFocus && minChars === 0)) && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300">
+          {emptyState}
         </div>
       )}
     </div>

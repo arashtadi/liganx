@@ -9,16 +9,25 @@ Two endpoints:
       - Free text (e.g. "EGFR", "kras") → RCSB full-text search → top N entries
         with their titles.
 
-  * /suggest/mutations?q=...&gene=EGFR
-      Curated cancer-mutation list. Filtered by prefix match on the query.
-      When `gene` is provided, mutations on that gene are boosted to the top
-      so they show up first.
+  * /suggest/mutations?q=...&gene=EGFR&uniprot_id=P00533
+      Three-source mutation suggestions:
+      1. Curated clinical/cancer hotspot list (local, ~80 entries) — instant.
+      2. UniProt annotated natural variants (when uniprot_id given) — disease-
+         associated SAVs from EBI Proteins API.
+      3. cBioPortal cancer-cohort hotspots (when gene given) — top recurrent
+         protein-level mutations across all studies.
 
-Both endpoints degrade gracefully — RCSB is best-effort, and the curated list
-is local so it can't fail.
+      Sources are deduped by code, ranked curated > UniProt > cBioPortal, and
+      cached in-memory for 24h to keep autocomplete snappy and avoid hammering
+      external APIs.
+
+All endpoints degrade gracefully — every external call is best-effort. If
+UniProt or cBioPortal is down, the curated list still works.
 """
 
+import asyncio
 import logging
+import time
 from urllib.parse import quote
 
 import httpx
@@ -26,6 +35,27 @@ from fastapi import APIRouter
 
 router = APIRouter(prefix="/suggest", tags=["suggest"])
 log = logging.getLogger(__name__)
+
+# In-process cache for external mutation sources. 24h TTL is fine: UniProt
+# annotations move on weekly cycles, cBioPortal hotspot frequencies change
+# slowly. Cache key is (source, identifier). Eviction is lazy on read.
+_EXT_CACHE: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_EXT_CACHE_TTL_SEC = 24 * 60 * 60
+
+
+def _cache_get(source: str, key: str) -> list[dict] | None:
+    entry = _EXT_CACHE.get((source, key))
+    if not entry:
+        return None
+    ts, val = entry
+    if time.time() - ts > _EXT_CACHE_TTL_SEC:
+        _EXT_CACHE.pop((source, key), None)
+        return None
+    return val
+
+
+def _cache_put(source: str, key: str, val: list[dict]) -> None:
+    _EXT_CACHE[(source, key)] = (time.time(), val)
 
 # RCSB Search v2 — free-text and structure-attribute queries
 RCSB_SEARCH = "https://search.rcsb.org/rcsbsearch/v2/query"
@@ -230,21 +260,279 @@ CURATED_MUTATIONS: list[tuple[str, str, str]] = [
     ("R175H",  "TP53",  "DNA contact, gain-of-function"),
     ("R248Q",  "TP53",  "DNA contact"),
     ("R273H",  "TP53",  "DNA contact"),
+    # JAK2 — myeloproliferative neoplasms
+    ("V617F",  "JAK2",  "constitutive activation, MPN driver"),
+    ("R683G",  "JAK2",  "B-ALL pseudokinase domain"),
+    # FGFR3 — bladder cancer, achondroplasia
+    ("K650E",  "FGFR3", "thanatophoric dysplasia, activating"),
+    ("S249C",  "FGFR3", "bladder cancer hotspot"),
+    ("Y373C",  "FGFR3", "bladder cancer activating"),
+    # FGFR2 — endometrial, cholangiocarcinoma
+    ("N549K",  "FGFR2", "endometrial activating"),
+    ("K659E",  "FGFR2", "kinase domain"),
+    # MEK / MAP2K1 — RASopathies, tumor
+    ("Q56P",   "MAP2K1", "uveal melanoma activating"),
+    ("K57N",   "MAP2K1", "histiocytosis"),
+    # ───── Neurological / Parkinson's / Alzheimer's ─────
+    ("G2019S", "LRRK2", "Parkinson's, kinase activating"),
+    ("R1441C", "LRRK2", "Parkinson's, ROC domain"),
+    ("R1441G", "LRRK2", "Parkinson's, ROC domain"),
+    ("A53T",   "SNCA",  "alpha-synuclein, familial Parkinson's"),
+    ("E46K",   "SNCA",  "alpha-synuclein, familial Parkinson's"),
+    ("V717I",  "APP",   "Alzheimer's, London mutation"),
+    # Huntington's — repeat expansion in HTT, no point mutations dock-relevant
+    # ───── Cystic fibrosis ─────
+    ("F508del", "CFTR", "most common CF allele, processing defect"),
+    ("G551D",   "CFTR", "gating defect, ivacaftor target"),
+    ("G542X",   "CFTR", "premature stop, class I"),
+    ("R117H",   "CFTR", "residual function, mild CF"),
+    # ───── Hemoglobinopathies ─────
+    ("E6V",    "HBB",   "sickle cell anemia, HbS"),
+    ("E6K",    "HBB",   "HbC, hemoglobin C disease"),
+    # ───── Infectious disease — HIV protease / RT ─────
+    ("D30N",   "HIV-PR", "nelfinavir resistance"),
+    ("V82A",   "HIV-PR", "PI multi-resistance"),
+    ("L90M",   "HIV-PR", "saquinavir/indinavir resistance"),
+    ("I84V",   "HIV-PR", "broad PI resistance"),
+    ("M184V",  "HIV-RT", "lamivudine/emtricitabine resistance"),
+    ("K103N",  "HIV-RT", "NNRTI cross-resistance"),
+    # ───── SARS-CoV-2 main protease ─────
+    ("E166V",   "MPRO",  "nirmatrelvir resistance"),
+    ("S144A",   "MPRO",  "nirmatrelvir-resistance pathway"),
+    ("T21I",    "MPRO",  "compensatory in resistance lineages"),
+    # ───── Cardiovascular / metabolic ─────
+    ("D374Y",  "PCSK9", "gain-of-function, hypercholesterolemia"),
+    ("R46L",   "PCSK9", "loss-of-function, low LDL"),
+    # ───── Other actionable rare-disease / inflammation ─────
+    ("V433A",  "DDR1",  "fibrosis-associated"),
+    ("M918T",  "RET",   "MEN2B, medullary thyroid"),
+    ("C634R",  "RET",   "MEN2A, familial medullary thyroid"),
+    ("V804M",  "RET",   "vandetanib gatekeeper resistance"),
+    ("V804L",  "RET",   "selpercatinib resistance"),
+    # ───── NTRK1/2/3 — solvent-front resistance ─────
+    ("G595R",  "NTRK1", "larotrectinib solvent-front resistance"),
+    ("G623R",  "NTRK3", "entrectinib solvent-front resistance"),
 ]
 
 
-@router.get("/mutations")
-def suggest_mutations(
-    q: str = "", gene: str | None = None, limit: int = 10,
-) -> dict:
-    """Return clinical mutation suggestions matching `q` (prefix or substring).
+# EBI Proteins API — annotated natural variants for a UniProt accession
+EBI_VARIATION = "https://www.ebi.ac.uk/proteins/api/variation"
 
-    When `gene` is given (e.g. "EGFR"), mutations on that gene rank first.
-    Empty `q` returns gene-only matches (or first N if no gene either) — useful
-    for showing the picker on focus before the user has typed anything.
+# cBioPortal public REST — pan-cancer mutation hotspots by gene
+# (no auth, ~50 req/sec rate limit, ToS allows research use)
+CBIOPORTAL_API = "https://www.cbioportal.org/api"
+
+# 1-letter → 3-letter amino acid (for parsing UniProt variant entries)
+_AA1 = {
+    "A", "C", "D", "E", "F", "G", "H", "I", "K", "L",
+    "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y",
+}
+
+
+async def _fetch_uniprot_variants(uniprot_id: str) -> list[dict]:
+    """Pull annotated natural variants (single-AA substitutions) from EBI.
+
+    Filters to disease-associated entries with a clean WT/MUT/position triple
+    so we can synthesize a Vina-style mutation code. Returns [] on any error
+    (network, parse, missing field) — the curated list still serves the user.
+    """
+    cached = _cache_get("uniprot", uniprot_id)
+    if cached is not None:
+        return cached
+    url = f"{EBI_VARIATION}/{quote(uniprot_id)}"
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(url, headers={"Accept": "application/json"})
+        if r.status_code != 200:
+            _cache_put("uniprot", uniprot_id, [])
+            return []
+        data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("UniProt variation fetch failed for %s: %s", uniprot_id, e)
+        return []
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    # EBI shape: top-level dict with `features: [{wildType, mutatedType,
+    # begin, end, association: [{disease, ...}], clinicalSignificances: [...]}, ...]`.
+    # The full feed is enormous (5k+ entries for EGFR, mostly raw ClinVar dumps
+    # of "uncertain significance"). Filter aggressively to disease-associated
+    # actionable variants.
+    features = data.get("features") or []
+    for f in features:
+        wt = (f.get("wildType") or "").strip()
+        mut = (f.get("mutatedType") or "").strip()
+        begin = f.get("begin")
+        end = f.get("end")
+        # Single-residue substitutions only — skip indels/frameshifts (PDBFixer
+        # only handles point mutations cleanly).
+        if not wt or not mut or wt == mut:
+            continue
+        if wt not in _AA1 or mut not in _AA1:
+            continue
+        if begin != end or not begin:
+            continue
+        try:
+            pos = int(begin)
+        except (TypeError, ValueError):
+            continue
+
+        # Qualification gate: only admit variants with a *positive* actionable
+        # clinical significance. EBI's full feed has 5000+ entries per gene
+        # (mostly "Variant of uncertain significance" ClinVar dumps + benign
+        # population variants); we want the few hundred that are actually
+        # disease-relevant. Whitelist trumps blacklist here because EBI keeps
+        # adding new "Uncertain" variants.
+        ACTIONABLE = {
+            "pathogenic", "likely pathogenic",
+            "disease", "association", "drug response", "risk factor",
+            "confers susceptibility",
+        }
+        diseases = [
+            (a.get("name") or "").strip()
+            for a in (f.get("association") or [])
+            if a.get("name")
+        ]
+        sig_types = [
+            (s.get("type") or "").strip().lower()
+            for s in (f.get("clinicalSignificances") or [])
+            if s.get("type")
+        ]
+        # Match an actionable label by substring so "Likely pathogenic /
+        # uncertain" composites still count.
+        actionable_hit = next(
+            (t for t in sig_types if any(a in t for a in ACTIONABLE)),
+            None,
+        )
+        if not actionable_hit:
+            # No clinical significance — fall back to admitting variants that
+            # come from a curated source AND have a named disease.
+            source_type = (f.get("sourceType") or "").strip().lower()
+            if source_type != "uniprot" or not diseases:
+                continue
+
+        code = f"{wt}{pos}{mut}"
+        if code in seen:
+            continue
+        seen.add(code)
+
+        # Build a compact note: disease name + actionable significance, e.g.
+        # "Lung cancer — pathogenic"
+        note_parts: list[str] = []
+        if diseases:
+            note_parts.append(diseases[0])
+        if actionable_hit:
+            note_parts.append(actionable_hit)
+        note = " — ".join(note_parts) or "natural variant"
+        out.append({"code": code, "gene": uniprot_id, "note": note,
+                    "source": "uniprot"})
+
+    _cache_put("uniprot", uniprot_id, out)
+    return out
+
+
+async def _fetch_cbioportal_hotspots(gene: str) -> list[dict]:
+    """Pull recurrent protein-level mutations for a gene from cBioPortal.
+
+    Strategy: use the `/api/mutations/fetch` endpoint scoped to the
+    pan-cancer MSK-IMPACT cohort (~10k tumor samples, dense genomic
+    coverage). We aggregate by proteinChange and rank by recurrence count.
+    Returns [] on any error.
+    """
+    gene_u = (gene or "").strip().upper()
+    if not gene_u:
+        return []
+    cached = _cache_get("cbioportal", gene_u)
+    if cached is not None:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # 1) Resolve gene symbol → entrezGeneId
+            gr = await client.get(f"{CBIOPORTAL_API}/genes/{quote(gene_u)}")
+            if gr.status_code != 200:
+                _cache_put("cbioportal", gene_u, [])
+                return []
+            entrez = gr.json().get("entrezGeneId")
+            if not entrez:
+                _cache_put("cbioportal", gene_u, [])
+                return []
+
+            # 2) Pull mutations from a broad pan-cancer profile.
+            # `msk_impact_2017_mutations` is large, public, and dense.
+            # Use DETAILED projection so the proteinChange field is populated
+            # — `projection=ID` returns only IDs and we get nothing to rank by.
+            mr = await client.post(
+                f"{CBIOPORTAL_API}/mutations/fetch",
+                params={"projection": "DETAILED"},
+                json={
+                    "entrezGeneIds": [entrez],
+                    "molecularProfileIds": ["msk_impact_2017_mutations"],
+                },
+            )
+        if mr.status_code != 200:
+            _cache_put("cbioportal", gene_u, [])
+            return []
+        muts = mr.json() or []
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("cBioPortal fetch failed for %s: %s", gene_u, e)
+        return []
+
+    # Aggregate: count occurrences of each protein-level change.
+    counts: dict[str, int] = {}
+    for m in muts:
+        pc = (m.get("proteinChange") or "").strip()
+        if not pc:
+            continue
+        # Normalize: strip any "p." prefix; keep WT-pos-MUT shape
+        if pc.startswith("p."):
+            pc = pc[2:]
+        # Heuristic: must look like a single-AA substitution (V600E etc.).
+        # Skip splice/fusion/silent.
+        if len(pc) < 3 or not pc[0].isalpha() or not pc[-1].isalpha():
+            continue
+        if not pc[1:-1].isdigit():
+            continue
+        if pc[0].upper() not in _AA1 or pc[-1].upper() not in _AA1:
+            continue
+        if pc[0].upper() == pc[-1].upper():
+            continue  # silent
+        counts[pc.upper()] = counts.get(pc.upper(), 0) + 1
+
+    # Take top 30, sort by recurrence desc
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:30]
+    out = [
+        {"code": code, "gene": gene_u, "note": f"cBioPortal: {n}× recurrent",
+         "source": "cbioportal"}
+        for code, n in ranked
+    ]
+    _cache_put("cbioportal", gene_u, out)
+    return out
+
+
+@router.get("/mutations")
+async def suggest_mutations(
+    q: str = "",
+    gene: str | None = None,
+    uniprot_id: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Return mutation suggestions from curated + UniProt + cBioPortal sources.
+
+    Args:
+      q: query string. Prefix or substring match on the mutation code.
+      gene: gene symbol (e.g. "EGFR"). Boosts curated entries on this gene
+        and triggers a cBioPortal hotspot lookup.
+      uniprot_id: UniProt accession (e.g. "P00533"). Triggers an EBI variation
+        lookup for annotated natural variants.
+      limit: max results, 1–30.
+
+    Empty `q` returns gene/uniprot-scoped matches first — useful for showing
+    the picker on focus before the user has typed.
     """
     query = q.strip().upper()
     gene_norm = (gene or "").strip().upper() or None
+    uniprot_norm = (uniprot_id or "").strip().upper() or None
     limit = max(1, min(30, limit))
 
     def matches(code: str) -> bool:
@@ -253,26 +541,76 @@ def suggest_mutations(
         # Prefer prefix match, but allow substring (e.g. "790" matches T790M)
         return code.upper().startswith(query) or query in code.upper()
 
-    # Score: 0 = on requested gene + prefix match
-    #        1 = on requested gene
-    #        2 = prefix match on any gene
-    #        3 = substring match on any gene
-    scored: list[tuple[int, dict]] = []
+    # ── Source 1: curated (local) ────────────────────────────────────────
+    curated_items: list[dict] = []
     for code, mgene, note in CURATED_MUTATIONS:
         if not matches(code):
             continue
-        is_gene = gene_norm is not None and mgene == gene_norm
-        is_prefix = bool(query) and code.upper().startswith(query)
-        if is_gene and is_prefix:
-            score = 0
-        elif is_gene:
-            score = 1
-        elif is_prefix:
-            score = 2
-        else:
-            score = 3
-        scored.append((score, {"code": code, "gene": mgene, "note": note}))
+        curated_items.append({"code": code, "gene": mgene, "note": note,
+                              "source": "curated"})
 
-    scored.sort(key=lambda x: (x[0], x[1]["code"]))
-    suggestions = [item for _, item in scored[:limit]]
-    return {"query": q, "gene": gene, "suggestions": suggestions}
+    # ── Sources 2 & 3 in parallel — fire only when we have an identifier ──
+    tasks = []
+    if uniprot_norm:
+        tasks.append(_fetch_uniprot_variants(uniprot_norm))
+    if gene_norm:
+        tasks.append(_fetch_cbioportal_hotspots(gene_norm))
+    external: list[list[dict]] = []
+    if tasks:
+        try:
+            external = await asyncio.gather(*tasks, return_exceptions=False)
+        except Exception as e:  # gather shouldn't raise w/ return_exceptions=False, but belt&braces
+            log.warning("external mutation fetch failed: %s", e)
+            external = []
+
+    uniprot_items: list[dict] = external[0] if uniprot_norm and external else []
+    cbio_offset = 1 if uniprot_norm else 0
+    cbio_items: list[dict] = (
+        external[cbio_offset] if gene_norm and len(external) > cbio_offset else []
+    )
+
+    # Apply query filter to external sources too
+    uniprot_items = [m for m in uniprot_items if matches(m["code"])]
+    cbio_items = [m for m in cbio_items if matches(m["code"])]
+
+    # ── Score + dedupe ────────────────────────────────────────────────────
+    # Score lower = better. Curated > UniProt > cBioPortal.
+    # Within each tier, gene-match and prefix-match further boost.
+    def score(item: dict) -> tuple[int, str]:
+        src = item.get("source", "curated")
+        is_gene = gene_norm is not None and (
+            item["gene"] == gene_norm or item["gene"] == uniprot_norm
+        )
+        is_prefix = bool(query) and item["code"].upper().startswith(query)
+        if src == "curated":
+            base = 0
+        elif src == "uniprot":
+            base = 10
+        else:  # cbioportal
+            base = 20
+        # Boost: gene match -2, prefix match -1
+        boost = 0
+        if is_gene:
+            boost -= 2
+        if is_prefix:
+            boost -= 1
+        return (base + boost, item["code"])
+
+    seen_codes: set[str] = set()
+    merged: list[tuple[tuple[int, str], dict]] = []
+    for pool in (curated_items, uniprot_items, cbio_items):
+        for item in pool:
+            code_u = item["code"].upper()
+            if code_u in seen_codes:
+                continue
+            seen_codes.add(code_u)
+            merged.append((score(item), item))
+
+    merged.sort(key=lambda x: x[0])
+    suggestions = [item for _, item in merged[:limit]]
+    return {
+        "query": q,
+        "gene": gene,
+        "uniprot_id": uniprot_id,
+        "suggestions": suggestions,
+    }

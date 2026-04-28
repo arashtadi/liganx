@@ -178,12 +178,13 @@ export const api = {
     request<{ query: string; suggestions: { pdb_id: string; title: string }[] }>(
       `/suggest/pdb?q=${encodeURIComponent(q)}`,
     ),
-  suggestMutations: (q: string, gene?: string | null) => {
+  suggestMutations: (q: string, gene?: string | null, uniprotId?: string | null) => {
     const params = new URLSearchParams({ q });
     if (gene) params.set("gene", gene);
+    if (uniprotId) params.set("uniprot_id", uniprotId);
     return request<{
-      query: string; gene: string | null;
-      suggestions: { code: string; gene: string; note: string }[];
+      query: string; gene: string | null; uniprot_id: string | null;
+      suggestions: { code: string; gene: string; note: string; source?: "curated" | "uniprot" | "cbioportal" }[];
     }>(`/suggest/mutations?${params.toString()}`);
   },
   parseCompoundsFile: async (file: File): Promise<{ compounds: { name: string; smiles: string }[]; truncated: boolean; limit?: number }> => {

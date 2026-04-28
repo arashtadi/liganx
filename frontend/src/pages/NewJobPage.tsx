@@ -623,7 +623,10 @@ export default function NewJobPage() {
                       onChange={(v) => setCustomMutationsFor(tid, v)}
                       mode="tokens"
                       fetchSuggestions={async (q) => {
-                        const r = await api.suggestMutations(q, t.id.toUpperCase());
+                        // Pass UniProt accession so the backend can pull
+                        // disease-associated natural variants from EBI in
+                        // addition to our curated list and cBioPortal hotspots.
+                        const r = await api.suggestMutations(q, t.id.toUpperCase(), t.uniprot);
                         return r.suggestions;
                       }}
                       getValue={(item) => item.code}
@@ -631,9 +634,28 @@ export default function NewJobPage() {
                         <div className="flex items-baseline gap-2">
                           <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
                           <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                          <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+                          <span className="text-[11px] text-slate-500 truncate flex-1">{item.note}</span>
+                          {item.source && item.source !== "curated" && (
+                            <span
+                              className={
+                                "shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold " +
+                                (item.source === "uniprot"
+                                  ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+                                  : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300")
+                              }
+                              title={item.source === "uniprot" ? "From UniProt annotated variants" : "From cBioPortal cohorts"}
+                            >
+                              {item.source === "uniprot" ? "UniProt" : "cBioPortal"}
+                            </span>
+                          )}
                         </div>
                       )}
+                      emptyState={
+                        <span>
+                          No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
+                          if the residue exists in {t.pdb_id}/{t.chain || "A"}, the runner will build it.
+                        </span>
+                      }
                       placeholder="e.g. T790M, L858R — start typing for suggestions"
                       inputClassName="input font-mono"
                       openOnFocus
@@ -702,8 +724,10 @@ export default function NewJobPage() {
                       value={customStr}
                       onChange={(v) => setCustomMutationsFor(CUSTOM_KEY, v)}
                       mode="tokens"
-                      // No gene filter — the user picks from any kinase's
-                      // suggestions since we don't know what their PDB is.
+                      // No gene/uniprot filter — the user picks from any
+                      // gene's suggestions since we don't know what their PDB
+                      // encodes. Curated list only (UniProt/cBioPortal need an
+                      // identifier we don't have for arbitrary uploads).
                       fetchSuggestions={async (q) => {
                         const r = await api.suggestMutations(q, null);
                         return r.suggestions;
@@ -716,6 +740,12 @@ export default function NewJobPage() {
                           <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
                         </div>
                       )}
+                      emptyState={
+                        <span>
+                          No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
+                          the runner verifies the residue exists in your PDB at the given chain+number.
+                        </span>
+                      }
                       placeholder="e.g. T315I, L858R, T790M+C797S"
                       inputClassName="input font-mono"
                       openOnFocus
