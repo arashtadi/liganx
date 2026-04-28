@@ -38,27 +38,37 @@ export default function NewJobPage() {
   const [includeWt, setIncludeWt] = useState(true);
 
   // First-target-pick guard. Auto-loading the catalog's default compounds +
-  // mutations is great on the FIRST target pick (saves typing), but if the
-  // user then adds their own compound and switches targets to compare, we
-  // shouldn't blow their work away. So we only auto-fill once per session;
-  // subsequent target switches just update the structural fields (pdb_id /
-  // chain / uniprot). The user can still click "Load all reference" in
-  // step 3 to opt back into the new target's catalog compounds.
+  // mutations is great on the FIRST target pick (saves typing). After that,
+  // we want to preserve user work on target switch — but with one twist:
+  //   * compounds + customMutations stay (user-typed, target-agnostic)
+  //   * selectedMutations CLEARS on target switch (mutation chips are
+  //     target-specific — T790M only shows for EGFR; carrying it forward
+  //     makes the "Will dock 6 mutants" summary list mutations the user
+  //     can no longer see in the chip row, which is confusing.)
   const autoFilledRef = useRef(false);
+  const previousTargetIdRef = useRef<string | null>(null);
 
   // When the target changes, update the structural fields. Auto-populate the
-  // compound + mutation lists on the very first pick only.
+  // compound + mutation lists on the very first pick only; clear chip-based
+  // mutations on every subsequent target change.
   useEffect(() => {
     if (!target) return;
     setPdbId(target.pdb_id);
     setChain(target.chain);
     setUniprot(target.uniprot);
     if (!autoFilledRef.current) {
+      // First target pick — load defaults.
       setSelectedMutations(target.mutations.slice(0, 3).map((m) => m.code));
       setCustomMutations("");
       setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
       autoFilledRef.current = true;
+    } else if (previousTargetIdRef.current !== target.id) {
+      // Subsequent switch to a different target — clear chip selections so
+      // they don't ghost into the dock summary. Custom-typed mutations
+      // (user explicitly authored) and compounds are preserved.
+      setSelectedMutations([]);
     }
+    previousTargetIdRef.current = target.id;
   }, [target]);
 
   // Strict mutation-code validation. Accepts:
