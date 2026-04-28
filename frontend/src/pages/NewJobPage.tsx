@@ -46,6 +46,12 @@ export default function NewJobPage() {
   // fan out N parallel jobs, redirect to a suite view.
   const isMultiTarget = totalTargets > 1;
   const target: CatalogTarget | undefined = isMultiTarget ? undefined : targets[0];
+
+  // Synthetic id for the Custom PDB row in selectedMutationsByTarget /
+  // customMutationsByTarget Records. Catalog targets use their real id
+  // ("egfr", "abl"); custom uses this key. Keeping it scoped to a constant
+  // means no risk of collision with a future catalog id called "__custom__".
+  const CUSTOM_KEY = "__custom__";
   // Per-target mutation state. Keys are catalog target IDs (e.g. "egfr").
   // In single-target mode we only ever populate one key; in multi-target
   // (selectivity) mode each selected kinase gets its own chip selection,
@@ -127,11 +133,17 @@ export default function NewJobPage() {
 
   // Single-target compatibility shim used by Step 4's count summary
   // (variantCount = WT? + total chosen mutations across all currently-
-  // visible target cards).
+  // visible target cards). Includes the custom-PDB row's user-typed
+  // mutations when customMode is on, so the count + single-target
+  // submit payload reflect them too.
   const allMutations = useMemo(
-    () => targets.flatMap((t) => mutationsForTarget(t.id)),
+    () => {
+      const fromCatalog = targets.flatMap((t) => mutationsForTarget(t.id));
+      const fromCustom = customMode && pdbId.trim() ? mutationsForTarget(CUSTOM_KEY) : [];
+      return Array.from(new Set([...fromCatalog, ...fromCustom]));
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [targets, selectedMutationsByTarget, customMutationsByTarget],
+    [targets, customMode, pdbId, selectedMutationsByTarget, customMutationsByTarget],
   );
 
   const submit = useMutation({
@@ -300,9 +312,11 @@ export default function NewJobPage() {
               pdb_id: pdbId.trim().toUpperCase(),
               chain: chain || "A",
               uniprot_id: uniprot.trim() || null,
-              // Custom PDB has no per-target mutation chips (no curated
-              // library). It always docks WT-only in selectivity mode.
-              mutations: [] as string[],
+              // Custom PDB has no curated chips, but user-typed mutations
+              // are honoured — the runner's PDBFixer mutation builder
+              // verifies each residue exists in the PDB at the requested
+              // chain+number and fails loudly if not.
+              mutations: mutationsForTarget(CUSTOM_KEY),
               compounds: compoundPayload,
               exhaustiveness,
               include_wt: true,
@@ -546,10 +560,10 @@ export default function NewJobPage() {
             : "Click any to toggle. We always dock against WT in addition to what you select."
         }
       >
-        {targets.length === 0 ? (
+        {targets.length === 0 && !(customMode && pdbId.trim()) ? (
           <div className="text-sm text-slate-500 dark:text-slate-400 italic">
             {customMode
-              ? "Custom PDB has no curated mutation library — your custom structure will dock WT-only. Pick a catalog target above to add mutations."
+              ? "Type a PDB ID below first, then come back here to add mutations."
               : "Pick a target above first."}
           </div>
         ) : (
@@ -650,12 +664,88 @@ export default function NewJobPage() {
                 </div>
               );
             })}
-            {customMode && pdbId.trim().length > 0 && isMultiTarget && (
-              <div className="text-xs text-slate-500 dark:text-slate-400 italic px-1">
-                Custom PDB <span className="font-mono">{pdbId.trim().toUpperCase()}</span> will
-                dock WT-only — no curated mutation library available.
-              </div>
-            )}
+            {/* Custom PDB mutation card — no curated chips (we don't know
+                what's in an arbitrary user-supplied structure), but the
+                custom-mutations textarea works the same as for catalog
+                targets. The runner's PDBFixer mutation builder will apply
+                whatever the user types, validating that the residue exists
+                in the PDB at the requested chain+number. */}
+            {customMode && pdbId.trim().length > 0 && (() => {
+              const customStr = customMutationsByTarget[CUSTOM_KEY] ?? "";
+              const all = mutationsForTarget(CUSTOM_KEY);
+              const invalid = invalidTokensForTarget(CUSTOM_KEY);
+              return (
+                <div
+                  className={
+                    isMultiTarget
+                      ? "rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white/60 dark:bg-slate-800/40"
+                      : ""
+                  }
+                >
+                  {isMultiTarget && (
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
+                        CUSTOM
+                      </span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                        {pdbId.trim().toUpperCase()}/{chain || "A"}
+                      </span>
+                    </div>
+                  )}
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2 leading-snug">
+                    No curated chip library for custom structures. Type mutation codes by hand —
+                    the runner verifies each residue exists in your PDB at the given chain+number.
+                  </p>
+                  <div>
+                    <label className="label">Custom mutations (comma-separated)</label>
+                    <AutocompleteInput
+                      value={customStr}
+                      onChange={(v) => setCustomMutationsFor(CUSTOM_KEY, v)}
+                      mode="tokens"
+                      // No gene filter — the user picks from any kinase's
+                      // suggestions since we don't know what their PDB is.
+                      fetchSuggestions={async (q) => {
+                        const r = await api.suggestMutations(q, null);
+                        return r.suggestions;
+                      }}
+                      getValue={(item) => item.code}
+                      renderItem={(item) => (
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
+                          <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+                        </div>
+                      )}
+                      placeholder="e.g. T315I, L858R, T790M+C797S"
+                      inputClassName="input font-mono"
+                      openOnFocus
+                      minChars={0}
+                    />
+                  </div>
+                  <SummaryRow>
+                    <span>
+                      {all.length === 0
+                        ? `Will dock WT only.`
+                        : `Will dock WT + ${all.length} mutant${all.length === 1 ? "" : "s"}: `}
+                    </span>
+                    {all.length > 0 && (
+                      <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
+                    )}
+                  </SummaryRow>
+                  {invalid.length > 0 && (
+                    <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-md px-3 py-2">
+                      <span className="font-semibold">Ignored:</span>{" "}
+                      <span className="font-mono">{invalid.join(", ")}</span>
+                      {" — "}
+                      <span className="text-amber-600 dark:text-amber-400/80">
+                        expected codes like <code className="font-mono">T790M</code>,{" "}
+                        <code className="font-mono">G12C</code>, or <code className="font-mono">T790M+C797S</code>.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </Step>
