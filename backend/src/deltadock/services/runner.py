@@ -443,21 +443,32 @@ def _run_real(session: Session, job: Job) -> None:
             fix_pdb(raw_pdb, cleaned_pdb, chain=chain)
             _stamp(cleaned_pdb)
         except Exception as e:
-            # Self-heal: if the raw cached PDB is corrupted (e.g. previous
-            # truncated download or stale partial file from before commit
-            # f44018c added the ATOM-count check), delete it so the next
-            # attempt re-fetches a clean copy from RCSB. This converts what
-            # used to be a permanently-broken target into a one-job hiccup.
-            if "No ATOM lines kept" in str(e) and not pdb_id.startswith("USR_"):
-                try:
-                    raw_pdb.unlink()
-                    log.warning(
-                        "Cached raw %s appeared empty after cleaning — "
-                        "deleted so next request refetches from RCSB",
-                        raw_pdb.name,
-                    )
-                except OSError:
-                    pass
+            # Self-heal: ANY failure inside fix_pdb suggests the cached raw
+            # or cleaned files are in a bad state — could be:
+            #   - "No ATOM lines kept": empty/truncated download
+            #   - IndexError from PDBFixer: corrupt residue records
+            #   - PrepError from obabel/PDBFixer: malformed coordinates
+            #   - ValueError parsing coordinate fields
+            # In all cases the cure is the same: nuke both the raw cached
+            # file (forces refetch from RCSB) and any partial cleaned
+            # output (forces re-clean). Cleanup is best-effort — failures
+            # to unlink are silently ignored. USR_ uploads are exempt
+            # from raw-file deletion since we can't refetch user uploads.
+            if not pdb_id.startswith("USR_"):
+                for stale_path in (raw_pdb, cleaned_pdb,
+                                   cleaned_pdb.with_suffix(cleaned_pdb.suffix + ".prep_version"),
+                                   cleaned_pdb.with_suffix(".prestrip.pdb")):
+                    try:
+                        if stale_path.exists():
+                            stale_path.unlink()
+                    except OSError:
+                        pass
+                log.warning(
+                    "fix_pdb failed for %s — deleted raw + cleaned caches "
+                    "so the next attempt rebuilds from a fresh RCSB fetch. "
+                    "Original error: %s",
+                    pdb_id, str(e)[:160],
+                )
             raise RuntimeError(
                 f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: {type(e).__name__}: {e}"
             ) from e
