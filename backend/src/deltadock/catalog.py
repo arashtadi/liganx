@@ -92,7 +92,7 @@ KRAS = Target(
     uniprot="P01116",
     pdb_id="4OBE",
     chain="A",
-    pocket=PocketBox(center=(-7.7, -11.7, 27.8)),  # GDP centroid
+    pocket=PocketBox(center=(2.0, -10.4, 38.2)),  # GDP centroid — corrected 2026-04-28 (was 14.3 Å off, partial pocket overlap only)
     description=(
         "KRAS — historically considered undruggable, until covalent G12C inhibitors. "
         "The G12C/G12D allele-selective workflow is the poster child for our "
@@ -120,7 +120,7 @@ BRAF = Target(
     uniprot="P15056",
     pdb_id="4WO5",
     chain="A",
-    pocket=PocketBox(center=(-28.2, -12.2, -28.2)),  # 324 inhibitor co-crystal
+    pocket=PocketBox(center=(-37.1, -15.4, -43.3)),  # 324 inhibitor co-crystal — corrected 2026-04-28 (was 17.8 Å off)
     description=(
         "Serine/threonine kinase in the MAPK pathway. The V600E mutation is the most "
         "studied actionable single-residue change in oncology."
@@ -147,7 +147,7 @@ IDH1 = Target(
     uniprot="O75874",
     pdb_id="1T0L",
     chain="A",
-    pocket=PocketBox(center=(22.8, -63.7, 28.9)),  # NAP (NADP+) cofactor site — verified centroid
+    pocket=PocketBox(center=(59.8, -30.0, 26.1)),  # NAP (NADP+) cofactor centroid — corrected 2026-04-28 (was 50.2 Å off — completely wrong, docking into empty space)
     description=(
         "Isocitrate dehydrogenase 1. The R132H mutation creates a neomorphic enzyme "
         "producing 2-hydroxyglutarate. Allosteric inhibitors that selectively target "
@@ -173,7 +173,7 @@ ABL = Target(
     uniprot="P00519",
     pdb_id="2HYY",
     chain="A",
-    pocket=PocketBox(center=(37.2, 37.0, 30.4)),  # imatinib (STI) co-crystal
+    pocket=PocketBox(center=(14.3, 15.3, 17.6)),  # imatinib (STI) co-crystal centroid — corrected 2026-04-28 (was 34.1 Å off — Imatinib was docking into empty space, blew our positive control)
     description=(
         "BCR-ABL is the driver of chronic myeloid leukemia. The T315I gatekeeper "
         "mutation is the textbook resistance event — it broke imatinib and drove "
@@ -204,7 +204,7 @@ HER2 = Target(
     uniprot="P04626",
     pdb_id="3PP0",
     chain="A",
-    pocket=PocketBox(center=(25.9, 30.6, 7.6)),  # 03Q inhibitor co-crystal
+    pocket=PocketBox(center=(17.1, 16.5, 26.6)),  # 03Q inhibitor centroid — corrected 2026-04-28 (was 25.2 Å off)
     description=(
         "ERBB2/HER2 — driver of a major breast cancer subtype and increasingly "
         "recognized in lung, gastric, and colorectal cancers. Kinase-domain "
@@ -309,7 +309,7 @@ FLT3 = Target(
     uniprot="P36888",
     pdb_id="4XUF",
     chain="A",
-    pocket=PocketBox(center=(-1.3, 17.4, -38.5)),  # P30 inhibitor
+    pocket=PocketBox(center=(21.3, 17.6, -12.8)),  # P30 inhibitor centroid — corrected 2026-04-28 (was 34.2 Å off — D835V activation loop also lives in this region now)
     description=(
         "FLT3 ITD and TKD mutations drive a major subset of acute myeloid leukemia. "
         "Resistance to gilteritinib via F691L and D835 mutations is increasingly "
