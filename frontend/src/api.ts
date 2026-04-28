@@ -191,6 +191,20 @@ export const api = {
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
   cancelJob: (key: string | number) =>
     request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
+  /** Permanently delete a job and all its compounds/results. Owner-only;
+   *  the backend returns 404 for non-owners (doesn't reveal existence).
+   *  Returns void (the endpoint is 204 No Content on success). */
+  deleteJob: async (key: string | number): Promise<void> => {
+    const r = await fetch(`${BASE}/jobs/${key}`, {
+      method: "DELETE",
+      headers: { ...(await authHeader()) },
+    });
+    if (!r.ok && r.status !== 204) {
+      let detail: string | undefined;
+      try { detail = (await r.json())?.detail; } catch { /* */ }
+      throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`);
+    }
+  },
   listJobs: () => request<Job[]>("/jobs"),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),

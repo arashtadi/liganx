@@ -4,9 +4,9 @@
 
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
-import { Spinner } from "../components/Icons";
+import { Close, Spinner } from "../components/Icons";
 
 function statusPill(s: Job["status"]) {
   const base = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset";
@@ -118,35 +118,112 @@ export default function HistoryPage() {
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
             {filtered.map((j) => (
-              <li key={j.id}>
-                <Link
-                  to={`/jobs/${j.share_id}`}
-                  className="block px-4 py-3 hover:bg-slate-50 transition-colors dark:hover:bg-slate-800/60"
-                >
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-semibold text-ink dark:text-slate-100 truncate">
-                          {j.title || defaultTitle(j)}
-                        </span>
-                        {statusPill(j.status)}
-                      </div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate">
-                        {j.pdb_id}/{j.chain}
-                        {j.mutations.length > 0 && ` · ${j.mutations.join(", ")}`}
-                        {` · ${j.compounds.length} compound${j.compounds.length === 1 ? "" : "s"}`}
-                      </div>
-                    </div>
-                    <div className="text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap">
-                      {fmtDate(j.created_at)}
-                    </div>
-                  </div>
-                </Link>
-              </li>
+              <HistoryRow key={j.id} job={j} />
             ))}
           </ul>
         )}
       </div>
     </div>
+  );
+}
+
+/** A single history list row with an inline two-step delete button.
+ *
+ * Why two-step: confirm-on-click avoids native `confirm()` (ugly + can't be
+ * styled to match the app) without making misclicks irreversible. First click
+ * arms the button; second click within ~5s actually deletes. Outside that
+ * window the button reverts to its idle state — the timeout protects against
+ * "armed forever" footguns.
+ *
+ * The whole row is wrapped in a Link, but we stop propagation on the delete
+ * button so clicking it never navigates into the job. */
+function HistoryRow({ job }: { job: Job }) {
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onDeleteClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirming) {
+      setConfirming(true);
+      setErr(null);
+      // Auto-revert after 5s so the row doesn't stay armed if the user
+      // wandered off. Safe to call setConfirming(false) unconditionally —
+      // if the deletion is already in flight, busy=true is the source of
+      // truth for "click does nothing", and confirming gets reset on row
+      // unmount anyway.
+      window.setTimeout(() => setConfirming(false), 5000);
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.deleteJob(job.share_id);
+      // Optimistic refresh. Could be `setQueryData` to remove just this row,
+      // but a refetch is cheap (one GET /jobs) and stays in sync if other
+      // tabs deleted/added jobs in parallel.
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    } catch (e) {
+      setBusy(false);
+      setConfirming(false);
+      setErr((e as Error).message);
+    }
+  }
+
+  return (
+    <li className="relative">
+      <Link
+        to={`/jobs/${job.share_id}`}
+        className="block px-4 py-3 hover:bg-slate-50 transition-colors dark:hover:bg-slate-800/60"
+      >
+        <div className="flex items-baseline justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <span className="font-semibold text-ink dark:text-slate-100 truncate">
+                {job.title || defaultTitle(job)}
+              </span>
+              {statusPill(job.status)}
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate">
+              {job.pdb_id}/{job.chain}
+              {job.mutations.length > 0 && ` · ${job.mutations.join(", ")}`}
+              {` · ${job.compounds.length} compound${job.compounds.length === 1 ? "" : "s"}`}
+            </div>
+            {err && (
+              <div className="text-[11px] text-rose-700 dark:text-rose-300 mt-1">
+                Couldn't delete: {err}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3 whitespace-nowrap">
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              {fmtDate(job.created_at)}
+            </span>
+            <button
+              type="button"
+              onClick={onDeleteClick}
+              disabled={busy}
+              className={
+                "inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors " +
+                (confirming
+                  ? "bg-rose-600 text-white hover:bg-rose-700"
+                  : "text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 dark:hover:text-rose-300")
+              }
+              title={confirming ? "Click again to confirm delete" : "Delete this job"}
+              aria-label={confirming ? "Confirm delete" : "Delete job"}
+            >
+              {busy ? (
+                <Spinner size={12} />
+              ) : confirming ? (
+                <>Confirm delete</>
+              ) : (
+                <Close size={14} />
+              )}
+            </button>
+          </div>
+        </div>
+      </Link>
+    </li>
   );
 }

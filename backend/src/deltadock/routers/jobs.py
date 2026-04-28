@@ -238,6 +238,41 @@ def cancel_job(
     return _to_out(job)
 
 
+@router.delete("/{job_key}", status_code=204)
+def delete_job(
+    job_key: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    """Permanently delete a job and all its compounds + docking results.
+
+    Owner-only — non-owners get 404 (we don't reveal that the job exists).
+    Cascade is done in app code because the migration didn't add ON DELETE
+    CASCADE on the FKs (intentional — it lets us decide per-table whether to
+    follow the parent down).
+
+    Pose files on the Fly volume are NOT deleted here. They become orphaned
+    but are harmless (~few KB each), and a periodic cleanup job can sweep
+    them up by checking for missing parent dockingresult rows. Leaving the
+    pose IO out of this path keeps the endpoint fast and avoids partial-
+    failure modes (DB row gone, file orphaned vs file gone, DB row stuck).
+    """
+    job = _resolve_job(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != user.id:
+        # Don't leak existence: return 404, not 403.
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Children first (no FK cascade in schema).
+    for r in session.exec(select(DockingResult).where(DockingResult.job_id == job.id)):
+        session.delete(r)
+    for c in session.exec(select(Compound).where(Compound.job_id == job.id)):
+        session.delete(c)
+    session.delete(job)
+    session.commit()
+
+
 @router.get("", response_model=list[JobOut])
 def list_jobs(
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
