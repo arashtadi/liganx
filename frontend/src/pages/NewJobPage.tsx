@@ -18,13 +18,23 @@ export default function NewJobPage() {
     queryFn: api.catalog,
   });
 
-  // Pre-select the target from ?target=xxx if present (e.g. coming from Library)
+  // Pre-select the target from ?target=xxx if present (e.g. coming from Library).
+  // selectedIds is now an ARRAY — pick multiple to enter "selectivity mode"
+  // and dock the same compound list against several kinases in parallel.
+  // Single-target use is the special case selectedIds.length === 1; the rest
+  // of the form behaves exactly as before in that case.
   const initialTarget = searchParams.get("target")?.toLowerCase() ?? "egfr";
-  const [selectedId, setSelectedId] = useState<string | null>(initialTarget);
-  const target: CatalogTarget | undefined = useMemo(
-    () => catalog?.find((t) => t.id === selectedId),
-    [catalog, selectedId],
+  const [selectedIds, setSelectedIds] = useState<string[]>([initialTarget]);
+  const [customMode, setCustomMode] = useState(false);
+  const targets: CatalogTarget[] = useMemo(
+    () => (catalog ?? []).filter((t) => selectedIds.includes(t.id)),
+    [catalog, selectedIds],
   );
+  // Single-target mode preserves all the existing form UX (mutations, custom
+  // PDB, full per-target tweaking). Multi-target mode is "selectivity mode"
+  // — WT only, fan out N parallel jobs, redirect to a suite view.
+  const isMultiTarget = targets.length > 1;
+  const target: CatalogTarget | undefined = isMultiTarget ? undefined : targets[0];
 
   const [pdbId, setPdbId] = useState("");
   const [chain, setChain] = useState("A");
@@ -221,15 +231,54 @@ export default function NewJobPage() {
   // 16 → ~6 s, 32 → ~12 s on the GPU Pod). Rough enough to set expectations.
   const estSeconds = totalDockings * (3 * (exhaustiveness / 8));
 
+  // Submission disabled while in flight — set when fan-out is running so the
+  // user can't double-click and submit 2× as many jobs.
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const cleaned = compounds.filter((c) => c.smiles.trim());
+    const compoundPayload = cleaned.map((c) => ({ name: c.name || null, smiles: c.smiles.trim() }));
+
+    if (isMultiTarget) {
+      // Selectivity mode — fan out N parallel jobs, one per target, WT only.
+      // We deliberately ignore allMutations here because the UI hides the
+      // mutation panel in this mode; double-defending against any leak.
+      setSubmitting(true);
+      setSubmitErr(null);
+      Promise.all(
+        targets.map((t) =>
+          api.createJob({
+            pdb_id: t.pdb_id,
+            chain: t.chain,
+            uniprot_id: t.uniprot,
+            mutations: [],
+            compounds: compoundPayload,
+            exhaustiveness,
+            include_wt: true,  // selectivity = WT-only by definition
+          }),
+        ),
+      )
+        .then((jobs) => {
+          // Encode the share IDs in URL for the suite page to pick up.
+          const ids = jobs.map((j) => j.share_id || String(j.id)).join(",");
+          navigate(`/suite?ids=${encodeURIComponent(ids)}`);
+        })
+        .catch((err) => {
+          setSubmitErr(`Failed to submit selectivity suite: ${(err as Error).message}`);
+        })
+        .finally(() => setSubmitting(false));
+      return;
+    }
+
+    // Single-target mode — unchanged behaviour.
     submit.mutate({
       pdb_id: pdbId.trim().toUpperCase(),
       chain,
       uniprot_id: uniprot.trim() || null,
       mutations: allMutations,
-      compounds: cleaned.map((c) => ({ name: c.name || null, smiles: c.smiles.trim() })),
+      compounds: compoundPayload,
       exhaustiveness,
       include_wt: includeWt,
     });
@@ -255,31 +304,58 @@ export default function NewJobPage() {
       </div>
 
       {/* ── Step 1: Target ─────────────────────────────────────────────── */}
-      <Step n={1} icon={<Target />} title="Choose a target" subtitle="Curated kinases with pre-defined pockets, or use custom.">
+      <Step
+        n={1}
+        icon={<Target />}
+        title="Choose target(s)"
+        subtitle="Click one for full mutation analysis · click multiple for kinase-selectivity mode."
+      >
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {catalog?.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setSelectedId(t.id)}
-              className={`text-left p-3 rounded-xl border transition-all ${
-                selectedId === t.id
-                  ? "border-delta-500 bg-delta-50 shadow-glow dark:bg-delta-900/30 dark:border-delta-400"
-                  : "border-slate-200 bg-white hover:border-delta-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400 dark:hover:bg-slate-700/50"
-              }`}
-            >
-              <div className="text-xs text-slate-500 dark:text-slate-400">{t.uniprot}</div>
-              <div className="font-semibold text-ink dark:text-slate-100 mt-0.5">{t.id.toUpperCase()}</div>
-              <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-snug">
-                {t.indications.slice(0, 2).join(" · ")}
-              </div>
-            </button>
-          ))}
+          {catalog?.map((t) => {
+            const picked = selectedIds.includes(t.id);
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => {
+                  // Toggle this target. Picking a catalog target clears
+                  // "Custom PDB" mode since the two paths can't coexist.
+                  setCustomMode(false);
+                  setSelectedIds((ids) =>
+                    ids.includes(t.id) ? ids.filter((x) => x !== t.id) : [...ids, t.id],
+                  );
+                }}
+                className={`relative text-left p-3 rounded-xl border transition-all ${
+                  picked
+                    ? "border-delta-500 bg-delta-50 shadow-glow dark:bg-delta-900/30 dark:border-delta-400"
+                    : "border-slate-200 bg-white hover:border-delta-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400 dark:hover:bg-slate-700/50"
+                }`}
+              >
+                {/* Picked-state checkmark — small but unmissable, helps users
+                    see at a glance which kinases are in the selectivity set */}
+                {picked && (
+                  <span className="absolute top-1.5 right-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-delta-500 text-white text-[10px] font-bold leading-none">
+                    ✓
+                  </span>
+                )}
+                <div className="text-xs text-slate-500 dark:text-slate-400">{t.uniprot}</div>
+                <div className="font-semibold text-ink dark:text-slate-100 mt-0.5">{t.id.toUpperCase()}</div>
+                <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-snug">
+                  {t.indications.slice(0, 2).join(" · ")}
+                </div>
+              </button>
+            );
+          })}
           <button
             type="button"
-            onClick={() => setSelectedId(null)}
+            onClick={() => {
+              // Custom PDB takes over — clear catalog selection so the form
+              // is unambiguous about what's being docked.
+              setSelectedIds([]);
+              setCustomMode(true);
+            }}
             className={`text-left p-3 rounded-xl border-2 border-dashed transition-all ${
-              selectedId === null
+              customMode
                 ? "border-delta-500 bg-delta-50 dark:bg-delta-900/30"
                 : "border-slate-200 hover:border-delta-300 text-slate-500 dark:border-slate-700 dark:hover:border-delta-500 dark:text-slate-400"
             }`}
@@ -289,7 +365,33 @@ export default function NewJobPage() {
           </button>
         </div>
 
-        {target && (
+        {/* Selectivity-mode banner — only when 2+ catalog targets picked.
+            Mutations are skipped in this mode so the matrix stays focused
+            on cross-kinase selectivity (the actual question multi-target
+            mode answers). */}
+        {isMultiTarget && (
+          <div className="mt-4 p-4 rounded-lg bg-accent-50 border border-accent-200 dark:bg-accent-900/20 dark:border-accent-800/40">
+            <div className="flex items-start gap-2.5">
+              <div className="text-accent-700 dark:text-accent-300 text-base shrink-0">⚡</div>
+              <div className="text-sm text-accent-900 dark:text-accent-100 leading-relaxed">
+                <div className="font-semibold mb-0.5">Selectivity mode · {targets.length} kinases</div>
+                <p>
+                  Each compound will be docked against the WT structure of every selected
+                  kinase. Per-target mutation analysis is skipped — for that, pick a single
+                  target. Clicking <strong>Run job</strong> submits {targets.length} parallel
+                  jobs and takes you to a combined results page.
+                </p>
+                <p className="mt-1.5 text-xs">
+                  Selected: <span className="font-mono">{targets.map((t) => t.id.toUpperCase()).join(", ")}</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Single-target description card — preserves the original UX when
+            exactly one catalog target is selected. */}
+        {target && !isMultiTarget && (
           <div className="mt-4 p-4 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-700 leading-relaxed dark:bg-slate-800/60 dark:border-slate-700 dark:text-slate-300">
             <div className="font-semibold text-ink dark:text-slate-100 mb-1">{target.name}</div>
             {target.description}
@@ -350,6 +452,12 @@ export default function NewJobPage() {
       </Step>
 
       {/* ── Step 2: Mutations ──────────────────────────────────────────── */}
+      {/* Selectivity (multi-target) mode skips this step entirely — testing
+          one compound against many WT kinases is the canonical kinome
+          selectivity question, and per-target mutation spread would make
+          the matrix unreadable. The "selectivity-mode" banner in Step 1
+          tells the user this is happening. */}
+      {!isMultiTarget && (
       <Step n={2} icon={<Beaker />} title="Pick mutations" subtitle="Click any to toggle. We always dock against WT in addition to what you select.">
         {target && target.mutations.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
@@ -421,6 +529,7 @@ export default function NewJobPage() {
           </div>
         )}
       </Step>
+      )}
 
       {/* ── Step 3: Compounds ──────────────────────────────────────────── */}
       <Step
@@ -682,13 +791,24 @@ export default function NewJobPage() {
               {compoundCount} compound{compoundCount === 1 ? "" : "s"} × {variantCount} variant{variantCount === 1 ? "" : "s"} · est. ~{estSeconds}s
             </div>
           </div>
-          <button
-            type="submit"
-            className="btn-primary btn-lg w-full sm:w-auto"
-            disabled={submit.isPending || compoundCount === 0}
-          >
-            {submit.isPending ? <><Spinner size={14} /> Submitting…</> : <>Run docking <ArrowRight size={16} /></>}
-          </button>
+          <div className="flex flex-col items-end gap-2 w-full sm:w-auto">
+            <button
+              type="submit"
+              className="btn-primary btn-lg w-full sm:w-auto"
+              disabled={submit.isPending || submitting || compoundCount === 0 || (!isMultiTarget && !customMode && targets.length === 0)}
+            >
+              {(submit.isPending || submitting) ? (
+                <><Spinner size={14} /> Submitting{isMultiTarget ? ` ${targets.length} jobs…` : "…"}</>
+              ) : isMultiTarget ? (
+                <>Run selectivity ({targets.length} kinases) <ArrowRight size={16} /></>
+              ) : (
+                <>Run docking <ArrowRight size={16} /></>
+              )}
+            </button>
+            {submitErr && (
+              <div className="text-xs text-rose-700 dark:text-rose-400 max-w-xs text-right">{submitErr}</div>
+            )}
+          </div>
         </div>
       </div>
     </form>

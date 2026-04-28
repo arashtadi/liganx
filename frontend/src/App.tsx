@@ -5,6 +5,7 @@ import JobPage from "./pages/JobPage";
 import LibraryPage from "./pages/LibraryPage";
 import PrivacyPage from "./pages/PrivacyPage";
 import TermsPage from "./pages/TermsPage";
+import SuitePage from "./pages/SuitePage";
 import { LogoMark } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/new" element={<NewJobPage />} />
           <Route path="/jobs/:id" element={<JobPage />} />
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/suite" element={<SuitePage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/terms" element={<TermsPage />} />
           {/* Catch-all 404 — used to leak through as a blank page */}
