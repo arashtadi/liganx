@@ -83,6 +83,23 @@ function dominantType(types: string[]): string {
 export default function MutationOverlayViewer(props: Props) {
   const [fullscreen, setFullscreen] = useState(false);
 
+  // ── Toolbar state, LIFTED to the parent ─────────────────────────────
+  // These were previously local to ViewerCanvas, which meant the inline
+  // viewer and the fullscreen viewer kept independent useState — opening
+  // fullscreen reset Backbone, Pose, surface color, blend, etc. back to
+  // defaults. Lifting up means both ViewerCanvas instances read the same
+  // values and writes propagate to both. Camera angle / zoom is still
+  // per-instance (lives in 3Dmol's viewer object, not React state) — that
+  // would need separate work to share.
+  const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("cartoon");
+  const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
+  const [showH, setShowH] = useState(false);
+  const [spinning, setSpinning] = useState(false);
+  const [surfaceColor, setSurfaceColor] = useState<SurfaceColor>("plain");
+  const [blend, setBlend] = useState(
+    props.initialBlend ?? (props.mutantPdb ? 0.5 : 0)
+  );
+
   // Esc closes the fullscreen modal — better than only click-outside.
   // Also lock body scroll while modal is open so the page doesn't move underneath.
   useEffect(() => {
@@ -99,10 +116,23 @@ export default function MutationOverlayViewer(props: Props) {
     };
   }, [fullscreen]);
 
+  // Pack the lifted state into a single object we can spread onto both
+  // ViewerCanvas instances. Keeping this in one place avoids the two
+  // call sites drifting out of sync as we add new toolbar controls.
+  const sharedToolbar = {
+    backboneStyle, setBackboneStyle,
+    poseStyle, setPoseStyle,
+    showH, setShowH,
+    spinning, setSpinning,
+    surfaceColor, setSurfaceColor,
+    blend, setBlend,
+  };
+
   return (
     <>
       <ViewerCanvas
         {...props}
+        {...sharedToolbar}
         onExpand={() => setFullscreen(true)}
         isFullscreen={false}
       />
@@ -151,6 +181,7 @@ export default function MutationOverlayViewer(props: Props) {
             <div className="flex-1 min-h-0">
               <ViewerCanvas
                 {...props}
+                {...sharedToolbar}
                 isFullscreen
                 onExpand={() => setFullscreen(false)}
                 className="h-full"
@@ -222,7 +253,40 @@ function ViewerCanvas({
   isFullscreen,
   onExpand,
   hideExpandButton,
-}: Props & { isFullscreen: boolean; onExpand: () => void; hideExpandButton?: boolean }) {
+  // ── Lifted toolbar state from MutationOverlayViewer ───────────────────
+  // These were local useState here, which meant the inline viewer and the
+  // fullscreen viewer had independent toolbar state — opening fullscreen
+  // reset everything. Now both ViewerCanvas instances read the same values
+  // from the parent so toolbar choices persist across the toggle.
+  backboneStyle,
+  setBackboneStyle,
+  poseStyle,
+  setPoseStyle,
+  showH,
+  setShowH,
+  spinning,
+  setSpinning,
+  surfaceColor,
+  setSurfaceColor,
+  blend,
+  setBlend,
+}: Props & {
+  isFullscreen: boolean;
+  onExpand: () => void;
+  hideExpandButton?: boolean;
+  backboneStyle: BackboneStyle;
+  setBackboneStyle: (s: BackboneStyle) => void;
+  poseStyle: PoseStyle;
+  setPoseStyle: (s: PoseStyle) => void;
+  showH: boolean;
+  setShowH: (b: boolean) => void;
+  spinning: boolean;
+  setSpinning: (b: boolean) => void;
+  surfaceColor: SurfaceColor;
+  setSurfaceColor: (c: SurfaceColor) => void;
+  blend: number;
+  setBlend: (n: number) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
   // The 3Dmol namespace itself, stashed during load() so applyAllStyles can
@@ -232,22 +296,10 @@ function ViewerCanvas({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [atomCount, setAtomCount] = useState<number | null>(null);
-  // Default slider position: middle (both side chains visible) when there's a
-  // mutant; pure WT when there isn't. Caller can still override with prop.
-  const [blend, setBlend] = useState(
-    initialBlend ?? (mutantPdb ? 0.5 : 0)
-  );
-
-  // Control-panel state — defaults match the original look so existing users
-  // don't see the viewer change after this update.
-  const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("cartoon");
-  const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
-  const [showH, setShowH] = useState(false);  // ligand H atoms; default off (cleaner)
-  const [spinning, setSpinning] = useState(false);
-  // Surface mode coloring — only meaningful when backboneStyle === "surface".
-  // We keep the state alive when the user switches away from Surface so
-  // toggling back restores their preferred coloring.
-  const [surfaceColor, setSurfaceColor] = useState<SurfaceColor>("plain");
+  // initialBlend is consumed at the parent (MutationOverlayViewer) where the
+  // shared blend state is initialized. Here we just receive `blend` as a
+  // prop and hand setBlend back when the slider moves.
+  void initialBlend;
   // Tracks whether the surface generation is currently in flight (3Dmol's
   // addSurface is CPU-heavy, ~0.5–2 s for a typical kinase). Used to fade
   // the toolbar so users know the click registered.
