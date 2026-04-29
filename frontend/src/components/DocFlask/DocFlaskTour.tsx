@@ -120,6 +120,25 @@ function markTourDismissed() {
   }
 }
 
+/** Public reset — used by the user-menu "Show Doc Flask again" option to
+ *  un-dismiss the tour. After calling this, the user should land on /new
+ *  (the menu handles navigation) and the tour will fire again on its
+ *  600 ms settle delay. */
+export function resetDocFlaskTour() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch { /* private mode — flag was never persisted to begin with */ }
+}
+
+/** Read whether the user has currently opted out of the tour. The user
+ *  menu uses this to decide whether to show the "Show again" item. We
+ *  show it always when the user is signed in — even if they haven't
+ *  dismissed yet — so people who *want* to revisit the tour after
+ *  finishing it normally still have the entry point. */
+export function isDocFlaskTourDismissed(): boolean {
+  return readTourState() === "dismissed";
+}
+
 export default function DocFlaskTour() {
   const location = useLocation();
   // Only run on the New Job page for now. Other pages can wire their own
