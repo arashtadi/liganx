@@ -9,6 +9,7 @@ export default function HomePage() {
       <Hero />
       <LogoStrip />
       <HowItWorks />
+      <WhatsNew />
       <FeatureGrid />
       <Comparison />
       <CTAStrip />
@@ -212,36 +213,52 @@ function HowItWorks() {
 /* ─── Feature grid ──────────────────────────────────────────────────── */
 
 function FeatureGrid() {
-  const features = [
+  const features: { icon: React.ReactNode; title: string; body: string; isNew?: boolean }[] = [
     {
       icon: <Grid />,
       title: "Selectivity matrix",
-      body: "N compounds × M mutants in one view. Sort by Δ-score, color-coded for resistance vs. selectivity.",
+      body: "N compounds × M mutants in one view. Cells colored by Δ-score so resistance and selectivity gain pop out instantly.",
+    },
+    {
+      icon: <Bolt />,
+      title: "GPU-accelerated docking",
+      body: "QuickVina2-GPU on RunPod with batched dispatch — typical cells finish in seconds, not minutes. Real Vina scoring, not a placeholder.",
     },
     {
       icon: <Sparkles />,
       title: "Plain-English readout",
-      body: "Not raw Vina scores — actual sentences: “Compound X binds 1.2 kcal/mol better to T790M, primarily through M790.”",
+      body: "Every pose comes with a sentence: which residues drive the interaction, how the mutant differs, whether to trust the Δ.",
     },
     {
-      icon: <Library />,
-      title: "Curated mutation library",
-      body: "Pre-loaded entries for EGFR, KRAS, BRAF, IDH1, ABL — pocket boxes and reference compounds included.",
+      icon: <Beaker />,
+      title: "Built-in 2D sketcher",
+      body: "Self-hosted EPAM Ketcher, one click from any compound row. Draw a structure, edit it, or paste a SMILES — never leave the page.",
+      isNew: true,
     },
     {
       icon: <Eye />,
       title: "Synced 3D viewer",
-      body: "Mutant + WT pockets side by side, contacts colored by interaction type, slider to morph between them.",
+      body: "Wild-type and mutant side chains overlaid on the same pose, contact-colored by ProLIF interaction type, blend slider to compare.",
     },
     {
       icon: <Shield />,
-      title: "Confidence ribbon",
-      body: "Every pose carries PoseBusters validation: clash-free, chirality-correct, cluster-stable.",
+      title: "Pose validation built in",
+      body: "PoseBusters confidence ribbon (clash-free, chirality-correct), Vinardo re-score, and RDKit MMFF strain analysis flags Vina junk poses.",
     },
     {
-      icon: <Bolt />,
-      title: "Fast mode",
-      body: "Optional Uni-Mol V2 / Boltz-2 backends when you need throughput. Vina by default for trust.",
+      icon: <Target />,
+      title: "Outside-pocket detection",
+      body: "If your mutation is far from the docking box, we tell you up-front instead of letting you read meaning into a noise-level Δ.",
+    },
+    {
+      icon: <Library />,
+      title: "Curated mutation library",
+      body: "30+ clinically actionable mutations across EGFR, KRAS, BRAF, ALK, MET, ABL, BTK, KIT and more — with verified pocket boxes.",
+    },
+    {
+      icon: <Sparkles />,
+      title: "Drug-likeness panel",
+      body: "QED, Lipinski Ro5, Veber, PAINS alerts, MW / LogP / TPSA / HBD-HBA / rotatable bonds — every compound, every cell.",
     },
   ];
   return (
@@ -249,12 +266,83 @@ function FeatureGrid() {
       <SectionHead eyebrow="What you get" title="Everything an early-discovery med-chemist actually wants." />
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {features.map((f) => (
-          <div key={f.title} className="card hover:border-delta-300 hover:shadow-glow dark:hover:border-delta-500 transition-all">
+          <div
+            key={f.title}
+            className="card hover:border-delta-300 hover:shadow-glow dark:hover:border-delta-500 transition-all relative"
+          >
+            {f.isNew && (
+              <span className="absolute top-3 right-3 inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40">
+                New
+              </span>
+            )}
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-delta-500 to-accent-500 text-white flex items-center justify-center mb-3 shadow-sm">
               {f.icon}
             </div>
             <h3 className="font-semibold text-ink dark:text-slate-100 mb-1.5">{f.title}</h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{f.body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ─── What's new ────────────────────────────────────────────────────── */
+
+/**
+ * Highlight strip directly under the "How it works" steps. Anchors attention
+ * on the latest shipping work so a returning user sees movement and a new
+ * visitor reads the project as actively developed. Update this list when
+ * shipping anything material — keep to ≤4 items so it stays scannable.
+ */
+function WhatsNew() {
+  const items = [
+    {
+      tag: "Just shipped",
+      title: "Built-in 2D molecule sketcher",
+      body:
+        "Draw or edit any compound visually with the EPAM Ketcher editor — no SMILES typing, no install. Self-hosted, same-origin, ~25 MB lazy-loaded.",
+      tone: "delta" as const,
+    },
+    {
+      tag: "Shipped this week",
+      title: "GPU batch docking",
+      body:
+        "Pod-side batched QuickVina2-GPU dispatch — N ligands per dispatch instead of N round-trips. Validation runs in parallel after the cells flip OK.",
+      tone: "accent" as const,
+    },
+    {
+      tag: "Shipped this week",
+      title: "Pose strain + outside-pocket honesty",
+      body:
+        "RDKit MMFF strain catches Vina junk poses; mutations far from the docking box get a noise badge so you don't read biology into a 0.1 Δ.",
+      tone: "emerald" as const,
+    },
+  ];
+  return (
+    <section>
+      <SectionHead eyebrow="What's new" title="Recently shipped." />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {items.map((it) => (
+          <div
+            key={it.title}
+            className="card relative ring-1 ring-slate-200/70 dark:ring-slate-700/60 overflow-hidden"
+          >
+            <span
+              className={
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
+                (it.tone === "delta"
+                  ? "bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 dark:bg-delta-900/30 dark:text-delta-300 dark:ring-delta-700/40"
+                  : it.tone === "accent"
+                    ? "bg-accent-50 text-accent-700 ring-1 ring-inset ring-accent-200 dark:bg-accent-900/30 dark:text-accent-300 dark:ring-accent-700/40"
+                    : "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40")
+              }
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-current" />
+              {it.tag}
+            </span>
+            <h3 className="mt-3 font-semibold text-ink dark:text-slate-100">{it.title}</h3>
+            <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{it.body}</p>
           </div>
         ))}
       </div>
@@ -285,10 +373,13 @@ function Comparison() {
               ["No install required",            true,      true,      false],
               ["Plain-English interpretation",   false,     true,      false],
               ["PoseBusters confidence ribbon",  false,     true,      true],
+              ["RDKit pose-strain analysis",     false,     true,      true],
+              ["Outside-pocket warning",         false,     true,      false],
               ["Interactive 3D pose viewer",     "partial", true,      true],
               ["2D contact map with distances",  false,     true,      true],
-              ["Built-in molecule sketcher",     "partial", "coming",  true],
-              ["GPU docking (~3 s/cell)",        false,     true,      "partial"],
+              ["Built-in molecule sketcher",     "partial", true,      true],
+              ["GPU batch docking (~3 s/cell)",  false,     true,      "partial"],
+              ["Drug-likeness (QED, Ro5, PAINS)", false,    true,      true],
             ].map((row, i) => (
               <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
                 <td className="px-5 py-3 font-medium text-ink dark:text-slate-100">{row[0]}</td>
