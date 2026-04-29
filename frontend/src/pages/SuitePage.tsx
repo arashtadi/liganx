@@ -288,12 +288,18 @@ export default function SuitePage() {
         );
         const compoundLabel = activePose.pick.compound.name ?? `Compound #${activePose.pick.compound.id}`;
         return createPortal(
+          // Outer overlay — flex-center, NO scroll. Earlier the overlay
+          // had its own overflow-y-auto which competed with the inner
+          // body's scroll, so wheel events sometimes hit the wrong
+          // container and "scrolling broke". Single-scrollable design:
+          // overlay = backdrop + click-to-dismiss, inner body = the
+          // only scrollable region.
           <div
-            className="fixed inset-0 z-[100] flex items-stretch justify-center p-2 sm:p-6 bg-ink/80 backdrop-blur-sm overflow-y-auto"
+            className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-6 bg-ink/80 backdrop-blur-sm"
             onClick={() => setActivePose(null)}
           >
             <div
-              className="bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 rounded-2xl shadow-2xl w-full max-w-7xl my-auto flex flex-col overflow-hidden"
+              className="bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 rounded-2xl shadow-2xl w-full max-w-7xl flex flex-col overflow-hidden"
               style={{ maxHeight: "min(96vh, 1200px)" }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -313,13 +319,20 @@ export default function SuitePage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <Link
-                    to={`/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`}
+                  {/* Open in NEW TAB so the suite page (with its other
+                      target matrices) stays open in the original tab.
+                      Earlier this was a same-tab Link, which dumped the
+                      user out of the multi-target context — they had to
+                      go through History to get back. */}
+                  <a
+                    href={`/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="text-xs text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline whitespace-nowrap"
-                    title="Open this cell in the standalone job page (deep link, shareable)"
+                    title="Open this cell in a new tab (your suite page stays in this one)"
                   >
-                    Open standalone
-                  </Link>
+                    Open standalone ↗
+                  </a>
                   <button
                     onClick={() => setActivePose(null)}
                     className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1.5 -m-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -330,12 +343,18 @@ export default function SuitePage() {
                   </button>
                 </div>
               </header>
-              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
+              {/* Single scrollable body. flex-1 + min-h-0 lets it take
+                  whatever vertical space remains after the header (a flex
+                  child needs min-h-0 to allow its overflow:auto to work
+                  inside a flex column — without it the child grows to fit
+                  content and never scrolls). */}
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6">
                 {/* Mirror the JobPage Option-Y layout: drill-down on the
                     left, sticky 3D banner on the right (desktop). On
-                    mobile, stacked. The HeroBanner doesn't try to be
-                    sticky here — the modal already gives it a fixed
-                    visible spot. */}
+                    mobile, stacked. The sticky `top-0` is relative to
+                    the scrollable body above — keeps the 3D viewer
+                    visible while the user scrolls through the long
+                    PoseDetail / Insights content on the left. */}
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
                   <div className="space-y-6 min-w-0">
                     <PoseDetail
@@ -355,7 +374,7 @@ export default function SuitePage() {
                       <Insights job={j} pick={activePose.pick} />
                     )}
                   </div>
-                  <div className="lg:sticky lg:top-2">
+                  <div className="lg:sticky lg:top-0">
                     <HeroBanner
                       pick={activePose.pick}
                       pdbId={j.pdb_id}
