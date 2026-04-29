@@ -508,15 +508,23 @@ function ScoreCell({
       style={{ background: bg || undefined }}
       onClick={onClick}
     >
-      {/* Active-pick pill — a tiny "viewing" tag in the top-right corner of
-          the highlighted cell. Color-redundant for accessibility: even
-          without seeing the ring, the text pill identifies the active cell. */}
+      {/* Active-pick indicator — a small filled chevron on the right edge
+          of the active cell, literally pointing toward the 3D viewer that
+          lives in the right rail of the page. Way more subtle than the
+          earlier all-caps "VIEWING" pill which felt loud, and the spatial
+          metaphor is direct: the arrow points at where the pose is
+          rendered. The blue ring around the cell carries the dominant
+          visual weight; this chevron is the secondary cue + accessibility
+          label (title text). */}
       {isCurrentPick && (
         <span
-          className="absolute -top-1.5 -right-1.5 z-[6] inline-flex items-center gap-0.5 rounded-full bg-delta-600 dark:bg-delta-500 text-white text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 shadow-sm pointer-events-none"
-          title="This cell is what's currently shown in the 3D viewer on the right"
+          className="absolute top-1/2 -translate-y-1/2 -right-2 z-[6] flex items-center justify-center w-4 h-4 rounded-full bg-delta-600 dark:bg-delta-500 text-white pointer-events-none shadow-sm"
+          title="Currently showing in the 3D viewer →"
+          aria-label="currently showing in 3D viewer"
         >
-          viewing
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
         </span>
       )}
       {Checkbox}
