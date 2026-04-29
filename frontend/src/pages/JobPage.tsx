@@ -752,7 +752,21 @@ function StreamingBanner({ job }: { job: Job }) {
 
 type Insight = { tag: string; tone: "good" | "bad" | "neutral"; body: string };
 
-export function Insights({ job, pick }: { job: Job; pick: Pick | null }) {
+export function Insights({
+  job,
+  pick,
+  compact = false,
+}: {
+  job: Job;
+  pick: Pick | null;
+  /** When true, force a single-column stack regardless of viewport. Used
+   *  inside the Suite page detail rail (~400 px wide) where the default
+   *  `lg:grid-cols-3` would crush each card to ~120 px and wrap every
+   *  word onto its own line. The parent's container width can't be read
+   *  with Tailwind viewport breakpoints (which key on the window, not
+   *  the container), so callers opt in explicitly. */
+  compact?: boolean;
+}) {
   // When the user has selected a cell, the cards reshape to describe that
   // specific compound × variant. Otherwise, fall back to the job-wide summary.
   const { insights, scope } = useMemo(
@@ -762,12 +776,17 @@ export function Insights({ job, pick }: { job: Job; pick: Pick | null }) {
     [job, pick],
   );
   if (insights.length === 0) return null;
+  // In compact mode, always single-column. In normal mode, the default
+  // responsive ladder: 1 col on phones → 2 on tablets → 3 on desktops.
+  const gridCls = compact
+    ? "grid grid-cols-1 gap-3"
+    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3";
   return (
     <div className="mt-5">
       <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-2">
         {pick ? `Insights for ${scope}` : "Job summary"}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className={gridCls}>
         {insights.map((ins, i) => (
           <div key={i} className="card">
             <div className={`badge mb-2 ${

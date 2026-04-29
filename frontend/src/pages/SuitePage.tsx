@@ -462,7 +462,7 @@ function DetailRail({ activePose, jobs, ids, catalog, onClear }: DetailRailProps
           onClose={onClear}
         />
         {j.status === "completed" && (
-          <Insights job={j} pick={livePick} />
+          <Insights job={j} pick={livePick} compact />
         )}
       </div>
     </div>
