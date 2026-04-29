@@ -140,13 +140,15 @@ export default function HeroBanner({
       </div>
 
       {/* Banner body: 3D canvas on the left, metrics column on the right.
-          Use grid so the metric column can shrink/wrap on narrow screens
-          without crushing the canvas. */}
+          `items-stretch` (default on grid) + `h-full` on the canvas wrapper
+          make the 3D pane grow to match the sidebar's full height. Without
+          this, the canvas was stuck at 320px and the sidebar's six stacked
+          cards left ~300px of empty space below the molecule. */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-4 p-4">
         {/* 3D canvas. While the WT/mutant PDBs are fetching, show a skeleton
             instead of an empty black rectangle — that's the worst part of
             the current Pod-cold-start experience. */}
-        <div className="relative min-h-[320px]">
+        <div className="relative min-h-[320px] h-full">
           {loadingPdb ? (
             <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex flex-col items-center justify-center text-sm text-slate-500 dark:text-slate-400 animate-pulse">
               <div className="w-12 h-12 rounded-full bg-white/60 dark:bg-slate-700/60 mb-3" />
@@ -164,7 +166,7 @@ export default function HeroBanner({
               variantLabel={variant}
               contextLabel={`${compound.name ?? `Compound #${compound.id}`} × ${variant}`}
               contextSubtitle={`${pdbId} chain ${chain}`}
-              className="rounded-lg overflow-hidden h-[320px]"
+              className="rounded-lg overflow-hidden h-full min-h-[320px]"
             />
           )}
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job, type PdbQuality } from "../api";
@@ -44,12 +44,27 @@ export default function JobPage() {
   // selections shouldn't carry that label since they're user intent.
   const [selectionReason, setSelectionReason] = useState<"auto" | "user">("auto");
 
+  // Ref on the hero banner so a matrix cell click can smooth-scroll the
+  // banner into view. Without this, clicking a cell at the bottom of the
+  // page silently updates the 3D viewer at the top — the user sees no
+  // change unless they scroll up themselves, which feels broken.
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+
   // Wrapper around setPick that records the selection origin. Pass `false`
   // for fromUser when the runner code itself sets the pick (auto-pick on
-  // first load); pass true when a matrix cell click triggered it.
+  // first load); pass true when a matrix cell click triggered it. On user
+  // clicks, smooth-scroll the banner into view so the action feels connected.
   const choosePick = (next: Pick | null, fromUser: boolean) => {
     setPick(next);
     setSelectionReason(fromUser ? "user" : "auto");
+    if (fromUser && next != null) {
+      // requestAnimationFrame so the scroll fires after React commits the
+      // pick state — otherwise we scroll before the banner has updated and
+      // the user sees the old pose at the top for a frame.
+      requestAnimationFrame(() => {
+        bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
   };
 
   // Subset sharing — when the URL has `?cells=...`, the page renders ONLY
@@ -304,15 +319,19 @@ export default function JobPage() {
       {/* Hero 3D banner — full-width, sits above the matrix so the docked
           pose is the first thing the user sees. Auto-loads the best mutant
           Δ on page open via the effect above; updates in place when a cell
-          is clicked. */}
-      <HeroBanner
-        pick={pick}
-        pdbId={job.pdb_id}
-        chain={job.chain}
-        pocketCenter={target?.pocket.center}
-        jobId={job.share_id || job.id}
-        selectionReason={selectionReason}
-      />
+          is clicked. The wrapping div carries `bannerRef` so cell clicks
+          can smooth-scroll the banner back into view (the banner is at
+          the top of the page; clicks happen below in the matrix). */}
+      <div ref={bannerRef} className="scroll-mt-24">
+        <HeroBanner
+          pick={pick}
+          pdbId={job.pdb_id}
+          chain={job.chain}
+          pocketCenter={target?.pocket.center}
+          jobId={job.share_id || job.id}
+          selectionReason={selectionReason}
+        />
+      </div>
 
       {/* Matrix — full width below the banner. */}
       <SelectivityMatrix
