@@ -13,6 +13,7 @@
 // Promising shows jobs that have either tag.
 
 import { useMemo, useRef, useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
@@ -341,7 +342,12 @@ function HistoryRow({ job }: { job: Job }) {
  *  opens the picker popover. */
 function TagStrip({ job }: { job: Job }) {
   const queryClient = useQueryClient();
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Anchor rect captured when the trigger is clicked. The popover renders
+  // via portal at document.body and positions itself with fixed coords
+  // anchored to this rect — that way it can escape the row's
+  // overflow-hidden wrapper without getting clipped.
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // Optimistic local copy so chip clicks feel instant. Server state syncs
   // back on mutation success via query invalidation.
@@ -372,6 +378,14 @@ function TagStrip({ job }: { job: Job }) {
     updateMut.mutate(next);
   }
 
+  function openPicker(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (triggerRef.current) {
+      setAnchorRect(triggerRef.current.getBoundingClientRect());
+    }
+  }
+
   const sorted = sortTags(localTags);
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -393,18 +407,20 @@ function TagStrip({ job }: { job: Job }) {
         );
       })}
       <button
+        ref={triggerRef}
         type="button"
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPickerOpen(true); }}
+        onClick={openPicker}
         className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-inset ring-dashed ring-slate-300 hover:ring-slate-400 hover:text-slate-700 dark:text-slate-400 dark:ring-slate-700 dark:hover:ring-slate-500 dark:hover:text-slate-200"
         title="Add a tag to this job"
       >
         <span aria-hidden="true">+</span>
         <span>Tag</span>
       </button>
-      {pickerOpen && (
+      {anchorRect && (
         <TagPicker
+          anchorRect={anchorRect}
           existing={localTags}
-          onClose={() => setPickerOpen(false)}
+          onClose={() => setAnchorRect(null)}
           onChange={(next) => setTags(next)}
         />
       )}
@@ -413,19 +429,33 @@ function TagStrip({ job }: { job: Job }) {
   );
 }
 
-/** Lightweight popover with the preset menu + custom-tag input. Click-
- *  outside / Escape dismisses. Tags toggle on click — checking applies,
- *  unchecking removes. The popover stays open for multi-select; users
- *  click outside or hit Done to close. */
+/** Lightweight popover with the preset menu + custom-tag input.
+ *
+ *  Renders via portal at document.body so it can escape the row's
+ *  overflow-hidden wrapper. Position is computed from the trigger's
+ *  bounding rect: by default opens below-left, flips above when there
+ *  isn't room below, and clamps left/right to keep it on-screen. We
+ *  recompute on scroll/resize so the popover tracks its anchor while
+ *  the user moves the page.
+ *
+ *  Click-outside / Escape dismisses. Tags toggle on click — checking
+ *  applies, unchecking removes. The popover stays open for multi-
+ *  select; users click outside or hit Done to close. */
 function TagPicker({
-  existing, onClose, onChange,
+  anchorRect, existing, onClose, onChange,
 }: {
+  anchorRect: DOMRect;
   existing: string[];
   onClose: () => void;
   onChange: (next: string[]) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [custom, setCustom] = useState("");
+  // Live rect — updated on scroll/resize so the popover tracks the
+  // trigger as the user scrolls the list. Falls back to the initial
+  // anchor if we lose the source.
+  const [rect, setRect] = useState(anchorRect);
+  useEffect(() => setRect(anchorRect), [anchorRect]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -443,6 +473,35 @@ function TagPicker({
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
+
+  // Track the anchor through scroll + resize. We close on scroll instead
+  // of trying to move along — moving popovers feel janky next to a
+  // scrolling list, and the user can re-open at the new position.
+  useEffect(() => {
+    function onScroll() { onClose(); }
+    function onResize() { onClose(); }
+    window.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [onClose]);
+
+  // Compute position. Width 256 px (w-64). Estimate height ~360 px for
+  // the bottom-flip decision; we don't measure pre-mount. Side margins
+  // 12 px so we don't sit flush against the viewport edge.
+  const W = 256;
+  const H = 380;
+  const M = 12;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const placeBelow = spaceBelow >= H + M || spaceBelow >= window.innerHeight - rect.top;
+  const top = placeBelow
+    ? Math.min(rect.bottom + 4, window.innerHeight - H - M)
+    : Math.max(M, rect.top - H - 4);
+  // Try to align the popover's left edge with the trigger; clamp to
+  // viewport so it never spills off the right edge on narrow screens.
+  const left = Math.max(M, Math.min(rect.left, window.innerWidth - W - M));
 
   function toggle(t: JobTag, e: React.MouseEvent) {
     e.preventDefault();
@@ -465,12 +524,13 @@ function TagPicker({
     setCustom("");
   }
 
-  return (
+  return createPortal(
     <div
       ref={wrapRef}
       role="menu"
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      className="absolute z-30 mt-1 w-64 rounded-lg border border-slate-200 bg-white shadow-xl py-1 dark:border-slate-700 dark:bg-slate-800"
+      style={{ position: "fixed", top, left, width: W }}
+      className="z-[60] rounded-lg border border-slate-200 bg-white shadow-xl py-1 dark:border-slate-700 dark:bg-slate-800"
     >
       <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
         <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
@@ -557,6 +617,7 @@ function TagPicker({
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
