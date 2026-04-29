@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job, type PdbQuality } from "../api";
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
+import HeroBanner from "../components/HeroBanner";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 
@@ -37,6 +38,19 @@ export default function JobPage() {
   // string through so we don't coerce a token like "VXrA3kF9zY1" into NaN.
   const jobKey = id ?? "";
   const [pick, setPick] = useState<Pick | null>(null);
+  // Track whether the current pick was auto-selected on page load or
+  // explicitly clicked by the user. Used to surface a "best mutant Δ"
+  // badge in the hero banner when the page just opened — clicked
+  // selections shouldn't carry that label since they're user intent.
+  const [selectionReason, setSelectionReason] = useState<"auto" | "user">("auto");
+
+  // Wrapper around setPick that records the selection origin. Pass `false`
+  // for fromUser when the runner code itself sets the pick (auto-pick on
+  // first load); pass true when a matrix cell click triggered it.
+  const choosePick = (next: Pick | null, fromUser: boolean) => {
+    setPick(next);
+    setSelectionReason(fromUser ? "user" : "auto");
+  };
 
   // Subset sharing — when the URL has `?cells=...`, the page renders ONLY
   // those compound × variant cells (a "curated view" the sender hand-picked).
@@ -100,6 +114,74 @@ export default function JobPage() {
       results: filteredResults,
     };
   }, [job, inSubsetView, subsetKeys]);
+
+  // Auto-pick a default cell once the job has results. The hero banner needs
+  // *something* to show on page load — without this the canvas is empty and
+  // the user has to click before they see the headline 3D pose. Algorithm:
+  //   1. Best mutant Δ that's NOT outside-pocket (the real selectivity story).
+  //   2. If every mutant is outside-pocket, fall back to best raw mutant score.
+  //   3. If no mutants at all, the best WT score.
+  //   4. Skip cells with `failed` extras — those have no pose to render.
+  // Re-runs when results stream in (status changes to completed) so we don't
+  // get stuck on an early-arriving WT row when the better mutant Δ comes in
+  // a few seconds later.
+  useEffect(() => {
+    if (pick != null) return;       // user already picked something — leave alone
+    if (!viewJob || viewJob.results.length === 0) return;
+
+    type Candidate = { result: DockingResult; delta: number | null; outsidePocket: boolean };
+    // Build a (compound_id → WT score) map for delta computation.
+    const wtByCompound = new Map<number, number>();
+    for (const r of viewJob.results) {
+      if (r.variant === "WT" && !parseExtra(r.extra).failure) {
+        wtByCompound.set(r.compound_id, r.best_score);
+      }
+    }
+    const candidates: Candidate[] = [];
+    for (const r of viewJob.results) {
+      const ext = parseExtra(r.extra);
+      if (ext.failure) continue;     // failed cell has no pose
+      const wt = wtByCompound.get(r.compound_id);
+      const delta = r.variant !== "WT" && wt != null ? r.best_score - wt : null;
+      candidates.push({
+        result: r,
+        delta,
+        outsidePocket: r.variant !== "WT" && ext.outsidePocketA != null,
+      });
+    }
+    if (candidates.length === 0) return;
+
+    // Try strict ranking: most-negative non-outside-pocket Δ first.
+    candidates.sort((a, b) => {
+      // Prefer in-pocket mutants over outside-pocket
+      if (a.outsidePocket !== b.outsidePocket) return a.outsidePocket ? 1 : -1;
+      // Prefer mutants over WT (mutant Δ is the headline story)
+      const aMut = a.result.variant !== "WT";
+      const bMut = b.result.variant !== "WT";
+      if (aMut !== bMut) return aMut ? -1 : 1;
+      // Among mutants: most-negative Δ wins
+      if (aMut && bMut) {
+        const ad = a.delta ?? 0;
+        const bd = b.delta ?? 0;
+        return ad - bd;
+      }
+      // Among WT: best (most-negative) raw score wins
+      return a.result.best_score - b.result.best_score;
+    });
+    const top = candidates[0];
+    const compound = viewJob.compounds.find((c) => c.id === top.result.compound_id);
+    if (!compound) return;
+    choosePick(
+      {
+        compound,
+        variant: top.result.variant,
+        score: top.result.best_score,
+        deltaWt: top.delta,
+        extra: top.result.extra,
+      },
+      false,
+    );
+  }, [viewJob, pick]);
 
   // Build a code → metadata lookup so the matrix can show "T790M (gatekeeper —
   // 1st-gen TKI resistance)" instead of just the bare code. We merge mutations
@@ -219,45 +301,52 @@ export default function JobPage() {
         <StreamingBanner job={job} />
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className={pick ? "lg:col-span-2" : "lg:col-span-3"}>
-          <SelectivityMatrix
-            compounds={viewJob.compounds}
-            mutations={viewJob.mutations}
-            results={viewJob.results}
-            mutationInfo={mutationInfo}
-            onPick={setPick}
-            isStreaming={!inSubsetView && (job.status === "running" || job.status === "pending")}
-            // Selection is hidden in subset view — the matrix is already
-            // curated; offering checkboxes there would invite confusion.
-            selected={inSubsetView ? undefined : selected}
-            onToggleSelect={inSubsetView ? undefined : onToggleSelect}
-            onSelectAll={inSubsetView ? undefined : onSelectAll}
-            onClearSelection={inSubsetView ? undefined : onClearSelection}
-          />
-          {/* Insights only meaningful once data is in — wait for completion.
-              When the user clicks a cell, the cards switch to context for
-              that specific compound × variant; otherwise they show the
-              job-wide summary. In subset view, insights are scoped to the
-              filtered job so they describe the curated view, not the full run. */}
-          {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
-        </div>
-        {pick && (
-          <div className="lg:col-span-1">
-            <PoseDetail
-              pick={pick}
-              pdbId={job.pdb_id}
-              chain={job.chain}
-              pocketCenter={target?.pocket.center}
-              // Pass share_id so the pose-fetch URL stays unguessable. Falls
-              // back to the integer id for legacy jobs that predate share_id
-              // (those still resolve via the backend's dual-lookup).
-              jobId={job.share_id || job.id}
-              onClose={() => setPick(null)}
-            />
-          </div>
-        )}
-      </div>
+      {/* Hero 3D banner — full-width, sits above the matrix so the docked
+          pose is the first thing the user sees. Auto-loads the best mutant
+          Δ on page open via the effect above; updates in place when a cell
+          is clicked. */}
+      <HeroBanner
+        pick={pick}
+        pdbId={job.pdb_id}
+        chain={job.chain}
+        pocketCenter={target?.pocket.center}
+        jobId={job.share_id || job.id}
+        selectionReason={selectionReason}
+      />
+
+      {/* Matrix — full width below the banner. */}
+      <SelectivityMatrix
+        compounds={viewJob.compounds}
+        mutations={viewJob.mutations}
+        results={viewJob.results}
+        mutationInfo={mutationInfo}
+        onPick={(p) => choosePick(p, true)}
+        isStreaming={!inSubsetView && (job.status === "running" || job.status === "pending")}
+        selected={inSubsetView ? undefined : selected}
+        onToggleSelect={inSubsetView ? undefined : onToggleSelect}
+        onSelectAll={inSubsetView ? undefined : onSelectAll}
+        onClearSelection={inSubsetView ? undefined : onClearSelection}
+      />
+
+      {/* Deeper drill-down — interpretation paragraph, ProLIF contacts list,
+          2D interaction map, mutation-outside-pocket explainer. Lives below
+          the matrix when a cell is selected, instead of beside it as a
+          right rail. The banner above already shows the score / Δ / drug-
+          likeness summary, so PoseDetail is purely the deep dive here. */}
+      {pick && (
+        <PoseDetail
+          pick={pick}
+          pdbId={job.pdb_id}
+          chain={job.chain}
+          pocketCenter={target?.pocket.center}
+          jobId={job.share_id || job.id}
+          onClose={() => setPick(null)}
+        />
+      )}
+
+      {/* Insights cards — same as before, scoped to the active pick when
+          present, else job-wide. */}
+      {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
     </div>
   );
 }
