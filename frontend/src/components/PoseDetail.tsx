@@ -195,16 +195,18 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
                 <p>
                   Residue {variant.match(/\d+/)?.[0] ?? variant} sits about {ext.outsidePocketA.toFixed(1)} Å
                   from the centre of the docking box (Vina searches a 22 Å cube). Single-conformation
-                  docking can't see geometric effects of mutations beyond the box edge — that's why
-                  this cell's Vina score matches WT.
+                  docking can't see geometric effects of mutations beyond the box edge.
+                </p>
+                <p className="mt-2">
+                  <strong>Any Δ vs WT shown for this cell is method noise, not biology.</strong> It
+                  comes from PDBFixer relaxing nearby side chains during the mutant build plus
+                  QuickVina-GPU's stochastic search — neither of which represents a real selectivity
+                  or resistance signal. Treat WT and mutant as effectively the same score here.
                 </p>
                 <p className="mt-2">
                   This is a method limitation, not a platform bug. Mutations like FLT3 D835V or
                   EGFR L858R that confer drug resistance via long-range allosteric / DFG-flip
-                  effects need molecular dynamics or multi-conformation ensemble docking to
-                  capture. The Vinardo number above may show a small (Vina-noise-level) shift
-                  because the side chain still interacts with neighbouring residues, but don't
-                  read too much into it.
+                  effects need molecular dynamics or multi-conformation ensemble docking to capture.
                 </p>
               </div>
             </div>

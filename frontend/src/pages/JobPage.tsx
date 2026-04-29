@@ -5,6 +5,7 @@ import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound,
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
+import { parseExtra } from "../lib/parseExtra";
 
 type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
 
@@ -667,6 +668,19 @@ function computeJobInsights(job: Job): Insight[] {
   let bestSel: { name: string; variant: string; delta: number } | null = null;
   // Worst resistance hit (largest positive delta)
   let worstRes: { name: string; variant: string; delta: number } | null = null;
+  // Build a (compound_id, variant) → outsidePocket lookup so we can skip
+  // outside-pocket cells when picking the best selectivity / worst resistance
+  // headlines. Δ values for outside-pocket cells are method noise (PDBFixer
+  // local relaxation + QuickVina-GPU stochastic search), not biology — if we
+  // included them in the headlines, we'd be confidently announcing fake
+  // selectivity/resistance signals.
+  const outsidePocketKey = new Set<string>();
+  for (const r of job.results) {
+    if (r.variant === "WT") continue;
+    if (parseExtra(r.extra).outsidePocketA != null) {
+      outsidePocketKey.add(`${r.compound_id}|${r.variant}`);
+    }
+  }
   for (const c of job.compounds) {
     const scores = byCompound[c.id] ?? {};
     const wt = scores["WT"];
@@ -674,6 +688,8 @@ function computeJobInsights(job: Job): Insight[] {
     for (const m of job.mutations) {
       const s = scores[m];
       if (s == null) continue;
+      // Skip outside-pocket cells — their Δ doesn't reflect biology.
+      if (outsidePocketKey.has(`${c.id}|${m}`)) continue;
       const d = s - wt;
       if (d < (bestSel?.delta ?? Infinity)) bestSel = { name: c.name ?? `Compound #${c.id}`, variant: m, delta: d };
       if (d > (worstRes?.delta ?? -Infinity)) worstRes = { name: c.name ?? `Compound #${c.id}`, variant: m, delta: d };
@@ -721,7 +737,29 @@ function computePickInsights(job: Job, pick: Pick): Insight[] {
   });
 
   // 2) Delta-vs-WT card — only meaningful for mutant variants.
-  if (pick.variant !== "WT" && pick.deltaWt != null) {
+  // Outside-pocket cells get a NOISE-warning card instead of a
+  // selectivity/resistance interpretation. Their Δ comes from PDBFixer
+  // local relaxation + QuickVina-GPU stochastic search, not biology, so
+  // claiming "Selectivity hint: Vemurafenib gains 1.30 kcal/mol on L597R"
+  // would be straightforwardly wrong.
+  const pickOutsidePocket =
+    pick.variant !== "WT" && parseExtra(pick.extra).outsidePocketA != null;
+
+  if (pickOutsidePocket) {
+    const dist = parseExtra(pick.extra).outsidePocketA?.toFixed(1) ?? "12+";
+    const dWt = pick.deltaWt;
+    const dWtStr = dWt != null ? `Δ ${dWt > 0 ? "+" : ""}${dWt.toFixed(2)} kcal/mol` : "any Δ shown";
+    out.push({
+      tag: "Outside docking pocket",
+      tone: "neutral",
+      body: (
+        `Residue ${pick.variant.match(/\d+/)?.[0] ?? pick.variant} sits ~${dist} Å from the docking-box ` +
+        `centre — outside Vina's search space. ${dWtStr} here is method noise (PDBFixer local ` +
+        `relaxation + QuickVina-GPU stochastic search), not a real selectivity or resistance signal. ` +
+        `Treat WT and ${pick.variant} as effectively the same affinity for this compound.`
+      ),
+    });
+  } else if (pick.variant !== "WT" && pick.deltaWt != null) {
     const dWt = pick.deltaWt;
     const tone: Insight["tone"] = dWt > 0.4 ? "bad" : dWt < -0.4 ? "good" : "neutral";
     const verb =

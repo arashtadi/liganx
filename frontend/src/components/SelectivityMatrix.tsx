@@ -455,8 +455,15 @@ function ScoreCell({
 
   // Cell tint based on Δ vs WT — same hue in light + dark, just different
   // alpha so it remains visible against the dark slate background.
+  //
+  // Outside-pocket cells get NO tint regardless of Δ. The mutation residue
+  // sits beyond Vina's search box, so any Δ here is method noise (PDBFixer
+  // local relaxation + QuickVina-GPU stochastic search) — not a real
+  // selectivity or resistance signal. Painting these cells green/red would
+  // tell the user the opposite of what's actually happening.
+  const outsidePocket = !isWT && ext.outsidePocketA != null;
   let bg = "";
-  if (!isWT && delta != null) {
+  if (!isWT && delta != null && !outsidePocket) {
     const t = Math.min(1, Math.abs(delta) / maxAbsDelta);
     if (delta < -0.3)      bg = `rgba(16, 185, 129, ${0.08 + 0.40 * t})`;
     else if (delta > 0.3)  bg = `rgba(239, 68, 68, ${0.08 + 0.40 * t})`;
@@ -483,13 +490,27 @@ function ScoreCell({
       {Checkbox}
       <div className="text-ink dark:text-slate-100 font-semibold">{value.toFixed(2)}</div>
       {delta != null && (
-        <div className={`text-[10px] font-medium ${
-          delta < 0 ? "text-emerald-700 dark:text-emerald-300"
-          : delta > 0 ? "text-rose-700 dark:text-rose-300"
-          : "text-slate-400 dark:text-slate-500"
-        }`}>
-          {delta > 0 ? "+" : ""}{delta.toFixed(2)}
-        </div>
+        // Outside-pocket Δ is method noise, not a real signal — render in
+        // muted gray (parenthesized + "noise" label) instead of the green/
+        // red selectivity scale. The amber "outside pocket" pill below
+        // explains why; this color treatment makes sure a quick scan of
+        // the matrix doesn't read these as biology.
+        outsidePocket ? (
+          <div
+            className="text-[10px] font-medium text-slate-400 dark:text-slate-500"
+            title="Mutation residue is outside the docking box — this Δ is method noise (PDBFixer local relaxation + QuickVina-GPU stochastic search), not a real selectivity or resistance signal."
+          >
+            ({delta > 0 ? "+" : ""}{delta.toFixed(2)} noise)
+          </div>
+        ) : (
+          <div className={`text-[10px] font-medium ${
+            delta < 0 ? "text-emerald-700 dark:text-emerald-300"
+            : delta > 0 ? "text-rose-700 dark:text-rose-300"
+            : "text-slate-400 dark:text-slate-500"
+          }`}>
+            {delta > 0 ? "+" : ""}{delta.toFixed(2)}
+          </div>
+        )
       )}
       {ext.vinardo != null && (
         <div
