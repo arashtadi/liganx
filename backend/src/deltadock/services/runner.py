@@ -305,6 +305,17 @@ def _run_real(session: Session, job: Job) -> None:
         )
         log.info("Pod GPU dispatch enabled → %s", settings.pod_dock_url)
 
+    # When pod_batch_dock is on, we can group cells of the same variant into
+    # one HTTP call so the GPU loads the receptor once per variant instead
+    # of once per cell. Pod-side endpoint (POST /dock_batch) must be live —
+    # check via env, not via probe, so a transient Pod hiccup at startup
+    # doesn't permanently disable the fast path. Falls back to per-cell
+    # dispatch on per-batch error.
+    pod_batch_on = pod_on and settings.pod_batch_dock
+    if pod_batch_on:
+        from deltadock_pipeline.pod_dock import dock_batch_pod, BatchLigand
+        log.info("Pod GPU batch dispatch enabled (one HTTP call per variant)")
+
     runpod_on = settings.runpod_enabled and not pod_on  # Pod takes precedence
     if runpod_on:
         from deltadock_pipeline.runpod_dock import dock_one_runpod, RunPodConfig, RunPodError
@@ -742,6 +753,190 @@ def _run_real(session: Session, job: Job) -> None:
     # compute spend within ~3 s of the cancel click.
     with tempfile.TemporaryDirectory(prefix=f"deltadock-job{job.id}-") as work_str:
         work = Path(work_str)
+
+        # ── Per-cell finalize: shared between the legacy per-cell path and
+        # the new batched-per-variant path. Runs vinardo rescore + ProLIF
+        # validation, persists the pose to R2 (or local), and writes the DB
+        # row. Pure side effects on `session`; caller commits.
+        def _finalize_cell(compound, variant, receptor, receptor_pdb, run_dir, result, engine_used):
+            parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
+            parts.append(f"engine={engine_used}")
+            try:
+                from deltadock_pipeline.rescore import smina_rescore
+                v_score = smina_rescore(receptor, result.pose_pdbqt, scoring="vinardo")
+                if v_score is not None:
+                    parts.append(f"vinardo={v_score:.2f}")
+            except Exception as e:
+                log.info("Vinardo rescore failed for c%s × %s: %s", compound.id, variant, e)
+            if validate_on:
+                try:
+                    v = validate_pose(
+                        receptor_pdbqt=receptor,
+                        pose_pdbqt=result.pose_pdbqt,
+                        receptor_pdb=receptor_pdb,
+                        work_dir=run_dir,
+                        ligand_smiles=compound.smiles,
+                    )
+                    parts.append(v.to_extra_string())
+                except Exception as ve:
+                    log.warning("Validation crashed for c%s × %s: %s", compound.id, variant, ve)
+                    parts.append(f"validate_err={str(ve)[:80]}")
+            from .pose_store import get_pose_store
+            try:
+                pose_uri = get_pose_store().write(
+                    job.id, compound.id, variant, Path(result.pose_pdbqt)
+                )
+            except Exception as e:
+                log.warning("Could not persist pose for c%s × %s: %s", compound.id, variant, e)
+                pose_uri = str(result.pose_pdbqt)
+            session.add(DockingResult(
+                job_id=job.id, compound_id=compound.id, variant=variant,
+                best_score=result.best_score,
+                pose_uri=pose_uri,
+                extra="|".join(parts) if parts else None,
+            ))
+
+        # ── Batched-per-variant dispatch path. Activates when pod_batch_on
+        # AND the matrix has more than one cell. Inverts the loop nesting:
+        # for each variant, prep all compound ligands once, then send the
+        # whole list to the Pod's /dock_batch endpoint in a single HTTP call.
+        # The GPU loads the receptor once per variant instead of once per
+        # cell — major throughput win on suite jobs.
+        # On any whole-batch HTTP failure we fall back to the per-cell Pod
+        # call for that variant, which is exactly what the legacy path does
+        # anyway, so reliability is unchanged.
+        if pod_batch_on and len(compounds) * len(variants) > 1:
+            log.info(
+                "Using batched dispatch: %d compounds x %d variants",
+                len(compounds), len(variants),
+            )
+
+            # Phase 1: prep every ligand once. Failed-prep compounds get a
+            # ligand_prep_failed row written for every variant up front so
+            # the user sees them immediately and we don't waste GPU on them.
+            prepped: dict[int, Path] = {}
+            for compound in compounds:
+                if is_cancelled(session, job.id):
+                    log.info("Job %s cancelled during ligand prep", job.id)
+                    raise JobCancelled()
+                try:
+                    lig_pdbqt = work / f"compound_{compound.id}.pdbqt"
+                    prepare_ligand(compound.smiles, lig_pdbqt, name=compound.name or f"c{compound.id}")
+                    prepped[compound.id] = lig_pdbqt
+                except Exception as e:
+                    log.warning("Ligand prep failed for compound %s: %s", compound.id, e)
+                    for variant in variants:
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=compound.id, variant=variant,
+                            best_score=0.0, extra=f"ligand_prep_failed: {e}",
+                        ))
+                    session.commit()
+
+            # Phase 2: per-variant batched dispatch.
+            for variant in variants:
+                if is_cancelled(session, job.id):
+                    log.info("Job %s cancelled — skipping remaining variants", job.id)
+                    raise JobCancelled()
+                receptor = receptor_for_variant.get(variant, wt_receptor)
+                receptor_pdb = receptor_pdb_for_variant.get(variant, cleaned_pdb)
+                # Sentinel: receptor=None means upstream caught a corrupt
+                # precache. Write the failure row for every prepped compound
+                # in this variant, then move on to the next variant.
+                if receptor is None:
+                    fail_reason = variant_extra.get(variant, "mutant_verify_failed")
+                    log.warning("Variant %s receptor unavailable: %s", variant, fail_reason)
+                    for c in compounds:
+                        if c.id in prepped:
+                            session.add(DockingResult(
+                                job_id=job.id, compound_id=c.id, variant=variant,
+                                best_score=0.0, extra=fail_reason,
+                            ))
+                    session.commit()
+                    continue
+
+                run_dir = work / f"batch_{variant}"
+                run_dir.mkdir(exist_ok=True)
+
+                batch_ligs = [
+                    BatchLigand(id=str(c.id), pdbqt_path=prepped[c.id])
+                    for c in compounds if c.id in prepped
+                ]
+                if not batch_ligs:
+                    continue
+
+                # Single HTTP call — the Pod loads the receptor once and
+                # docks every ligand in one GPU session.
+                try:
+                    batch_results = dock_batch_pod(
+                        receptor_pdbqt=receptor,
+                        ligands=batch_ligs,
+                        box=box,
+                        work_dir=run_dir,
+                        cfg=pod_cfg,
+                        exhaustiveness=exhaustiveness,
+                        num_modes=9,
+                    )
+                    results_by_id = {br.id: br for br in batch_results}
+                    engine_label = "pod_gpu_batch"
+                except PodDockError as pde:
+                    # Whole-batch failure: fall back to per-cell single-
+                    # ligand /dock for this variant. Exact same code path
+                    # as the legacy loop uses for a per-cell error, just
+                    # scoped to this variant's compounds.
+                    log.warning(
+                        "Batch dispatch failed for %s: %s — falling back per-cell",
+                        variant, pde,
+                    )
+                    for c in compounds:
+                        if c.id not in prepped:
+                            continue
+                        if is_cancelled(session, job.id):
+                            raise JobCancelled()
+                        cell_dir = work / f"compound_{c.id}_{variant}"
+                        cell_dir.mkdir(exist_ok=True)
+                        try:
+                            result = dock_one_pod(
+                                receptor_pdbqt=receptor,
+                                ligand_pdbqt=prepped[c.id],
+                                box=box,
+                                work_dir=cell_dir,
+                                cfg=pod_cfg,
+                                exhaustiveness=exhaustiveness,
+                                num_modes=9,
+                            )
+                            _finalize_cell(c, variant, receptor, receptor_pdb, cell_dir, result, "pod_gpu_after_batch_fail")
+                        except Exception as e:
+                            log.warning("Per-cell fallback failed for c%s × %s: %s", c.id, variant, e)
+                            session.add(DockingResult(
+                                job_id=job.id, compound_id=c.id, variant=variant,
+                                best_score=0.0, extra=f"docking_failed: {e}",
+                            ))
+                    session.commit()
+                    continue
+
+                # Per-cell post-processing on batch results.
+                for c in compounds:
+                    if c.id not in prepped:
+                        continue
+                    br = results_by_id.get(str(c.id))
+                    try:
+                        if br is None:
+                            raise RuntimeError("missing from batch response")
+                        if br.error or not br.result:
+                            raise RuntimeError(f"batch err: {br.error or 'no result'}")
+                        _finalize_cell(c, variant, receptor, receptor_pdb, run_dir, br.result, engine_label)
+                    except Exception as e:
+                        log.warning("Docking failed for c%s × %s: %s", c.id, variant, e)
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=c.id, variant=variant,
+                            best_score=0.0, extra=f"docking_failed: {e}",
+                        ))
+                session.commit()
+            return  # batched path done; skip the legacy per-cell loop below
+
+        # ── Legacy per-cell dispatch (untouched). Kept as fallback for
+        # local Vina runs (no Pod), per-cell debugging, and as the safety
+        # net while the batched path stabilizes.
         for compound in compounds:
             if is_cancelled(session, job.id):
                 log.info("Job %s cancelled — skipping remaining compounds", job.id)

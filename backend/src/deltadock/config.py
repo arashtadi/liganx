@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     pod_dock_url: str = ""
     pod_dock_timeout_s: int = 60
 
+    # When the Pod has the /dock_batch endpoint deployed, we can group cells
+    # of the same variant into a single HTTP call so the GPU loads the
+    # receptor once per variant instead of once per cell. Big throughput win
+    # on suite jobs (compounds x variants). Off by default until we've
+    # stabilized the new per-cell post-processing path through batch
+    # results — flip on via env (POD_BATCH_DOCK=1) when ready.
+    pod_batch_dock: bool = False
+
     # Email
     resend_api_key: str = ""
     email_from: str = "hello@deltadock.bio"
