@@ -489,12 +489,17 @@ function ScoreCell({
   const wtSurface = isWT ? "bg-slate-50/40 dark:bg-slate-800/30" : "";
 
   // Active-pick ring — outranks every other ring class so the user can
-  // always see WHICH cell drives the right-rail 3D viewer. Solid 2px brand
-  // border, distinct from the dashed selection ring and the soft hover ring.
-  // We layer a small "viewing" pill in the corner too, since users with
-  // monochrome / colorblind setups won't read color alone.
+  // always see WHICH cell drives the right-rail 3D viewer. We use a
+  // 3px violet inset ring for two reasons:
+  //   1. Violet doesn't conflict with the green-selectivity / red-
+  //      resistance / blue-hover colors already on the matrix, so it
+  //      reads cleanly as "this is the active cell" without being
+  //      confused for a Δ signal.
+  //   2. No extra glow, no corner pill — the user pushed back on the
+  //      earlier "VIEWING" pill and on the chevron indicator as visually
+  //      noisy. A clean thicker ring is enough.
   const currentPickRing = isCurrentPick
-    ? "ring-2 ring-inset ring-delta-600 dark:ring-delta-400 shadow-[0_0_0_4px_rgba(59,108,246,0.12)]"
+    ? "ring-[3px] ring-inset ring-violet-600 dark:ring-violet-400"
     : "";
   return (
     <td
@@ -508,25 +513,6 @@ function ScoreCell({
       style={{ background: bg || undefined }}
       onClick={onClick}
     >
-      {/* Active-pick indicator — a small filled chevron on the right edge
-          of the active cell, literally pointing toward the 3D viewer that
-          lives in the right rail of the page. Way more subtle than the
-          earlier all-caps "VIEWING" pill which felt loud, and the spatial
-          metaphor is direct: the arrow points at where the pose is
-          rendered. The blue ring around the cell carries the dominant
-          visual weight; this chevron is the secondary cue + accessibility
-          label (title text). */}
-      {isCurrentPick && (
-        <span
-          className="absolute top-1/2 -translate-y-1/2 -right-2 z-[6] flex items-center justify-center w-4 h-4 rounded-full bg-delta-600 dark:bg-delta-500 text-white pointer-events-none shadow-sm"
-          title="Currently showing in the 3D viewer →"
-          aria-label="currently showing in 3D viewer"
-        >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 6 15 12 9 18" />
-          </svg>
-        </span>
-      )}
       {Checkbox}
       <div className="text-ink dark:text-slate-100 font-semibold">{value.toFixed(2)}</div>
       {delta != null && (
