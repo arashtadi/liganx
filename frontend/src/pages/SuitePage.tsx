@@ -319,20 +319,33 @@ export default function SuitePage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {/* Open in NEW TAB so the suite page (with its other
-                      target matrices) stays open in the original tab.
-                      Earlier this was a same-tab Link, which dumped the
-                      user out of the multi-target context — they had to
-                      go through History to get back. */}
-                  <a
-                    href={`/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  {/* Open in a NEW WINDOW (not just a new tab) so the
+                      suite page with its other target matrices stays
+                      visible alongside the standalone view. We use an
+                      explicit window.open with the `popup` feature
+                      string and width/height — this is the only way to
+                      force most modern browsers to open a window
+                      instead of a tab. The user can drag the new
+                      window to a second monitor or arrange side-by-
+                      side with the suite. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`;
+                      // popup + width/height forces a real window; without
+                      // these, target="_blank" tends to open a tab in
+                      // Chromium-family browsers.
+                      window.open(
+                        url,
+                        "_blank",
+                        "noopener,noreferrer,popup=yes,width=1400,height=900",
+                      );
+                    }}
                     className="text-xs text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline whitespace-nowrap"
-                    title="Open this cell in a new tab (your suite page stays in this one)"
+                    title="Open this cell in a new window (your suite page stays in this one)"
                   >
                     Open standalone ↗
-                  </a>
+                  </button>
                   <button
                     onClick={() => setActivePose(null)}
                     className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1.5 -m-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -365,14 +378,6 @@ export default function SuitePage() {
                       jobId={j.share_id || j.id}
                       onClose={() => setActivePose(null)}
                     />
-                    {/* Insights cards — same component used on the standalone
-                        JobPage. Scopes to the active pick (compound × variant)
-                        and shows ranking, outside-pocket explainers, and the
-                        binding summary. Without this the modal felt thinner
-                        than the standalone page. */}
-                    {j.status === "completed" && (
-                      <Insights job={j} pick={activePose.pick} />
-                    )}
                   </div>
                   <div className="lg:sticky lg:top-0">
                     <HeroBanner
@@ -384,6 +389,19 @@ export default function SuitePage() {
                     />
                   </div>
                 </div>
+
+                {/* Insights cards — full-width row BELOW the 2-col grid so
+                    the 3 cards (binding, resistance hint, rank) get to
+                    spread into a proper 3-up layout instead of being
+                    squished into the narrow left column where they
+                    rendered as a vertical stack at the bottom of the
+                    scroll and felt cut off. Same component used on the
+                    standalone JobPage — scopes to the active pick. */}
+                {j.status === "completed" && (
+                  <div className="mt-6">
+                    <Insights job={j} pick={activePose.pick} />
+                  </div>
+                )}
               </div>
             </div>
           </div>,
