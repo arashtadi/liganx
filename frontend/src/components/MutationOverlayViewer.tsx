@@ -320,8 +320,18 @@ function ViewerCanvas({
       // SAS (solvent-accessible) is the most pocket-readable surface for
       // docking — VDW packs too tightly and obscures the ligand pocket.
       try { setSurfaceComputing(true); } catch { /* ignore */ }
-      const surfType = dmolNsRef.current?.SurfaceType?.SAS ?? 2; // SAS=2, fall back to literal
-      const opts: Record<string, any> = { opacity: 0.92 };
+      // MS (molecular surface, a.k.a. Connolly / solvent-excluded surface)
+      // wraps the protein tightly with a closed-shell mesh. The binding
+      // pocket then renders as a deep depression in the same-colored
+      // material — exactly the "ligand sitting in a colored cave" look
+      // from the hero references. SAS (solvent-accessible) leaves literal
+      // holes through to the canvas BG, which read as a void instead of
+      // a depression and required forcing a dark canvas to look right.
+      const surfType = dmolNsRef.current?.SurfaceType?.MS ?? 1; // MS=1
+      // Fully opaque so the pocket interior reads as solid material
+      // rather than transparent through to the BG. Slight transparency
+      // (0.92) was masking the depression effect.
+      const opts: Record<string, any> = { opacity: 1.0 };
       if (surfaceColor === "plain") {
         opts.color = "#a78bfa"; // light violet — matches the hero look
       } else {
@@ -467,18 +477,9 @@ function ViewerCanvas({
         // Theme-aware canvas background — read the .dark class on <html>.
         // Light: pure white (matches card surface). Dark: deep slate so the
         // ribbon contrast stays readable without being a pure black hole.
-        // EXCEPT when Surface mode is active: force dark regardless of
-        // theme, because Surface's pocket cavity clips through to BG and
-        // a white BG reads as a hole, not a cave. See pickCanvasBackground.
         const isDark = document.documentElement.classList.contains("dark");
-        const initialBg =
-          backboneStyle === "surface"
-            ? "#0f172a"
-            : isDark
-              ? "#0f172a"
-              : "white";
         viewer = $3Dmol.createViewer(container, {
-          backgroundColor: initialBg,
+          backgroundColor: isDark ? "#0f172a" : "white",
           antialias: true,
         });
         // 3Dmol's createViewer returns undefined if WebGL init fails (e.g.
@@ -647,15 +648,15 @@ function ViewerCanvas({
     };
   }, []);
 
-  /** Pick the right canvas background based on theme and backbone style.
-   *  Surface mode is special-cased to always use a deep slate background:
-   *  the pocket cavity is rendered as a hole through the surface mesh, so
-   *  on a white canvas the ligand-in-pocket area reads as a flat white
-   *  blob, killing the depth illusion. Forcing dark behind the surface
-   *  gives the cavity the cavernous "ligand sitting in a deep groove"
-   *  look from the hero references regardless of site theme. */
+  /** Canvas background simply follows the site theme — white in light
+   *  mode, deep slate in dark mode. We used to force dark when Surface
+   *  mode was active to compensate for SAS surfaces leaving literal holes
+   *  through the protein where the binding pocket is, but the proper fix
+   *  is switching the surface type to MS (solvent-excluded / Connolly)
+   *  which gives a closed-shell mesh with the pocket as a depression
+   *  rather than a hole. Now the cavity reads as same-color depth in
+   *  both themes, so the BG can stay theme-appropriate. */
   function pickCanvasBackground(): string {
-    if (backboneStyle === "surface") return "#0f172a";  // deep slate, theme-agnostic
     const isDark = document.documentElement.classList.contains("dark");
     return isDark ? "#0f172a" : "white";
   }
