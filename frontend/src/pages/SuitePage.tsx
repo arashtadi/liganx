@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQueries } from "@tanstack/react-query";
 import { api, type Job, type CatalogTarget } from "../api";
@@ -56,23 +55,13 @@ export default function SuitePage() {
   const [params] = useSearchParams();
   const idsParam = params.get("ids") ?? "";
 
-  // Active pose for the in-page modal. Replaces the previous behavior of
-  // navigating away to /jobs/{shareId}?cells=... — that yanked the user
-  // off the suite page and lost the multi-target context. Now clicking a
-  // cell opens an overlay with the same pose-detail content (3D viewer
-  // + drug-likeness + interpretation) without leaving the page.
+  // Active cell driving the sticky detail rail. Replaces the earlier
+  // modal-popup design: clicking a cell now updates the right-side panel
+  // in place instead of opening a fullscreen overlay. Cell coords (not
+  // a frozen pick snapshot) so when ProLIF/PoseBusters validation lands
+  // 5–30s after Vina, the rail picks up the new data automatically on
+  // the next poll. Null = no cell selected → rail shows an empty state.
   const [activePose, setActivePose] = useState<ActivePose | null>(null);
-  useEffect(() => {
-    if (!activePose) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setActivePose(null); };
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [activePose]);
   const ids = useMemo(
     () => idsParam.split(",").map((s) => s.trim()).filter(Boolean),
     [idsParam],
@@ -142,8 +131,8 @@ export default function SuitePage() {
               )}
             </h1>
             <p className="muted mt-1 text-sm">
-              Each compound docked against every selected target. Each kinase shows its full
-              WT-vs-mutant matrix below; click any mutant cell to drill into the pose.
+              Each compound docked against every selected target. Click any cell — the
+              detail rail on the right updates in place without leaving the page.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -164,10 +153,15 @@ export default function SuitePage() {
         </div>
       </div>
 
-      {/* Per-kinase matrices — one stacked panel per child job. Each panel
-          contains the same SelectivityMatrix component used on the single-
-          job page, so users get the same affordances (sort, CSV, cell
-          drilldown to PoseDetail, "outside pocket" badging) here. */}
+      {/* Two-column working area:
+            • Left: matrices stack normally and scroll with the page.
+            • Right: a sticky rail that shows the active cell's full
+              detail (3D viewer + PoseDetail + Insights). Updates in
+              place when the user clicks a different cell — no popup.
+          Below the lg breakpoint the rail stacks BELOW the matrices
+          (no sticky), since two columns would crush both on mobile. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
+        <div className="space-y-6 min-w-0">
       {jobs.map((j, i) => {
         const sid = ids[i];
         const catalogEntry = catalog?.find(
@@ -278,169 +272,202 @@ export default function SuitePage() {
         );
       })}
 
-      {/* In-page pose modal. Composes the same HeroBanner (3D viewer +
-          score metrics) and PoseDetail (drug-likeness, ProLIF contacts,
-          interpretation, 2D map) used on the standalone JobPage, just
-          inside an overlay so the multi-target matrices stay visible
-          underneath. Backdrop click / Esc / X all dismiss back to the
-          suite. Rendered via portal so the overlay escapes any parent
-          stacking context (the per-kinase panels create their own). */}
-      {activePose && (() => {
-        const j = jobs[activePose.jobIdx];
-        if (!j) return null;
-        const sid = ids[activePose.jobIdx];
-        const target = catalog?.find(
-          (t) => t.pdb_id.toUpperCase() === j.pdb_id.toUpperCase(),
-        );
-        // Derive a LIVE pick from current job results — not a frozen
-        // snapshot from click time. ProLIF validation finishes ASYNC so
-        // contacts + 2D map data lands in the result row 5–30 s after
-        // Vina; without this lookup the modal kept showing the pre-
-        // validation row and the 2D map / contacts never appeared.
-        const liveCompound = j.compounds.find((c) => c.id === activePose.compoundId);
-        const liveResult = j.results.find(
-          (r) => r.compound_id === activePose.compoundId && r.variant === activePose.variant,
-        );
-        const wtResult = j.results.find(
-          (r) => r.compound_id === activePose.compoundId && r.variant === "WT",
-        );
-        if (!liveCompound || !liveResult) return null;
-        const livePick = {
-          compound: liveCompound,
-          variant: activePose.variant,
-          score: liveResult.best_score,
-          deltaWt:
-            activePose.variant === "WT" || !wtResult
-              ? null
-              : liveResult.best_score - wtResult.best_score,
-          extra: liveResult.extra ?? null,
-        };
-        const compoundLabel = liveCompound.name ?? `Compound #${liveCompound.id}`;
-        return createPortal(
-          // Outer overlay — flex-center, NO scroll. Earlier the overlay
-          // had its own overflow-y-auto which competed with the inner
-          // body's scroll, so wheel events sometimes hit the wrong
-          // container and "scrolling broke". Single-scrollable design:
-          // overlay = backdrop + click-to-dismiss, inner body = the
-          // only scrollable region.
-          <div
-            className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-6 bg-ink/80 backdrop-blur-sm"
-            onClick={() => setActivePose(null)}
-          >
-            <div
-              className="bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 rounded-2xl shadow-2xl w-full max-w-7xl flex flex-col overflow-hidden"
-              style={{ maxHeight: "min(96vh, 1200px)" }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <header className="flex items-start justify-between gap-4 px-5 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-700 shrink-0 bg-white dark:bg-slate-900">
-                <div className="min-w-0">
-                  <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className="text-base sm:text-lg font-semibold text-ink dark:text-slate-100 truncate">
-                      {compoundLabel}
-                    </span>
-                    <span className="text-slate-400 dark:text-slate-500">×</span>
-                    <span className="font-mono text-base sm:text-lg font-semibold text-delta-700 dark:text-delta-300">
-                      {livePick.variant}
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    {j.pdb_id} chain {j.chain}{target ? ` · ${target.name}` : ""}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {/* Open in a NEW WINDOW (not just a new tab) so the
-                      suite page with its other target matrices stays
-                      visible alongside the standalone view. We use an
-                      explicit window.open with the `popup` feature
-                      string and width/height — this is the only way to
-                      force most modern browsers to open a window
-                      instead of a tab. The user can drag the new
-                      window to a second monitor or arrange side-by-
-                      side with the suite. */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = `/jobs/${sid}?cells=${encodeURIComponent(`${livePick.compound.id}.${livePick.variant}`)}`;
-                      // popup + width/height forces a real window; without
-                      // these, target="_blank" tends to open a tab in
-                      // Chromium-family browsers.
-                      window.open(
-                        url,
-                        "_blank",
-                        "noopener,noreferrer,popup=yes,width=1400,height=900",
-                      );
-                    }}
-                    className="text-xs text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline whitespace-nowrap"
-                    title="Open this cell in a new window (your suite page stays in this one)"
-                  >
-                    Open standalone ↗
-                  </button>
-                  <button
-                    onClick={() => setActivePose(null)}
-                    className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1.5 -m-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                    aria-label="Close (Esc)"
-                    title="Close (Esc)"
-                  >
-                    <Close size={18} />
-                  </button>
-                </div>
-              </header>
-              {/* Single scrollable body. flex-1 + min-h-0 lets it take
-                  whatever vertical space remains after the header (a flex
-                  child needs min-h-0 to allow its overflow:auto to work
-                  inside a flex column — without it the child grows to fit
-                  content and never scrolls). */}
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6">
-                {/* Two-column layout for the pose detail + 3D viewer.
-                    Earlier the right column was lg:sticky so the 3D
-                    viewer stayed visible while reading the long left
-                    content — but the user reported that felt like only
-                    part of the modal was scrolling: the 3D / scores
-                    panel appeared frozen while everything else moved.
-                    Dropped the sticky so both columns scroll together
-                    as one unit; on a scroll-down, the entire modal
-                    contents move uniformly which matches how every
-                    other dialog on the site behaves. */}
-                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
-                  <div className="space-y-6 min-w-0">
-                    <PoseDetail
-                      pick={livePick}
-                      pdbId={j.pdb_id}
-                      chain={j.chain}
-                      pocketCenter={target?.pocket.center}
-                      jobId={j.share_id || j.id}
-                      onClose={() => setActivePose(null)}
-                    />
-                  </div>
-                  <div>
-                    <HeroBanner
-                      pick={livePick}
-                      pdbId={j.pdb_id}
-                      chain={j.chain}
-                      pocketCenter={target?.pocket.center}
-                      jobId={j.share_id || j.id}
-                    />
-                  </div>
-                </div>
+        </div>
 
-                {/* Insights cards — full-width row BELOW the 2-col grid so
-                    the 3 cards (binding, resistance hint, rank) get to
-                    spread into a proper 3-up layout instead of being
-                    squished into the narrow left column where they
-                    rendered as a vertical stack at the bottom of the
-                    scroll and felt cut off. Same component used on the
-                    standalone JobPage — scopes to the active pick. */}
-                {j.status === "completed" && (
-                  <div className="mt-6">
-                    <Insights job={j} pick={livePick} />
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>,
-          document.body,
-        );
-      })()}
+        {/* Sticky detail rail. Above the lg breakpoint it pins to the
+            top of the viewport and updates whenever the user clicks a
+            cell anywhere in the matrix list. Below lg it just stacks
+            under the matrix column (no sticky — too cramped on mobile). */}
+        <aside className="lg:sticky lg:top-20 lg:self-start">
+          <DetailRail
+            activePose={activePose}
+            jobs={jobs}
+            ids={ids}
+            catalog={catalog}
+            onClear={() => setActivePose(null)}
+          />
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Detail rail — replaces the old cell-click modal                            */
+/* -------------------------------------------------------------------------- */
+
+interface DetailRailProps {
+  activePose: ActivePose | null;
+  jobs: (Job | null)[];
+  ids: string[];
+  catalog: CatalogTarget[] | undefined;
+  onClear: () => void;
+}
+
+/** Right-rail detail panel for the suite. When a cell is selected,
+ *  renders the same 3D viewer + PoseDetail + Insights you'd see on a
+ *  standalone JobPage. When nothing is selected, renders a friendly
+ *  empty state pointing the user at the matrix.
+ *
+ *  The rail derives its content from `activePose` (cell coords) on
+ *  every render, looking up the *live* result row from `jobs[i].results`.
+ *  This is essential because per-cell validation (ProLIF, PoseBusters)
+ *  lands 5–30s after Vina — using a frozen pick snapshot would freeze
+ *  the rail with `extra: null` and the 2D map would never appear. The
+ *  jobPolling helper drives the refetches so this lookup will become
+ *  populated automatically without any user action. */
+function DetailRail({ activePose, jobs, ids, catalog, onClear }: DetailRailProps) {
+  // Inner-scroll cap: rail content can be tall (3D viewer + long PoseDetail
+  // + Insights). Without a cap the rail would overflow the viewport, sticky
+  // would still pin the TOP, and the bottom would be unreachable. With this
+  // cap the rail itself scrolls when its content exceeds the viewport.
+  const innerStyle = { maxHeight: "calc(100vh - 6rem)" } as const;
+
+  if (!activePose) {
+    return (
+      <div
+        className="panel p-6 flex flex-col items-center justify-center text-center overflow-y-auto"
+        style={innerStyle}
+      >
+        <div className="w-12 h-12 rounded-full bg-delta-50 dark:bg-delta-900/30 flex items-center justify-center text-delta-600 dark:text-delta-300 text-xl mb-3">
+          ←
+        </div>
+        <h3 className="text-base font-semibold text-ink dark:text-slate-100">
+          Click any cell
+        </h3>
+        <p className="muted text-sm mt-2 max-w-xs">
+          The 3D pose, ProLIF contacts, 2D interaction map, and drug-likeness
+          for the selected compound × variant land here.
+        </p>
+        <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-3">
+          The rail follows you as you scroll.
+        </p>
+      </div>
+    );
+  }
+
+  const j = jobs[activePose.jobIdx];
+  if (!j) {
+    return (
+      <div className="panel p-6" style={innerStyle}>
+        <p className="muted text-sm">Loading job…</p>
+      </div>
+    );
+  }
+  const sid = ids[activePose.jobIdx];
+  const target = catalog?.find(
+    (t) => t.pdb_id.toUpperCase() === j.pdb_id.toUpperCase(),
+  );
+
+  // Live pick lookup — see the comment block above. ProLIF validation lands
+  // asynchronously, so we re-derive the pick from current results on every
+  // render rather than caching it at click time.
+  const liveCompound = j.compounds.find((c) => c.id === activePose.compoundId);
+  const liveResult = j.results.find(
+    (r) => r.compound_id === activePose.compoundId && r.variant === activePose.variant,
+  );
+  const wtResult = j.results.find(
+    (r) => r.compound_id === activePose.compoundId && r.variant === "WT",
+  );
+  if (!liveCompound || !liveResult) {
+    return (
+      <div className="panel p-6" style={innerStyle}>
+        <p className="muted text-sm">
+          Waiting for this cell's result…
+        </p>
+      </div>
+    );
+  }
+  const livePick = {
+    compound: liveCompound,
+    variant: activePose.variant,
+    score: liveResult.best_score,
+    deltaWt:
+      activePose.variant === "WT" || !wtResult
+        ? null
+        : liveResult.best_score - wtResult.best_score,
+    extra: liveResult.extra ?? null,
+  };
+  const compoundLabel = liveCompound.name ?? `Compound #${liveCompound.id}`;
+
+  return (
+    <div
+      className="panel flex flex-col overflow-hidden"
+      style={innerStyle}
+    >
+      {/* Rail header — compact summary of which cell is showing, plus
+          'Open standalone' (new window) and a × button to clear back
+          to the empty state without losing scroll position. */}
+      <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-1.5 flex-wrap">
+            <span className="font-semibold text-ink dark:text-slate-100 truncate">
+              {compoundLabel}
+            </span>
+            <span className="text-slate-400 dark:text-slate-500">×</span>
+            <span className="font-mono text-sm font-semibold text-delta-700 dark:text-delta-300">
+              {livePick.variant}
+            </span>
+          </div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+            {j.pdb_id} chain {j.chain}{target ? ` · ${target.name}` : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Open the same cell in a popup window — useful when the
+              user wants the wider standalone JobPage layout (with the
+              full-width matrix + sticky 3D banner) without losing the
+              suite they're working from. popup + width/height forces a
+              real window in Chromium browsers (vs. a tab). */}
+          <button
+            type="button"
+            onClick={() => {
+              const url = `/jobs/${sid}?cells=${encodeURIComponent(`${livePick.compound.id}.${livePick.variant}`)}`;
+              window.open(
+                url,
+                "_blank",
+                "noopener,noreferrer,popup=yes,width=1400,height=900",
+              );
+            }}
+            className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline whitespace-nowrap"
+            title="Open this cell in a new window"
+          >
+            Open ↗
+          </button>
+          <button
+            onClick={onClear}
+            className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+            aria-label="Clear selection"
+            title="Clear selection"
+          >
+            <Close size={14} />
+          </button>
+        </div>
+      </header>
+
+      {/* Scrollable rail body. The 3D viewer goes first so it stays
+          near the top — the most important visual when scanning poses.
+          PoseDetail + Insights flow underneath. */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 space-y-4">
+        <HeroBanner
+          pick={livePick}
+          pdbId={j.pdb_id}
+          chain={j.chain}
+          pocketCenter={target?.pocket.center}
+          jobId={j.share_id || j.id}
+        />
+        <PoseDetail
+          pick={livePick}
+          pdbId={j.pdb_id}
+          chain={j.chain}
+          pocketCenter={target?.pocket.center}
+          jobId={j.share_id || j.id}
+          onClose={onClear}
+        />
+        {j.status === "completed" && (
+          <Insights job={j} pick={livePick} />
+        )}
+      </div>
     </div>
   );
 }
