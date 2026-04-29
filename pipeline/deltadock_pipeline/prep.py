@@ -556,7 +556,21 @@ def prepare_ligand(smiles: str, out_pdbqt: Path | str, *, name: str | None = Non
     writer.close()
 
     # 2) SDF → PDBQT via meeko
-    cmd = ["mk_prepare_ligand.py", "-i", str(sdf_path), "-o", str(out_pdbqt)]
+    #
+    # --rigid_macrocycles: by default Meeko detects spanning macrocycles
+    # (e.g. Lorlatinib's lactam path through the fused aromatic ring) and
+    # "opens" them with dummy glue atoms typed `G` / `CG0` so the macrocycle
+    # gets pseudo-flexible torsions. AutoDock Vina (and QuickVina2-GPU,
+    # which our Pod runs) DO NOT recognize the `G` atom type — the engine
+    # silently rejects the ligand and returns no pose. This was making
+    # every Lorlatinib docking fail across all variants with the cryptic
+    # "batch err: no pose written" message. Forcing macrocycles to stay
+    # rigid sacrifices a small amount of conformational sampling but lets
+    # Vina actually dock the compound. Non-macrocyclic compounds are
+    # unaffected (the flag only applies when a spanning macrocycle is
+    # detected).
+    cmd = ["mk_prepare_ligand.py", "--rigid_macrocycles",
+           "-i", str(sdf_path), "-o", str(out_pdbqt)]
     log.info("Preparing ligand: %s → %s", smiles[:60], out_pdbqt.name)
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
