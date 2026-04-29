@@ -50,7 +50,13 @@ export default function PoseDetail({ pick, onClose }: Props) {
   const diagramRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    <div className="panel sticky top-20 animate-fade-in">
+    // Used to be `sticky top-20` so the card pinned while the right rail
+    // scrolled — but now that we've dropped the right rail's own sticky
+    // (so both columns scroll together), keeping this sticky here had
+    // the inverse effect: the LEFT column appeared frozen and only the
+    // right column scrolled. Page-wide rule is now "everything scrolls
+    // together," so this card is normal flow too.
+    <div className="panel animate-fade-in">
       <header className="flex items-start justify-between p-5 border-b border-slate-200 dark:border-slate-700">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
