@@ -362,12 +362,16 @@ export default function SuitePage() {
                   inside a flex column — without it the child grows to fit
                   content and never scrolls). */}
               <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6">
-                {/* Mirror the JobPage Option-Y layout: drill-down on the
-                    left, sticky 3D banner on the right (desktop). On
-                    mobile, stacked. The sticky `top-0` is relative to
-                    the scrollable body above — keeps the 3D viewer
-                    visible while the user scrolls through the long
-                    PoseDetail / Insights content on the left. */}
+                {/* Two-column layout for the pose detail + 3D viewer.
+                    Earlier the right column was lg:sticky so the 3D
+                    viewer stayed visible while reading the long left
+                    content — but the user reported that felt like only
+                    part of the modal was scrolling: the 3D / scores
+                    panel appeared frozen while everything else moved.
+                    Dropped the sticky so both columns scroll together
+                    as one unit; on a scroll-down, the entire modal
+                    contents move uniformly which matches how every
+                    other dialog on the site behaves. */}
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
                   <div className="space-y-6 min-w-0">
                     <PoseDetail
@@ -379,7 +383,7 @@ export default function SuitePage() {
                       onClose={() => setActivePose(null)}
                     />
                   </div>
-                  <div className="lg:sticky lg:top-0">
+                  <div>
                     <HeroBanner
                       pick={activePose.pick}
                       pdbId={j.pdb_id}
