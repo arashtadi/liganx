@@ -2,25 +2,24 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQueries } from "@tanstack/react-query";
-import { api, type Job, type CatalogTarget, type Compound } from "../api";
+import { api, type Job, type CatalogTarget } from "../api";
 import { Close, Spinner, Target } from "../components/Icons";
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import HeroBanner from "../components/HeroBanner";
 import PoseDetail from "../components/PoseDetail";
 import { Insights } from "./JobPage";
 
-/** Active pose for the in-page modal. Tracking the JOB INDEX (not just the
- *  cell) lets us look up the right job + catalog entry when rendering the
- *  modal. The pick shape mirrors what SelectivityMatrix's onPick emits. */
+/** Active pose for the in-page modal. We track the cell COORDINATES
+ *  (jobIdx + compoundId + variant) rather than a frozen snapshot of the
+ *  pick, so that when validation completes after the modal opens —
+ *  ProLIF contacts and the 2D interaction map land 5–30 s after Vina —
+ *  the modal automatically updates with the new data instead of showing
+ *  stale pre-validation state. The fresh pick is derived from the live
+ *  job.results on every render. */
 interface ActivePose {
   jobIdx: number;
-  pick: {
-    compound: Compound;
-    variant: string;
-    score: number;
-    deltaWt: number | null;
-    extra?: string | null;
-  };
+  compoundId: number;
+  variant: string;
 }
 
 /**
@@ -262,10 +261,14 @@ export default function SuitePage() {
                 mutationInfo={mutationInfo}
                 currentPickKey={
                   activePose && activePose.jobIdx === i
-                    ? `${activePose.pick.compound.id}.${activePose.pick.variant}`
+                    ? `${activePose.compoundId}.${activePose.variant}`
                     : null
                 }
-                onPick={(pick) => setActivePose({ jobIdx: i, pick })}
+                onPick={(pick) => setActivePose({
+                  jobIdx: i,
+                  compoundId: pick.compound.id,
+                  variant: pick.variant,
+                })}
               />
             )}
           </div>
@@ -286,7 +289,30 @@ export default function SuitePage() {
         const target = catalog?.find(
           (t) => t.pdb_id.toUpperCase() === j.pdb_id.toUpperCase(),
         );
-        const compoundLabel = activePose.pick.compound.name ?? `Compound #${activePose.pick.compound.id}`;
+        // Derive a LIVE pick from current job results — not a frozen
+        // snapshot from click time. ProLIF validation finishes ASYNC so
+        // contacts + 2D map data lands in the result row 5–30 s after
+        // Vina; without this lookup the modal kept showing the pre-
+        // validation row and the 2D map / contacts never appeared.
+        const liveCompound = j.compounds.find((c) => c.id === activePose.compoundId);
+        const liveResult = j.results.find(
+          (r) => r.compound_id === activePose.compoundId && r.variant === activePose.variant,
+        );
+        const wtResult = j.results.find(
+          (r) => r.compound_id === activePose.compoundId && r.variant === "WT",
+        );
+        if (!liveCompound || !liveResult) return null;
+        const livePick = {
+          compound: liveCompound,
+          variant: activePose.variant,
+          score: liveResult.best_score,
+          deltaWt:
+            activePose.variant === "WT" || !wtResult
+              ? null
+              : liveResult.best_score - wtResult.best_score,
+          extra: liveResult.extra ?? null,
+        };
+        const compoundLabel = liveCompound.name ?? `Compound #${liveCompound.id}`;
         return createPortal(
           // Outer overlay — flex-center, NO scroll. Earlier the overlay
           // had its own overflow-y-auto which competed with the inner
@@ -311,7 +337,7 @@ export default function SuitePage() {
                     </span>
                     <span className="text-slate-400 dark:text-slate-500">×</span>
                     <span className="font-mono text-base sm:text-lg font-semibold text-delta-700 dark:text-delta-300">
-                      {activePose.pick.variant}
+                      {livePick.variant}
                     </span>
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -331,7 +357,7 @@ export default function SuitePage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const url = `/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`;
+                      const url = `/jobs/${sid}?cells=${encodeURIComponent(`${livePick.compound.id}.${livePick.variant}`)}`;
                       // popup + width/height forces a real window; without
                       // these, target="_blank" tends to open a tab in
                       // Chromium-family browsers.
@@ -375,7 +401,7 @@ export default function SuitePage() {
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
                   <div className="space-y-6 min-w-0">
                     <PoseDetail
-                      pick={activePose.pick}
+                      pick={livePick}
                       pdbId={j.pdb_id}
                       chain={j.chain}
                       pocketCenter={target?.pocket.center}
@@ -385,7 +411,7 @@ export default function SuitePage() {
                   </div>
                   <div>
                     <HeroBanner
-                      pick={activePose.pick}
+                      pick={livePick}
                       pdbId={j.pdb_id}
                       chain={j.chain}
                       pocketCenter={target?.pocket.center}
@@ -403,7 +429,7 @@ export default function SuitePage() {
                     standalone JobPage — scopes to the active pick. */}
                 {j.status === "completed" && (
                   <div className="mt-6">
-                    <Insights job={j} pick={activePose.pick} />
+                    <Insights job={j} pick={livePick} />
                   </div>
                 )}
               </div>
