@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     # results — flip on via env (POD_BATCH_DOCK=1) when ready.
     pod_batch_dock: bool = False
 
+    # When true, validation (PoseBusters + ProLIF + strain analysis) runs
+    # AFTER docking + DB write completes — in a thread pool that updates
+    # row.extra in place. The user sees scores within seconds of docking
+    # finishing; the confidence ribbon, contacts list, and PoseBusters
+    # verdict fill in over the next ~30s via the frontend's 2s polling.
+    # Without this, every cell waits 15-20s for validation in series before
+    # being persisted, which dominates wall time on small-target jobs.
+    # Off by default — flip on via env (DEFER_VALIDATION=1) when ready.
+    defer_validation: bool = False
+
     # Email
     resend_api_key: str = ""
     email_from: str = "hello@deltadock.bio"

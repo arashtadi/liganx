@@ -272,6 +272,96 @@ def run_job_in_background(job_id: int) -> None:
 # Real Vina pipeline
 # ──────────────────────────────────────────────────────────────────────
 
+def _drain_pending_validations(pending: list[dict], session: Session) -> None:
+    """Run deferred PoseBusters/ProLIF/strain validation in parallel.
+
+    `pending` is a list of dicts (built by _finalize_cell when
+    defer_validation is on) containing everything one validation pass
+    needs: receptor pdbqt, receptor pdb, pose pdbqt path (still alive
+    in the runner's tempdir), ligand SMILES, and the row's current
+    `extra` string so we can append the new validation segment.
+
+    Updates DockingResult.extra in place via the same `session` —
+    rows already have `validate=pending` from _finalize_cell, which we
+    overwrite with the real validation string. Frontend's 2s polling
+    sees the update on the next /jobs fetch.
+
+    Concurrency: uses ThreadPoolExecutor. PoseBusters + ProLIF + strain
+    each run as their own subprocess (RDKit segfault isolation), so
+    real parallelism comes from the OS scheduler, not the Python GIL.
+    Cap at 4 concurrent because each validation spawns ~3 subprocesses
+    and the Fly machine has 2 vCPU — going wider would just cause
+    context-switch thrash without speedup.
+
+    No-op when `pending` is empty (eager-validation path doesn't
+    populate the list).
+    """
+    if not pending:
+        return
+    try:
+        from deltadock_pipeline.validate import validate_pose
+    except ImportError:
+        log.warning("validate_pose unavailable; deferred validation skipped")
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one_validation(item: dict) -> tuple[int, str, str | None, str | None]:
+        """Returns (compound_id, variant, validation_segment, error)."""
+        try:
+            v = validate_pose(
+                receptor_pdbqt=item["receptor"],
+                pose_pdbqt=item["pose_pdbqt"],
+                receptor_pdb=item["receptor_pdb"],
+                work_dir=item["run_dir"],
+                ligand_smiles=item["ligand_smiles"],
+            )
+            return (item["compound_id"], item["variant"], v.to_extra_string(), None)
+        except Exception as ve:
+            return (item["compound_id"], item["variant"], None, f"validate_err={str(ve)[:80]}")
+
+    log.info("Deferred validation: draining %d cells in parallel", len(pending))
+    by_key = {(it["compound_id"], it["variant"]): it for it in pending}
+    # All pending items share a job_id (one runner = one job) — capture once.
+    job_id_for_rows = pending[0].get("job_id") if pending and pending[0].get("job_id") is not None else None
+    # Fallback: derive from a query against compound_id+variant — but every
+    # pending item came from this runner so they all carry the same job_id
+    # if it was set at enqueue time. Add it now if missing (older callers).
+    # We use the first pending item's job_id; matches the model.
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(_one_validation, it) for it in pending]
+        for fut in as_completed(futures):
+            try:
+                compound_id, variant, segment, err = fut.result()
+            except Exception as e:
+                log.warning("Validation worker crashed: %s", e)
+                continue
+
+            current_extra = by_key[(compound_id, variant)].get("current_extra") or ""
+            new_segment = segment if segment else (err or "validate_err=unknown")
+            # Strip the placeholder so the final extra is clean.
+            cleaned = "|".join(
+                p for p in current_extra.split("|")
+                if p and p != "validate=pending"
+            )
+            final_extra = (cleaned + "|" + new_segment) if cleaned else new_segment
+
+            # Find and update the row. Filter by job_id when we have it
+            # (avoids cross-job collisions in the same compound_id space).
+            stmt = select(DockingResult).where(
+                DockingResult.compound_id == compound_id,
+                DockingResult.variant == variant,
+            )
+            if job_id_for_rows is not None:
+                stmt = stmt.where(DockingResult.job_id == job_id_for_rows)
+            for r in session.exec(stmt):
+                r.extra = final_extra
+                session.add(r)
+            session.commit()
+    log.info("Deferred validation: done")
+
+
 def _run_real(session: Session, job: Job) -> None:
     # Late import — keeps the placeholder-only path lightweight
     import sys
@@ -754,10 +844,20 @@ def _run_real(session: Session, job: Job) -> None:
     with tempfile.TemporaryDirectory(prefix=f"deltadock-job{job.id}-") as work_str:
         work = Path(work_str)
 
+        # ── Pending-validation queue. When defer_validation is on, validation
+        # is skipped inside _finalize_cell and queued here. After the main
+        # docking loop finishes (and the job is marked COMPLETED so the user
+        # sees scores immediately), we drain this queue in a ThreadPoolExecutor
+        # that updates row.extra as each validation finishes. The frontend's
+        # 2s polling picks up the updates piecewise.
+        pending_validations: list[dict] = []
+        defer_val = settings.defer_validation and validate_on
+
         # ── Per-cell finalize: shared between the legacy per-cell path and
-        # the new batched-per-variant path. Runs vinardo rescore + ProLIF
-        # validation, persists the pose to R2 (or local), and writes the DB
-        # row. Pure side effects on `session`; caller commits.
+        # the new batched-per-variant path. Runs vinardo rescore + (eagerly
+        # OR deferred) ProLIF/PoseBusters validation, persists the pose to
+        # R2 (or local), and writes the DB row. Pure side effects on
+        # `session`; caller commits.
         def _finalize_cell(compound, variant, receptor, receptor_pdb, run_dir, result, engine_used):
             parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
             parts.append(f"engine={engine_used}")
@@ -768,7 +868,9 @@ def _run_real(session: Session, job: Job) -> None:
                     parts.append(f"vinardo={v_score:.2f}")
             except Exception as e:
                 log.info("Vinardo rescore failed for c%s × %s: %s", compound.id, variant, e)
-            if validate_on:
+            if validate_on and not defer_val:
+                # Eager (legacy) validation — runs synchronously before the
+                # row is written. Slow but simpler.
                 try:
                     v = validate_pose(
                         receptor_pdbqt=receptor,
@@ -781,6 +883,10 @@ def _run_real(session: Session, job: Job) -> None:
                 except Exception as ve:
                     log.warning("Validation crashed for c%s × %s: %s", compound.id, variant, ve)
                     parts.append(f"validate_err={str(ve)[:80]}")
+            elif defer_val:
+                # Deferred — write a placeholder so the matrix UI knows to
+                # show "validation pending" rather than a missing column.
+                parts.append("validate=pending")
             from .pose_store import get_pose_store
             try:
                 pose_uri = get_pose_store().write(
@@ -795,6 +901,23 @@ def _run_real(session: Session, job: Job) -> None:
                 pose_uri=pose_uri,
                 extra="|".join(parts) if parts else None,
             ))
+            if defer_val:
+                # Capture everything the validation thread needs. Note we
+                # snapshot the pose_pdbqt path WHILE the runner's tempdir
+                # still exists — the validation pass must finish before the
+                # outer `with tempfile.TemporaryDirectory()` block exits,
+                # otherwise the pose file gets unlinked out from under it.
+                pending_validations.append({
+                    "job_id": job.id,
+                    "compound_id": compound.id,
+                    "variant": variant,
+                    "receptor": receptor,
+                    "receptor_pdb": receptor_pdb,
+                    "pose_pdbqt": result.pose_pdbqt,
+                    "run_dir": run_dir,
+                    "ligand_smiles": compound.smiles,
+                    "current_extra": "|".join(parts) if parts else None,
+                })
 
         # ── Batched-per-variant dispatch path. Activates when pod_batch_on
         # AND the matrix has more than one cell. Inverts the loop nesting:
@@ -932,6 +1055,7 @@ def _run_real(session: Session, job: Job) -> None:
                             best_score=0.0, extra=f"docking_failed: {e}",
                         ))
                 session.commit()
+            _drain_pending_validations(pending_validations, session)
             return  # batched path done; skip the legacy per-cell loop below
 
         # ── Legacy per-cell dispatch (untouched). Kept as fallback for
@@ -1080,6 +1204,21 @@ def _run_real(session: Session, job: Job) -> None:
                         best_score=0.0, extra=f"docking_failed: {e}",
                     ))
                 session.commit()
+        # Common drain for both batched and legacy paths. Runs deferred
+        # validation (when DEFER_VALIDATION=1) in a thread pool that
+        # updates rows in place; tempdir is still alive so pose files
+        # are readable. We mark the job COMPLETED *before* the drain so
+        # the user sees scores immediately while validation columns fill
+        # in via the frontend's polling.
+        if pending_validations:
+            session.refresh(job)
+            if job.status != JobStatus.CANCELLED:
+                job.status = JobStatus.COMPLETED
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
+                log.info("Job %s docking phase complete; running validation in background", job.id)
+        _drain_pending_validations(pending_validations, session)
 
 
 def _catalog_by_pdb(pdb_id: str):
