@@ -16,7 +16,7 @@ import SettingsPage from "./pages/SettingsPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
-import DocFlaskTour, { resetDocFlaskTour, isDocFlaskTourDismissed } from "./components/DocFlask/DocFlaskTour";
+import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
 
 export default function App() {
   return (
@@ -193,26 +193,10 @@ function UserMenu({ email, avatarUrl, onSignOut }: { email: string; avatarUrl: s
           >
             My history
           </button>
-          {/* Re-enable the Doc Flask onboarding tour. We always show this
-              entry — both for users who explicitly opted out AND for
-              users who just want to see the walkthrough again later.
-              Label changes based on whether the dismissed flag is set
-              so users who clicked "Don't show again" know they're
-              undoing that. Clicking takes them to /new and the tour
-              fires after the standard 600 ms settle delay. */}
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              resetDocFlaskTour();
-              navigate("/new");
-            }}
-            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700 border-t border-slate-100 dark:border-slate-700"
-            role="menuitem"
-            title="Re-enable the New Job page walkthrough"
-          >
-            {isDocFlaskTourDismissed() ? "Re-enable Doc Flask tour" : "Show Doc Flask tour"}
-          </button>
+          {/* The Doc Flask tour toggle moved to /settings — keeping it
+              there only avoids two parallel UI entry points that can
+              drift apart. Users reach it via Settings → "Doc Flask
+              tour" instead. */}
           <button
             type="button"
             onClick={async () => { setOpen(false); await onSignOut(); navigate("/"); }}
