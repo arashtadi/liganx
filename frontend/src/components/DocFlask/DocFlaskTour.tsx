@@ -50,7 +50,7 @@ const NEW_JOB_TOUR: TourStep[] = [
     selector: null,
     title: "Hi! I'm Doc Flask.",
     body:
-      "I'll walk you through your first docking — about 30 seconds. Click any step's highlight to dismiss me, or tap Skip if you'd rather explore on your own.",
+      "I'll walk you through a docking run — about 30 seconds. I'll come back each time you visit New Job unless you tick \"Don't show this again\" below.",
     pose: "idle",
   },
   {
@@ -95,20 +95,28 @@ const NEW_JOB_TOUR: TourStep[] = [
 ];
 
 const STORAGE_KEY = "liganx-tour:new-job";
-const COMPLETED_VALUE = "completed";
+const DISMISSED_VALUE = "dismissed";
 
-function readTourState(): "completed" | "fresh" {
+/** The tour now shows on EVERY visit to /new, UNTIL the user explicitly
+ *  ticks "Don't show again" and dismisses. Just clicking Skip or
+ *  finishing the tour without the checkbox leaves the dismissed flag
+ *  unset, so the tour reappears next visit. This matches "Clippy on
+ *  every new doc" energy — the user opted into Liganx, the brief tour
+ *  helps every time, and there's a clear opt-out for power users. */
+function readTourState(): "dismissed" | "fresh" {
   try {
-    return localStorage.getItem(STORAGE_KEY) === COMPLETED_VALUE ? "completed" : "fresh";
+    return localStorage.getItem(STORAGE_KEY) === DISMISSED_VALUE ? "dismissed" : "fresh";
   } catch {
     return "fresh";
   }
 }
-function markTourCompleted() {
+function markTourDismissed() {
   try {
-    localStorage.setItem(STORAGE_KEY, COMPLETED_VALUE);
+    localStorage.setItem(STORAGE_KEY, DISMISSED_VALUE);
   } catch {
-    /* private mode — accept that the tour might re-run next session */
+    /* private mode — the user will see the tour again next session.
+       That's the conservative outcome: better re-shown than silently
+       lost on a flag we couldn't write. */
   }
 }
 
@@ -120,16 +128,23 @@ export default function DocFlaskTour() {
   const [active, setActive] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
 
-  // Auto-start on first visit to /new for users who haven't completed.
-  // Delay 600 ms to let the page settle (catalog API, layout) — without
-  // the delay the bubble anchors at coordinates that change as content
-  // loads, so it visibly jumps once before the first step.
+  // "Don't show again" checkbox — when checked at dismiss time, we
+  // persist the dismissed flag. Otherwise the tour just closes for
+  // this session and will return on the next /new visit.
+  const [neverAgain, setNeverAgain] = useState(false);
+
+  // Auto-start on every visit to /new for users who haven't permanently
+  // dismissed. Delay 600 ms to let the page settle (catalog API,
+  // layout) — without the delay the bubble anchors at coordinates that
+  // change as content loads, so it visibly jumps once before the first
+  // step. The checkbox state resets each time the tour fires.
   useEffect(() => {
     if (!onNewJob) {
       setActive(false);
       return;
     }
-    if (readTourState() === "completed") return;
+    if (readTourState() === "dismissed") return;
+    setNeverAgain(false);
     const t = window.setTimeout(() => {
       setActive(true);
       setStepIdx(0);
@@ -141,18 +156,23 @@ export default function DocFlaskTour() {
   const step = NEW_JOB_TOUR[stepIdx];
   if (!step) return null;
 
+  function dismiss() {
+    // Only persist the dismissed flag when the user opts out via the
+    // checkbox. Without it, "Skip" / "Got it" just closes for now and
+    // the tour returns next visit — exactly the "always show until told
+    // to stop" behavior we want.
+    if (neverAgain) markTourDismissed();
+    setActive(false);
+  }
   function next() {
     if (stepIdx + 1 >= NEW_JOB_TOUR.length) {
-      // Last step → mark completed and dismiss
-      markTourCompleted();
-      setActive(false);
+      dismiss();
     } else {
       setStepIdx(stepIdx + 1);
     }
   }
   function skip() {
-    markTourCompleted();
-    setActive(false);
+    dismiss();
   }
 
   return (
@@ -160,6 +180,8 @@ export default function DocFlaskTour() {
       step={step}
       stepIdx={stepIdx}
       total={NEW_JOB_TOUR.length}
+      neverAgain={neverAgain}
+      onToggleNeverAgain={setNeverAgain}
       onNext={next}
       onSkip={skip}
     />
@@ -170,11 +192,15 @@ interface OverlayProps {
   step: TourStep;
   stepIdx: number;
   total: number;
+  neverAgain: boolean;
+  onToggleNeverAgain: (v: boolean) => void;
   onNext: () => void;
   onSkip: () => void;
 }
 
-function TourOverlay({ step, stepIdx, total, onNext, onSkip }: OverlayProps) {
+function TourOverlay({
+  step, stepIdx, total, neverAgain, onToggleNeverAgain, onNext, onSkip,
+}: OverlayProps) {
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
 
@@ -298,25 +324,42 @@ function TourOverlay({ step, stepIdx, total, onNext, onSkip }: OverlayProps) {
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center justify-between gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-          <button
-            type="button"
-            onClick={onSkip}
-            className="text-xs text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100"
-          >
-            Skip tour
-          </button>
-          <div className="flex items-center gap-2">
-            <span className="hidden sm:inline text-[10px] text-slate-400 dark:text-slate-500">
-              Esc to dismiss · Enter to advance
-            </span>
+        <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+          {/* "Don't show again" — only persists the dismissed flag when
+              checked. Without this checkbox ticked, Skip / Got it just
+              closes for this session and the tour returns next /new visit.
+              Default unchecked so first-timers can read every step without
+              opting out by accident. */}
+          <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-500 dark:text-slate-400 select-none">
+            <input
+              type="checkbox"
+              checked={neverAgain}
+              onChange={(e) => onToggleNeverAgain(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-slate-300 text-delta-600 focus:ring-delta-500 dark:border-slate-600 dark:bg-slate-800"
+            />
+            <span>Don't show this again on the New Job page</span>
+          </label>
+          <div className="flex items-center justify-between gap-2">
             <button
               type="button"
-              onClick={onNext}
-              className="btn-primary btn-sm"
+              onClick={onSkip}
+              className="text-xs text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100"
+              title={neverAgain ? "Close — tour will not return" : "Close for now — tour returns next visit"}
             >
-              {stepIdx + 1 === total ? "Got it" : "Next"}
+              {neverAgain ? "Close" : "Skip for now"}
             </button>
+            <div className="flex items-center gap-2">
+              <span className="hidden sm:inline text-[10px] text-slate-400 dark:text-slate-500">
+                Esc to dismiss · Enter to advance
+              </span>
+              <button
+                type="button"
+                onClick={onNext}
+                className="btn-primary btn-sm"
+              >
+                {stepIdx + 1 === total ? "Got it" : "Next"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
