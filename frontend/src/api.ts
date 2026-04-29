@@ -261,7 +261,17 @@ export const api = {
       throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`);
     }
   },
-  listJobs: () => request<Job[]>("/jobs"),
+  /** List the signed-in user's jobs, newest first.
+   *
+   *  Pagination via `offset` + `limit`. The backend caps `limit` at 200 but
+   *  the History page hits this with limit=25 (one "page") and bumps the
+   *  offset on each "Load more" click via useInfiniteQuery. A response with
+   *  fewer than `limit` rows means there are no more pages.
+   *
+   *  Both args are optional so existing callers (none today, but future
+   *  consumers) get the legacy 20-row default. */
+  listJobs: (offset = 0, limit = 25) =>
+    request<Job[]>(`/jobs?offset=${offset}&limit=${limit}`),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
   lookupCompound: (q: string) =>

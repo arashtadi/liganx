@@ -15,7 +15,7 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { Close, Spinner } from "../components/Icons";
 import {
@@ -56,12 +56,42 @@ function defaultTitle(j: Job): string {
   return `${j.pdb_id}/${j.chain} · ${j.compounds.length} compound${j.compounds.length === 1 ? "" : "s"}${muts}`;
 }
 
+/** Page size for the infinite-scroll list. Sized to one "Load more" click
+ *  feeling material (a viewport-and-a-half of fresh rows) without making
+ *  the initial render slow. Mirrored on the API call. */
+const PAGE_SIZE = 25;
+
 export default function HistoryPage() {
-  const { data: jobs, isLoading, error } = useQuery({
+  // Cursor-style pagination via useInfiniteQuery. The backend already
+  // supports ?offset=N&limit=M; we bump offset by PAGE_SIZE on each "Load
+  // more". A page that returns fewer than PAGE_SIZE rows signals end-of-
+  // list, at which point useInfiniteQuery sets hasNextPage = false and the
+  // Load more button hides itself.
+  const {
+    data,
+    isLoading,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: ["jobs"],
-    queryFn: api.listJobs,
+    queryFn: ({ pageParam = 0 }) => api.listJobs(pageParam, PAGE_SIZE),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      // Backend returned fewer rows than we asked for → no more pages.
+      if (lastPage.length < PAGE_SIZE) return undefined;
+      return allPages.length * PAGE_SIZE;
+    },
     refetchOnWindowFocus: true,
   });
+
+  // Flatten all loaded pages into a single array so the existing search/
+  // filter/render code stays identical to the pre-pagination version.
+  const jobs = useMemo(
+    () => data?.pages.flat() ?? [],
+    [data],
+  );
 
   const [q, setQ] = useState("");
   // Selected filter tags. OR semantics across selected tags. Starts empty
@@ -149,7 +179,8 @@ export default function HistoryPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">My history</h1>
         <p className="muted mt-1">
-          {jobs.length} job{jobs.length === 1 ? "" : "s"} · click any to open ·
+          Showing {jobs.length} job{jobs.length === 1 ? "" : "s"}
+          {hasNextPage ? "" : " · end of history"} · click any to open ·
           tag jobs to color-code and filter them
         </p>
       </div>
@@ -186,6 +217,32 @@ export default function HistoryPage() {
           </ul>
         )}
       </div>
+
+      {/* Load more — paginates older jobs in 25-row chunks. The button
+          hides itself when the last page returned fewer than PAGE_SIZE
+          rows (= no more history left). Rendered only when jobs exist
+          AND filtering hasn't already reduced the visible set to 0
+          (showing "Load more" beneath an empty filter result is just
+          confusing — the user knows they need to clear filters first). */}
+      {jobs.length > 0 && hasNextPage && (
+        <div className="flex flex-col items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="btn btn-secondary btn-sm"
+          >
+            {isFetchingNextPage ? (
+              <><Spinner size={14} className="mr-1.5" /> Loading…</>
+            ) : (
+              <>Load {PAGE_SIZE} more</>
+            )}
+          </button>
+          <div className="text-[11px] text-slate-400 dark:text-slate-500">
+            Older jobs load on demand to keep the page snappy
+          </div>
+        </div>
+      )}
     </div>
   );
 }
