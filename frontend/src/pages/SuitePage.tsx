@@ -1,9 +1,26 @@
-import { useMemo } from "react";
-import { Link, useSearchParams, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQueries } from "@tanstack/react-query";
-import { api, type Job, type CatalogTarget } from "../api";
-import { Spinner, Target } from "../components/Icons";
+import { api, type Job, type CatalogTarget, type Compound } from "../api";
+import { Close, Spinner, Target } from "../components/Icons";
 import SelectivityMatrix from "../components/SelectivityMatrix";
+import HeroBanner from "../components/HeroBanner";
+import PoseDetail from "../components/PoseDetail";
+
+/** Active pose for the in-page modal. Tracking the JOB INDEX (not just the
+ *  cell) lets us look up the right job + catalog entry when rendering the
+ *  modal. The pick shape mirrors what SelectivityMatrix's onPick emits. */
+interface ActivePose {
+  jobIdx: number;
+  pick: {
+    compound: Compound;
+    variant: string;
+    score: number;
+    deltaWt: number | null;
+    extra?: string | null;
+  };
+}
 
 /**
  * Suite page — shown after submitting a multi-target "selectivity mode" job
@@ -36,8 +53,25 @@ import SelectivityMatrix from "../components/SelectivityMatrix";
  */
 export default function SuitePage() {
   const [params] = useSearchParams();
-  const navigate = useNavigate();
   const idsParam = params.get("ids") ?? "";
+
+  // Active pose for the in-page modal. Replaces the previous behavior of
+  // navigating away to /jobs/{shareId}?cells=... — that yanked the user
+  // off the suite page and lost the multi-target context. Now clicking a
+  // cell opens an overlay with the same pose-detail content (3D viewer
+  // + drug-likeness + interpretation) without leaving the page.
+  const [activePose, setActivePose] = useState<ActivePose | null>(null);
+  useEffect(() => {
+    if (!activePose) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setActivePose(null); };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [activePose]);
   const ids = useMemo(
     () => idsParam.split(",").map((s) => s.trim()).filter(Boolean),
     [idsParam],
@@ -214,8 +248,10 @@ export default function SuitePage() {
 
             {/* Real matrix — same component as the single-job page. Cells
                 stream in as results arrive (isStreaming when not yet done).
-                onPick navigates to the per-job pose detail because the suite
-                page itself doesn't host the 3D viewer. */}
+                onPick now opens the in-page pose modal (instead of
+                navigating away) so the user keeps all the other matrices
+                in view. The 'Open' link in the panel header is still
+                available if they want the standalone job page. */}
             {j && (j.status === "running" || j.status === "completed") && (j.results?.length ?? 0) > 0 && (
               <SelectivityMatrix
                 compounds={j.compounds}
@@ -223,17 +259,109 @@ export default function SuitePage() {
                 results={j.results}
                 isStreaming={j.status === "running"}
                 mutationInfo={mutationInfo}
-                onPick={(pick) => {
-                  // Drill into the standalone job page with the chosen cell
-                  // pinned via the existing ?cells= subset-share mechanism,
-                  // so the user lands directly on that pose detail.
-                  navigate(`/jobs/${sid}?cells=${encodeURIComponent(`${pick.compound.id}.${pick.variant}`)}`);
-                }}
+                currentPickKey={
+                  activePose && activePose.jobIdx === i
+                    ? `${activePose.pick.compound.id}.${activePose.pick.variant}`
+                    : null
+                }
+                onPick={(pick) => setActivePose({ jobIdx: i, pick })}
               />
             )}
           </div>
         );
       })}
+
+      {/* In-page pose modal. Composes the same HeroBanner (3D viewer +
+          score metrics) and PoseDetail (drug-likeness, ProLIF contacts,
+          interpretation, 2D map) used on the standalone JobPage, just
+          inside an overlay so the multi-target matrices stay visible
+          underneath. Backdrop click / Esc / X all dismiss back to the
+          suite. Rendered via portal so the overlay escapes any parent
+          stacking context (the per-kinase panels create their own). */}
+      {activePose && (() => {
+        const j = jobs[activePose.jobIdx];
+        if (!j) return null;
+        const sid = ids[activePose.jobIdx];
+        const target = catalog?.find(
+          (t) => t.pdb_id.toUpperCase() === j.pdb_id.toUpperCase(),
+        );
+        const compoundLabel = activePose.pick.compound.name ?? `Compound #${activePose.pick.compound.id}`;
+        return createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-stretch justify-center p-2 sm:p-6 bg-ink/80 backdrop-blur-sm overflow-y-auto"
+            onClick={() => setActivePose(null)}
+          >
+            <div
+              className="bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 rounded-2xl shadow-2xl w-full max-w-7xl my-auto flex flex-col overflow-hidden"
+              style={{ maxHeight: "min(96vh, 1200px)" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="flex items-start justify-between gap-4 px-5 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-700 shrink-0 bg-white dark:bg-slate-900">
+                <div className="min-w-0">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-base sm:text-lg font-semibold text-ink dark:text-slate-100 truncate">
+                      {compoundLabel}
+                    </span>
+                    <span className="text-slate-400 dark:text-slate-500">×</span>
+                    <span className="font-mono text-base sm:text-lg font-semibold text-delta-700 dark:text-delta-300">
+                      {activePose.pick.variant}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {j.pdb_id} chain {j.chain}{target ? ` · ${target.name}` : ""}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Link
+                    to={`/jobs/${sid}?cells=${encodeURIComponent(`${activePose.pick.compound.id}.${activePose.pick.variant}`)}`}
+                    className="text-xs text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline whitespace-nowrap"
+                    title="Open this cell in the standalone job page (deep link, shareable)"
+                  >
+                    Open standalone
+                  </Link>
+                  <button
+                    onClick={() => setActivePose(null)}
+                    className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1.5 -m-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                    aria-label="Close (Esc)"
+                    title="Close (Esc)"
+                  >
+                    <Close size={18} />
+                  </button>
+                </div>
+              </header>
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
+                {/* Mirror the JobPage Option-Y layout: drill-down on the
+                    left, sticky 3D banner on the right (desktop). On
+                    mobile, stacked. The HeroBanner doesn't try to be
+                    sticky here — the modal already gives it a fixed
+                    visible spot. */}
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
+                  <div className="space-y-6 min-w-0">
+                    <PoseDetail
+                      pick={activePose.pick}
+                      pdbId={j.pdb_id}
+                      chain={j.chain}
+                      pocketCenter={target?.pocket.center}
+                      jobId={j.share_id || j.id}
+                      onClose={() => setActivePose(null)}
+                    />
+                  </div>
+                  <div className="lg:sticky lg:top-2">
+                    <HeroBanner
+                      pick={activePose.pick}
+                      pdbId={j.pdb_id}
+                      chain={j.chain}
+                      pocketCenter={target?.pocket.center}
+                      jobId={j.share_id || j.id}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        );
+      })()}
     </div>
   );
 }
