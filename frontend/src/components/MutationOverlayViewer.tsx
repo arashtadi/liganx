@@ -319,6 +319,12 @@ function ViewerCanvas({
   // means any older addSurface that resolves later sees a mismatched gen
   // and immediately removes itself.
   const surfaceGenRef = useRef(0);
+  // Tracks what surface params (backbone mode + color) we last actually
+  // built. Used to skip the expensive rebuild when applyAllStyles fires
+  // for unrelated reasons (pose style, H toggle, blend slider). Without
+  // this, the surface visibly disappeared and re-rendered every time the
+  // user touched the toolbar — both ugly AND laggy on bigger receptors.
+  const lastSurfaceRef = useRef<{ backbone: BackboneStyle; color: SurfaceColor } | null>(null);
 
   // ── Measure-mode state ──────────────────────────────────────────────
   // When ON, atoms become clickable; pick two atoms to draw a labeled dashed
@@ -361,77 +367,88 @@ function ViewerCanvas({
 
     // Step 2: backbone style on model 0 (the WT structure).
     //
-    // Always remove any prior surface first. We use removeAllSurfaces()
-    // because 3Dmol's addSurface() in modern versions returns a Promise
-    // rather than a numeric handle — pushing that Promise into a ref and
-    // later calling removeSurface(promise) silently fails, leaving a
-    // stuck mesh on screen ("can't switch out of Surface mode" bug).
-    // removeAllSurfaces is handle-agnostic and clears every mesh.
+    // Surface lifecycle is decoupled from the rest of applyAllStyles.
+    // We only tear down + rebuild the surface mesh when the user
+    // ACTUALLY changes something surface-relevant (backbone mode or
+    // surface color). Touching pose style / H toggle / blend slider
+    // leaves the existing surface in place — no flicker, no rebuild.
     //
-    // Bumping surfaceGenRef invalidates any in-flight addSurface
-    // promise — if it resolves AFTER this clear, the resolution handler
-    // sees a mismatched gen and tears down its own mesh.
-    safe("clear-surfaces", () => {
-      surfaceGenRef.current++;
-      try { viewer.removeAllSurfaces?.(); } catch { /* ignore */ }
-      surfaceHandlesRef.current = [];
-    });
+    // Without this gate, the surface visibly disappeared every time
+    // the user clicked the Pose toolbar because applyAllStyles always
+    // ran clear-surfaces → addSurface, with a 200–500 ms gap between
+    // the two while the marching-cubes mesh regenerated.
+    const wantSurface = backboneStyle === "surface";
+    const last = lastSurfaceRef.current;
+    const surfaceModeChanged = wantSurface !== !!last;
+    const surfaceColorChanged = !!last && last.color !== surfaceColor;
+    const needsSurfaceRebuild = surfaceModeChanged || surfaceColorChanged;
+    if (needsSurfaceRebuild) {
+      // removeAllSurfaces is handle-agnostic (works whether 3Dmol's
+      // addSurface returned a numeric ID or a Promise). Bumping the
+      // gen counter invalidates any in-flight addSurface that
+      // resolves after this clear.
+      safe("clear-surfaces", () => {
+        surfaceGenRef.current++;
+        try { viewer.removeAllSurfaces?.(); } catch { /* ignore */ }
+        surfaceHandlesRef.current = [];
+        lastSurfaceRef.current = null;
+      });
+    }
 
     if (backboneStyle === "surface") {
-      // Surface mode replaces the cartoon entirely — no setStyle for model 0,
-      // we just paint a molecular surface. Color depends on surfaceColor:
-      //   - plain → uniform light slate
-      //   - hydrophobicity → per-residue Kyte-Doolittle ramp
-      //   - electrostatic → per-residue charge surrogate at neutral pH
-      // 3Dmol's addSurface is async-ish (kicks the marching-cubes job onto
-      // the next frame); we mark surfaceComputing so the toolbar can fade.
-      // SAS (solvent-accessible) is the most pocket-readable surface for
-      // docking — VDW packs too tightly and obscures the ligand pocket.
-      try { setSurfaceComputing(true); } catch { /* ignore */ }
-      // MS (molecular surface, a.k.a. Connolly / solvent-excluded surface)
-      // wraps the protein tightly with a closed-shell mesh. The binding
-      // pocket then renders as a deep depression in the same-colored
-      // material — exactly the "ligand sitting in a colored cave" look
-      // from the hero references. SAS (solvent-accessible) leaves literal
-      // holes through to the canvas BG, which read as a void instead of
-      // a depression and required forcing a dark canvas to look right.
-      const surfType = dmolNsRef.current?.SurfaceType?.MS ?? 1; // MS=1
-      // Fully opaque so the pocket interior reads as solid material
-      // rather than transparent through to the BG. Slight transparency
-      // (0.92) was masking the depression effect.
-      const opts: Record<string, any> = { opacity: 1.0 };
-      if (surfaceColor === "plain") {
-        opts.color = "#a78bfa"; // light violet — matches the hero look
-      } else {
-        // For property-based coloring we paint per-atom by residue name.
-        // 3Dmol's `colorfunc` receives an atom and returns a hex color.
-        const fn = surfaceColor === "hydrophobicity" ? hydroColor : chargeColor;
-        opts.colorfunc = (atom: any) => fn(String(atom?.resn || "").toUpperCase());
-      }
-      safe("add-surface", () => {
-        // Capture the generation at call time. If the user switches away
-        // before this addSurface resolves, the gen will have advanced and
-        // we'll know to tear down the late mesh.
-        const myGen = surfaceGenRef.current;
-        const result = viewer.addSurface(surfType, opts, { model: 0 });
-        const isPromise = result && typeof (result as any).then === "function";
-        const onReady = () => {
-          if (surfaceGenRef.current !== myGen) {
-            // The user switched modes while this surface was building.
-            // Tear it down so it doesn't paint over the new style.
-            try { viewer.removeAllSurfaces?.(); viewer.render(); } catch { /* ignore */ }
-            return;
-          }
-          try { viewer.render(); } catch { /* ignore */ }
-          requestAnimationFrame(() => setSurfaceComputing(false));
-        };
-        if (isPromise) {
-          (result as Promise<any>).then(onReady, onReady);
+      // Only rebuild the mesh if backbone or color actually changed —
+      // see needsSurfaceRebuild gate above. If we're already in Surface
+      // mode and the user just changed pose style or H toggle or the
+      // blend slider, the surface stays exactly as it was: no
+      // disappear-then-rebuild flicker, no marching-cubes recompute.
+      if (needsSurfaceRebuild) {
+        try { setSurfaceComputing(true); } catch { /* ignore */ }
+        // MS (molecular surface, a.k.a. Connolly / solvent-excluded
+        // surface) wraps the protein tightly with a closed-shell mesh.
+        // The binding pocket renders as a deep depression in the same-
+        // colored material — the "ligand sitting in a colored cave"
+        // look. SAS (solvent-accessible) leaves literal holes through
+        // to the canvas BG, which read as a void instead of a
+        // depression.
+        const surfType = dmolNsRef.current?.SurfaceType?.MS ?? 1; // MS=1
+        // Fully opaque so the pocket interior reads as solid material
+        // rather than transparent through to the BG.
+        const opts: Record<string, any> = { opacity: 1.0 };
+        if (surfaceColor === "plain") {
+          opts.color = "#a78bfa"; // light violet — matches the hero look
         } else {
-          if (result != null) surfaceHandlesRef.current.push(result);
-          onReady();
+          // Property coloring per atom by residue name.
+          const fn = surfaceColor === "hydrophobicity" ? hydroColor : chargeColor;
+          opts.colorfunc = (atom: any) => fn(String(atom?.resn || "").toUpperCase());
         }
-      });
+        safe("add-surface", () => {
+          // Capture the generation at call time. If the user switches
+          // away before this addSurface resolves, the gen will have
+          // advanced and we'll know to tear down the late mesh.
+          const myGen = surfaceGenRef.current;
+          const result = viewer.addSurface(surfType, opts, { model: 0 });
+          const isPromise = result && typeof (result as any).then === "function";
+          const onReady = () => {
+            if (surfaceGenRef.current !== myGen) {
+              // User switched modes while this surface was building.
+              // Tear it down so it doesn't paint over the new style.
+              try { viewer.removeAllSurfaces?.(); viewer.render(); } catch { /* ignore */ }
+              return;
+            }
+            // Record what we just built so future applyAllStyles calls
+            // for unrelated reasons (pose change etc.) can short-circuit.
+            lastSurfaceRef.current = { backbone: "surface", color: surfaceColor };
+            try { viewer.render(); } catch { /* ignore */ }
+            requestAnimationFrame(() => setSurfaceComputing(false));
+          };
+          if (isPromise) {
+            (result as Promise<any>).then(onReady, onReady);
+          } else {
+            if (result != null) surfaceHandlesRef.current.push(result);
+            onReady();
+          }
+        });
+      }
     } else {
       const backboneSpec: Record<string, any> = {};
       if (backboneStyle === "cartoon") {
