@@ -467,9 +467,18 @@ function ViewerCanvas({
         // Theme-aware canvas background — read the .dark class on <html>.
         // Light: pure white (matches card surface). Dark: deep slate so the
         // ribbon contrast stays readable without being a pure black hole.
+        // EXCEPT when Surface mode is active: force dark regardless of
+        // theme, because Surface's pocket cavity clips through to BG and
+        // a white BG reads as a hole, not a cave. See pickCanvasBackground.
         const isDark = document.documentElement.classList.contains("dark");
+        const initialBg =
+          backboneStyle === "surface"
+            ? "#0f172a"
+            : isDark
+              ? "#0f172a"
+              : "white";
         viewer = $3Dmol.createViewer(container, {
-          backgroundColor: isDark ? "#0f172a" : "white",
+          backgroundColor: initialBg,
           antialias: true,
         });
         // 3Dmol's createViewer returns undefined if WebGL init fails (e.g.
@@ -638,6 +647,19 @@ function ViewerCanvas({
     };
   }, []);
 
+  /** Pick the right canvas background based on theme and backbone style.
+   *  Surface mode is special-cased to always use a deep slate background:
+   *  the pocket cavity is rendered as a hole through the surface mesh, so
+   *  on a white canvas the ligand-in-pocket area reads as a flat white
+   *  blob, killing the depth illusion. Forcing dark behind the surface
+   *  gives the cavity the cavernous "ligand sitting in a deep groove"
+   *  look from the hero references regardless of site theme. */
+  function pickCanvasBackground(): string {
+    if (backboneStyle === "surface") return "#0f172a";  // deep slate, theme-agnostic
+    const isDark = document.documentElement.classList.contains("dark");
+    return isDark ? "#0f172a" : "white";
+  }
+
   // Live-track theme changes — when the user flips the theme toggle, swap the
   // 3Dmol canvas background without remounting the viewer (which would re-fetch
   // and re-style everything from scratch).
@@ -645,15 +667,32 @@ function ViewerCanvas({
     const obs = new MutationObserver(() => {
       const viewer = viewerRef.current;
       if (!viewer) return;
-      const isDark = document.documentElement.classList.contains("dark");
       try {
-        viewer.setBackgroundColor(isDark ? "#0f172a" : "white");
+        viewer.setBackgroundColor(pickCanvasBackground());
         viewer.render();
       } catch { /* ignore — viewer may not be ready */ }
     });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backboneStyle]);
+
+  // Sync canvas background whenever the user toggles in/out of Surface mode.
+  // Without this, switching from Cartoon (white BG in light theme) to Surface
+  // would keep the white BG and the pocket cavity would clip to white,
+  // losing the depth-of-pocket effect that makes Surface useful as a hero
+  // visual. Same in reverse — leaving Surface for Cartoon should restore
+  // the theme-appropriate BG so the cartoon ribbon doesn't sit on dark slate
+  // in light mode.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    try {
+      viewer.setBackgroundColor(pickCanvasBackground());
+      viewer.render();
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backboneStyle]);
 
   /** Reset the camera back to a sensible default — frame the pose if we have
    *  one, otherwise the mutation residue, otherwise the whole structure. */
