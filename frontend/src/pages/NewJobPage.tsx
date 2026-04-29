@@ -11,17 +11,17 @@ interface CompoundRow {
   smiles: string;
 }
 
-/** Small pencil-on-hexagon icon for the "Sketch" action — distinct from the
- *  Plus / Beaker / Close icons already in use so users immediately read it
- *  as "draw/edit a structure". Inline SVG (no Icons.tsx dep) since it's
- *  only used here. */
+/** Standard pencil icon for the "Sketch" action. The earlier pencil-on-
+ *  hexagon design was illegible at 16px (read as a faint circle on screen).
+ *  Lucide-style pencil with a clear diagonal body, eraser end, and tip — at
+ *  16px each stroke is recognizable, and we pair it with a "Sketch" text
+ *  label in the button so there's no chance of misreading the affordance. */
 function SketchIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-      <path d="M14.5 9.5l-5 5" />
-      <path d="M9 13l-1 3 3-1" />
+      <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+      <path d="M15 5l4 4" />
     </svg>
   );
 }
@@ -991,7 +991,7 @@ export default function NewJobPage() {
                   onChange={(e) => setCompound(i, { name: e.target.value })}
                 />
               </div>
-              <div className="col-span-10 sm:col-span-7">
+              <div className="col-span-9 sm:col-span-6">
                 <input
                   className="input-mono"
                   placeholder="SMILES"
@@ -1000,19 +1000,20 @@ export default function NewJobPage() {
                 />
               </div>
               {/* Sketch button — opens the self-hosted Ketcher modal.
-                  Pre-loads the row's existing SMILES (if any) so users
-                  can edit a compound rather than start from a blank
-                  canvas. Compact icon button so the existing layout
-                  doesn't shift much: SMILES col goes 8 → 7, this
-                  button is the new col-span-1. */}
+                  Pre-loads the row's existing SMILES (if any) so users can
+                  edit a compound rather than start from a blank canvas.
+                  Pill button with explicit "Sketch" / "Edit" text label
+                  next to the pencil — earlier icon-only version was
+                  illegible at 16px. Layout: name(3) + SMILES(6) +
+                  sketch(2) + remove(1) = 12. */}
               <button
                 type="button"
                 onClick={() => setSketcherRow(i)}
-                className="col-span-1 h-9 text-slate-400 hover:text-delta-600 flex items-center justify-center rounded-md hover:bg-delta-50 dark:text-slate-500 dark:hover:text-delta-400 dark:hover:bg-delta-900/30 transition-colors"
-                aria-label={c.smiles ? "Edit structure in sketcher" : "Sketch structure"}
-                title={c.smiles ? "Edit in sketcher" : "Sketch a molecule"}
+                className="col-span-2 h-9 px-2 text-xs font-semibold text-delta-700 hover:text-white hover:bg-delta-600 ring-1 ring-delta-200 hover:ring-delta-600 bg-delta-50 flex items-center justify-center gap-1.5 rounded-md transition-colors dark:text-delta-300 dark:bg-delta-900/30 dark:ring-delta-700/40 dark:hover:bg-delta-600 dark:hover:text-white"
+                title={c.smiles ? "Open the structure in the 2D sketcher to edit it" : "Draw a molecule with the 2D sketcher"}
               >
-                <SketchIcon size={16} />
+                <SketchIcon size={14} />
+                <span>{c.smiles ? "Edit" : "Sketch"}</span>
               </button>
               <button
                 type="button"
