@@ -719,7 +719,7 @@ export default function NewJobPage() {
         title={isMultiTarget ? "Pick mutations per target" : "Pick mutations"}
         subtitle={
           isMultiTarget
-            ? "Each target has its own mutation list. Skip a target's chips to keep it WT-only."
+            ? `You picked ${targets.length} targets. Each one has its own mutation list — set them separately in the cards below. Skip a target's chips to keep it WT-only.`
             : "Click any to toggle. We always dock against WT in addition to what you select."
         }
       >
@@ -730,8 +730,25 @@ export default function NewJobPage() {
               : "Pick a target above first."}
           </div>
         ) : (
-          <div className="space-y-4">
-            {targets.map((t) => {
+          <>
+            {/* Multi-target callout banner — appears only when 2+ targets
+                are selected. Makes the per-target structure unmissable so
+                users don't try to add mutations once and assume they apply
+                to everything. */}
+            {isMultiTarget && (
+              <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 rounded-lg bg-delta-50 border border-delta-200 dark:bg-delta-900/20 dark:border-delta-800/50">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 text-delta-600 dark:text-delta-300">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+                <div className="text-xs sm:text-sm text-delta-900 dark:text-delta-100 leading-relaxed">
+                  <strong>{targets.length} target cards below</strong> — set mutations separately for each one. Each target card maintains its own mutation list; mutations don't carry across.
+                </div>
+              </div>
+            )}
+            <div className="space-y-4">
+            {targets.map((t, targetIdx) => {
               const tid = t.id;
               const chipSelected = selectedMutationsByTarget[tid] ?? [];
               const customStr = customMutationsByTarget[tid] ?? "";
@@ -744,20 +761,56 @@ export default function NewJobPage() {
                   key={tid}
                   className={
                     isMultiTarget
-                      ? "rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white/60 dark:bg-slate-800/40"
+                      ? "relative rounded-lg border-2 border-slate-200 dark:border-slate-700 p-4 bg-white dark:bg-slate-800/40 overflow-hidden"
                       : ""
                   }
                 >
-                  {/* Target header — only when multi (one card visually
-                      separated per target). Single-target mode gets the
-                      original headerless layout for visual continuity. */}
+                  {/* Per-target header — much more prominent in multi-target
+                      mode so the user can't miss that each card is its own
+                      mutation list. A left-edge accent bar + numbered pill
+                      ('Target 1 of 2') + larger target name + selection
+                      status badge ('0 selected · WT only' vs '2 selected')
+                      gives four redundant cues that this is a per-target
+                      slot. Single-target mode keeps the original headerless
+                      layout. */}
                   {isMultiTarget && (
-                    <div className="mb-2 flex items-baseline gap-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
-                        {t.id.toUpperCase()}
-                      </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-400">{t.name}</span>
-                    </div>
+                    <>
+                      {/* Left-edge accent bar — visually anchors the card
+                          as a distinct unit and reinforces the per-target
+                          boundary at a glance. */}
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-delta-500 dark:bg-delta-400" />
+                      <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-1.5 rounded-md bg-delta-100 text-delta-700 dark:bg-delta-900/40 dark:text-delta-300 text-[10px] font-semibold uppercase tracking-wider">
+                            Target {targetIdx + 1} of {targets.length}
+                          </span>
+                          <span className="font-mono font-semibold text-base text-ink dark:text-slate-100">
+                            {t.id.toUpperCase()}
+                          </span>
+                          <span className="text-sm text-slate-500 dark:text-slate-400 truncate">
+                            {t.name}
+                          </span>
+                        </div>
+                        <span
+                          className={
+                            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap " +
+                            (all.length === 0
+                              ? "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700/40"
+                              : "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40")
+                          }
+                          title={
+                            all.length === 0
+                              ? "No mutations picked for this target — only wild-type will be docked"
+                              : `${all.length} mutation${all.length === 1 ? "" : "s"} selected for this target`
+                          }
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          {all.length === 0
+                            ? "WT only"
+                            : `${all.length} mutation${all.length === 1 ? "" : "s"}`}
+                        </span>
+                      </div>
+                    </>
                   )}
                   {t.mutations.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-3">
@@ -958,6 +1011,7 @@ export default function NewJobPage() {
               );
             })()}
           </div>
+          </>
         )}
       </Step>
 
