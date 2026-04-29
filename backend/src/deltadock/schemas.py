@@ -28,10 +28,11 @@ class JobCreate(BaseModel):
     pdb_id: str = Field(..., min_length=4, max_length=12)
     chain: str = "A"
     uniprot_id: str | None = Field(default=None, max_length=20)
-    # Empty list = WT only. Free-tier cap: max 2 mutations per submit.
-    # Frontend disables adding past 2; this is the server-side guard so direct
-    # API callers (curl, scripts) can't exceed it either.
-    mutations: list[str] = Field(default_factory=list, max_length=2)
+    # Empty list = WT only. Free-tier cap: max 5 mutations per submit.
+    # Frontend hard-blocks adding past 5 and shows a popup; this is the
+    # server-side guard so direct API callers (curl, scripts) can't exceed
+    # it either.
+    mutations: list[str] = Field(default_factory=list, max_length=5)
     # Free-tier cap: max 5 compounds per submit.
     compounds: list[CompoundIn] = Field(..., min_length=1, max_length=5)
     # Search depth — Vina-style: 8 fast / 16 balanced / 32 thorough. We cap at

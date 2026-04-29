@@ -11,6 +11,16 @@ interface CompoundRow {
   smiles: string;
 }
 
+// Free-tier caps. Backend enforces these in JobCreate (max_length=5 mutations,
+// max_length=5 compounds, max 2 targets). Hoisted to module scope so
+// mutationsForTarget() can reference MAX_MUTATIONS_PER_TARGET during render
+// without a temporal-dead-zone error. The UI hard-blocks adding past these
+// limits and pops a "limit reached" toast so users always know why a click
+// didn't take effect.
+const MAX_COMPOUNDS = 5;
+const MAX_MUTATIONS_PER_TARGET = 5;
+const MAX_TARGETS = 2;
+
 /** Standard pencil icon for the "Sketch" action. The earlier pencil-on-
  *  hexagon design was illegible at 16px (read as a faint circle on screen).
  *  Lucide-style pencil with a clear diagonal body, eraser end, and tip — at
@@ -53,6 +63,20 @@ export default function NewJobPage() {
   // Ketcher iframe (~25 MB of static assets), so we only pay the cost
   // when the user actually wants to draw.
   const [sketcherRow, setSketcherRow] = useState<number | null>(null);
+
+  // Free-tier limit toast: a brief auto-dismissing message that pops
+  // when the user tries to add a target/mutation/compound past the cap.
+  // Without this, the click was silently no-op and users thought the UI
+  // was broken. The toast is rendered as a fixed-position banner at the
+  // top of the viewport — non-blocking, dismissible, auto-clears in 4s.
+  const [capToast, setCapToast] = useState<string | null>(null);
+  function flashCapToast(msg: string) {
+    setCapToast(msg);
+    // each call resets the timer, so rapid clicks keep the toast visible.
+    if (capToastTimerRef.current) window.clearTimeout(capToastTimerRef.current);
+    capToastTimerRef.current = window.setTimeout(() => setCapToast(null), 4000);
+  }
+  const capToastTimerRef = useRef<number | null>(null);
 
   const [pdbId, setPdbId] = useState("");
   const [chain, setChain] = useState("A");
@@ -139,8 +163,24 @@ export default function NewJobPage() {
   const MUTATION_RE = /^[A-Z][0-9]+[A-Z]([+_][A-Za-z0-9]+)*(del|ins[A-Z]+)?$/;
 
   // Combine chip-selected + free-typed mutations for a single target id.
-  // Returns the deduplicated, validated list ready to send to the backend.
+  // Returns the deduplicated, validated list, clamped to the free-tier cap
+  // so the backend's max_length validator can never reject our submit.
+  // Anything beyond the cap is silently dropped — the per-target summary
+  // row below the inputs surfaces the truncation so the user sees what
+  // happened.
   function mutationsForTarget(tid: string): string[] {
+    const chips = selectedMutationsByTarget[tid] ?? [];
+    const typed = (customMutationsByTarget[tid] ?? "")
+      .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+      .map((s) => s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1"))
+      .filter((s) => MUTATION_RE.test(s));
+    const merged = Array.from(new Set([...chips, ...typed]));
+    return merged.slice(0, MAX_MUTATIONS_PER_TARGET);
+  }
+
+  /** Same merge logic as mutationsForTarget but WITHOUT the cap — used to
+   *  detect overflow so we can show a "limit reached" warning to the user. */
+  function rawMutationsForTarget(tid: string): string[] {
     const chips = selectedMutationsByTarget[tid] ?? [];
     const typed = (customMutationsByTarget[tid] ?? "")
       .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
@@ -185,31 +225,62 @@ export default function NewJobPage() {
   function toggleMutation(targetId: string, code: string) {
     setSelectedMutationsByTarget((prev) => {
       const cur = prev[targetId] ?? [];
-      // Free-tier cap: enforce max-2 by ignoring the click when at cap and the
-      // user is trying to ADD a chip. Removing chips is always allowed.
+      // Removing a chip is always allowed.
       if (cur.includes(code)) {
         return { ...prev, [targetId]: cur.filter((c) => c !== code) };
       }
-      if (cur.length >= MAX_MUTATIONS_PER_TARGET) return prev;
+      // Free-tier cap: when at the limit and the user tries to ADD another,
+      // fire a toast and no-op. The cap counts BOTH chip selections AND the
+      // typed-in custom mutations — otherwise a user with 3 typed mutations
+      // could click 5 chips and exceed the backend max_length.
+      const totalNow = rawMutationsForTarget(targetId).length;
+      if (totalNow >= MAX_MUTATIONS_PER_TARGET) {
+        flashCapToast(`You've reached the free-tier limit of ${MAX_MUTATIONS_PER_TARGET} mutations per target. Remove one to pick another.`);
+        return prev;
+      }
       return { ...prev, [targetId]: [...cur, code] };
     });
   }
   function setCustomMutationsFor(targetId: string, value: string) {
-    setCustomMutationsByTarget((prev) => ({ ...prev, [targetId]: value }));
+    setCustomMutationsByTarget((prev) => {
+      // Compute the projected combined-list size with this new value, so we
+      // can fire a toast at the moment the user crosses the free-tier cap
+      // (rather than only when they later try to submit). Mirrors the
+      // logic in rawMutationsForTarget — kept inline here to avoid the
+      // staleness pitfalls of calling rawMutationsForTarget(targetId)
+      // before this state update commits.
+      const chips = selectedMutationsByTarget[targetId] ?? [];
+      const typed = value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+        .map((s) => s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1"))
+        .filter((s) => MUTATION_RE.test(s));
+      const projected = new Set([...chips, ...typed]).size;
+      const previousProjected = (() => {
+        const prevTyped = (prev[targetId] ?? "")
+          .split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+          .map((s) => s.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1"))
+          .filter((s) => MUTATION_RE.test(s));
+        return new Set([...chips, ...prevTyped]).size;
+      })();
+      // Only fire the toast on the upward transition past the cap — keeps
+      // the message from re-popping every keystroke while the user edits
+      // an already-too-long list.
+      if (projected > MAX_MUTATIONS_PER_TARGET && previousProjected <= MAX_MUTATIONS_PER_TARGET) {
+        flashCapToast(`Free-tier limit reached: only the first ${MAX_MUTATIONS_PER_TARGET} mutations per target will be docked.`);
+      }
+      return { ...prev, [targetId]: value };
+    });
   }
   function setCompound(i: number, patch: Partial<CompoundRow>) {
     setCompounds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
   }
-  // Free-tier caps. Backend enforces in JobCreate (max_length=5 compounds,
-  // max_length=2 mutations); these UI guards just stop the user from typing
-  // into a void and getting a confusing 422 on submit.
-  const MAX_COMPOUNDS = 5;
-  const MAX_MUTATIONS_PER_TARGET = 2;
-  const MAX_TARGETS = 2;
   function addCompound() {
-    setCompounds((cs) =>
-      cs.length >= MAX_COMPOUNDS ? cs : [...cs, { name: "", smiles: "" }],
-    );
+    setCompounds((cs) => {
+      if (cs.length >= MAX_COMPOUNDS) {
+        flashCapToast(`You've reached the free-tier limit of ${MAX_COMPOUNDS} compounds per job. Remove one to add another.`);
+        return cs;
+      }
+      return [...cs, { name: "", smiles: "" }];
+    });
   }
   function removeCompound(i: number) { setCompounds((cs) => cs.filter((_, idx) => idx !== i)); }
   function loadAllCompounds() {
@@ -401,6 +472,35 @@ export default function NewJobPage() {
 
   return (
     <>
+    {/* Free-tier limit toast — fixed at top-center, auto-dismisses in 4s.
+        Pops when the user tries to add a target/mutation/compound past the
+        cap, or when typed mutations would be truncated. Click to dismiss
+        early. The high z-index keeps it above the Ketcher modal too. */}
+    {capToast && (
+      <div
+        role="status"
+        aria-live="polite"
+        onClick={() => setCapToast(null)}
+        className="fixed top-20 left-1/2 -translate-x-1/2 z-[300] cursor-pointer"
+      >
+        <div className="flex items-start gap-3 max-w-md bg-rose-600 text-white px-4 py-3 rounded-lg shadow-lg ring-1 ring-rose-700 animate-fade-in">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <div className="text-sm leading-snug">{capToast}</div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className="shrink-0 -mr-1 -mt-0.5 text-white/80 hover:text-white"
+            onClick={(e) => { e.stopPropagation(); setCapToast(null); }}
+          >
+            <Close size={14} />
+          </button>
+        </div>
+      </div>
+    )}
     <form onSubmit={onSubmit} className="space-y-6 animate-fade-in">
       <div className="flex items-baseline justify-between">
         <div>
@@ -429,12 +529,19 @@ export default function NewJobPage() {
               <button
                 key={t.id}
                 type="button"
-                disabled={atCap}
                 title={atCap ? `Free tier: max ${MAX_TARGETS} targets` : undefined}
                 onClick={() => {
                   // Toggle this catalog target. Custom PDB mode can coexist
                   // with catalog picks — the user might want to dock against
                   // EGFR + ABL + their-own-AlphaFold-structure in one run.
+                  // If we're at the cap and the user clicks an unselected
+                  // target, fire the toast instead of silently no-oping —
+                  // earlier the button was disabled and click didn't fire,
+                  // which left users wondering if the page was broken.
+                  if (atCap) {
+                    flashCapToast(`You've reached the free-tier limit of ${MAX_TARGETS} targets. Deselect one to pick another.`);
+                    return;
+                  }
                   setSelectedIds((ids) =>
                     ids.includes(t.id)
                       ? ids.filter((x) => x !== t.id)
@@ -629,6 +736,8 @@ export default function NewJobPage() {
               const chipSelected = selectedMutationsByTarget[tid] ?? [];
               const customStr = customMutationsByTarget[tid] ?? "";
               const all = mutationsForTarget(tid);
+              const raw = rawMutationsForTarget(tid);
+              const truncated = raw.length > all.length;
               const invalid = invalidTokensForTarget(tid);
               return (
                 <div
@@ -728,6 +837,13 @@ export default function NewJobPage() {
                       <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
                     )}
                   </SummaryRow>
+                  {truncated && (
+                    <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 rounded-md px-3 py-2">
+                      <span className="font-semibold">Free-tier limit reached.</span>{" "}
+                      Only the first {MAX_MUTATIONS_PER_TARGET} mutations will be docked
+                      ({all.length}/{raw.length} kept). Remove some to use the rest.
+                    </div>
+                  )}
                   {invalid.length > 0 && (
                     <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-md px-3 py-2">
                       <span className="font-semibold">Ignored:</span>{" "}
@@ -751,6 +867,8 @@ export default function NewJobPage() {
             {customMode && pdbId.trim().length > 0 && (() => {
               const customStr = customMutationsByTarget[CUSTOM_KEY] ?? "";
               const all = mutationsForTarget(CUSTOM_KEY);
+              const raw = rawMutationsForTarget(CUSTOM_KEY);
+              const truncated = raw.length > all.length;
               const invalid = invalidTokensForTarget(CUSTOM_KEY);
               return (
                 <div
@@ -818,6 +936,13 @@ export default function NewJobPage() {
                       <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
                     )}
                   </SummaryRow>
+                  {truncated && (
+                    <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 rounded-md px-3 py-2">
+                      <span className="font-semibold">Free-tier limit reached.</span>{" "}
+                      Only the first {MAX_MUTATIONS_PER_TARGET} mutations will be docked
+                      ({all.length}/{raw.length} kept). Remove some to use the rest.
+                    </div>
+                  )}
                   {invalid.length > 0 && (
                     <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-md px-3 py-2">
                       <span className="font-semibold">Ignored:</span>{" "}
@@ -1245,9 +1370,28 @@ function SubmitErrorPanel({
   }
 
   // Fallback: plain message (covers SMILES failures and other 4xx/5xx).
+  // Try to parse a Pydantic validation array first — without this, a 422
+  // landed in the UI as raw JSON like `[{"type":"too_long",...}]`.
+  let friendly = (err as Error)?.message ?? String(err);
+  try {
+    const parsed = JSON.parse(friendly);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const first = parsed[0];
+      const field = Array.isArray(first?.loc) ? first.loc[first.loc.length - 1] : first?.loc;
+      if (first?.type === "too_long" && first?.ctx?.max_length != null) {
+        friendly = `Free-tier limit reached: ${field} can have at most ${first.ctx.max_length} items (you sent ${first.ctx.actual_length}).`;
+      } else if (first?.type === "too_short" && first?.ctx?.min_length != null) {
+        friendly = `${field} needs at least ${first.ctx.min_length} item(s).`;
+      } else if (typeof first?.msg === "string") {
+        friendly = `${field}: ${first.msg}`;
+      }
+    }
+  } catch {
+    // not JSON → leave the message alone
+  }
   return (
     <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40">
-      <p className="text-sm">Couldn't submit: {(err as Error)?.message ?? String(err)}</p>
+      <p className="text-sm">Couldn't submit: {friendly}</p>
     </div>
   );
 }
