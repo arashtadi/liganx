@@ -1055,6 +1055,17 @@ def _run_real(session: Session, job: Job) -> None:
                             best_score=0.0, extra=f"docking_failed: {e}",
                         ))
                 session.commit()
+            # Mark COMPLETED *before* validation drain so the user sees
+            # the matrix as soon as docking finishes, not after PoseBusters/
+            # ProLIF (~30-60s of blocking subprocess work).
+            if pending_validations:
+                session.refresh(job)
+                if job.status != JobStatus.CANCELLED:
+                    job.status = JobStatus.COMPLETED
+                    job.updated_at = datetime.utcnow()
+                    session.add(job)
+                    session.commit()
+                    log.info("Job %s docking phase complete; running validation in background", job.id)
             _drain_pending_validations(pending_validations, session)
             return  # batched path done; skip the legacy per-cell loop below
 
