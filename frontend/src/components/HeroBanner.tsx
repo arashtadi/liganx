@@ -181,12 +181,26 @@ export default function HeroBanner({
               {score.toFixed(2)}
               <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">kcal/mol</span>
             </div>
-            {ext.vinardo != null && (
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                Vinardo refined: <span className="font-mono">{ext.vinardo.toFixed(2)}</span>
-              </div>
-            )}
           </div>
+
+          {/* Vinardo refined — its own card now (was previously a subtitle
+              under Vina score). Promoted because the drill-down section
+              below the matrix used to duplicate it. Single source of truth
+              for the second-pass smina rescore. */}
+          {ext.vinardo != null && (
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Vinardo refined
+              </div>
+              <div className="font-mono text-2xl font-semibold text-ink dark:text-slate-100 mt-0.5">
+                {ext.vinardo.toFixed(2)}
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">kcal/mol</span>
+              </div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                Smina re-score · sharper for close-analog ranking
+              </div>
+            </div>
+          )}
 
           {/* Δ vs WT — outside-pocket cells get the muted "noise" treatment
               consistent with the matrix cell rendering. */}
@@ -231,6 +245,54 @@ export default function HeroBanner({
                 </div>
               </div>
             )
+          )}
+
+          {/* Pose strain — RDKit MMFF strain analysis on the docked
+              geometry. Tone tracks the verdict (ok/mild/high) so the user
+              can spot a Vina junk pose at a glance. Lives here (not in
+              the drill-down) so the score, Δ, Vinardo, and strain are all
+              in one column next to the 3D viewer. */}
+          {ext.strain && (
+            <div className={`rounded-lg px-3 py-2.5 ${
+              ext.strain.verdict === "ok"
+                ? "bg-emerald-50 dark:bg-emerald-900/20"
+                : ext.strain.verdict === "high"
+                  ? "bg-rose-50 dark:bg-rose-900/20"
+                  : "bg-slate-50 dark:bg-slate-800/60"
+            }`}>
+              <div className={`text-[10px] font-semibold uppercase tracking-wider ${
+                ext.strain.verdict === "ok"
+                  ? "text-emerald-800 dark:text-emerald-200"
+                  : ext.strain.verdict === "high"
+                    ? "text-rose-800 dark:text-rose-200"
+                    : "text-slate-500 dark:text-slate-400"
+              }`}>
+                Pose strain
+              </div>
+              <div className={`font-mono text-2xl font-semibold mt-0.5 ${
+                ext.strain.verdict === "ok"
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : ext.strain.verdict === "high"
+                    ? "text-rose-700 dark:text-rose-300"
+                    : "text-ink dark:text-slate-100"
+              }`}>
+                {ext.strain.kcal.toFixed(2)}
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">Å</span>
+              </div>
+              <div className={`text-[10px] mt-0.5 leading-snug ${
+                ext.strain.verdict === "ok"
+                  ? "text-emerald-700 dark:text-emerald-200/80"
+                  : ext.strain.verdict === "high"
+                    ? "text-rose-700 dark:text-rose-200/80"
+                    : "text-slate-500 dark:text-slate-400"
+              }`}>
+                {ext.strain.verdict === "ok"
+                  ? "Matches a relaxed conformer · pose geometry is plausible"
+                  : ext.strain.verdict === "mild"
+                    ? "Mild strain · differs from any relaxed conformer"
+                    : "High strain · likely a Vina junk pose"}
+              </div>
+            </div>
           )}
 
           {/* Drug-likeness — the existing chip layout but in compact mode so

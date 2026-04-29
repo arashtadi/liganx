@@ -41,8 +41,6 @@ function residueOf(code: string): number | null {
  */
 export default function PoseDetail({ pick, onClose }: Props) {
   const { compound, variant, score, deltaWt, extra } = pick;
-  const stronger = deltaWt != null && deltaWt < -0.3;
-  const weaker = deltaWt != null && deltaWt > 0.3;
   const mutationResidue = residueOf(variant);
   const ext = parseExtra(extra);
 
@@ -98,48 +96,11 @@ export default function PoseDetail({ pick, onClose }: Props) {
       </header>
 
       <div className="p-5 space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <Metric label="Vina score" value={`${score.toFixed(2)} kcal/mol`} />
-          <Metric
-            label="Δ vs WT"
-            value={deltaWt == null ? "—" : `${deltaWt > 0 ? "+" : ""}${deltaWt.toFixed(2)}`}
-            tone={stronger ? "good" : weaker ? "bad" : undefined}
-          />
-          {/* Vinardo refined score — second-pass scoring (smina) of the same
-              docked geometry. Often a tighter discriminator of close analogs
-              than raw Vina; lands Liganx in the Glide-SP-equivalent zone for
-              analog-vs-analog ranking. Hidden when smina didn't run. */}
-          {ext.vinardo != null && (
-            <Metric
-              label="Vinardo refined"
-              value={`${ext.vinardo.toFixed(2)} kcal/mol`}
-              subtitle="Smina re-score · sharper for close-analog ranking"
-            />
-          )}
-        </div>
-
-        {/* Pose-quality row: strain verdict. Hidden when the backend didn't
-            compute strain (e.g. SDF unavailable). We measure strain as
-            heavy-atom RMSD between the docked pose and the closest of 20
-            ETKDG-generated relaxed conformers — robust to MMFF parameter
-            gaps and clash artifacts. Bostrom 2007 thresholds: <1 Å = a
-            real binding mode, >2 Å = unusual geometry. */}
-        {ext.strain && (
-          <div className="grid grid-cols-2 gap-3">
-            <Metric
-              label="Pose strain"
-              value={`${ext.strain.kcal.toFixed(2)} Å`}
-              tone={ext.strain.verdict === "ok" ? "good" : ext.strain.verdict === "high" ? "bad" : undefined}
-              subtitle={
-                ext.strain.verdict === "ok"
-                  ? "Matches a relaxed conformer · pose geometry is plausible"
-                  : ext.strain.verdict === "mild"
-                  ? "Mild strain · differs from any relaxed conformer; worth a second look"
-                  : "High strain · pose differs >2 Å from every relaxed conformer; likely a Vina junk pose"
-              }
-            />
-          </div>
-        )}
+        {/* Vina / Δ vs WT / Vinardo / Pose strain metrics all moved to the
+            HeroBanner sidebar at the top of the page (single source of
+            truth). The drill-down here picks up where the banner stops:
+            drug-likeness, mutation-outside-pocket explainer, the human-
+            readable interpretation, ProLIF contacts, 2D map, SMILES. */}
 
         {/* Drug-likeness card — RDKit descriptors (MW/LogP/QED, Lipinski/Veber,
             PAINS) so the user can triage compound chemistry without leaving
@@ -271,28 +232,9 @@ export default function PoseDetail({ pick, onClose }: Props) {
   );
 }
 
-function Metric({ label, value, tone, subtitle }: {
-  label: string;
-  value: string;
-  tone?: "good" | "bad";
-  /** Optional secondary line shown under the value, e.g. context for what the
-   *  number means. Free-form short text — not styled by tone. */
-  subtitle?: string;
-}) {
-  const toneCls =
-    tone === "good" ? "text-emerald-700 bg-emerald-50 ring-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:ring-emerald-800/40"
-    : tone === "bad" ? "text-rose-700 bg-rose-50 ring-rose-200 dark:text-rose-300 dark:bg-rose-900/20 dark:ring-rose-800/40"
-    : "text-ink bg-white ring-slate-200 dark:text-slate-100 dark:bg-slate-800/40 dark:ring-slate-700";
-  return (
-    <div className={`rounded-lg ring-1 ring-inset px-3 py-2 ${toneCls}`}>
-      <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 dark:opacity-60">{label}</div>
-      <div className="text-lg font-bold tabular-nums mt-0.5">{value}</div>
-      {subtitle && (
-        <div className="text-[10px] mt-0.5 opacity-75 leading-snug">{subtitle}</div>
-      )}
-    </div>
-  );
-}
+/* Metric helper removed — Vina/Δ/Vinardo/strain all live in the HeroBanner
+   sidebar now. The drill-down section here doesn't render bare metric
+   tiles anymore. */
 
 /** Compact interaction-type names for chips. Maps the ProLIF short codes
  *  (Hydr, HBAc, VdWC, …) to readable abbreviations. */
