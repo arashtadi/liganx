@@ -7,6 +7,7 @@ import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
+import { jobPollingInterval } from "../lib/jobPolling";
 
 export type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
 
@@ -92,10 +93,12 @@ export default function JobPage() {
   const { data: job, isLoading, error } = useQuery({
     queryKey: ["job", jobKey],
     queryFn: () => api.getJob(jobKey),
-    refetchInterval: (q) => {
-      const status = q.state.data?.status;
-      return status === "completed" || status === "failed" ? false : 1500;
-    },
+    // Polling continues past status=completed until per-cell validation
+    // (ProLIF 2D map / PoseBusters / strain) has populated `result.extra`
+    // — the backend flips to COMPLETED before validation lands, so
+    // stopping at that flip would freeze the cached snapshot with
+    // null `extra` and the 2D interaction map would never appear.
+    refetchInterval: (q) => jobPollingInterval(q.state.data, 1500),
     enabled: !!jobKey,
   });
 

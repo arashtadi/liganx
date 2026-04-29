@@ -8,6 +8,7 @@ import SelectivityMatrix from "../components/SelectivityMatrix";
 import HeroBanner from "../components/HeroBanner";
 import PoseDetail from "../components/PoseDetail";
 import { Insights } from "./JobPage";
+import { jobPollingInterval } from "../lib/jobPolling";
 
 /** Active pose for the in-page modal. We track the cell COORDINATES
  *  (jobIdx + compoundId + variant) rather than a frozen snapshot of the
@@ -80,14 +81,16 @@ export default function SuitePage() {
   // Parallel polling — react-query handles refetch + caching per job.
   // We refetch every 4 s while ANY job is still running, then stop.
   // react-query v5 passes the Query object (not the data) to refetchInterval.
+  // Polling continues past status=completed until per-cell validation
+  // (ProLIF 2D map / PoseBusters / strain) has populated `result.extra`,
+  // because the backend flips to COMPLETED *before* validation lands.
+  // See lib/jobPolling for the full policy.
   const queries = useQueries({
     queries: ids.map((id) => ({
       queryKey: ["job", id],
       queryFn: () => api.getJob(id),
-      refetchInterval: (q: { state: { data?: Job } }) => {
-        const d = q.state.data;
-        return d && (d.status === "completed" || d.status === "failed") ? false : 4000;
-      },
+      refetchInterval: (q: { state: { data?: Job } }) =>
+        jobPollingInterval(q.state.data, 4000),
     })),
   });
 
