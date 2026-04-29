@@ -8,16 +8,21 @@
     <title>Liganx — Mutation-aware structural biology</title>
     <!-- Inline theme bootstrap: runs before React mounts so the .dark class
          is set on <html> before first paint. Prevents flash-of-wrong-theme
-         when user has dark mode saved. Falls back to system preference. -->
+         when user has dark mode saved.
+         Default for NEW users (no saved preference) is LIGHT mode regardless
+         of the OS-level prefers-color-scheme. Liganx is a science tool first
+         seen in marketing screenshots and shared links — light reads as the
+         "default product look". Users on dark-mode systems can flip via the
+         toggle, and that choice persists. -->
     <script>
       (function () {
         try {
           // Read the new key first; fall back to the legacy `deltadock-theme`
           // so a user's saved choice survives the rebrand on first load.
           var saved = localStorage.getItem("liganx-theme") || localStorage.getItem("deltadock-theme");
-          var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          var dark = saved === "dark" || (!saved && prefersDark);
-          if (dark) document.documentElement.classList.add("dark");
+          // ONLY apply dark when the user has explicitly chosen it. New
+          // users / cleared storage = light by default, not OS-following.
+          if (saved === "dark") document.documentElement.classList.add("dark");
         } catch (_) { /* localStorage unavailable — silently default to light */ }
       })();
     </script>

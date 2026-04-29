@@ -37,25 +37,13 @@ export default function ThemeToggle() {
     } catch { /* ignore — private mode etc. */ }
   }, [theme]);
 
-  // If the user hasn't explicitly chosen a theme, follow OS changes live.
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    function onChange(e: MediaQueryListEvent) {
-      const explicit = (() => {
-        try {
-          // Honour either key — legacy `deltadock-theme` keeps existing
-          // bookmarks' preference until the next toggle migrates it.
-          return (
-            localStorage.getItem("liganx-theme") ||
-            localStorage.getItem("deltadock-theme")
-          );
-        } catch { return null; }
-      })();
-      if (!explicit) setTheme(e.matches ? "dark" : "light");
-    }
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+  // OS prefers-color-scheme is intentionally NOT auto-followed. Earlier
+  // we'd flip new users into dark mode whenever their OS was set to dark
+  // (or even when the OS theme changed at runtime), but the product
+  // brand is light-first and most marketing / shared-link views are
+  // screenshotted in light. New users get light by default and stay
+  // there until they click the toggle. After they do, their choice is
+  // saved to localStorage and persists across sessions.
 
   const isDark = theme === "dark";
   return (
