@@ -126,13 +126,25 @@ export default function HeroBanner({
   // wtQuery.data was undefined — and we'd briefly mount the viewer with
   // wtPdb=null, which the viewer's own no-data guard handles safely, but it
   // flashed an error banner on every single auto-pick during streaming.
+  //
+  // We also block on the pose query: even though the viewer will happily
+  // render WT-only without a pose, mounting it before R2 has finished
+  // uploading the pose looks broken to the user — the cell has a score but
+  // the canvas has no ligand. Better to keep the skeleton up until the
+  // pose lands, so what the user sees inside the viewer always matches the
+  // values shown in the matrix cell.
   const wtReady = !!wtQuery.data;
   const mutReady = variant === "WT" || !!mutQuery.data || mutQuery.isError;
+  const poseReady = jobId == null || !!poseQuery.data || poseQuery.isError;
   const wtFetching = wtQuery.isLoading || wtQuery.isFetching;
   const mutFetching = variant !== "WT" && (mutQuery.isLoading || mutQuery.isFetching);
+  const poseFetching = jobId != null && (poseQuery.isLoading || poseQuery.isFetching);
   // Failed AFTER all retries — show explicit error UX with manual retry.
   const wtFailed = !wtQuery.data && wtQuery.isError && !wtQuery.isFetching;
-  const loadingPdb = (!wtReady && wtFetching) || (!mutReady && mutFetching);
+  const loadingPdb =
+    (!wtReady && wtFetching) ||
+    (!mutReady && mutFetching) ||
+    (!poseReady && poseFetching);
 
   return (
     <section className="card relative overflow-hidden p-0">
