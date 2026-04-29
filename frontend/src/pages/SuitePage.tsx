@@ -7,6 +7,7 @@ import { Close, Spinner, Target } from "../components/Icons";
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import HeroBanner from "../components/HeroBanner";
 import PoseDetail from "../components/PoseDetail";
+import { Insights } from "./JobPage";
 
 /** Active pose for the in-page modal. Tracking the JOB INDEX (not just the
  *  cell) lets us look up the right job + catalog entry when rendering the
@@ -345,6 +346,14 @@ export default function SuitePage() {
                       jobId={j.share_id || j.id}
                       onClose={() => setActivePose(null)}
                     />
+                    {/* Insights cards — same component used on the standalone
+                        JobPage. Scopes to the active pick (compound × variant)
+                        and shows ranking, outside-pocket explainers, and the
+                        binding summary. Without this the modal felt thinner
+                        than the standalone page. */}
+                    {j.status === "completed" && (
+                      <Insights job={j} pick={activePose.pick} />
+                    )}
                   </div>
                   <div className="lg:sticky lg:top-2">
                     <HeroBanner

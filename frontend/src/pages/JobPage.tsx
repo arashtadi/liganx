@@ -8,7 +8,7 @@ import HeroBanner from "../components/HeroBanner";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 
-type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
+export type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
 
 /** Cell key used everywhere subset selection touches: `${compound_id}.${variant}`.
  *  The variant may legitimately contain "+" (e.g. "T790M+C797S"), so we always
@@ -745,7 +745,7 @@ function StreamingBanner({ job }: { job: Job }) {
 
 type Insight = { tag: string; tone: "good" | "bad" | "neutral"; body: string };
 
-function Insights({ job, pick }: { job: Job; pick: Pick | null }) {
+export function Insights({ job, pick }: { job: Job; pick: Pick | null }) {
   // When the user has selected a cell, the cards reshape to describe that
   // specific compound × variant. Otherwise, fall back to the job-wide summary.
   const { insights, scope } = useMemo(
