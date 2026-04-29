@@ -301,22 +301,64 @@ function TourOverlay({
       )}
 
       {/* Speech bubble — anchored near the target or centered when none.
-          Click handlers stop propagation so clicking the bubble doesn't
-          advance via the backdrop. */}
+          Spring-in scale + fade on each step change. The bubble is keyed
+          by stepIdx so React remounts it (re-runs the entry animation)
+          when the user advances, giving each step a fresh feel. The
+          mascot inside the bubble also remounts and replays its own
+          spring-in. */}
+      <style>{`
+        @keyframes df-bubble-in {
+          0%   { transform: translateY(8px) scale(0.94); opacity: 0; }
+          70%  { transform: translateY(-2px) scale(1.01); opacity: 1; }
+          100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        @keyframes df-progress-pulse {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.25); }
+        }
+        .df-bubble-card {
+          animation: df-bubble-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+        }
+        .df-dot.active {
+          animation: df-progress-pulse 1.6s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .df-bubble-card, .df-dot.active { animation: none; }
+        }
+      `}</style>
       <div
-        className="fixed z-[202] max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 p-4 sm:p-5 animate-fade-in"
+        key={stepIdx}
+        className="df-bubble-card fixed z-[202] max-w-sm bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-[0_20px_60px_-15px_rgba(15,23,42,0.45)] ring-1 ring-slate-200 dark:ring-slate-700 p-4 sm:p-5"
         style={{ top: bubble.top, left: bubble.left, transform: bubble.transform }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3">
-          <div className="shrink-0 -mt-1">
-            <DocFlaskMascot pose={step.pose} size={72} />
+          <div className="shrink-0 -mt-2 -ml-1">
+            <DocFlaskMascot
+              pose={step.pose}
+              size={84}
+              attentionBounce={stepIdx === 0}
+            />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
-              Step {stepIdx + 1} of {total}
+            {/* Progress dots — modern alternative to "Step N of M".
+                The active dot pulses gently to draw the eye. Click to
+                jump to that step. */}
+            <div className="flex items-center gap-1.5 mb-1.5">
+              {Array.from({ length: total }).map((_, i) => (
+                <span
+                  key={i}
+                  className={`df-dot inline-block rounded-full transition-all ${
+                    i === stepIdx
+                      ? "active bg-delta-500 w-6 h-1.5 dark:bg-delta-400"
+                      : i < stepIdx
+                        ? "bg-delta-300 w-1.5 h-1.5 dark:bg-delta-700"
+                        : "bg-slate-200 w-1.5 h-1.5 dark:bg-slate-700"
+                  }`}
+                />
+              ))}
             </div>
-            <h3 className="mt-0.5 text-base font-semibold text-ink dark:text-slate-100">
+            <h3 className="text-base font-semibold text-ink dark:text-slate-100 leading-tight">
               {step.title}
             </h3>
             <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
