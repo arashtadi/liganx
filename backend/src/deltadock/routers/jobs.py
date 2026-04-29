@@ -16,6 +16,7 @@ from ..schemas import (
     DockingResultOut,
     JobCreate,
     JobOut,
+    JobUpdate,
 )
 from ..services.rate_limit import JOBS_LIMIT
 from ..services.runner import run_job_in_background
@@ -355,6 +356,53 @@ def cancel_job(
     session.add(job)
     session.commit()
     session.refresh(job)
+    return _to_out(job)
+
+
+@router.patch("/{job_key}", response_model=JobOut)
+def update_job(
+    job_key: str,
+    payload: JobUpdate,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> JobOut:
+    """Owner-side patch for editable fields (currently title and tags).
+
+    Tags drive the History page's color-coded labels (Favorite, Promising,
+    Bad, Send to lab, etc.) and filter. They're stored in the existing
+    Job.tags ARRAY column, so this endpoint requires no schema change.
+
+    Both fields use the "None means leave alone" convention so the frontend
+    can patch one without echoing the other:
+      • {"tags": ["promising", "favorite"]}  → only tags change
+      • {"title": "EGFR resistance panel"}   → only title changes
+      • {"tags": []}                         → clear all tags
+      • {"title": ""}                        → clear back to synthesized title
+
+    Authorization: only the job's owner. Non-owners get 404 (not 403) so
+    a guessed share-link can't probe whether the job exists.
+    """
+    job = _resolve_job(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    changed = False
+    if payload.title is not None:
+        # Empty string clears the title back to the synthesized default.
+        job.title = payload.title.strip() or None
+        changed = True
+    if payload.tags is not None:
+        # JobUpdate.field_validator already trims, dedupes, and length-checks.
+        job.tags = payload.tags
+        changed = True
+
+    if changed:
+        job.updated_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+        session.refresh(job)
     return _to_out(job)
 
 

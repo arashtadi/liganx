@@ -240,6 +240,13 @@ export const api = {
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
   cancelJob: (key: string | number) =>
     request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
+  /** Patch the user-editable fields on a job (currently title and tags).
+   *  Both fields are optional — omitting one leaves it unchanged. Used by
+   *  the History page tag picker to color-code jobs. Returns the updated
+   *  Job; callers should invalidate the ["jobs"] query so the list
+   *  re-renders with the new tags. */
+  updateJob: (key: string | number, patch: { title?: string | null; tags?: string[] }) =>
+    request<Job>(`/jobs/${key}`, { method: "PATCH", body: JSON.stringify(patch) }),
   /** Permanently delete a job and all its compounds/results. Owner-only;
    *  the backend returns 404 for non-owners (doesn't reveal existence).
    *  Returns void (the endpoint is 204 No Content on success). */

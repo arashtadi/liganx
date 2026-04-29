@@ -1,12 +1,29 @@
 // User's job history — newest-first list with search across title, target,
 // mutation, and compound name. Clicking a row deep-links into JobPage. Empty
 // state has a clear CTA to /new.
+//
+// Tagging: each row carries a "+ Tag" pill that opens a popover with a
+// preset menu (Favorite, Promising, Bad, Send to lab, etc.) plus a free-text
+// "Add custom" input. Tags persist server-side via PATCH /jobs/{id}; the
+// list query refetches after each save so other tabs see the change.
+//
+// Filter bar: chips at the top show every tag that's been used in the
+// current job list. Clicking one filters jobs to those carrying it; click
+// again to clear. Multi-select uses OR semantics — selecting Favorite +
+// Promising shows jobs that have either tag.
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { Close, Spinner } from "../components/Icons";
+import {
+  TAG_PRESETS,
+  TAG_BY_VALUE,
+  CUSTOM_TAG_CHIP,
+  sortTags,
+  type JobTag,
+} from "../lib/jobTags";
 
 function statusPill(s: Job["status"]) {
   const base = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset";
@@ -46,25 +63,58 @@ export default function HistoryPage() {
   });
 
   const [q, setQ] = useState("");
+  // Selected filter tags. OR semantics across selected tags. Starts empty
+  // (= show everything). Cleared when the user clicks the active chip again.
+  const [filterTags, setFilterTags] = useState<string[]>([]);
+
+  // The set of every tag currently in use across the job list, in preset-
+  // order then alphabetical. Used to populate the filter bar — we only show
+  // chips for tags the user has actually applied somewhere, so the bar
+  // doesn't fill up with presets they don't care about.
+  const tagsInUse = useMemo(() => {
+    if (!jobs) return [] as string[];
+    const seen = new Set<string>();
+    for (const j of jobs) {
+      for (const t of j.tags) seen.add(t);
+    }
+    return sortTags([...seen]);
+  }, [jobs]);
 
   const filtered = useMemo(() => {
     if (!jobs) return [];
+    let out = jobs;
+    if (filterTags.length > 0) {
+      // OR semantics: a job passes if it has ANY of the selected tags.
+      const wanted = new Set(filterTags);
+      out = out.filter((j) => j.tags.some((t) => wanted.has(t)));
+    }
     const needle = q.trim().toLowerCase();
-    if (!needle) return jobs;
-    return jobs.filter((j) => {
-      const hay = [
-        j.title || defaultTitle(j),
-        j.pdb_id,
-        j.uniprot_id || "",
-        j.chain,
-        ...j.mutations,
-        ...j.compounds.map((c) => c.name || ""),
-        ...j.compounds.map((c) => c.smiles),
-        ...j.tags,
-      ].join(" ").toLowerCase();
-      return hay.includes(needle);
-    });
-  }, [jobs, q]);
+    if (needle) {
+      out = out.filter((j) => {
+        const hay = [
+          j.title || defaultTitle(j),
+          j.pdb_id,
+          j.uniprot_id || "",
+          j.chain,
+          ...j.mutations,
+          ...j.compounds.map((c) => c.name || ""),
+          ...j.compounds.map((c) => c.smiles),
+          ...j.tags,
+          // Also include the human label for preset tags so searching
+          // "send to lab" matches the slug "send-to-lab".
+          ...j.tags.map((t) => TAG_BY_VALUE[t]?.label || ""),
+        ].join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }
+    return out;
+  }, [jobs, q, filterTags]);
+
+  function toggleFilterTag(value: string) {
+    setFilterTags((prev) =>
+      prev.includes(value) ? prev.filter((t) => t !== value) : [...prev, value],
+    );
+  }
 
   if (isLoading) {
     return (
@@ -98,22 +148,34 @@ export default function HistoryPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">My history</h1>
         <p className="muted mt-1">
-          {jobs.length} job{jobs.length === 1 ? "" : "s"} · click any to open
+          {jobs.length} job{jobs.length === 1 ? "" : "s"} · click any to open ·
+          tag jobs to color-code and filter them
         </p>
       </div>
 
       <input
         type="search"
         className="input"
-        placeholder="Search by title, target, mutation, compound name, or SMILES…"
+        placeholder="Search by title, target, mutation, compound name, SMILES, or tag…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
 
+      {tagsInUse.length > 0 && (
+        <FilterBar
+          tagsInUse={tagsInUse}
+          selected={filterTags}
+          onToggle={toggleFilterTag}
+          onClear={() => setFilterTags([])}
+        />
+      )}
+
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden dark:border-slate-700 dark:bg-slate-900">
         {filtered.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            No jobs match "{q}".
+            {q || filterTags.length > 0
+              ? "No jobs match the current filters."
+              : "No jobs to show."}
           </div>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -127,6 +189,59 @@ export default function HistoryPage() {
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/* Filter bar                                                                 */
+/* -------------------------------------------------------------------------- */
+
+function FilterBar({
+  tagsInUse, selected, onToggle, onClear,
+}: {
+  tagsInUse: string[];
+  selected: string[];
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mr-1">
+        Filter
+      </span>
+      {tagsInUse.map((value) => {
+        const preset = TAG_BY_VALUE[value];
+        const active = selected.includes(value);
+        const chipClass = preset?.chip ?? CUSTOM_TAG_CHIP;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onToggle(value)}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-all ${chipClass} ${
+              active ? "ring-2 shadow-sm scale-[1.02]" : "opacity-80 hover:opacity-100"
+            }`}
+            title={active ? "Click to remove from filter" : "Filter by this tag"}
+          >
+            {preset && <span aria-hidden="true">{preset.icon}</span>}
+            <span>{preset?.label ?? value}</span>
+          </button>
+        );
+      })}
+      {selected.length > 0 && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-xs text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-200 underline-offset-2 hover:underline ml-1"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Row + tag picker                                                           */
+/* -------------------------------------------------------------------------- */
+
 /** A single history list row with an inline two-step delete button.
  *
  * Why two-step: confirm-on-click avoids native `confirm()` (ugly + can't be
@@ -136,7 +251,7 @@ export default function HistoryPage() {
  * "armed forever" footguns.
  *
  * The whole row is wrapped in a Link, but we stop propagation on the delete
- * button so clicking it never navigates into the job. */
+ * and tag-picker controls so clicking them never navigates into the job. */
 function HistoryRow({ job }: { job: Job }) {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
@@ -149,20 +264,12 @@ function HistoryRow({ job }: { job: Job }) {
     if (!confirming) {
       setConfirming(true);
       setErr(null);
-      // Auto-revert after 5s so the row doesn't stay armed if the user
-      // wandered off. Safe to call setConfirming(false) unconditionally —
-      // if the deletion is already in flight, busy=true is the source of
-      // truth for "click does nothing", and confirming gets reset on row
-      // unmount anyway.
       window.setTimeout(() => setConfirming(false), 5000);
       return;
     }
     setBusy(true);
     try {
       await api.deleteJob(job.share_id);
-      // Optimistic refresh. Could be `setQueryData` to remove just this row,
-      // but a refetch is cheap (one GET /jobs) and stays in sync if other
-      // tabs deleted/added jobs in parallel.
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     } catch (e) {
       setBusy(false);
@@ -179,7 +286,7 @@ function HistoryRow({ job }: { job: Job }) {
       >
         <div className="flex items-baseline justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
+            <div className="flex items-baseline gap-2 flex-wrap">
               <span className="font-semibold text-ink dark:text-slate-100 truncate">
                 {job.title || defaultTitle(job)}
               </span>
@@ -190,6 +297,7 @@ function HistoryRow({ job }: { job: Job }) {
               {job.mutations.length > 0 && ` · ${job.mutations.join(", ")}`}
               {` · ${job.compounds.length} compound${job.compounds.length === 1 ? "" : "s"}`}
             </div>
+            <TagStrip job={job} />
             {err && (
               <div className="text-[11px] text-rose-700 dark:text-rose-300 mt-1">
                 Couldn't delete: {err}
@@ -225,5 +333,230 @@ function HistoryRow({ job }: { job: Job }) {
         </div>
       </Link>
     </li>
+  );
+}
+
+/** The chip strip shown under each row's metadata line. Renders existing
+ *  tags as colored pills (clickable to remove) plus a "+ Tag" trigger that
+ *  opens the picker popover. */
+function TagStrip({ job }: { job: Job }) {
+  const queryClient = useQueryClient();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Optimistic local copy so chip clicks feel instant. Server state syncs
+  // back on mutation success via query invalidation.
+  const [localTags, setLocalTags] = useState(job.tags);
+  // Re-sync when the server sends a different tag set (e.g. another tab
+  // edited the job).
+  useEffect(() => {
+    setLocalTags(job.tags);
+  }, [job.tags]);
+
+  const updateMut = useMutation({
+    mutationFn: (next: string[]) => api.updateJob(job.share_id, { tags: next }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (e: Error) => {
+      // Roll back optimistic state on failure.
+      setLocalTags(job.tags);
+      // eslint-disable-next-line no-alert
+      alert(`Couldn't update tags: ${e.message}`);
+    },
+  });
+
+  function setTags(next: string[], e?: React.MouseEvent) {
+    e?.preventDefault();
+    e?.stopPropagation();
+    setLocalTags(next);
+    updateMut.mutate(next);
+  }
+
+  const sorted = sortTags(localTags);
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {sorted.map((value) => {
+        const preset = TAG_BY_VALUE[value];
+        const chip = preset?.chip ?? CUSTOM_TAG_CHIP;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={(e) => setTags(localTags.filter((t) => t !== value), e)}
+            className={`group inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${chip}`}
+            title="Click to remove this tag"
+          >
+            {preset && <span aria-hidden="true">{preset.icon}</span>}
+            <span>{preset?.label ?? value}</span>
+            <span className="text-[10px] opacity-50 group-hover:opacity-100 transition-opacity">×</span>
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPickerOpen(true); }}
+        className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-inset ring-dashed ring-slate-300 hover:ring-slate-400 hover:text-slate-700 dark:text-slate-400 dark:ring-slate-700 dark:hover:ring-slate-500 dark:hover:text-slate-200"
+        title="Add a tag to this job"
+      >
+        <span aria-hidden="true">+</span>
+        <span>Tag</span>
+      </button>
+      {pickerOpen && (
+        <TagPicker
+          existing={localTags}
+          onClose={() => setPickerOpen(false)}
+          onChange={(next) => setTags(next)}
+        />
+      )}
+      {updateMut.isPending && <Spinner size={10} className="text-slate-400" />}
+    </div>
+  );
+}
+
+/** Lightweight popover with the preset menu + custom-tag input. Click-
+ *  outside / Escape dismisses. Tags toggle on click — checking applies,
+ *  unchecking removes. The popover stays open for multi-select; users
+ *  click outside or hit Done to close. */
+function TagPicker({
+  existing, onClose, onChange,
+}: {
+  existing: string[];
+  onClose: () => void;
+  onChange: (next: string[]) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [custom, setCustom] = useState("");
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  function toggle(t: JobTag, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const has = existing.includes(t.value);
+    onChange(has ? existing.filter((v) => v !== t.value) : [...existing, t.value]);
+  }
+
+  function addCustom(e: React.FormEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const v = custom.trim();
+    if (!v) return;
+    if (existing.some((t) => t.toLowerCase() === v.toLowerCase())) {
+      setCustom("");
+      return;
+    }
+    if (v.length > 32) return;
+    onChange([...existing, v]);
+    setCustom("");
+  }
+
+  return (
+    <div
+      ref={wrapRef}
+      role="menu"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      className="absolute z-30 mt-1 w-64 rounded-lg border border-slate-200 bg-white shadow-xl py-1 dark:border-slate-700 dark:bg-slate-800"
+    >
+      <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+        <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+          Tags
+        </div>
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }}
+          className="text-xs text-slate-500 hover:text-ink dark:text-slate-400 dark:hover:text-white"
+          title="Close"
+        >
+          Done
+        </button>
+      </div>
+      <div className="py-1 max-h-72 overflow-y-auto">
+        {TAG_PRESETS.map((t) => {
+          const checked = existing.includes(t.value);
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={(e) => toggle(t, e)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+              role="menuitemcheckbox"
+              aria-checked={checked}
+            >
+              <span
+                className={`w-3.5 h-3.5 rounded-sm border border-slate-300 dark:border-slate-600 flex items-center justify-center text-[9px] text-white ${
+                  checked ? "bg-delta-600 border-delta-600" : ""
+                }`}
+              >
+                {checked && "✓"}
+              </span>
+              <span className={`inline-block w-2 h-2 rounded-full ${t.dot}`} aria-hidden="true" />
+              <span className="flex-1 text-left">{t.label}</span>
+              <span className="text-xs text-slate-400">{t.icon}</span>
+            </button>
+          );
+        })}
+      </div>
+      <form
+        onSubmit={addCustom}
+        className="border-t border-slate-100 dark:border-slate-700 px-3 py-2 flex gap-2"
+      >
+        <input
+          type="text"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          maxLength={32}
+          placeholder="Custom tag…"
+          onClick={(e) => e.stopPropagation()}
+          className="flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-delta-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+        />
+        <button
+          type="submit"
+          disabled={!custom.trim()}
+          className="rounded-md bg-delta-600 px-2 py-1 text-xs font-medium text-white hover:bg-delta-700 disabled:opacity-40"
+        >
+          Add
+        </button>
+      </form>
+      {existing.filter((t) => !TAG_BY_VALUE[t]).length > 0 && (
+        <div className="border-t border-slate-100 dark:border-slate-700 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mb-1.5">
+            Custom
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {existing.filter((t) => !TAG_BY_VALUE[t]).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onChange(existing.filter((v) => v !== value));
+                }}
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${CUSTOM_TAG_CHIP}`}
+                title="Click to remove"
+              >
+                <span>{value}</span>
+                <span className="opacity-60">×</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

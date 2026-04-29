@@ -135,6 +135,46 @@ class JobOut(BaseModel):
     pdb_quality: dict | None = None
 
 
+class JobUpdate(BaseModel):
+    """Owner-side patch for fields the user can edit after creation.
+
+    Currently scoped to title + tags — the only mutable, user-meaningful
+    fields. Everything else (target, mutations, compounds, results) is
+    immutable post-submit so the displayed data always matches what was
+    actually run. Both fields are optional; omitting one leaves it
+    unchanged. Empty list / None / empty string are treated as "clear".
+    """
+    # Mirror the JobCreate cap (200 chars). None = leave alone, "" = clear
+    # back to the synthesized default title.
+    title: str | None = Field(default=None, max_length=200)
+    # Same cap as JobCreate (10 tags max). None = leave alone, [] = clear.
+    # Each tag is bounded to 32 chars to keep the column tidy and to deter
+    # anyone storing JSON blobs in here.
+    tags: list[str] | None = Field(default=None, max_length=10)
+
+    @field_validator("tags")
+    @classmethod
+    def _trim_and_bound_tags(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        out: list[str] = []
+        seen: set[str] = set()
+        for t in v:
+            t2 = (t or "").strip()
+            if not t2:
+                continue
+            if len(t2) > 32:
+                raise ValueError(f"tag '{t2[:32]}…' exceeds 32 chars")
+            # Dedupe case-insensitively while preserving the user's chosen
+            # casing on first occurrence.
+            key = t2.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(t2)
+        return out
+
+
 class HealthOut(BaseModel):
     status: str = "ok"
     version: str
