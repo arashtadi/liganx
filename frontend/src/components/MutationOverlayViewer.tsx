@@ -227,12 +227,21 @@ function ViewerCanvas({
   /** Re-apply ALL styles to the viewer based on current control + blend state.
    *  Single source of truth — called from load() and from any control change.
    *  Wiping styles first (`setStyle({}, {})`) prevents leftover sticks from
-   *  previous styles bleeding through. */
+   *  previous styles bleeding through.
+   *
+   *  Each step is independently try/catch'd because 3Dmol's setStyle/addStyle
+   *  can throw if the selector targets a model that wasn't successfully
+   *  loaded (e.g. "model: 1" when the mutant PDB came back malformed). One
+   *  bad step shouldn't blank the whole viewer — show what we can. */
   function applyAllStyles(viewer: any) {
-    if (!viewer) return;
+    if (!viewer || typeof viewer.setStyle !== "function") return;
+
+    const safe = (label: string, fn: () => void) => {
+      try { fn(); } catch (e) { console.warn(`applyAllStyles[${label}]:`, e); }
+    };
 
     // Step 1: clear everything to a known state
-    viewer.setStyle({}, {});
+    safe("clear", () => viewer.setStyle({}, {}));
 
     // Step 2: backbone style on model 0 (the WT structure)
     const backboneSpec: Record<string, any> = {};
@@ -245,7 +254,7 @@ function ViewerCanvas({
     }
     // "hidden" → leave backboneSpec empty so nothing renders for the bulk
     if (backboneStyle !== "hidden") {
-      viewer.setStyle({ model: 0 }, backboneSpec);
+      safe("backbone", () => viewer.setStyle({ model: 0 }, backboneSpec));
     }
 
     // Step 3: contact residues coloured by interaction type, on model 0
@@ -263,7 +272,7 @@ function ViewerCanvas({
         const sel: any = { model: 0, resi: resnum };
         if (chain) sel.chain = chain;
         if (mutationResidue != null && resnum === mutationResidue) continue;
-        viewer.addStyle(sel, { stick: { color, radius: 0.22 } });
+        safe(`contact-${resnum}`, () => viewer.addStyle(sel, { stick: { color, radius: 0.22 } }));
       }
     }
 
@@ -276,8 +285,8 @@ function ViewerCanvas({
       if (chain) mutSel.chain = chain;
       const showWt = blend < 0.75;
       const showMut = blend > 0.25 && !!mutantPdb;
-      if (showWt) viewer.addStyle(wtSel, { stick: { color: "#10b981", radius: 0.32 } });
-      if (showMut) viewer.addStyle(mutSel, { stick: { color: "#3b6cf6", radius: 0.32 } });
+      if (showWt) safe("wt-side", () => viewer.addStyle(wtSel, { stick: { color: "#10b981", radius: 0.32 } }));
+      if (showMut) safe("mut-side", () => viewer.addStyle(mutSel, { stick: { color: "#3b6cf6", radius: 0.32 } }));
     }
 
     // Step 5: pose style on model poseModelIdx
@@ -300,15 +309,27 @@ function ViewerCanvas({
         default:
           poseSpec = { stick: { colorscheme: "Jmol", radius: 0.22 } };
       }
-      viewer.setStyle({ model: poseModelIdx }, poseSpec);
+      safe("pose", () => viewer.setStyle({ model: poseModelIdx }, poseSpec));
     }
 
     // Step 6: hydrogen visibility on the ligand. Default is hidden (cleaner
     // view); user can toggle on. Receptor H atoms are usually absent (PDBFixer
     // omits them), so this mostly affects the ligand.
     if (!showH && posePdbqt) {
-      viewer.setStyle({ model: poseModelIdx, elem: "H" }, {});
+      safe("hide-H", () => viewer.setStyle({ model: poseModelIdx, elem: "H" }, {}));
     }
+  }
+
+  /** Cheap validity check for PDB text. Catches the failure mode where the
+   *  fetch returned an HTML error page (e.g. Cloudflare 502, Fly maintenance)
+   *  and the JSON parser saw it as text — passing that to 3Dmol's addModel
+   *  produces a model with 0 atoms or worse, undefined. Better to throw a
+   *  descriptive error here than crash inside the viewer's render loop. */
+  function looksLikePdb(text: string | null | undefined): text is string {
+    if (!text || text.length < 100) return false;
+    // Real PDB text is always ASCII and contains ATOM or HETATM record names
+    // in column 1. HTML error pages don't.
+    return /^\s*(ATOM|HETATM|HEADER|MODEL|REMARK)\b/m.test(text);
   }
 
   useEffect(() => {
@@ -322,8 +343,13 @@ function ViewerCanvas({
       setError(null);
       setAtomCount(null);
 
-      if (!wtPdb) {
-        setError("WT structure not available");
+      // Validate WT BEFORE booting 3Dmol — a missing/garbage WT means we
+      // have nothing to show and the viewer will crash deep in addStyle if
+      // we let it through. (HeroBanner already gates on this for the
+      // streaming-race case; this is a defense-in-depth check for callers
+      // that don't.)
+      if (!looksLikePdb(wtPdb)) {
+        setError("WT structure not ready yet — try again in a moment.");
         setLoading(false);
         return;
       }
@@ -345,24 +371,55 @@ function ViewerCanvas({
           backgroundColor: isDark ? "#0f172a" : "white",
           antialias: true,
         });
+        // 3Dmol's createViewer returns undefined if WebGL init fails (e.g.
+        // browser ran out of GL contexts after lots of tab churn). Without
+        // this guard the addModel call below crashes with the cryptic
+        // "Cannot read properties of undefined (reading 'addModel')".
+        if (!viewer || typeof viewer.addModel !== "function") {
+          throw new Error("3D viewer failed to initialize (WebGL unavailable?)");
+        }
         viewerRef.current = viewer;
 
         // Model 0: wild-type, used for the backbone cartoon
         const wtModel = viewer.addModel(wtPdb, "pdb");
+        // 3Dmol historically returns the model object, but if PDB parsing
+        // bombs out it can return null/undefined. Treat that as a load
+        // failure with a real message instead of letting downstream
+        // selectedAtoms()/setStyle() crash with "Cannot read properties of
+        // undefined".
+        if (!wtModel || typeof wtModel.selectedAtoms !== "function") {
+          throw new Error("WT structure couldn't be parsed — file may be incomplete");
+        }
         const wtAtomCount = wtModel.selectedAtoms({}).length;
         setAtomCount(wtAtomCount);
         if (wtAtomCount === 0) throw new Error("WT model loaded with 0 atoms");
 
-        // Model 1: mutant (loaded but invisible by default — applyAllStyles controls)
+        // Model 1: mutant (loaded but invisible by default — applyAllStyles
+        // controls visibility). If the mutant PDB looks bad, skip it and let
+        // the WT view stand on its own rather than failing the whole viewer.
         if (mutantPdb && mutationResidue != null) {
-          viewer.addModel(mutantPdb, "pdb");
+          if (looksLikePdb(mutantPdb)) {
+            try {
+              viewer.addModel(mutantPdb, "pdb");
+            } catch (e) {
+              console.warn("mutant addModel failed; continuing with WT only", e);
+            }
+          } else {
+            console.warn("mutant PDB doesn't look valid — skipping");
+          }
         }
 
         // Model 2 (or 1 if no mutant): docked ligand pose. Backend converts
         // PDBQT → PDB before serving because 3Dmol's PDBQT parser silently
-        // drops atoms with non-PDB columns.
-        if (posePdbqt) {
-          viewer.addModel(posePdbqt, "pdb");
+        // drops atoms with non-PDB columns. Same skip-on-invalid policy as
+        // the mutant — receptor + WT side chain is still a useful view if
+        // the pose isn't ready yet.
+        if (posePdbqt && looksLikePdb(posePdbqt)) {
+          try {
+            viewer.addModel(posePdbqt, "pdb");
+          } catch (e) {
+            console.warn("pose addModel failed; rendering receptor only", e);
+          }
         }
 
         // All visual style decisions (backbone, contacts, side-chain blend,

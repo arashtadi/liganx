@@ -62,25 +62,39 @@ export default function HeroBanner({
 }: Props) {
   // Fetch WT + mutant PDB text and the docked pose. Same queries PoseDetail
   // uses, so React Query dedupes when both components render simultaneously.
+  //
+  // Retry policy: during job streaming, the structures/pose endpoints can 404
+  // briefly while the cell is mid-flip from "running" to "ok" (cleaned PDBs
+  // are written before the row commits but there's a tiny window). Without
+  // retries, React Query gave up immediately and HeroBanner tried to render
+  // the viewer with null PDB data — which surfaced to the user as a cryptic
+  // "Cannot read properties of undefined (reading 'setStyle')" inside 3Dmol.
+  // 5 retries with exponential backoff (capped at 5s) covers the streaming
+  // race comfortably without hammering the server on a permanent failure.
+  const retryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 5000);
   const wtQuery = useQuery({
     queryKey: ["structure", pdbId, chain, "WT"],
     queryFn: () => api.structure(pdbId, chain, "WT"),
     staleTime: 5 * 60 * 1000,
     enabled: pick != null,
+    retry: 5,
+    retryDelay,
   });
   const mutQuery = useQuery({
     queryKey: ["structure", pdbId, chain, pick?.variant ?? ""],
     queryFn: () => api.structure(pdbId, chain, pick!.variant),
     staleTime: 5 * 60 * 1000,
     enabled: pick != null && pick.variant !== "WT",
-    retry: 0,
+    retry: 5,
+    retryDelay,
   });
   const poseQuery = useQuery({
     queryKey: ["pose", jobId, pick?.compound.id ?? 0, pick?.variant ?? ""],
     queryFn: () => api.pose(jobId!, pick!.compound.id, pick!.variant),
     staleTime: 5 * 60 * 1000,
     enabled: jobId != null && pick != null,
-    retry: 0,
+    retry: 5,
+    retryDelay,
   });
 
   // Empty state: no completed cells yet (job still running with all cells
@@ -105,9 +119,20 @@ export default function HeroBanner({
 
   // Loading flag for the canvas skeleton. We don't block on the mutant query
   // alone — for WT-only jobs there's nothing to fetch there.
-  const loadingPdb =
-    wtQuery.isLoading ||
-    (variant !== "WT" && mutQuery.isLoading);
+  //
+  // We treat "no data yet" (isLoading OR fetching with retries OR fetched-
+  // but-empty) as still loading. Without this, when wtQuery was retrying in
+  // the background isLoading was already false and isFetching=true, but
+  // wtQuery.data was undefined — and we'd briefly mount the viewer with
+  // wtPdb=null, which the viewer's own no-data guard handles safely, but it
+  // flashed an error banner on every single auto-pick during streaming.
+  const wtReady = !!wtQuery.data;
+  const mutReady = variant === "WT" || !!mutQuery.data || mutQuery.isError;
+  const wtFetching = wtQuery.isLoading || wtQuery.isFetching;
+  const mutFetching = variant !== "WT" && (mutQuery.isLoading || mutQuery.isFetching);
+  // Failed AFTER all retries — show explicit error UX with manual retry.
+  const wtFailed = !wtQuery.data && wtQuery.isError && !wtQuery.isFetching;
+  const loadingPdb = (!wtReady && wtFetching) || (!mutReady && mutFetching);
 
   return (
     <section className="card relative overflow-hidden p-0">
@@ -147,12 +172,43 @@ export default function HeroBanner({
       <div className="flex flex-col gap-3 p-4">
         {/* 3D canvas. While the WT/mutant PDBs are fetching, show a skeleton
             instead of an empty black rectangle — that's the worst part of
-            the current Pod-cold-start experience. */}
+            the current Pod-cold-start experience. If the WT fetch failed
+            after all retries (rare — usually only happens when the user
+            opens the page during a Fly cold-start window), surface a
+            friendly retry button rather than rendering the viewer with
+            null PDB data (which would crash inside 3Dmol). */}
         <div className="relative h-[300px]">
           {loadingPdb ? (
             <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex flex-col items-center justify-center text-sm text-slate-500 dark:text-slate-400 animate-pulse">
               <div className="w-12 h-12 rounded-full bg-white/60 dark:bg-slate-700/60 mb-3" />
               Loading the 3D pose…
+            </div>
+          ) : wtFailed ? (
+            <div className="absolute inset-0 rounded-lg bg-slate-50 dark:bg-slate-800/60 flex flex-col items-center justify-center gap-2 text-sm text-slate-600 dark:text-slate-300 px-6 text-center">
+              <div className="font-semibold text-ink dark:text-slate-100">
+                Pose still being prepared
+              </div>
+              <div className="text-xs text-slate-500 dark:text-slate-400 max-w-md">
+                The receptor for {pdbId} chain {chain} hasn't finished writing yet — this usually clears within a few seconds.
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  wtQuery.refetch();
+                  if (variant !== "WT") mutQuery.refetch();
+                  poseQuery.refetch();
+                }}
+                className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white text-xs font-semibold px-3 py-1.5 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          ) : !wtReady ? (
+            // Defensive fallback: not loading, not failed, but no data —
+            // shouldn't happen in practice, but guarantees we never mount
+            // the viewer with null wtPdb.
+            <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex flex-col items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+              Preparing 3D pose…
             </div>
           ) : (
             <MutationOverlayViewer
