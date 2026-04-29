@@ -168,8 +168,44 @@ export default function MutationOverlayViewer(props: Props) {
 /** Visual style options exposed via the control toolbar. Mirrors PubChem's
  *  3D Conformer viewer: backbone style for the receptor, ligand style for the
  *  pose, plus toggles for hydrogens and rotation animation. */
-type BackboneStyle = "cartoon" | "line" | "sphere" | "hidden";
+type BackboneStyle = "cartoon" | "line" | "sphere" | "surface" | "hidden";
 type PoseStyle = "stick" | "ballAndStick" | "line" | "sphere";
+/** Surface coloring modes — only meaningful when backboneStyle === "surface".
+ *  - plain: uniform light slate, the canonical "buried-in-pocket" hero shot
+ *  - hydrophobicity: Kyte-Doolittle scale per residue, hydrophobic → amber,
+ *    polar → cyan. Tells the user where the binding groove's lipid-loving
+ *    region sits.
+ *  - electrostatic: simple per-residue charge surrogate at neutral pH.
+ *    Lys/Arg/His → blue, Asp/Glu → red, others → near-white. Real APBS
+ *    electrostatics would need a server round-trip; this charge proxy is
+ *    informative enough for spotting a charge-flip mutation in the pocket. */
+type SurfaceColor = "plain" | "hydrophobicity" | "electrostatic";
+
+/** Kyte-Doolittle hydrophobicity → ramp color. -4.5 (Arg) → cyan,
+ *  +4.5 (Ile) → amber. Anything outside ±4.5 clamps. */
+const KD_HYDROPHOBICITY: Record<string, number> = {
+  ALA:  1.8, ARG: -4.5, ASN: -3.5, ASP: -3.5, CYS:  2.5,
+  GLN: -3.5, GLU: -3.5, GLY: -0.4, HIS: -3.2, ILE:  4.5,
+  LEU:  3.8, LYS: -3.9, MET:  1.9, PHE:  2.8, PRO: -1.6,
+  SER: -0.8, THR: -0.7, TRP: -0.9, TYR: -1.3, VAL:  4.2,
+};
+function hydroColor(resn: string): string {
+  const v = KD_HYDROPHOBICITY[resn] ?? 0;
+  // map -4.5..4.5 → 0..1 → cyan(#06b6d4) … amber(#f59e0b)
+  const t = Math.max(0, Math.min(1, (v + 4.5) / 9));
+  const r = Math.round(0x06 + (0xf5 - 0x06) * t);
+  const g = Math.round(0xb6 + (0x9e - 0xb6) * t);
+  const b = Math.round(0xd4 + (0x0b - 0xd4) * t);
+  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Per-residue charge color at pH 7. Positive=blue, negative=red, neutral=light. */
+function chargeColor(resn: string): string {
+  if (resn === "LYS" || resn === "ARG") return "#2563eb";   // strong + → blue
+  if (resn === "HIS")                    return "#93c5fd";   // weak + → light blue
+  if (resn === "ASP" || resn === "GLU") return "#dc2626";   // - → red
+  return "#e5e7eb";                                          // neutral → light slate
+}
 
 function ViewerCanvas({
   wtPdb,
@@ -189,6 +225,10 @@ function ViewerCanvas({
 }: Props & { isFullscreen: boolean; onExpand: () => void; hideExpandButton?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
+  // The 3Dmol namespace itself, stashed during load() so applyAllStyles can
+  // reach SurfaceType constants. Surface coloring needs $3Dmol.SurfaceType.SAS;
+  // hard-coded literal (2) is used as a fallback if the namespace isn't ready.
+  const dmolNsRef = useRef<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [atomCount, setAtomCount] = useState<number | null>(null);
@@ -204,6 +244,17 @@ function ViewerCanvas({
   const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
   const [showH, setShowH] = useState(false);  // ligand H atoms; default off (cleaner)
   const [spinning, setSpinning] = useState(false);
+  // Surface mode coloring — only meaningful when backboneStyle === "surface".
+  // We keep the state alive when the user switches away from Surface so
+  // toggling back restores their preferred coloring.
+  const [surfaceColor, setSurfaceColor] = useState<SurfaceColor>("plain");
+  // Tracks whether the surface generation is currently in flight (3Dmol's
+  // addSurface is CPU-heavy, ~0.5–2 s for a typical kinase). Used to fade
+  // the toolbar so users know the click registered.
+  const [surfaceComputing, setSurfaceComputing] = useState(false);
+  // Surface handles need to be removed before re-adding when style or
+  // color changes — otherwise they stack and drag rendering to a crawl.
+  const surfaceHandlesRef = useRef<any[]>([]);
 
   // ── Measure-mode state ──────────────────────────────────────────────
   // When ON, atoms become clickable; pick two atoms to draw a labeled dashed
@@ -244,18 +295,64 @@ function ViewerCanvas({
     // Step 1: clear everything to a known state
     safe("clear", () => viewer.setStyle({}, {}));
 
-    // Step 2: backbone style on model 0 (the WT structure)
-    const backboneSpec: Record<string, any> = {};
-    if (backboneStyle === "cartoon") {
-      backboneSpec.cartoon = { color: "#cbd5e1" };
-    } else if (backboneStyle === "line") {
-      backboneSpec.line = { color: "#94a3b8", linewidth: 1 };
-    } else if (backboneStyle === "sphere") {
-      backboneSpec.sphere = { colorscheme: "Jmol", scale: 0.25 };
-    }
-    // "hidden" → leave backboneSpec empty so nothing renders for the bulk
-    if (backboneStyle !== "hidden") {
-      safe("backbone", () => viewer.setStyle({ model: 0 }, backboneSpec));
+    // Step 2: backbone style on model 0 (the WT structure).
+    //
+    // Always remove any prior surface first — addSurface APIs in 3Dmol stack
+    // surfaces (each call adds another mesh on top), so without explicit
+    // removal switching from Surface→Cartoon would leave the surface drawn
+    // beneath the cartoon, and switching color modes would render multiple
+    // overlapping surfaces.
+    safe("clear-surfaces", () => {
+      for (const h of surfaceHandlesRef.current) {
+        try { viewer.removeSurface(h); } catch { /* ignore */ }
+      }
+      surfaceHandlesRef.current = [];
+    });
+
+    if (backboneStyle === "surface") {
+      // Surface mode replaces the cartoon entirely — no setStyle for model 0,
+      // we just paint a molecular surface. Color depends on surfaceColor:
+      //   - plain → uniform light slate
+      //   - hydrophobicity → per-residue Kyte-Doolittle ramp
+      //   - electrostatic → per-residue charge surrogate at neutral pH
+      // 3Dmol's addSurface is async-ish (kicks the marching-cubes job onto
+      // the next frame); we mark surfaceComputing so the toolbar can fade.
+      // SAS (solvent-accessible) is the most pocket-readable surface for
+      // docking — VDW packs too tightly and obscures the ligand pocket.
+      try { setSurfaceComputing(true); } catch { /* ignore */ }
+      const surfType = dmolNsRef.current?.SurfaceType?.SAS ?? 2; // SAS=2, fall back to literal
+      const opts: Record<string, any> = { opacity: 0.92 };
+      if (surfaceColor === "plain") {
+        opts.color = "#a78bfa"; // light violet — matches the hero look
+      } else {
+        // For property-based coloring we paint per-atom by residue name.
+        // 3Dmol's `colorfunc` receives an atom and returns a hex color.
+        const fn = surfaceColor === "hydrophobicity" ? hydroColor : chargeColor;
+        opts.colorfunc = (atom: any) => fn(String(atom?.resn || "").toUpperCase());
+      }
+      safe("add-surface", () => {
+        const handle = viewer.addSurface(surfType, opts, { model: 0 });
+        if (handle) surfaceHandlesRef.current.push(handle);
+        // The surface promise resolves when geometry is ready; we don't have
+        // a callback in 3Dmol's older API, so just clear the spinner after
+        // a render tick. This is good enough — actual users see the spinner
+        // for ~half a second on a kinase, which is the right feel.
+        requestAnimationFrame(() => setSurfaceComputing(false));
+      });
+    } else {
+      const backboneSpec: Record<string, any> = {};
+      if (backboneStyle === "cartoon") {
+        backboneSpec.cartoon = { color: "#cbd5e1" };
+      } else if (backboneStyle === "line") {
+        backboneSpec.line = { color: "#94a3b8", linewidth: 1 };
+      } else if (backboneStyle === "sphere") {
+        backboneSpec.sphere = { colorscheme: "Jmol", scale: 0.25 };
+      }
+      // "hidden" → leave backboneSpec empty so nothing renders for the bulk
+      if (backboneStyle !== "hidden") {
+        safe("backbone", () => viewer.setStyle({ model: 0 }, backboneSpec));
+      }
+      setSurfaceComputing(false);
     }
 
     // Step 3: contact residues coloured by interaction type, on model 0
@@ -358,6 +455,9 @@ function ViewerCanvas({
       try {
         const mod: any = await import("3dmol");
         const $3Dmol: any = mod.default && Object.keys(mod.default).length > 0 ? mod.default : mod;
+        // Stash the namespace so applyAllStyles can reach SurfaceType etc.
+        // when the user toggles backbone modes after the initial load.
+        dmolNsRef.current = $3Dmol;
 
         // Wait one frame so the container has its final dimensions.
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -500,7 +600,7 @@ function ViewerCanvas({
       console.warn("style re-apply failed:", e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blend, backboneStyle, poseStyle, showH]);
+  }, [blend, backboneStyle, poseStyle, showH, surfaceColor]);
 
   // Spin animation — toggled independently of style state so we can start/stop
   // without re-applying everything.
@@ -828,6 +928,9 @@ function ViewerCanvas({
           setShowH={setShowH}
           spinning={spinning}
           setSpinning={setSpinning}
+          surfaceColor={surfaceColor}
+          setSurfaceColor={setSurfaceColor}
+          surfaceComputing={surfaceComputing}
           onZoomIn={() => bumpZoom(1.25)}
           onZoomOut={() => bumpZoom(0.8)}
           onReset={resetView}
@@ -849,6 +952,9 @@ interface ControlToolbarProps {
   setShowH: (b: boolean) => void;
   spinning: boolean;
   setSpinning: (b: boolean) => void;
+  surfaceColor: SurfaceColor;
+  setSurfaceColor: (c: SurfaceColor) => void;
+  surfaceComputing: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onReset: () => void;
@@ -857,13 +963,15 @@ interface ControlToolbarProps {
 
 function ControlToolbar(p: ControlToolbarProps) {
   return (
-    <div className="border-t border-slate-200 bg-slate-50/60 px-2 py-1.5 flex items-center gap-2 flex-wrap text-[11px] dark:border-slate-700 dark:bg-slate-800/40">
+    <div className="border-t border-slate-200 bg-slate-50/60 px-2 py-1.5 flex flex-col gap-1 text-[11px] dark:border-slate-700 dark:bg-slate-800/40">
+      <div className="flex items-center gap-2 flex-wrap">
       {/* Backbone style group */}
       <div className="flex items-center gap-1">
         <span className="text-slate-500 font-medium pr-1 dark:text-slate-400">Backbone:</span>
         <SegButton active={p.backboneStyle === "cartoon"}  onClick={() => p.setBackboneStyle("cartoon")}  title="Cartoon ribbon">Cartoon</SegButton>
         <SegButton active={p.backboneStyle === "line"}     onClick={() => p.setBackboneStyle("line")}     title="Wire-frame">Line</SegButton>
         <SegButton active={p.backboneStyle === "sphere"}   onClick={() => p.setBackboneStyle("sphere")}   title="Space-filling spheres">Sphere</SegButton>
+        <SegButton active={p.backboneStyle === "surface"}  onClick={() => p.setBackboneStyle("surface")}  title="Solvent-accessible molecular surface — best for showing the ligand inside the binding pocket">Surface</SegButton>
         <SegButton active={p.backboneStyle === "hidden"}   onClick={() => p.setBackboneStyle("hidden")}   title="Hide backbone (pose + side chains only)">Hide</SegButton>
       </div>
 
@@ -898,6 +1006,22 @@ function ControlToolbar(p: ControlToolbarProps) {
           <ResetIcon />
         </IconButton>
       </div>
+      </div>
+
+      {/* Surface coloring sub-row — only shown when Surface is the active
+          backbone mode. Three coloring choices: plain (cosmetic), Kyte-
+          Doolittle hydrophobicity (binding-pocket chemistry), and a charge
+          surrogate at neutral pH (catches Lys/Arg → polar mutations). */}
+      {p.backboneStyle === "surface" && (
+        <div className="flex items-center gap-1 pt-1 border-t border-slate-200/70 dark:border-slate-700/70">
+          <span className="text-slate-500 font-medium pr-1 dark:text-slate-400">
+            Color: {p.surfaceComputing && <span className="text-delta-600 dark:text-delta-400 italic">computing…</span>}
+          </span>
+          <SegButton active={p.surfaceColor === "plain"}          onClick={() => p.setSurfaceColor("plain")}          title="Uniform color — cleanest hero shot for showing the ligand inside the pocket">Plain</SegButton>
+          <SegButton active={p.surfaceColor === "hydrophobicity"} onClick={() => p.setSurfaceColor("hydrophobicity")} title="Kyte-Doolittle scale: hydrophobic residues amber, polar residues cyan. Reveals where the binding groove's lipid-loving region sits.">Hydrophobicity</SegButton>
+          <SegButton active={p.surfaceColor === "electrostatic"}  onClick={() => p.setSurfaceColor("electrostatic")}  title="Per-residue charge surrogate at pH 7: Lys/Arg blue, Asp/Glu red, His light blue. Spots charge-flip mutations near the pocket.">Electrostatic</SegButton>
+        </div>
+      )}
     </div>
   );
 }
