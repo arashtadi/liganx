@@ -52,18 +52,27 @@ export default function JobPage() {
 
   // Wrapper around setPick that records the selection origin. Pass `false`
   // for fromUser when the runner code itself sets the pick (auto-pick on
-  // first load); pass true when a matrix cell click triggered it. On user
-  // clicks, smooth-scroll the banner into view so the action feels connected.
+  // first load); pass true when a matrix cell click triggered it.
+  // The side-by-side layout (sticky banner on the right) means the banner
+  // is always visible during scroll, so we no longer need to scroll-into-
+  // view on click — the action feedback is automatic. On narrow screens
+  // (mobile/tablet, single-column stacked layout), we still scroll because
+  // the banner is below the matrix there.
   const choosePick = (next: Pick | null, fromUser: boolean) => {
     setPick(next);
     setSelectionReason(fromUser ? "user" : "auto");
     if (fromUser && next != null) {
-      // requestAnimationFrame so the scroll fires after React commits the
-      // pick state — otherwise we scroll before the banner has updated and
-      // the user sees the old pose at the top for a frame.
-      requestAnimationFrame(() => {
-        bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+      // Only scroll when the sticky layout isn't active (i.e. window is
+      // below the lg breakpoint, ~1024px). matchMedia is the cheap way
+      // to check this without coupling to Tailwind directly.
+      const isStacked =
+        typeof window !== "undefined" &&
+        !window.matchMedia("(min-width: 1024px)").matches;
+      if (isStacked) {
+        requestAnimationFrame(() => {
+          bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
     }
   };
 
@@ -316,58 +325,65 @@ export default function JobPage() {
         <StreamingBanner job={job} />
       )}
 
-      {/* Selectivity matrix on top — users scan the table of scores first,
-          then click into a cell to see the 3D pose below. Clicking flows
-          DOWN the page (natural reading direction) instead of up; the
-          auto-scroll in choosePick takes them to the banner so the change
-          is on-screen without manual scrolling. */}
-      <SelectivityMatrix
-        compounds={viewJob.compounds}
-        mutations={viewJob.mutations}
-        results={viewJob.results}
-        mutationInfo={mutationInfo}
-        onPick={(p) => choosePick(p, true)}
-        isStreaming={!inSubsetView && (job.status === "running" || job.status === "pending")}
-        selected={inSubsetView ? undefined : selected}
-        onToggleSelect={inSubsetView ? undefined : onToggleSelect}
-        onSelectAll={inSubsetView ? undefined : onSelectAll}
-        onClearSelection={inSubsetView ? undefined : onClearSelection}
-      />
+      {/* Side-by-side layout for desktop (lg+): matrix + drill-down + insights
+          flow in the LEFT column (~⅔ width); HeroBanner pinned sticky on the
+          RIGHT (~⅓ width) so a 50-row matrix doesn't push the 3D viewer off
+          screen. Below the lg breakpoint we drop back to a single column
+          stacked top-to-bottom, with the banner below the matrix and the
+          smooth-scroll fallback handling visibility. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
+        {/* LEFT column — matrix, drill-down, insights. Stays in normal flow
+            so vertical scrolling reads the way it always did. */}
+        <div className="space-y-6 min-w-0">
+          <SelectivityMatrix
+            compounds={viewJob.compounds}
+            mutations={viewJob.mutations}
+            results={viewJob.results}
+            mutationInfo={mutationInfo}
+            onPick={(p) => choosePick(p, true)}
+            isStreaming={!inSubsetView && (job.status === "running" || job.status === "pending")}
+            selected={inSubsetView ? undefined : selected}
+            onToggleSelect={inSubsetView ? undefined : onToggleSelect}
+            onSelectAll={inSubsetView ? undefined : onSelectAll}
+            onClearSelection={inSubsetView ? undefined : onClearSelection}
+          />
 
-      {/* Hero 3D banner — full-width, sits below the matrix. Auto-loads
-          the best mutant Δ on page open via the effect above; updates in
-          place when a cell is clicked. The wrapping div carries `bannerRef`
-          so cell clicks above can smooth-scroll the banner into view. */}
-      <div ref={bannerRef} className="scroll-mt-24">
-        <HeroBanner
-          pick={pick}
-          pdbId={job.pdb_id}
-          chain={job.chain}
-          pocketCenter={target?.pocket.center}
-          jobId={job.share_id || job.id}
-          selectionReason={selectionReason}
-        />
+          {/* Deeper drill-down — interpretation paragraph, ProLIF contacts,
+              2D interaction map, mutation-outside-pocket explainer. The
+              banner on the right already shows the at-a-glance numbers; this
+              section is the deep dive. */}
+          {pick && (
+            <PoseDetail
+              pick={pick}
+              pdbId={job.pdb_id}
+              chain={job.chain}
+              pocketCenter={target?.pocket.center}
+              jobId={job.share_id || job.id}
+              onClose={() => setPick(null)}
+            />
+          )}
+
+          {/* Insights cards — scoped to the active pick when present, else
+              job-wide. */}
+          {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
+        </div>
+
+        {/* RIGHT column — sticky 3D banner. `top-20` matches the page
+            header height (16) + a bit of breathing room so the banner
+            doesn't clip behind the sticky header. On stacked layouts the
+            sticky property is a no-op because there's nothing to stick
+            relative to (single column). */}
+        <div ref={bannerRef} className="lg:sticky lg:top-20 scroll-mt-24">
+          <HeroBanner
+            pick={pick}
+            pdbId={job.pdb_id}
+            chain={job.chain}
+            pocketCenter={target?.pocket.center}
+            jobId={job.share_id || job.id}
+            selectionReason={selectionReason}
+          />
+        </div>
       </div>
-
-      {/* Deeper drill-down — interpretation paragraph, ProLIF contacts list,
-          2D interaction map, mutation-outside-pocket explainer. Lives below
-          the matrix when a cell is selected, instead of beside it as a
-          right rail. The banner above already shows the score / Δ / drug-
-          likeness summary, so PoseDetail is purely the deep dive here. */}
-      {pick && (
-        <PoseDetail
-          pick={pick}
-          pdbId={job.pdb_id}
-          chain={job.chain}
-          pocketCenter={target?.pocket.center}
-          jobId={job.share_id || job.id}
-          onClose={() => setPick(null)}
-        />
-      )}
-
-      {/* Insights cards — same as before, scoped to the active pick when
-          present, else job-wide. */}
-      {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
     </div>
   );
 }

@@ -139,16 +139,16 @@ export default function HeroBanner({
         )}
       </div>
 
-      {/* Banner body: 3D canvas on the left, metrics column on the right.
-          `items-stretch` (default on grid) + `h-full` on the canvas wrapper
-          make the 3D pane grow to match the sidebar's full height. Without
-          this, the canvas was stuck at 320px and the sidebar's six stacked
-          cards left ~300px of empty space below the molecule. */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-4 p-4">
+      {/* Banner body. Now lives in a sticky right column ~400px wide on
+          desktop, so internal layout is always stacked (3D on top, metrics
+          below). The previous side-by-side grid was too cramped at column
+          width and stretched too tall when the metric stack was longer than
+          the canvas. */}
+      <div className="flex flex-col gap-3 p-4">
         {/* 3D canvas. While the WT/mutant PDBs are fetching, show a skeleton
             instead of an empty black rectangle — that's the worst part of
             the current Pod-cold-start experience. */}
-        <div className="relative min-h-[320px] h-full">
+        <div className="relative h-[300px]">
           {loadingPdb ? (
             <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex flex-col items-center justify-center text-sm text-slate-500 dark:text-slate-400 animate-pulse">
               <div className="w-12 h-12 rounded-full bg-white/60 dark:bg-slate-700/60 mb-3" />
@@ -166,20 +166,21 @@ export default function HeroBanner({
               variantLabel={variant}
               contextLabel={`${compound.name ?? `Compound #${compound.id}`} × ${variant}`}
               contextSubtitle={`${pdbId} chain ${chain}`}
-              className="rounded-lg overflow-hidden h-full min-h-[320px]"
+              className="rounded-lg overflow-hidden h-full"
             />
           )}
         </div>
 
-        {/* Metrics column. Keep this tight — the user reads ~3 numbers and
-            then drops into the matrix or the deeper PoseDetail below. */}
-        <div className="flex flex-col gap-2.5">
+        {/* Metrics row. Score / Δ / Vinardo / Strain are 4 small cards in
+            a 2-column grid so the banner doesn't get stupidly tall. Drug-
+            likeness and validation flow below as full-width cards. */}
+        <div className="grid grid-cols-2 gap-2">
           {/* Vina score */}
           <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               Vina score
             </div>
-            <div className="font-mono text-2xl font-semibold text-ink dark:text-slate-100 mt-0.5">
+            <div className="font-mono text-xl font-semibold text-ink dark:text-slate-100 mt-0.5">
               {score.toFixed(2)}
               <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">kcal/mol</span>
             </div>
@@ -194,7 +195,7 @@ export default function HeroBanner({
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 Vinardo refined
               </div>
-              <div className="font-mono text-2xl font-semibold text-ink dark:text-slate-100 mt-0.5">
+              <div className="font-mono text-xl font-semibold text-ink dark:text-slate-100 mt-0.5">
                 {ext.vinardo.toFixed(2)}
                 <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">kcal/mol</span>
               </div>
@@ -236,7 +237,7 @@ export default function HeroBanner({
                 }`}>
                   Δ vs WT
                 </div>
-                <div className={`font-mono text-2xl font-semibold mt-0.5 ${
+                <div className={`font-mono text-xl font-semibold mt-0.5 ${
                   stronger
                     ? "text-emerald-700 dark:text-emerald-300"
                     : weaker
@@ -271,7 +272,7 @@ export default function HeroBanner({
               }`}>
                 Pose strain
               </div>
-              <div className={`font-mono text-2xl font-semibold mt-0.5 ${
+              <div className={`font-mono text-xl font-semibold mt-0.5 ${
                 ext.strain.verdict === "ok"
                   ? "text-emerald-700 dark:text-emerald-300"
                   : ext.strain.verdict === "high"
@@ -296,37 +297,38 @@ export default function HeroBanner({
               </div>
             </div>
           )}
+        </div>
 
-          {/* Drug-likeness — the existing chip layout but in compact mode so
-              we don't wrap onto five lines in a 240px column. */}
-          {compound.admet && (
-            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
-                Drug-likeness
-              </div>
-              <AdmetChips admet={compound.admet} layout="card" />
-            </div>
-          )}
-
-          {/* Validation status — confidence + contact count. Falls back to
-              "validation pending" while the deferred-validation thread is
-              still draining (DEFER_VALIDATION=1 path). */}
+        {/* Drug-likeness — full-width card below the 4-numeric grid. The
+            chip layout doesn't fit two-up in this column width without
+            ugly wrapping, so it gets its own row. */}
+        {compound.admet && (
           <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Validation
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+              Drug-likeness
             </div>
-            <div className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">
-              {ext.confidence && ext.confidence !== "unknown" ? (
-                <>Confidence <span className="font-semibold">{ext.confidence}</span></>
-              ) : (
-                <span className="text-slate-400 dark:text-slate-500">Validation pending…</span>
-              )}
-              {ext.contacts && ext.contacts.length > 0 && (
-                <span className="ml-1 text-slate-500 dark:text-slate-400">
-                  · {ext.contacts.length} contact{ext.contacts.length === 1 ? "" : "s"}
-                </span>
-              )}
-            </div>
+            <AdmetChips admet={compound.admet} layout="card" />
+          </div>
+        )}
+
+        {/* Validation status — confidence + contact count. Falls back to
+            "validation pending" while the deferred-validation thread is
+            still draining (DEFER_VALIDATION=1 path). */}
+        <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            Validation
+          </div>
+          <div className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">
+            {ext.confidence && ext.confidence !== "unknown" ? (
+              <>Confidence <span className="font-semibold">{ext.confidence}</span></>
+            ) : (
+              <span className="text-slate-400 dark:text-slate-500">Validation pending…</span>
+            )}
+            {ext.contacts && ext.contacts.length > 0 && (
+              <span className="ml-1 text-slate-500 dark:text-slate-400">
+                · {ext.contacts.length} contact{ext.contacts.length === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
         </div>
       </div>
