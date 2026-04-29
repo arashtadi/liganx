@@ -369,12 +369,16 @@ export default function JobPage() {
           {viewJob.status === "completed" && <Insights job={viewJob} pick={pick} />}
         </div>
 
-        {/* RIGHT column — sticky 3D banner. `top-20` matches the page
-            header height (16) + a bit of breathing room so the banner
-            doesn't clip behind the sticky header. On stacked layouts the
-            sticky property is a no-op because there's nothing to stick
-            relative to (single column). */}
-        <div ref={bannerRef} className="lg:sticky lg:top-20 scroll-mt-24">
+        {/* RIGHT column — 3D banner. Used to be lg:sticky so the viewer
+            stayed visible while the user scrolled through PoseDetail +
+            Insights on the left, but users reported it felt like only
+            the bottom of the page moved (the right side appeared
+            frozen). Dropped the sticky so both columns scroll together
+            as one unit, matching the Suite popup behavior. The
+            scroll-mt-24 is kept so smooth-scrolls into this anchor
+            (cell click → scroll to viewer) clear the page's sticky
+            top header. */}
+        <div ref={bannerRef} className="scroll-mt-24">
           <HeroBanner
             pick={pick}
             pdbId={job.pdb_id}
