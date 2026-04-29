@@ -18,7 +18,8 @@
  * Pure SVG + a single floating tooltip div. No extra deps.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 interface Contact {
   residue: string;
@@ -223,6 +224,24 @@ export default function InteractionDiagram({
     y: number;
   } | null>(null);
 
+  // Fullscreen toggle. When true, the diagram body is portaled into a
+  // fullscreen overlay so the SVG can scale up well past the inline
+  // ~340 px cap. Esc dismisses; body scroll is locked while open.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
   if (items.length === 0) {
     return (
       <div className={`text-xs text-slate-400 italic px-3 py-4 text-center dark:text-slate-500 ${className}`}>
@@ -273,12 +292,21 @@ export default function InteractionDiagram({
     }
   }
 
-  return (
-    <div className={`relative bg-white rounded-lg border border-slate-200 p-3 dark:bg-slate-800 dark:border-slate-700 ${className}`}>
+  // SVG height cap — small inline; uncapped (fills viewport) in fullscreen.
+  // The viewBox stays 400×320 so existing geometry/labels just scale up.
+  const svgMaxHeight = fullscreen ? "calc(100vh - 8rem)" : 340;
+
+  // Body — extracted so it can be rendered identically inline OR inside the
+  // fullscreen portal. Includes the SVG + tooltip + legends. The fullscreen
+  // toggle button itself stays *outside* the body so the inline wrapper and
+  // the fullscreen wrapper each render their own (with different icons +
+  // titles).
+  const body = (
+    <>
       <svg
         viewBox="0 0 400 320"
         className="w-full"
-        style={{ maxHeight: 340 }}
+        style={{ maxHeight: svgMaxHeight }}
         onMouseLeave={() => setHover(null)}
       >
         {/* Spokes (rendered first so dots + labels stack on top) */}
@@ -469,6 +497,77 @@ export default function InteractionDiagram({
             : "Hover any line for details"}
         </div>
       </div>
+    </>
+  );
+
+  // Small fullscreen toggle in the top-right corner. Same icon shape (4
+  // corner brackets) familiar from photo viewers / video players. The
+  // button sits absolutely over the diagram so it doesn't reflow the
+  // existing layout. We render BOTH instances (inline and inside the
+  // fullscreen modal) — the inline one toggles fullscreen ON, the
+  // modal's toggle button toggles it OFF.
+  const ExpandIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" />
+    </svg>
+  );
+  const CollapseIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" />
+    </svg>
+  );
+
+  // Inline render — the diagram as it appears inside the page/rail.
+  const inline = (
+    <div className={`relative bg-white rounded-lg border border-slate-200 p-3 dark:bg-slate-800 dark:border-slate-700 ${className}`}>
+      <button
+        type="button"
+        onClick={() => setFullscreen(true)}
+        className="absolute top-2 right-2 z-10 p-1.5 rounded-md text-slate-400 hover:text-ink hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-700 transition-colors"
+        title="Open in full screen"
+        aria-label="Open in full screen"
+      >
+        <ExpandIcon />
+      </button>
+      {body}
     </div>
+  );
+
+  if (!fullscreen) return inline;
+
+  // Fullscreen render — portaled to body so it covers any parent
+  // overflow / stacking contexts. Backdrop click + Esc dismiss.
+  return (
+    <>
+      {inline}
+      {createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-ink/80 backdrop-blur-sm"
+          onClick={() => setFullscreen(false)}
+        >
+          <div
+            className="relative bg-white dark:bg-slate-900 rounded-2xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 w-full max-w-6xl max-h-[95vh] overflow-y-auto p-4 sm:p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-semibold text-ink dark:text-slate-100">
+                2D interaction map · {ligandLabel}
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullscreen(false)}
+                className="p-1.5 rounded-md text-slate-500 hover:text-ink hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-700 transition-colors"
+                title="Exit full screen (Esc)"
+                aria-label="Exit full screen"
+              >
+                <CollapseIcon size={16} />
+              </button>
+            </div>
+            {body}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
