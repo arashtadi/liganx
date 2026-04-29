@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./index.css";
+import { tryReloadOnChunkError } from "./lib/chunkReload";
 
 // Stale-chunk recovery. Vite emits hashed chunk names (`3Dmol-CXDV6TS_.js`)
 // and references them from the deployed `index.html`. After a redeploy, the
@@ -13,30 +14,16 @@ import "./index.css";
 // module" and any feature that depends on it (3D viewer, ProLIF, etc.) breaks
 // without the user knowing why.
 //
-// Mitigation: when we detect a chunk-load failure, force a hard reload so the
-// browser picks up the fresh `index.html` and its current chunk references.
-// We guard with sessionStorage so we don't loop if the actual asset really is
-// missing on the server (broken deploy).
-function isChunkLoadError(reason: unknown): boolean {
-  const msg = (reason as Error)?.message || String(reason);
-  return /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError/i.test(msg);
-}
-function maybeReloadOnce() {
-  const KEY = "__liganx_chunk_reload_at";
-  const last = Number(sessionStorage.getItem(KEY) || "0");
-  if (Date.now() - last < 30_000) return; // already tried recently — give up
-  sessionStorage.setItem(KEY, String(Date.now()));
-  // Force a fresh fetch of index.html. `location.reload()` alone usually does
-  // it (the navigation is uncached); appending a cache-buster guarantees it.
-  const url = new URL(window.location.href);
-  url.searchParams.set("_v", Date.now().toString());
-  window.location.replace(url.toString());
-}
+// Mitigation lives in lib/chunkReload — these are the global handlers that
+// catch errors that bubble up. Components that wrap their dynamic imports in
+// try/catch (so they can render an error UI) need to ALSO call
+// tryReloadOnChunkError() inside their catch block, otherwise their
+// swallowed error never reaches these handlers.
 window.addEventListener("error", (e) => {
-  if (isChunkLoadError(e.error || e.message)) maybeReloadOnce();
+  tryReloadOnChunkError(e.error || e.message);
 });
 window.addEventListener("unhandledrejection", (e) => {
-  if (isChunkLoadError(e.reason)) maybeReloadOnce();
+  tryReloadOnChunkError(e.reason);
 });
 
 const queryClient = new QueryClient({

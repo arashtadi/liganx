@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Close, Spinner } from "./Icons";
+import { tryReloadOnChunkError } from "../lib/chunkReload";
 
 /**
  * Overlay viewer for a WT/mutant pair.
@@ -460,6 +461,14 @@ function ViewerCanvas({
         if (!cancelled) setLoading(false);
       } catch (e) {
         console.error("MutationOverlayViewer error:", e);
+        // Stale-chunk recovery — if this was a 'Failed to fetch dynamically
+        // imported module' error caused by a redeploy renaming the 3Dmol
+        // chunk, force a page reload so the browser picks up the fresh
+        // index.html. Without this we'd just sit on the old index.html
+        // forever, showing a permanent "Couldn't load" card. Returns true
+        // when it triggers a reload — bail out before setError so the
+        // component doesn't briefly flash the error before reload kicks in.
+        if (tryReloadOnChunkError(e)) return;
         if (!cancelled) {
           setError((e as Error).message);
           setLoading(false);
