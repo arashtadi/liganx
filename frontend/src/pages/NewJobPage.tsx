@@ -4,10 +4,26 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIssue, type ValidationDetail } from "../api";
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
+import KetcherModal from "../components/KetcherModal";
 
 interface CompoundRow {
   name: string;
   smiles: string;
+}
+
+/** Small pencil-on-hexagon icon for the "Sketch" action — distinct from the
+ *  Plus / Beaker / Close icons already in use so users immediately read it
+ *  as "draw/edit a structure". Inline SVG (no Icons.tsx dep) since it's
+ *  only used here. */
+function SketchIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+      <path d="M14.5 9.5l-5 5" />
+      <path d="M9 13l-1 3 3-1" />
+    </svg>
+  );
 }
 
 export default function NewJobPage() {
@@ -31,6 +47,12 @@ export default function NewJobPage() {
     initialTarget ? [initialTarget] : [],
   );
   const [customMode, setCustomMode] = useState(false);
+
+  // Ketcher sketcher modal: tracks which compound row index is being
+  // edited. `null` = closed. Opening it lazily loads the self-hosted
+  // Ketcher iframe (~25 MB of static assets), so we only pay the cost
+  // when the user actually wants to draw.
+  const [sketcherRow, setSketcherRow] = useState<number | null>(null);
 
   const [pdbId, setPdbId] = useState("");
   const [chain, setChain] = useState("A");
@@ -378,6 +400,7 @@ export default function NewJobPage() {
   }
 
   return (
+    <>
     <form onSubmit={onSubmit} className="space-y-6 animate-fade-in">
       <div className="flex items-baseline justify-between">
         <div>
@@ -968,7 +991,7 @@ export default function NewJobPage() {
                   onChange={(e) => setCompound(i, { name: e.target.value })}
                 />
               </div>
-              <div className="col-span-11 sm:col-span-8">
+              <div className="col-span-10 sm:col-span-7">
                 <input
                   className="input-mono"
                   placeholder="SMILES"
@@ -976,6 +999,21 @@ export default function NewJobPage() {
                   onChange={(e) => setCompound(i, { smiles: e.target.value })}
                 />
               </div>
+              {/* Sketch button — opens the self-hosted Ketcher modal.
+                  Pre-loads the row's existing SMILES (if any) so users
+                  can edit a compound rather than start from a blank
+                  canvas. Compact icon button so the existing layout
+                  doesn't shift much: SMILES col goes 8 → 7, this
+                  button is the new col-span-1. */}
+              <button
+                type="button"
+                onClick={() => setSketcherRow(i)}
+                className="col-span-1 h-9 text-slate-400 hover:text-delta-600 flex items-center justify-center rounded-md hover:bg-delta-50 dark:text-slate-500 dark:hover:text-delta-400 dark:hover:bg-delta-900/30 transition-colors"
+                aria-label={c.smiles ? "Edit structure in sketcher" : "Sketch structure"}
+                title={c.smiles ? "Edit in sketcher" : "Sketch a molecule"}
+              >
+                <SketchIcon size={16} />
+              </button>
               <button
                 type="button"
                 onClick={() => removeCompound(i)}
@@ -1136,6 +1174,22 @@ export default function NewJobPage() {
         </div>
       </div>
     </form>
+
+    {/* Ketcher sketcher modal — rendered as a sibling to the form so it
+        can portal-overlay the page without inheriting form styles. The
+        Ketcher iframe (~25 MB) is only mounted when sketcherRow !== null,
+        so the cost is paid lazily when the user actually clicks Sketch. */}
+    {sketcherRow !== null && (
+      <KetcherModal
+        initialSmiles={compounds[sketcherRow]?.smiles || undefined}
+        onClose={() => setSketcherRow(null)}
+        onAccept={(smiles) => {
+          setCompound(sketcherRow, { smiles });
+          setSketcherRow(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 
