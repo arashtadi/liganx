@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import {
-  ArrowRight, Beaker, Bolt, Code, Eye, Grid, Library, Shield, Sparkles, Target,
+  ArrowRight, Beaker, Bolt, Eye, Grid, Library, Shield, Sparkles, Target,
 } from "../components/Icons";
 
 export default function HomePage() {
@@ -363,7 +363,12 @@ function Comparison() {
               <th className="text-left px-5 py-3 font-semibold text-slate-700 dark:text-slate-300"></th>
               <th className="px-5 py-3 font-semibold text-slate-700 dark:text-slate-300">Free servers</th>
               <th className="px-5 py-3 font-semibold text-delta-700 bg-delta-50 dark:text-delta-300 dark:bg-delta-900/30">Liganx</th>
-              <th className="px-5 py-3 font-semibold text-slate-700 dark:text-slate-300">Schrödinger FEP+</th>
+              {/* Column heading deliberately broadened from "Schrödinger
+                  FEP+" to "Schrödinger Maestro" — several rows below
+                  describe Maestro / QikProp features (sketcher,
+                  drug-likeness, 2D contact map) that aren't part of FEP+
+                  specifically, so the narrower label was misleading. */}
+              <th className="px-5 py-3 font-semibold text-slate-700 dark:text-slate-300">Schrödinger Maestro</th>
             </tr>
           </thead>
           <tbody>
@@ -372,13 +377,23 @@ function Comparison() {
               ["WT-vs-mutant matrix",            false,     true,      "partial"],
               ["No install required",            true,      true,      false],
               ["Plain-English interpretation",   false,     true,      false],
-              ["PoseBusters confidence ribbon",  false,     true,      true],
-              ["RDKit pose-strain analysis",     false,     true,      true],
+              // Row labels generalized so the Schrödinger ✓ doesn't
+              // imply they use the same OSS tools we do (PoseBusters,
+              // RDKit). Schrödinger has equivalent functionality via
+              // Glide validators / MacroModel — the generic labels keep
+              // the comparison honest in either direction.
+              ["Pose-quality validation",        false,     true,      true],
+              ["Pose strain analysis",           false,     true,      true],
               ["Outside-pocket warning",         false,     true,      false],
               ["Interactive 3D pose viewer",     "partial", true,      true],
               ["2D contact map with distances",  false,     true,      true],
               ["Built-in molecule sketcher",     "partial", true,      true],
-              ["GPU batch docking (~3 s/cell)",  false,     true,      "partial"],
+              // Dropped the specific "~3 s/cell" number from the row
+              // label — that figure is accurate for the standard pocket
+              // box at exhaustiveness=8 but a Thorough run or a much
+              // larger pocket can land at 8-15 s/cell, and we'd rather
+              // not have a user benchmark and feel misled.
+              ["GPU-accelerated batch docking",  false,     true,      "partial"],
               ["Drug-likeness (QED, Ro5, PAINS)", false,    true,      true],
             ].map((row, i) => (
               <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
@@ -393,6 +408,12 @@ function Comparison() {
           </tbody>
         </table>
       </div>
+      {/* Light disclaimer below the comparison. Comparison tables age fast;
+          flagging the snapshot date and licensing variance keeps the
+          page hard to challenge as competitor capabilities shift. */}
+      <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 text-center">
+        Reflects publicly known features as of April 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
+      </p>
     </section>
   );
 }
@@ -420,13 +441,13 @@ function CTAStrip() {
           One UI. Real Vina under the hood. Selectivity matrix in minutes, not days.
         </p>
         <div className="mt-7 flex justify-center gap-3">
-          {/* CTA banner uses brand gradient in both themes — buttons stay light-on-gradient. */}
+          {/* CTA banner uses brand gradient in both themes — buttons stay
+              light-on-gradient. The "View on GitHub" button was removed
+              alongside the Liganx repo being kept private — the link
+              pointed at github.com root which felt placeholdery. */}
           <Link to="/new" className="btn bg-white text-delta-700 hover:bg-delta-50 btn-lg shadow-sm">
             Run your first job <ArrowRight size={16} />
           </Link>
-          <a href="https://github.com" className="btn bg-transparent text-white border border-white/30 hover:bg-white/10 btn-lg">
-            <Code size={16} /> View on GitHub
-          </a>
         </div>
       </div>
     </section>
