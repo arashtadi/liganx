@@ -316,24 +316,11 @@ export default function JobPage() {
         <StreamingBanner job={job} />
       )}
 
-      {/* Hero 3D banner — full-width, sits above the matrix so the docked
-          pose is the first thing the user sees. Auto-loads the best mutant
-          Δ on page open via the effect above; updates in place when a cell
-          is clicked. The wrapping div carries `bannerRef` so cell clicks
-          can smooth-scroll the banner back into view (the banner is at
-          the top of the page; clicks happen below in the matrix). */}
-      <div ref={bannerRef} className="scroll-mt-24">
-        <HeroBanner
-          pick={pick}
-          pdbId={job.pdb_id}
-          chain={job.chain}
-          pocketCenter={target?.pocket.center}
-          jobId={job.share_id || job.id}
-          selectionReason={selectionReason}
-        />
-      </div>
-
-      {/* Matrix — full width below the banner. */}
+      {/* Selectivity matrix on top — users scan the table of scores first,
+          then click into a cell to see the 3D pose below. Clicking flows
+          DOWN the page (natural reading direction) instead of up; the
+          auto-scroll in choosePick takes them to the banner so the change
+          is on-screen without manual scrolling. */}
       <SelectivityMatrix
         compounds={viewJob.compounds}
         mutations={viewJob.mutations}
@@ -346,6 +333,21 @@ export default function JobPage() {
         onSelectAll={inSubsetView ? undefined : onSelectAll}
         onClearSelection={inSubsetView ? undefined : onClearSelection}
       />
+
+      {/* Hero 3D banner — full-width, sits below the matrix. Auto-loads
+          the best mutant Δ on page open via the effect above; updates in
+          place when a cell is clicked. The wrapping div carries `bannerRef`
+          so cell clicks above can smooth-scroll the banner into view. */}
+      <div ref={bannerRef} className="scroll-mt-24">
+        <HeroBanner
+          pick={pick}
+          pdbId={job.pdb_id}
+          chain={job.chain}
+          pocketCenter={target?.pocket.center}
+          jobId={job.share_id || job.id}
+          selectionReason={selectionReason}
+        />
+      </div>
 
       {/* Deeper drill-down — interpretation paragraph, ProLIF contacts list,
           2D interaction map, mutation-outside-pocket explainer. Lives below
