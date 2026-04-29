@@ -158,6 +158,13 @@ export function isDocFlaskTourDismissed(): boolean {
   return readTourState() === "dismissed";
 }
 
+/** Public dismiss — used by the SettingsPage Doc Flask toggle so users
+ *  can opt out without having to navigate to /new and tick the in-tour
+ *  checkbox. Persists the same flag the in-tour checkbox does. */
+export function dismissDocFlaskTour() {
+  markTourDismissed();
+}
+
 export default function DocFlaskTour() {
   const location = useLocation();
   // Only run on the New Job page for now. Other pages can wire their own

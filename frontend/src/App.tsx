@@ -12,6 +12,7 @@ import SignupPage from "./pages/SignupPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import HistoryPage from "./pages/HistoryPage";
+import SettingsPage from "./pages/SettingsPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/new" element={<RequireAuth><NewJobPage /></RequireAuth>} />
             <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/jobs/:id" element={<JobPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/suite" element={<SuitePage />} />
@@ -103,7 +105,11 @@ function Header() {
           )}
           <ThemeToggle />
           {user ? (
-            <UserMenu email={user.email || "account"} onSignOut={signOut} />
+            <UserMenu
+              email={user.email || "account"}
+              avatarUrl={(user.user_metadata?.avatar_url as string | undefined) || ""}
+              onSignOut={signOut}
+            />
           ) : (
             <Link to="/login" className="text-sm font-medium text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white px-3 py-2">
               Sign in
@@ -118,11 +124,14 @@ function Header() {
   );
 }
 
-function UserMenu({ email, onSignOut }: { email: string; onSignOut: () => Promise<void> }) {
+function UserMenu({ email, avatarUrl, onSignOut }: { email: string; avatarUrl: string; onSignOut: () => Promise<void> }) {
   // Lightweight popover — no portal, just absolute-positioned card. Click-
   // outside dismisses via a document-level mousedown listener (same pattern
-  // as AutocompleteInput). Avatar is the first letter of the email; full
-  // address is only shown when the menu is open so the header stays compact.
+  // as AutocompleteInput). Avatar shows the user's uploaded picture
+  // (user_metadata.avatar_url, set via SettingsPage or pulled from Google
+  // OAuth) when present; otherwise falls back to the first letter of the
+  // email so the header always has *something*. The full address is only
+  // shown when the menu is open so the header stays compact.
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -144,12 +153,16 @@ function UserMenu({ email, onSignOut }: { email: string; onSignOut: () => Promis
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-center w-8 h-8 rounded-full bg-delta-100 text-delta-700 font-semibold text-sm hover:bg-delta-200 transition-colors dark:bg-delta-900/40 dark:text-delta-200 dark:hover:bg-delta-900/70"
+        className="flex items-center justify-center w-8 h-8 rounded-full overflow-hidden bg-delta-100 text-delta-700 font-semibold text-sm hover:bg-delta-200 transition-colors dark:bg-delta-900/40 dark:text-delta-200 dark:hover:bg-delta-900/70"
         aria-haspopup="menu"
         aria-expanded={open}
         title={email}
       >
-        {initial}
+        {avatarUrl ? (
+          <img src={avatarUrl} alt={email} className="w-full h-full object-cover" />
+        ) : (
+          initial
+        )}
       </button>
       {open && (
         <div
@@ -164,6 +177,14 @@ function UserMenu({ email, onSignOut }: { email: string; onSignOut: () => Promis
               {email}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => { setOpen(false); navigate("/settings"); }}
+            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            role="menuitem"
+          >
+            Settings
+          </button>
           <button
             type="button"
             onClick={() => { setOpen(false); navigate("/history"); }}
