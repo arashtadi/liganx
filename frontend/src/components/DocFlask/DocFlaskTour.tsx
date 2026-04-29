@@ -96,6 +96,17 @@ const NEW_JOB_TOUR: TourStep[] = [
 
 const STORAGE_KEY = "liganx-tour:new-job";
 const DISMISSED_VALUE = "dismissed";
+/** sessionStorage flag set by resetDocFlaskTour() to tell the next mount
+ *  of DocFlaskTour to skip the 600 ms settle delay and pop up instantly.
+ *  Cleared as soon as it's consumed. sessionStorage (not localStorage) so
+ *  it doesn't leak across tabs/sessions if something goes wrong. */
+const FORCE_NOW_KEY = "liganx-tour:force-now";
+/** Window event name dispatched by resetDocFlaskTour(). The currently-
+ *  mounted DocFlaskTour listens for this and fires immediately if it's
+ *  on /new. Covers the case where the user clicks "Show Doc Flask tour"
+ *  while already on /new — the path doesn't change, so the route-change
+ *  effect won't re-fire on its own. */
+const SHOW_EVENT = "docflask:show";
 
 /** The tour now shows on EVERY visit to /new, UNTIL the user explicitly
  *  ticks "Don't show again" and dismisses. Just clicking Skip or
@@ -122,12 +133,20 @@ function markTourDismissed() {
 
 /** Public reset — used by the user-menu "Show Doc Flask again" option to
  *  un-dismiss the tour. After calling this, the user should land on /new
- *  (the menu handles navigation) and the tour will fire again on its
- *  600 ms settle delay. */
+ *  (the menu handles navigation) and the tour fires INSTANTLY — no
+ *  600 ms settle delay — because explicit menu invocations don't need
+ *  to wait for layout to stabilize the way first-page-load does.
+ *
+ *  We do two things to guarantee it pops up immediately:
+ *    1. Set FORCE_NOW_KEY in sessionStorage. The /new mount-time effect
+ *       reads this and skips the setTimeout when it's "1".
+ *    2. Dispatch a window event. If a DocFlaskTour is already mounted on
+ *       /new (user clicked the menu while already on /new — the navigate
+ *       to /new is a no-op, no route change), it activates on the spot. */
 export function resetDocFlaskTour() {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch { /* private mode — flag was never persisted to begin with */ }
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* private mode */ }
+  try { sessionStorage.setItem(FORCE_NOW_KEY, "1"); } catch { /* private mode */ }
+  try { window.dispatchEvent(new Event(SHOW_EVENT)); } catch { /* SSR / older */ }
 }
 
 /** Read whether the user has currently opted out of the tour. The user
@@ -157,6 +176,11 @@ export default function DocFlaskTour() {
   // layout) — without the delay the bubble anchors at coordinates that
   // change as content loads, so it visibly jumps once before the first
   // step. The checkbox state resets each time the tour fires.
+  //
+  // EXCEPTION — when FORCE_NOW_KEY is set (the user just clicked
+  // "Show Doc Flask tour" in the user menu), we skip the settle and
+  // fire instantly. The user explicitly asked for it; making them wait
+  // 600 ms after a click feels broken.
   useEffect(() => {
     if (!onNewJob) {
       setActive(false);
@@ -164,11 +188,45 @@ export default function DocFlaskTour() {
     }
     if (readTourState() === "dismissed") return;
     setNeverAgain(false);
+
+    let forceNow = false;
+    try {
+      forceNow = sessionStorage.getItem(FORCE_NOW_KEY) === "1";
+      if (forceNow) sessionStorage.removeItem(FORCE_NOW_KEY);
+    } catch { /* private mode */ }
+
+    if (forceNow) {
+      setActive(true);
+      setStepIdx(0);
+      return;
+    }
+
     const t = window.setTimeout(() => {
       setActive(true);
       setStepIdx(0);
     }, 600);
     return () => window.clearTimeout(t);
+  }, [onNewJob]);
+
+  // Already-on-/new case: when the user clicks "Show Doc Flask tour" from
+  // the user menu while they're already on /new, navigate("/new") is a
+  // no-op (no path change), so the effect above doesn't re-fire.
+  // resetDocFlaskTour() also dispatches SHOW_EVENT — we listen for it and
+  // activate immediately. Guard on `onNewJob` so the event is ignored
+  // from other pages (the navigate will land first and the effect above
+  // will handle it via FORCE_NOW_KEY).
+  useEffect(() => {
+    function onShow() {
+      if (!onNewJob) return;
+      // Clear the force flag if it's still set — we're handling it here
+      // instead of via the route-change effect.
+      try { sessionStorage.removeItem(FORCE_NOW_KEY); } catch { /* private mode */ }
+      setNeverAgain(false);
+      setStepIdx(0);
+      setActive(true);
+    }
+    window.addEventListener(SHOW_EVENT, onShow);
+    return () => window.removeEventListener(SHOW_EVENT, onShow);
   }, [onNewJob]);
 
   if (!active) return null;
