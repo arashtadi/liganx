@@ -1,8 +1,6 @@
 import { useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type Compound } from "../api";
+import { type Compound } from "../api";
 import { Close, Sparkles } from "./Icons";
-import MutationOverlayViewer from "./MutationOverlayViewer";
 import ConfidenceRibbon from "./ConfidenceRibbon";
 import InteractionDiagram from "./InteractionDiagram";
 import AdmetChips from "./AdmetChips";
@@ -41,41 +39,17 @@ function residueOf(code: string): number | null {
  *
  * Phase 3: real Mol* viewer + ProLIF interaction list.
  */
-export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, onClose }: Props) {
+export default function PoseDetail({ pick, onClose }: Props) {
   const { compound, variant, score, deltaWt, extra } = pick;
   const stronger = deltaWt != null && deltaWt < -0.3;
   const weaker = deltaWt != null && deltaWt > 0.3;
   const mutationResidue = residueOf(variant);
   const ext = parseExtra(extra);
 
-  // Refs for the 2D-map → 3D-viewer scroll sync. When the user clicks a
-  // residue in the InteractionDiagram, we smooth-scroll the 3D viewer
-  // into view and flash its border so the spatial connection is obvious.
+  // Diagram ref is still used for the 2D contact map's own anchor; we no
+  // longer scroll-target a 3D viewer because the 3D viewer is now in the
+  // HeroBanner at the top of the page (single canonical 3D pane per page).
   const diagramRef = useRef<HTMLDivElement | null>(null);
-  const viewerRef = useRef<HTMLDivElement | null>(null);
-
-  // Fetch the WT and mutant PDBs from the backend so the overlay viewer can
-  // render the actual FoldX-built mutant geometry next to the WT side chain.
-  const wtQuery = useQuery({
-    queryKey: ["structure", pdbId, chain, "WT"],
-    queryFn: () => api.structure(pdbId, chain, "WT"),
-    staleTime: 5 * 60 * 1000,
-  });
-  const mutQuery = useQuery({
-    queryKey: ["structure", pdbId, chain, variant],
-    queryFn: () => api.structure(pdbId, chain, variant),
-    staleTime: 5 * 60 * 1000,
-    enabled: variant !== "WT",
-    retry: 0, // missing mutant cache → just gracefully show WT
-  });
-  // Pull the docked ligand pose so the viewer can show the actual binding pose
-  const poseQuery = useQuery({
-    queryKey: ["pose", jobId, compound.id, variant],
-    queryFn: () => api.pose(jobId!, compound.id, variant),
-    staleTime: 5 * 60 * 1000,
-    enabled: jobId != null,
-    retry: 0, // /tmp poses get cleaned between sessions; just skip silently
-  });
 
   return (
     <div className="panel sticky top-20 animate-fade-in">
@@ -273,88 +247,18 @@ export default function PoseDetail({ pick, pdbId, chain, pocketCenter, jobId, on
         )}
 
         {/* 2D interaction diagram — radial spoke view of the ProLIF contacts.
-            Clicking a residue scrolls the 3D viewer into view + flashes its
-            border so the user can pick out the same residue spatially. */}
+            The 3D viewer that this used to scroll-target lives in the
+            HeroBanner at the top of the page now, so we just render the
+            diagram on its own without the spatial-link click handler. */}
         {ext.contacts && ext.contacts.length > 0 && (
           <div ref={diagramRef}>
             <div className="label">2D interaction map</div>
             <InteractionDiagram
               ligandLabel={compound.name ?? "Ligand"}
               contacts={ext.contacts}
-              onResidueClick={() => {
-                viewerRef.current?.scrollIntoView({
-                  behavior: "smooth",
-                  block: "center",
-                });
-                // Brief border flash on the viewer container so the user
-                // gets visual confirmation the click did something.
-                const el = viewerRef.current;
-                if (el) {
-                  el.classList.add("ring-2", "ring-delta-400");
-                  setTimeout(() => el.classList.remove("ring-2", "ring-delta-400"), 1400);
-                }
-              }}
             />
           </div>
         )}
-
-        {/* 3D viewer — overlays the FoldX-mutated side chain on the WT structure.
-            Wrapped in a ref so the 2D contact map's residue clicks can scroll
-            it into view + flash its border for the spatial-link cue. */}
-        <div ref={viewerRef} className="rounded-lg transition-all">
-          <div className="label flex items-center justify-between">
-            <span>WT vs mutant overlay</span>
-            {mutationResidue != null && (
-              <span className="text-[10px] text-delta-600 font-mono">
-                residue {mutationResidue}
-              </span>
-            )}
-          </div>
-          <MutationOverlayViewer
-            wtPdb={wtQuery.data ?? null}
-            mutantPdb={mutQuery.data ?? null}
-            posePdbqt={poseQuery.data ?? null}
-            contacts={ext.contacts}
-            chain={chain}
-            mutationResidue={mutationResidue ?? undefined}
-            pocketCenter={pocketCenter}
-            variantLabel={variant}
-            className="min-h-[280px]"
-            contextLabel={`${compound.name ?? "Compound"} × ${variant}`}
-            contextSubtitle={[
-              `${pdbId} chain ${chain}`,
-              // Show "Job #N" for legacy integer IDs, or skip for share_id
-              // tokens — random base64 strings look terrible in headers.
-              typeof jobId === "number" ? `Job #${jobId}` : null,
-              `${score.toFixed(2)} kcal/mol`,
-              deltaWt != null ? `Δ vs WT ${deltaWt > 0 ? "+" : ""}${deltaWt.toFixed(2)}` : null,
-            ].filter(Boolean).join(" · ")}
-          />
-          {/* Provenance note — exactly what the viewer is showing, so the user
-              never has to wonder which receptor the pose was docked against. */}
-          <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed dark:text-slate-400">
-            <span className="font-semibold text-slate-600 dark:text-slate-300">Ligand pose</span>{" "}
-            was docked against the{" "}
-            <span className="font-mono text-delta-700 dark:text-delta-400">{variant}</span> receptor
-            {variant !== "WT" && " (FoldX-built mutant)"}.{" "}
-            <span className="font-semibold text-slate-600 dark:text-slate-300">Backbone</span> shown
-            is wild-type{variant !== "WT" && " — identical to mutant except at the substituted residue"}.{" "}
-            {variant !== "WT" && (
-              <>
-                <span className="font-semibold text-slate-600 dark:text-slate-300">Side chain</span> at
-                residue {mutationResidue ?? "?"} is swappable WT (green) ↔ mutant (blue) via the slider.
-              </>
-            )}
-            {ext.contacts && ext.contacts.length > 0 && (
-              <>
-                {" "}
-                <span className="font-semibold text-slate-600 dark:text-slate-300">Contact residues</span> are
-                colored by ProLIF interaction type from the docked complex.
-              </>
-            )}
-            {mutQuery.isError && " Mutant structure not cached — showing WT only."}
-          </p>
-        </div>
 
         <div>
           <div className="label">SMILES</div>
