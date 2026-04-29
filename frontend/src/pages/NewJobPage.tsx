@@ -514,6 +514,7 @@ export default function NewJobPage() {
       {/* ── Step 1: Target ─────────────────────────────────────────────── */}
       <Step
         n={1}
+        dataTour="step-targets"
         icon={<Target />}
         title="Choose target(s)"
         subtitle={`Click one for full mutation analysis · click multiple for kinase-selectivity mode. Free tier: max ${MAX_TARGETS} targets.`}
@@ -715,6 +716,7 @@ export default function NewJobPage() {
           step renders an info note instead of disappearing. */}
       <Step
         n={2}
+        dataTour="step-mutations"
         icon={<Beaker />}
         title={isMultiTarget ? "Pick mutations per target" : "Pick mutations"}
         subtitle={
@@ -1018,6 +1020,7 @@ export default function NewJobPage() {
       {/* ── Step 3: Compounds ──────────────────────────────────────────── */}
       <Step
         n={3}
+        dataTour="step-compounds"
         icon={<Bolt />}
         title="Add compounds"
         subtitle="Provide SMILES. Reference compounds for this target are pre-loaded — edit, remove, or add your own."
@@ -1336,6 +1339,7 @@ export default function NewJobPage() {
           <div className="flex flex-col items-end gap-2 w-full sm:w-auto">
             <button
               type="submit"
+              data-tour="step-run"
               className="btn-primary btn-lg w-full sm:w-auto"
               disabled={submit.isPending || submitting || compoundCount === 0 || (!isMultiTarget && !customMode && targets.length === 0)}
             >
@@ -1524,7 +1528,7 @@ function MutationIssueCard({
 }
 
 function Step({
-  n, icon, title, subtitle, action, children,
+  n, icon, title, subtitle, action, children, dataTour,
 }: {
   n: number;
   icon: React.ReactNode;
@@ -1532,9 +1536,13 @@ function Step({
   subtitle?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
+  /** Optional data-tour="…" attribute. Used by the Doc Flask onboarding
+   *  tour to anchor a speech bubble on this step's card. Stable across
+   *  className refactors because we key off this attribute, not class. */
+  dataTour?: string;
 }) {
   return (
-    <section className="card">
+    <section className="card" data-tour={dataTour}>
       <header className="flex items-start justify-between mb-5">
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-delta-500 to-accent-500 text-white flex items-center justify-center shadow-sm shrink-0">

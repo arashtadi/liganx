@@ -1,0 +1,401 @@
+/**
+ * DocFlaskTour — first-run walkthrough for new users on the New Job page.
+ *
+ * Orchestrates a small step machine: each step has a target CSS selector,
+ * a title, body copy, and a Doc Flask pose. The tour:
+ *
+ *   1. Mounts globally (in App.tsx) but renders nothing unless we're on a
+ *      page where a tour is configured AND the user hasn't already
+ *      completed/skipped it.
+ *   2. Highlights the target element by drawing a soft ring around it
+ *      (computed from getBoundingClientRect — no DOM mutation on the
+ *      target itself).
+ *   3. Anchors a speech bubble next to the target with a tail pointing
+ *      at it.
+ *   4. Doc Flask floats in a screen corner, points / cheers / thinks
+ *      based on the step's pose.
+ *
+ * Cross-browser hardening:
+ *   - getBoundingClientRect (universal)
+ *   - Position recomputed on scroll + resize via passive listeners
+ *   - localStorage wrapped in try/catch (Safari incognito throws)
+ *   - All animations use transform + opacity (Safari-safe)
+ *   - No backdrop-filter, no scroll-behavior:smooth (older Safari quirks)
+ *   - prefers-reduced-motion honored by the mascot's keyframes
+ */
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
+import DocFlaskMascot, { type DocFlaskPose } from "./DocFlaskMascot";
+
+interface TourStep {
+  /** CSS selector of the element this step is teaching about. The element
+   *  is highlighted with a ring and the speech bubble anchors near it.
+   *  If null, the speech bubble is centered (used for welcome / outro). */
+  selector: string | null;
+  title: string;
+  body: string;
+  pose: DocFlaskPose;
+  /** Where the bubble sits relative to the target. 'auto' tries to find
+   *  the side with the most room. */
+  side?: "auto" | "top" | "bottom" | "left" | "right";
+}
+
+/** Steps for the New Job page first-run tour. Each one teaches one
+ *  concept tied to a stable selector — most of these match
+ *  data-tour="..." attributes in NewJobPage.tsx. Stable data-tour markers
+ *  prevent the tour from breaking when class names get refactored. */
+const NEW_JOB_TOUR: TourStep[] = [
+  {
+    selector: null,
+    title: "Hi! I'm Doc Flask.",
+    body:
+      "I'll walk you through your first docking — about 30 seconds. Click any step's highlight to dismiss me, or tap Skip if you'd rather explore on your own.",
+    pose: "idle",
+  },
+  {
+    selector: '[data-tour="step-targets"]',
+    title: "Step 1 — pick a target",
+    body:
+      "Choose the kinase you want to study. Each card represents a clinically actionable drug target. EGFR or ALK are gentle starting points if you're new.",
+    pose: "pointing-down",
+    side: "top",
+  },
+  {
+    selector: '[data-tour="step-mutations"]',
+    title: "Step 2 — pick mutations",
+    body:
+      "Click any chip to add a clinical mutation. Each card below has its own mutation list — so for two targets, you set them separately. Skip a card to dock that target as wild-type only.",
+    pose: "pointing-down",
+    side: "top",
+  },
+  {
+    selector: '[data-tour="step-compounds"]',
+    title: "Step 3 — add your compounds",
+    body:
+      "Reference compounds are pre-loaded. Edit, paste a SMILES, or click Sketch to draw one in the 2D editor. Up to 5 on the free tier.",
+    pose: "pointing-down",
+    side: "top",
+  },
+  {
+    selector: '[data-tour="step-run"]',
+    title: "Run it!",
+    body:
+      "Each compound docks against the wild-type structure plus every mutation you picked. You'll get a selectivity matrix in seconds.",
+    pose: "celebrating",
+    side: "top",
+  },
+  {
+    selector: null,
+    title: "That's the whole loop.",
+    body:
+      "Click any matrix cell to inspect a pose in 3D. You can revisit jobs from History anytime. Good luck!",
+    pose: "celebrating",
+  },
+];
+
+const STORAGE_KEY = "liganx-tour:new-job";
+const COMPLETED_VALUE = "completed";
+
+function readTourState(): "completed" | "fresh" {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === COMPLETED_VALUE ? "completed" : "fresh";
+  } catch {
+    return "fresh";
+  }
+}
+function markTourCompleted() {
+  try {
+    localStorage.setItem(STORAGE_KEY, COMPLETED_VALUE);
+  } catch {
+    /* private mode — accept that the tour might re-run next session */
+  }
+}
+
+export default function DocFlaskTour() {
+  const location = useLocation();
+  // Only run on the New Job page for now. Other pages can wire their own
+  // tour by adding a steps definition + a path check here.
+  const onNewJob = location.pathname === "/new";
+  const [active, setActive] = useState(false);
+  const [stepIdx, setStepIdx] = useState(0);
+
+  // Auto-start on first visit to /new for users who haven't completed.
+  // Delay 600 ms to let the page settle (catalog API, layout) — without
+  // the delay the bubble anchors at coordinates that change as content
+  // loads, so it visibly jumps once before the first step.
+  useEffect(() => {
+    if (!onNewJob) {
+      setActive(false);
+      return;
+    }
+    if (readTourState() === "completed") return;
+    const t = window.setTimeout(() => {
+      setActive(true);
+      setStepIdx(0);
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [onNewJob]);
+
+  if (!active) return null;
+  const step = NEW_JOB_TOUR[stepIdx];
+  if (!step) return null;
+
+  function next() {
+    if (stepIdx + 1 >= NEW_JOB_TOUR.length) {
+      // Last step → mark completed and dismiss
+      markTourCompleted();
+      setActive(false);
+    } else {
+      setStepIdx(stepIdx + 1);
+    }
+  }
+  function skip() {
+    markTourCompleted();
+    setActive(false);
+  }
+
+  return (
+    <TourOverlay
+      step={step}
+      stepIdx={stepIdx}
+      total={NEW_JOB_TOUR.length}
+      onNext={next}
+      onSkip={skip}
+    />
+  );
+}
+
+interface OverlayProps {
+  step: TourStep;
+  stepIdx: number;
+  total: number;
+  onNext: () => void;
+  onSkip: () => void;
+}
+
+function TourOverlay({ step, stepIdx, total, onNext, onSkip }: OverlayProps) {
+  const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+
+  // Resolve and track the target element's bounding rect. Recomputes on
+  // scroll, resize, and any DOM size change in the target's subtree. We
+  // also re-resolve the selector each tick because the target may not
+  // exist yet on first render (catalog still loading, etc.) — without
+  // re-querying we'd miss the element when it appears.
+  useEffect(() => {
+    if (!step.selector) {
+      setTargetRect(null);
+      return;
+    }
+    let raf = 0;
+    function refresh() {
+      const el = document.querySelector(step.selector!);
+      if (el) {
+        setTargetRect((el as HTMLElement).getBoundingClientRect());
+        // Scroll the target into view if it's offscreen — without
+        // scroll-behavior:smooth (Safari iOS bug) we use a manual
+        // smooth-ish call by setting block:'center' and letting the
+        // browser handle it.
+        const rect = (el as HTMLElement).getBoundingClientRect();
+        const offTop = rect.top < 80;
+        const offBot = rect.bottom > window.innerHeight - 100;
+        if (offTop || offBot) {
+          (el as HTMLElement).scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+      } else {
+        setTargetRect(null);
+      }
+    }
+    function tick() {
+      refresh();
+      raf = window.requestAnimationFrame(tick);
+    }
+    raf = window.requestAnimationFrame(tick);
+    window.addEventListener("scroll", refresh, { passive: true, capture: true });
+    window.addEventListener("resize", refresh, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", refresh, true);
+      window.removeEventListener("resize", refresh);
+      observerRef.current?.disconnect();
+    };
+  }, [step.selector]);
+
+  // Esc dismisses
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onSkip();
+      else if (e.key === "Enter" || e.key === " ") {
+        // Only advance on Enter when the focus isn't on a form input —
+        // otherwise typing Space in the SMILES field would skip the tour.
+        const tag = (document.activeElement?.tagName || "").toLowerCase();
+        if (tag !== "input" && tag !== "textarea" && tag !== "select") {
+          e.preventDefault();
+          onNext();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onNext, onSkip]);
+
+  // Bubble position. If we have a target, anchor near it; otherwise center.
+  const bubble = useMemo(() => computeBubblePosition(targetRect, step.side ?? "auto"), [targetRect, step.side]);
+
+  // Z-index plan:
+  //   - Backdrop: 200
+  //   - Highlight ring: 201
+  //   - Speech bubble + Doc Flask: 202
+  // Above modals (which use 100–200) but below browser UI.
+  return (
+    <>
+      {/* Soft backdrop. We don't dim too aggressively — this is a tour,
+          not a blocking modal. The user should still be able to read the
+          page underneath. Click anywhere on the backdrop = advance. */}
+      <div
+        className="fixed inset-0 z-[200] bg-ink/30 dark:bg-ink/50 cursor-pointer"
+        style={{ pointerEvents: "auto" }}
+        onClick={onNext}
+        aria-hidden="true"
+      />
+
+      {/* Highlight ring around the target. Drawn as a fixed-positioned
+          div with no fill so the underlying element is fully visible. */}
+      {targetRect && (
+        <div
+          className="fixed z-[201] pointer-events-none rounded-xl ring-4 ring-delta-400/80 dark:ring-delta-300/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.0)] transition-all"
+          style={{
+            top: targetRect.top - 6,
+            left: targetRect.left - 6,
+            width: targetRect.width + 12,
+            height: targetRect.height + 12,
+          }}
+        />
+      )}
+
+      {/* Speech bubble — anchored near the target or centered when none.
+          Click handlers stop propagation so clicking the bubble doesn't
+          advance via the backdrop. */}
+      <div
+        className="fixed z-[202] max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 p-4 sm:p-5 animate-fade-in"
+        style={{ top: bubble.top, left: bubble.left, transform: bubble.transform }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 -mt-1">
+            <DocFlaskMascot pose={step.pose} size={72} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-delta-600 dark:text-delta-400">
+              Step {stepIdx + 1} of {total}
+            </div>
+            <h3 className="mt-0.5 text-base font-semibold text-ink dark:text-slate-100">
+              {step.title}
+            </h3>
+            <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              {step.body}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={onSkip}
+            className="text-xs text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100"
+          >
+            Skip tour
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="hidden sm:inline text-[10px] text-slate-400 dark:text-slate-500">
+              Esc to dismiss · Enter to advance
+            </span>
+            <button
+              type="button"
+              onClick={onNext}
+              className="btn-primary btn-sm"
+            >
+              {stepIdx + 1 === total ? "Got it" : "Next"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** Pick a sensible fixed-position for the speech bubble.
+ *
+ * If we have a target rect, anchor the bubble on the side with the most
+ * room. If we don't have a target (welcome / outro steps), center the
+ * bubble on the screen.
+ *
+ * Returns CSS position values directly — no transform tricks beyond an
+ * occasional translate, which is universally supported.
+ */
+function computeBubblePosition(
+  rect: DOMRect | null,
+  side: "auto" | "top" | "bottom" | "left" | "right",
+): { top: number; left: number; transform?: string } {
+  const margin = 16;
+  const bubbleW = Math.min(420, window.innerWidth - margin * 2);
+  // Estimated bubble height — we don't measure pre-mount. 200 px covers
+  // the ~3-line body cases, slight overshoot is fine since we clamp to
+  // viewport below.
+  const bubbleH = 220;
+
+  if (!rect) {
+    // No target — center on screen.
+    return {
+      top: Math.max(margin, (window.innerHeight - bubbleH) / 2),
+      left: Math.max(margin, (window.innerWidth - bubbleW) / 2),
+    };
+  }
+
+  // Find the side with the most room. If `side` is explicit, prefer it
+  // unless it doesn't fit, in which case fall back to auto.
+  const room = {
+    top: rect.top,
+    bottom: window.innerHeight - rect.bottom,
+    left: rect.left,
+    right: window.innerWidth - rect.right,
+  };
+
+  let chosen: "top" | "bottom" | "left" | "right" = "bottom";
+  if (side !== "auto") {
+    chosen = side;
+  } else {
+    chosen = (Object.entries(room).sort((a, b) => b[1] - a[1])[0][0]) as typeof chosen;
+  }
+
+  // If the chosen side doesn't have room for the bubble, fall back to
+  // the side with the most room. Prevents the bubble from being clipped.
+  if (room[chosen] < (chosen === "top" || chosen === "bottom" ? bubbleH : bubbleW) + margin) {
+    chosen = (Object.entries(room).sort((a, b) => b[1] - a[1])[0][0]) as typeof chosen;
+  }
+
+  let top: number, left: number;
+  switch (chosen) {
+    case "top":
+      top = Math.max(margin, rect.top - bubbleH - margin);
+      left = clamp(rect.left + rect.width / 2 - bubbleW / 2, margin, window.innerWidth - bubbleW - margin);
+      break;
+    case "bottom":
+      top = Math.min(window.innerHeight - bubbleH - margin, rect.bottom + margin);
+      left = clamp(rect.left + rect.width / 2 - bubbleW / 2, margin, window.innerWidth - bubbleW - margin);
+      break;
+    case "left":
+      top = clamp(rect.top + rect.height / 2 - bubbleH / 2, margin, window.innerHeight - bubbleH - margin);
+      left = Math.max(margin, rect.left - bubbleW - margin);
+      break;
+    case "right":
+      top = clamp(rect.top + rect.height / 2 - bubbleH / 2, margin, window.innerHeight - bubbleH - margin);
+      left = Math.min(window.innerWidth - bubbleW - margin, rect.right + margin);
+      break;
+  }
+  return { top, left };
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}

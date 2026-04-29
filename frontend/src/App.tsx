@@ -15,6 +15,7 @@ import HistoryPage from "./pages/HistoryPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
+import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
 
 export default function App() {
   return (
@@ -40,6 +41,11 @@ export default function App() {
           </Routes>
         </main>
         <Footer />
+        {/* First-run tour mascot. Self-gates on route + localStorage —
+            renders nothing for users who've seen it or are off the
+            tour-eligible pages. Mounted once at app root so the tour
+            survives client-side route transitions. */}
+        <DocFlaskTour />
       </div>
     </AuthProvider>
   );
