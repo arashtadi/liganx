@@ -105,12 +105,16 @@ export default function MutationOverlayViewer(props: Props) {
         isFullscreen={false}
       />
       {fullscreen && (
-        // z-[100] beats the page header's stacking context (z-30 + backdrop-blur).
-        // `isolate` makes sure no parent context can paint over us.
-        // Top padding clears the sticky page header (~64px) so the modal's X
-        // never sits underneath it, even when the header re-paints with blur.
+        // z-[200] beats the page header (z-30) AND the new sticky right-rail
+        // 3D banner column whose `lg:sticky` creates a new stacking context.
+        // Backdrop is FULLY opaque (was bg-ink/70, which let the
+        // selectivity matrix's first column read clearly through the blur
+        // — distracting in fullscreen). `isolate` prevents any parent
+        // context from painting over us.
+        // Top padding clears the sticky page header (~64px) so the modal's
+        // X never sits underneath it, even when the header re-paints with blur.
         <div
-          className="fixed inset-0 z-[100] isolate bg-ink/70 backdrop-blur-sm flex items-center justify-center pt-20 pb-6 px-4 sm:pt-24 sm:pb-10 sm:px-12 animate-fade-in"
+          className="fixed inset-0 z-[200] isolate bg-ink backdrop-blur-sm flex items-center justify-center pt-20 pb-6 px-4 sm:pt-24 sm:pb-10 sm:px-12 animate-fade-in"
           onClick={() => setFullscreen(false)}
         >
           <div
