@@ -218,13 +218,10 @@ export default function SuitePage() {
                     <Spinner size={10} /> {j.status}
                   </span>
                 )}
-                <Link
-                  to={`/jobs/${sid}`}
-                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-delta-600 dark:hover:text-delta-400 underline"
-                  title="Open the standalone job page (3D viewer, pose download, etc.)"
-                >
-                  Open
-                </Link>
+                {/* The per-target Open link was removed — users reach
+                    the standalone JobPage via the detail rail's
+                    "Open ↗" button on a selected cell, which keeps the
+                    suite open in the original window. */}
               </div>
             </div>
 
