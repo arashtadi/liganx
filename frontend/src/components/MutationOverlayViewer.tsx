@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Close, Spinner } from "./Icons";
 
 /**
@@ -104,17 +105,18 @@ export default function MutationOverlayViewer(props: Props) {
         onExpand={() => setFullscreen(true)}
         isFullscreen={false}
       />
-      {fullscreen && (
-        // z-[200] beats the page header (z-30) AND the new sticky right-rail
-        // 3D banner column whose `lg:sticky` creates a new stacking context.
-        // Backdrop is FULLY opaque (was bg-ink/70, which let the
-        // selectivity matrix's first column read clearly through the blur
-        // — distracting in fullscreen). `isolate` prevents any parent
-        // context from painting over us.
-        // Top padding clears the sticky page header (~64px) so the modal's
-        // X never sits underneath it, even when the header re-paints with blur.
+      {fullscreen && createPortal(
+        // Rendered into document.body via createPortal so the modal escapes
+        // ANY parent stacking context (the new sticky right-rail banner
+        // column, transformed elements, filter ancestors, etc.). Without
+        // the portal, fixed-positioned elements get clipped to whichever
+        // ancestor created a new containing block — the matrix on the
+        // left was reading through clearly in some configurations.
+        // Backdrop is fully opaque (bg-ink) so nothing on the page bleeds
+        // through. Top padding clears the sticky page header (~64px) so
+        // the modal's X never sits underneath it.
         <div
-          className="fixed inset-0 z-[200] isolate bg-ink backdrop-blur-sm flex items-center justify-center pt-20 pb-6 px-4 sm:pt-24 sm:pb-10 sm:px-12 animate-fade-in"
+          className="fixed inset-0 z-[200] isolate bg-ink flex items-center justify-center pt-20 pb-6 px-4 sm:pt-24 sm:pb-10 sm:px-12 animate-fade-in"
           onClick={() => setFullscreen(false)}
         >
           <div
@@ -155,7 +157,8 @@ export default function MutationOverlayViewer(props: Props) {
               />
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
