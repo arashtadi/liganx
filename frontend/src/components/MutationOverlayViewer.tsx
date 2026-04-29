@@ -306,7 +306,19 @@ function ViewerCanvas({
   const [surfaceComputing, setSurfaceComputing] = useState(false);
   // Surface handles need to be removed before re-adding when style or
   // color changes — otherwise they stack and drag rendering to a crawl.
+  // We don't actually rely on these handles for cleanup (we use
+  // removeAllSurfaces below) but keep the ref for potential future use
+  // and to suppress 'unused' warnings.
   const surfaceHandlesRef = useRef<any[]>([]);
+  // Generation counter for in-flight addSurface promises. 3Dmol's
+  // addSurface can return a Promise that resolves several hundred
+  // milliseconds after the call — long enough for the user to click a
+  // different style. If we don't invalidate the in-flight promise, its
+  // late-resolving surface mesh paints over the new style and the user
+  // appears "stuck in Surface mode". Bumping this ref on every applyAll
+  // means any older addSurface that resolves later sees a mismatched gen
+  // and immediately removes itself.
+  const surfaceGenRef = useRef(0);
 
   // ── Measure-mode state ──────────────────────────────────────────────
   // When ON, atoms become clickable; pick two atoms to draw a labeled dashed
@@ -349,15 +361,19 @@ function ViewerCanvas({
 
     // Step 2: backbone style on model 0 (the WT structure).
     //
-    // Always remove any prior surface first — addSurface APIs in 3Dmol stack
-    // surfaces (each call adds another mesh on top), so without explicit
-    // removal switching from Surface→Cartoon would leave the surface drawn
-    // beneath the cartoon, and switching color modes would render multiple
-    // overlapping surfaces.
+    // Always remove any prior surface first. We use removeAllSurfaces()
+    // because 3Dmol's addSurface() in modern versions returns a Promise
+    // rather than a numeric handle — pushing that Promise into a ref and
+    // later calling removeSurface(promise) silently fails, leaving a
+    // stuck mesh on screen ("can't switch out of Surface mode" bug).
+    // removeAllSurfaces is handle-agnostic and clears every mesh.
+    //
+    // Bumping surfaceGenRef invalidates any in-flight addSurface
+    // promise — if it resolves AFTER this clear, the resolution handler
+    // sees a mismatched gen and tears down its own mesh.
     safe("clear-surfaces", () => {
-      for (const h of surfaceHandlesRef.current) {
-        try { viewer.removeSurface(h); } catch { /* ignore */ }
-      }
+      surfaceGenRef.current++;
+      try { viewer.removeAllSurfaces?.(); } catch { /* ignore */ }
       surfaceHandlesRef.current = [];
     });
 
@@ -393,13 +409,28 @@ function ViewerCanvas({
         opts.colorfunc = (atom: any) => fn(String(atom?.resn || "").toUpperCase());
       }
       safe("add-surface", () => {
-        const handle = viewer.addSurface(surfType, opts, { model: 0 });
-        if (handle) surfaceHandlesRef.current.push(handle);
-        // The surface promise resolves when geometry is ready; we don't have
-        // a callback in 3Dmol's older API, so just clear the spinner after
-        // a render tick. This is good enough — actual users see the spinner
-        // for ~half a second on a kinase, which is the right feel.
-        requestAnimationFrame(() => setSurfaceComputing(false));
+        // Capture the generation at call time. If the user switches away
+        // before this addSurface resolves, the gen will have advanced and
+        // we'll know to tear down the late mesh.
+        const myGen = surfaceGenRef.current;
+        const result = viewer.addSurface(surfType, opts, { model: 0 });
+        const isPromise = result && typeof (result as any).then === "function";
+        const onReady = () => {
+          if (surfaceGenRef.current !== myGen) {
+            // The user switched modes while this surface was building.
+            // Tear it down so it doesn't paint over the new style.
+            try { viewer.removeAllSurfaces?.(); viewer.render(); } catch { /* ignore */ }
+            return;
+          }
+          try { viewer.render(); } catch { /* ignore */ }
+          requestAnimationFrame(() => setSurfaceComputing(false));
+        };
+        if (isPromise) {
+          (result as Promise<any>).then(onReady, onReady);
+        } else {
+          if (result != null) surfaceHandlesRef.current.push(result);
+          onReady();
+        }
       });
     } else {
       const backboneSpec: Record<string, any> = {};
