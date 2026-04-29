@@ -189,7 +189,11 @@ export default function HeroBanner({
             opens the page during a Fly cold-start window), surface a
             friendly retry button rather than rendering the viewer with
             null PDB data (which would crash inside 3Dmol). */}
-        <div className="relative h-[300px]">
+        {/* Viewer height — was 300px which clipped the Pose toolbar row
+            (Stick / Ball / Line / Sphere) below the Backbone row. Bumped
+            to 380px so canvas (~280px) + Backbone row + Pose row + the
+            optional Surface-color sub-row all fit without scrolling. */}
+        <div className="relative h-[380px]">
           {loadingPdb ? (
             <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex flex-col items-center justify-center text-sm text-slate-500 dark:text-slate-400 animate-pulse">
               <div className="w-12 h-12 rounded-full bg-white/60 dark:bg-slate-700/60 mb-3" />

@@ -346,6 +346,7 @@ export default function JobPage() {
             onToggleSelect={inSubsetView ? undefined : onToggleSelect}
             onSelectAll={inSubsetView ? undefined : onSelectAll}
             onClearSelection={inSubsetView ? undefined : onClearSelection}
+            currentPickKey={pick ? `${pick.compound.id}.${pick.variant}` : null}
           />
 
           {/* Deeper drill-down — interpretation paragraph, ProLIF contacts,

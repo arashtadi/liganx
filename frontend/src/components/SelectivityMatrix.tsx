@@ -32,6 +32,12 @@ interface Props {
   onToggleSelect?: (key: string) => void;
   onSelectAll?: () => void;
   onClearSelection?: () => void;
+  /** The cell currently driving the right-rail 3D viewer. Format
+   *  `${compound_id}.${variant}` — same key shape as `selected`. The matrix
+   *  rings this cell with a thick brand-colored border so users can see at a
+   *  glance which docking the 3D image corresponds to. Without this, the
+   *  visual link between the matrix and the viewer was invisible. */
+  currentPickKey?: string | null;
 }
 
 type SortKey = "best-delta" | "best-mutant" | "wt" | "name";
@@ -47,7 +53,7 @@ type SortKey = "best-delta" | "best-mutant" | "wt" | "name";
  */
 export default function SelectivityMatrix({
   compounds, mutations, results, isStreaming = false, mutationInfo, onPick,
-  selected, onToggleSelect, onSelectAll, onClearSelection,
+  selected, onToggleSelect, onSelectAll, onClearSelection, currentPickKey,
 }: Props) {
   const variants = useMemo(() => ["WT", ...mutations], [mutations]);
   const [sortKey, setSortKey] = useState<SortKey>("best-delta");
@@ -273,6 +279,7 @@ export default function SelectivityMatrix({
                 {variants.map((v) => {
                   const cellId = `${compound.id}.${v}`;
                   const isSelected = selected?.has(cellId) ?? false;
+                  const isCurrentPick = currentPickKey === cellId;
                   return (
                     <ScoreCell
                       key={v}
@@ -285,6 +292,7 @@ export default function SelectivityMatrix({
                       highlighted={hoverCol === v || hoverRow === rowIdx}
                       selectable={selectable}
                       isSelected={isSelected}
+                      isCurrentPick={isCurrentPick}
                       onToggleSelect={selectable ? () => onToggleSelect?.(cellId) : undefined}
                       onClick={() => {
                         if (v === "WT" || scores[v] == null) return;
@@ -323,7 +331,7 @@ export default function SelectivityMatrix({
 
 function ScoreCell({
   value, extra, delta, isWT, isStreaming, maxAbsDelta, highlighted, onClick,
-  selectable = false, isSelected = false, onToggleSelect,
+  selectable = false, isSelected = false, isCurrentPick = false, onToggleSelect,
 }: {
   value: number | undefined;
   extra: string | null;
@@ -337,6 +345,10 @@ function ScoreCell({
    *  checkbox in the cell and dim its score when not selected. */
   selectable?: boolean;
   isSelected?: boolean;
+  /** True when this cell is the one currently driving the right-rail 3D
+   *  viewer. Renders a thick brand-colored ring + arrow indicator so the
+   *  user can see at a glance which docking the 3D image corresponds to. */
+  isCurrentPick?: boolean;
   onToggleSelect?: () => void;
 }) {
   // The checkbox sits in the top-left of every cell. We stop click propagation
@@ -476,17 +488,37 @@ function ScoreCell({
   // the user reported.
   const wtSurface = isWT ? "bg-slate-50/40 dark:bg-slate-800/30" : "";
 
+  // Active-pick ring — outranks every other ring class so the user can
+  // always see WHICH cell drives the right-rail 3D viewer. Solid 2px brand
+  // border, distinct from the dashed selection ring and the soft hover ring.
+  // We layer a small "viewing" pill in the corner too, since users with
+  // monochrome / colorblind setups won't read color alone.
+  const currentPickRing = isCurrentPick
+    ? "ring-2 ring-inset ring-delta-600 dark:ring-delta-400 shadow-[0_0_0_4px_rgba(59,108,246,0.12)]"
+    : "";
   return (
     <td
       className={`relative text-right py-2.5 ${selectable ? "pl-6 pr-4" : "px-4"} font-mono tabular-nums transition-all align-top
         ${isWT ? `border-r border-slate-200 dark:border-slate-800 ${wtSurface}` : ""}
-        ${highlighted && !isWT && !isSelected ? "ring-1 ring-inset ring-slate-200/60 dark:ring-slate-700/60" : ""}
+        ${highlighted && !isWT && !isSelected && !isCurrentPick ? "ring-1 ring-inset ring-slate-200/60 dark:ring-slate-700/60" : ""}
         ${selectionRing}
-        ${interactive && !isSelected ? "cursor-pointer hover:ring-2 hover:ring-inset hover:ring-delta-400 dark:hover:ring-delta-500" : ""}
-        ${interactive && isSelected ? "cursor-pointer" : ""}`}
+        ${currentPickRing}
+        ${interactive && !isSelected && !isCurrentPick ? "cursor-pointer hover:ring-2 hover:ring-inset hover:ring-delta-400 dark:hover:ring-delta-500" : ""}
+        ${interactive && (isSelected || isCurrentPick) ? "cursor-pointer" : ""}`}
       style={{ background: bg || undefined }}
       onClick={onClick}
     >
+      {/* Active-pick pill — a tiny "viewing" tag in the top-right corner of
+          the highlighted cell. Color-redundant for accessibility: even
+          without seeing the ring, the text pill identifies the active cell. */}
+      {isCurrentPick && (
+        <span
+          className="absolute -top-1.5 -right-1.5 z-[6] inline-flex items-center gap-0.5 rounded-full bg-delta-600 dark:bg-delta-500 text-white text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 shadow-sm pointer-events-none"
+          title="This cell is what's currently shown in the 3D viewer on the right"
+        >
+          viewing
+        </span>
+      )}
       {Checkbox}
       <div className="text-ink dark:text-slate-100 font-semibold">{value.toFixed(2)}</div>
       {delta != null && (
