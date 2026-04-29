@@ -578,4 +578,35 @@ def prepare_ligand(smiles: str, out_pdbqt: Path | str, *, name: str | None = Non
 
     if not out_pdbqt.exists() or out_pdbqt.stat().st_size == 0:
         raise PrepError(f"Ligand prep wrote no file: {out_pdbqt}")
+
+    # Defense against silent Vina rejections.
+    #
+    # AutoDock Vina / QuickVina2-GPU only recognize a fixed set of atom
+    # types. If Meeko ever emits something outside that set (e.g. the `G`
+    # macrocycle glue atoms before we added --rigid_macrocycles, or some
+    # future atom-type addition Meeko introduces), Vina silently rejects
+    # the whole ligand and our Pod returns an empty pose with a vague
+    # "no pose written" error. By the time the user sees that, the row
+    # is red across every variant and the cause is invisible.
+    #
+    # Better: catch it here at prep time with a specific, actionable
+    # error so the row in the matrix says "unsupported atom type X" and
+    # we know exactly what changed in Meeko.
+    _vina_types = {"A","C","HD","N","NA","OA","SA","S","F","Cl","Br","I","P"}
+    bad_types: set[str] = set()
+    try:
+        for line in out_pdbqt.read_text().splitlines():
+            if line.startswith(("ATOM", "HETATM")):
+                t = line.split()[-1] if line.split() else ""
+                if t and t not in _vina_types:
+                    bad_types.add(t)
+    except OSError:
+        pass  # don't mask the original prep success on a transient read error
+    if bad_types:
+        raise PrepError(
+            f"Meeko produced atom types Vina cannot dock: {sorted(bad_types)}. "
+            f"This was the macrocycle-glue-atom bug (Meeko inserts `G`/`CG0` "
+            f"to open spanning rings) — make sure --rigid_macrocycles is "
+            f"still being passed. SMILES: {smiles!r}"
+        )
     return out_pdbqt
