@@ -95,6 +95,13 @@ export interface Job {
    *  frontend uses this to decide whether to render the Cancel/Edit Title
    *  buttons (only the owner sees them). */
   user_id: string | null;
+  /** Docking engine that the runner used for this job. Same set as
+   *  JobCreatePayload.engine. Null on very old rows that predate the
+   *  column being added (legacy = quickvina2_gpu). The progress bar
+   *  uses this to pick engine-appropriate pre-flight stages — Vina
+   *  has more (receptor PDBQT prep, FoldX mutants), Boltz-2 has
+   *  fewer (sequence extraction, no PDBQT). */
+  engine?: "quickvina2_gpu" | "gnina" | "boltz2" | string | null;
   /** User-editable display title. Falls back to a synthesized label
    *  ("EGFR · 4 compounds · T790M+C797S") when null. */
   title: string | null;

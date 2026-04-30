@@ -720,24 +720,185 @@ function CancelButton({ job }: { job: Job }) {
 
 /* ─── Streaming banner shown above the matrix while results arrive ─── */
 
+/** Pre-flight stages the runner walks through before the first cell finishes
+ *  and the matrix can fill in. The bar used to sit at 0% for ~30-60s while
+ *  the receptor was being fetched + cleaned + the WT/mutant structures
+ *  built — felt like the system was stuck. We now animate a small "phantom
+ *  progress" through these stages based on elapsed time + engine, so the
+ *  user sees concrete activity from the moment they hit Run.
+ *
+ *  Stage timings are CALIBRATED against typical Fly + Pod-warm runs (we
+ *  don't try to be exact — just plausible enough that the active step
+ *  matches what's roughly happening). A stage transitions to the next
+ *  when (a) elapsed time exceeds its budget, or (b) the runner has
+ *  written its first DocketResult row (which means docking actually
+ *  started — we've moved past pre-flight regardless of the timer).
+ *
+ *  Engine differences worth noting:
+ *  - Vina/GNINA: extra "Building mutants" stage when mutations are
+ *    requested (FoldX/PDBFixer adds 5-10s per mutation).
+ *  - Boltz-2: skips receptor PDBQT prep + mutant builds (the model
+ *    consumes a sequence + applies the substitution at the input
+ *    layer), but each cell takes ~130s vs Vina's ~3-5s — so the
+ *    "Docking" stage spends most of its time with very few cells
+ *    visible. That's a real trade-off, not a bug. */
+interface Stage {
+  key: string;
+  label: string;
+  /** Estimated cumulative time in seconds at the END of this stage.
+   *  The active stage is the FIRST one whose budget the elapsed time
+   *  hasn't exceeded yet (and where cells haven't started landing). */
+  budgetS: number;
+}
+
+function preflightStages(job: Job): Stage[] {
+  const isBoltz2 = (job.engine ?? "").startsWith("boltz2");
+  const hasMutations = job.mutations.length > 0;
+  if (isBoltz2) {
+    // Boltz-2 path: fetch → clean → extract sequence → predict.
+    // The model handles mutations at its input layer so there's no
+    // separate "Building mutants" stage.
+    return [
+      { key: "fetch",   label: "Fetching protein structure",  budgetS: 6 },
+      { key: "clean",   label: "Cleaning structure (PDBFixer)", budgetS: 16 },
+      { key: "seq",     label: "Extracting sequence",          budgetS: 20 },
+      { key: "predict", label: "Predicting complex (Boltz-2 ML)", budgetS: 25 },
+    ];
+  }
+  // Vina/GNINA path: more pre-flight stages because we have to build
+  // PDBQT receptors + (optionally) FoldX mutants before docking can
+  // start.
+  const stages: Stage[] = [
+    { key: "fetch",    label: "Fetching protein structure",        budgetS: 6 },
+    { key: "clean",    label: "Cleaning structure (PDBFixer)",     budgetS: 16 },
+    { key: "receptor", label: "Preparing receptor (Meeko)",        budgetS: 24 },
+  ];
+  if (hasMutations) {
+    // Each mutation adds ~5s of build time (PDBFixer applyMutations +
+    // optional OpenMM minimisation), so widen the budget proportionally.
+    const mutBudget = 24 + Math.min(20, 5 * job.mutations.length);
+    stages.push({ key: "mutants", label: "Building mutant receptors", budgetS: mutBudget });
+  }
+  stages.push({ key: "ligand", label: "Preparing compounds (Meeko)", budgetS: (stages[stages.length - 1].budgetS) + 6 });
+  return stages;
+}
+
 function StreamingBanner({ job }: { job: Job }) {
   const total = job.compounds.length * (job.mutations.length + 1);
   const done = job.results.length;
-  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  // Tick 1×/sec so the elapsed-driven stage indicator and phantom
+  // progress are smooth without re-rendering the whole tree on every
+  // frame. Hard cap so we don't keep updating once docking actually
+  // starts (cell-driven progress takes over then).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (job.status !== "running" && job.status !== "pending") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [job.status]);
+  const elapsedS = Math.max(0, (now - new Date(job.created_at).getTime()) / 1000);
+
+  // ── Stage detection ────────────────────────────────────────────────
+  // If any cells are done OR validation is the only thing left, we're
+  // past pre-flight. Otherwise pick the active pre-flight stage based
+  // on elapsed time vs each stage's budget.
+  const stages = preflightStages(job);
+  const allCellsDone = total > 0 && done >= total;
+  const validatingOnly = allCellsDone && job.status === "running";
+  const dockingActive = done > 0 && !allCellsDone;
+  let activeKey: string;
+  let stageLabel: string;
+  if (validatingOnly) {
+    activeKey = "validate";
+    stageLabel = "Validating poses (PoseBusters / ProLIF)";
+  } else if (dockingActive) {
+    activeKey = "docking";
+    stageLabel = `Docking · ${done} of ${total} done`;
+  } else {
+    // Pre-flight: pick first stage whose budget hasn't been exceeded.
+    const idx = stages.findIndex((s) => elapsedS < s.budgetS);
+    const stage = idx >= 0 ? stages[idx] : stages[stages.length - 1];
+    activeKey = stage.key;
+    stageLabel = stage.label;
+  }
+
+  // ── Progress bar percentage ────────────────────────────────────────
+  // Three-phase model so the bar ALWAYS feels alive:
+  //   Phase 1 — pre-flight (0–15%):    eases in over the estimated
+  //             pre-flight time so the user sees movement immediately.
+  //   Phase 2 — docking   (15–95%):    driven by cells done / total.
+  //   Phase 3 — validate  (95–100%):   small final step once docking
+  //             ends and we're waiting on the deferred validation pass.
+  const preflightTotal = stages[stages.length - 1].budgetS;
+  const realPct = total === 0 ? 0 : (done / total) * 80; // 80, not 85, leaves headroom for validation
+  const phantomPct = Math.min(15, (elapsedS / preflightTotal) * 15);
+  let pct: number;
+  if (validatingOnly) {
+    pct = 95;
+  } else if (dockingActive) {
+    pct = Math.max(15, 15 + realPct);
+  } else {
+    pct = phantomPct;
+  }
+  const pctLabel = Math.round(pct);
+
   return (
     <div className="card">
       <div className="flex items-center gap-3 mb-3">
         <Spinner size={16} className="text-delta-600 dark:text-delta-400" />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div className="font-semibold text-ink dark:text-slate-100 text-sm">
-            {job.status === "pending" ? "Queued for execution" : "Docking in progress"}
+            {job.status === "pending" ? "Queued for execution" : stageLabel}
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400">
-            {done} of {total} dockings complete · cells fill in below as each pose finishes
+            {dockingActive || validatingOnly
+              ? `${done} of ${total} dockings complete · cells fill in below as each pose finishes`
+              : `Setting up — ${total} docking${total === 1 ? "" : "s"} queued · usually under a minute before the first result`}
           </div>
         </div>
-        <span className="text-sm font-semibold text-delta-600 dark:text-delta-300 tabular-nums">{pct}%</span>
+        <span className="text-sm font-semibold text-delta-600 dark:text-delta-300 tabular-nums">{pctLabel}%</span>
       </div>
+
+      {/* Stepper: the pre-flight stages as a horizontal row of small pills.
+          Active stage gets a brand background + spinner; completed stages
+          (those before the active one) show a subtle check; future stages
+          are muted. Hidden once docking starts because at that point the
+          progress bar tells the story better than a stepper would. */}
+      {!dockingActive && !validatingOnly && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[10px]">
+          {stages.map((s, i) => {
+            const activeIdx = stages.findIndex((x) => x.key === activeKey);
+            const state =
+              activeIdx === -1
+                ? "future"
+                : i < activeIdx
+                  ? "done"
+                  : i === activeIdx
+                    ? "active"
+                    : "future";
+            return (
+              <div
+                key={s.key}
+                className={
+                  state === "active"
+                    ? "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 font-semibold dark:bg-delta-900/30 dark:text-delta-300 dark:ring-delta-700/40"
+                    : state === "done"
+                      ? "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800/40"
+                      : "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700"
+                }
+                aria-current={state === "active" ? "step" : undefined}
+              >
+                {state === "active" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-delta-500 dark:bg-delta-400 animate-pulse" />
+                )}
+                {state === "done" && <span aria-hidden>✓</span>}
+                <span>{s.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
         <div
           className="h-full bg-gradient-to-r from-delta-500 to-accent-500 transition-all duration-500"
