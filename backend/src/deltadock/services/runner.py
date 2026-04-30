@@ -202,24 +202,16 @@ class JobCancelled(Exception):
 
 def set_stage(session: Session, job_id: int, stage: str | None) -> None:
     """Write a short stage slug onto the job row so the JobPage's progress
-    banner can show the user what's happening RIGHT NOW.
+    banner can show what's happening RIGHT NOW.
 
-    Stages are short slugs the frontend translates to friendly labels
-    ("fetching_pdb" → "Fetching protein structure"). Free-form text means
-    we can add new stages without coordinating a migration each time.
-
-    Cheap: one short UPDATE, no transaction wrap. Caller should already
-    have an open session. Session.refresh(job) before reading stage in
-    the same call site, since SQLModel doesn't auto-invalidate after
-    a bare UPDATE.
+    NO-OP UNTIL MIGRATION 004 LANDS. The Job model temporarily doesn't
+    declare the stage column (SQLModel would emit SELECT statements
+    referencing a non-existent column → every JobPage GET 500s). Runner
+    keeps calling set_stage at every phase boundary so re-enabling the
+    body is a one-line change once the column is added.
     """
-    fresh = session.get(Job, job_id)
-    if fresh is None:
-        return
-    fresh.stage = stage
-    fresh.updated_at = datetime.utcnow()
-    session.add(fresh)
-    session.commit()
+    _ = (session, job_id, stage)
+    return
 
 
 def is_cancelled(session: Session, job_id: int) -> bool:
