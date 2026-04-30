@@ -496,8 +496,17 @@ function Comparison() {
             aren't pure binding-affinity signal. Saying so up front is
             cheaper than having a reviewer write the same thing on Twitter. */}
         <div className="mt-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40 p-4 text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mb-1.5">
-            Method limitations we publish on purpose
+          <div className="flex items-baseline justify-between mb-1.5 gap-3 flex-wrap">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+              Method limitations we publish on purpose
+            </div>
+            <Link
+              to="/validation"
+              className="text-[11px] text-delta-700 dark:text-delta-300 font-semibold hover:underline"
+              title="Live scientific-validation page — pocket-coordinate audit + 8 literature-anchored positive controls"
+            >
+              See full validation report →
+            </Link>
           </div>
           <ul className="list-disc pl-5 space-y-1.5">
             <li>

@@ -13,6 +13,7 @@ import VerifyEmailPage from "./pages/VerifyEmailPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
+import ValidationPage from "./pages/ValidationPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/terms" element={<TermsPage />} />
+            <Route path="/validation" element={<ValidationPage />} />
             {/* Catch-all 404 — used to leak through as a blank page */}
             <Route path="*" element={<NotFound />} />
           </Routes>
@@ -269,6 +271,7 @@ function Footer() {
           <span>© {new Date().getFullYear()} Liganx — mutation-aware structural biology.</span>
         </div>
         <div className="flex items-center gap-4">
+          <Link to="/validation" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Validation</Link>
           <Link to="/privacy" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Privacy</Link>
           <Link to="/terms" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Terms</Link>
           <span className="text-slate-400 dark:text-slate-500">v0.0.1 · Phase 1</span>

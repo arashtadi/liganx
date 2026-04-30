@@ -60,6 +60,10 @@ from typing import Literal
 
 API_BASE = os.environ.get("LIGANX_API_BASE", "https://api.liganx.com")
 TOKEN = os.environ.get("LIGANX_BEARER_TOKEN", "").strip()
+# Optional path — when set, write a machine-readable JSON of the run for the
+# public /validation page on liganx.com to consume. Without this, the script
+# only emits the human-readable markdown report.
+JSON_OUT = os.environ.get("LIGANX_VALIDATE_JSON_OUT", "").strip()
 
 # Vina/QuickVina2 noise floor at default exhaustiveness. Δs below this
 # magnitude are within scoring noise and shouldn't be claimed as a direction.
@@ -395,6 +399,52 @@ def main() -> int:
 
     report = "\n".join(lines)
     print(report)
+
+    # Optional machine-readable dump for the public /validation page on
+    # liganx.com. The frontend reads this JSON at runtime — re-running the
+    # suite and committing the refreshed JSON to frontend/public/ updates
+    # the page's honest current snapshot.
+    if JSON_OUT:
+        # Re-derive verdict for each case so the JSON has the canonical
+        # PASS/NOISE/FAIL/SKIP that the markdown table shows. Including it
+        # in the JSON spares the frontend from re-implementing the noise-
+        # floor logic (and accidentally diverging from the script).
+        cases_json = []
+        for c in CASES:
+            v, note = _verdict(c)
+            cases_json.append({
+                "name": c.name,
+                "pdb_id": c.pdb_id,
+                "chain": c.chain,
+                "uniprot_id": c.uniprot_id,
+                "mutation": c.mutation,
+                "drug_name": c.drug_name,
+                "expected_direction": c.expected_direction,
+                "literature": c.literature,
+                "caveat": c.caveat,
+                "share_id": c.share_id,
+                "wt_score": c.wt_score,
+                "mut_score": c.mut_score,
+                "delta_kcal": c.delta_kcal,
+                "verdict": v,
+                "verdict_note": note,
+            })
+        # ISO-8601 UTC for the timestamp — frontend renders 'Last refreshed:
+        # …' near the top so a reviewer can see if the page is stale.
+        run = {
+            "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "api_base": API_BASE,
+            "noise_floor_kcal": NOISE_FLOOR_KCAL,
+            "summary": {
+                "total": len(CASES),
+                "pass": n_pass, "fail": n_fail, "noise": n_noise, "skip": n_skip,
+            },
+            "cases": cases_json,
+        }
+        out_path = JSON_OUT
+        with open(out_path, "w") as f:
+            json.dump(run, f, indent=2)
+        print(f"\nWrote {out_path} ({len(cases_json)} cases)", file=sys.stderr)
 
     # Exit code: 0 if no FAIL (NOISE / SKIP are not regressions on their own).
     if n_fail > 0:
