@@ -13,9 +13,14 @@
  *   • status running / pending  →  poll on the supplied `runningMs`
  *   • status failed             →  stop (no validation expected)
  *   • status completed:
- *       • any result missing `extra`  →  keep polling on `runningMs`
- *           (validation still in flight)
- *       • all results have `extra`    →  stop
+ *       • any result missing `extra` OR carrying the `validate=pending`
+ *         placeholder  →  keep polling on `runningMs`
+ *           (validation still in flight — the runner writes `validate=pending`
+ *           up front in the batched path so the row is non-null even before
+ *           ProLIF/PoseBusters land. Without checking that token, polling
+ *           stops the moment Vina finishes and the user is stuck looking at
+ *           the placeholder.)
+ *       • all results have a real (non-pending) `extra`    →  stop
  *       • safety net: if the job's `updated_at` is older than 5 min,
  *           stop regardless — old history-page jobs from before the
  *           validation pipeline existed have null `extra` forever and
@@ -39,8 +44,17 @@ export function jobPollingInterval(
   if (data.status === "failed") return false;
 
   // status === "completed". Check whether per-cell validation has finished
-  // by looking for any result that's still missing its `extra` blob.
-  const validationPending = data.results.some((r) => !r.extra);
+  // by looking for any result that's still missing its `extra` blob OR
+  // carrying the `validate=pending` placeholder. The runner writes that
+  // placeholder up front in the batched-dispatch path so the row exists
+  // and the matrix can render a Vina score immediately, then rewrites the
+  // row when ProLIF / PoseBusters / strain land. If we only checked
+  // `!r.extra` we'd stop polling the moment Vina finished, snapshot the
+  // placeholder, and the user would never see the contact chips or 2D
+  // interaction map until they manually reloaded.
+  const validationPending = data.results.some(
+    (r) => !r.extra || r.extra.includes("validate=pending"),
+  );
   if (!validationPending) return false;
 
   // Cap how long we keep retrying — on truly old jobs (created before the
