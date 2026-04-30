@@ -261,14 +261,24 @@ def _extract_delta(case: Case, job: dict) -> tuple[float | None, float | None, f
     mut = next((r for r in results if r.get("compound_id") == cid and r.get("variant") == case.mutation), None)
     if not wt or not mut:
         return None, None, None, "missing WT or mutant result row"
-    # Skip if either cell is badged outside-pocket / skipped — those have a
-    # best_score but it's not interpretable for a Δ comparison.
+    # Skip cells whose best_score isn't a real docking score:
+    #   - 'outside_pocket' — the runner returns a number but it's against
+    #     a residue Vina never sampled near, so the Δ is meaningless.
+    #   - 'docking_failed' / 'ligand_prep_failed' — the runner stores
+    #     best_score=0.0 as a sentinel on hard failures (a malformed
+    #     receptor PDBQT, an exited Vina process, etc.). Treating that
+    #     as a real "no binding" score would invent signal where there is
+    #     none. The validation suite caught this on 2026-04-30 when a
+    #     broken BTK C481S mutant PDBQT silently produced 0.0 scores
+    #     and the prior version of this script counted them as valid.
+    #   - 'skipped' / 'validate=skip' — runner-marked unscored cells.
+    FAIL_TAGS = ("outside_pocket", "docking_failed", "ligand_prep_failed",
+                 "validate=skip", "skipped", "mutant_build_failed")
     for label, r in (("WT", wt), (case.mutation, mut)):
         extra = r.get("extra") or ""
-        if "outside_pocket" in extra:
-            return None, None, None, f"{label} badged outside_pocket"
-        if "validate=skip" in extra or "skipped" in extra:
-            return None, None, None, f"{label} marked skipped"
+        for tag in FAIL_TAGS:
+            if tag in extra:
+                return None, None, None, f"{label} cell tagged '{tag}' — not a real Vina score"
     wt_s = float(wt["best_score"])
     mut_s = float(mut["best_score"])
     return wt_s, mut_s, mut_s - wt_s, None
@@ -305,6 +315,17 @@ def main() -> int:
         print("Get one from a signed-in browser console:", file=sys.stderr)
         print("  (await window.supabaseClient?.auth.getSession())?.data?.session?.access_token", file=sys.stderr)
         return 2
+
+    # Optional ONLY filter — comma-separated case names (substring match) so
+    # we can re-run a subset after fixing a specific bug. e.g.:
+    #   LIGANX_VALIDATE_ONLY="BTK,KIT" python validate_positive_controls.py
+    # When unset, run the full eight-case suite.
+    global CASES  # must come before the first reference below
+    only = [s.strip() for s in os.environ.get("LIGANX_VALIDATE_ONLY", "").split(",") if s.strip()]
+    if only:
+        original = len(CASES)
+        CASES = [c for c in CASES if any(o.lower() in c.name.lower() for o in only)]
+        print(f"Filter active (LIGANX_VALIDATE_ONLY): running {len(CASES)} of {original} cases", file=sys.stderr)
 
     print(f"Liganx positive-control validation — {len(CASES)} cases", file=sys.stderr)
     print(f"  API: {API_BASE}", file=sys.stderr)
