@@ -34,6 +34,11 @@ on:
         description: 'Supabase JWT - get from signed-in browser DevTools console (see workflow file header for the snippet)'
         required: true
         type: string
+      only:
+        description: 'Optional: comma-separated case-name substrings to re-run a subset (e.g. "BRAF,Pirtobrutinib"). Empty = full eight-case suite. When set, the matching cases are merged into the existing JSON instead of replacing the whole snapshot.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   refresh:
@@ -67,6 +72,9 @@ jobs:
         env:
           LIGANX_BEARER_TOKEN: ${{ inputs.bearer_token }}
           LIGANX_VALIDATE_JSON_OUT: frontend/public/validation_results.json
+          # Empty filter = full suite. When non-empty, the script merges the
+          # matched cases into the existing JSON instead of overwriting it.
+          LIGANX_VALIDATE_ONLY: ${{ inputs.only }}
         run: |
           python backend/scripts/validate_positive_controls.py
 

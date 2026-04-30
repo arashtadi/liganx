@@ -64,6 +64,12 @@ TOKEN = os.environ.get("LIGANX_BEARER_TOKEN", "").strip()
 # public /validation page on liganx.com to consume. Without this, the script
 # only emits the human-readable markdown report.
 JSON_OUT = os.environ.get("LIGANX_VALIDATE_JSON_OUT", "").strip()
+# When set together with LIGANX_VALIDATE_ONLY, the targeted re-run will
+# replace only the matching cases inside the existing JSON file at JSON_OUT
+# (or LIGANX_VALIDATE_MERGE_INTO if that points elsewhere) instead of
+# overwriting the file with just the filtered subset. This lets us re-run a
+# single case without wiping the other seven from the public page.
+MERGE_INTO = os.environ.get("LIGANX_VALIDATE_MERGE_INTO", "").strip()
 # Vina sampling depth. Default 16 for the validation suite (vs 8 for the
 # product default) because the suite's whole point is to resolve direction
 # vs noise — bumping exhaustiveness halves the standard deviation of
@@ -486,9 +492,45 @@ def main() -> int:
             "cases": cases_json,
         }
         out_path = JSON_OUT
+
+        # Targeted re-run merge: when a filter is active and the existing
+        # output JSON already has the full eight-case suite, replace just
+        # the matching cases by name and recompute the summary. This lets
+        # us re-run a single failing case without wiping the other seven.
+        merge_target = MERGE_INTO or out_path
+        if only and os.path.exists(merge_target):
+            try:
+                with open(merge_target, "r") as f:
+                    existing = json.load(f)
+                existing_cases = existing.get("cases", [])
+                if existing_cases:
+                    by_name = {c["name"]: c for c in existing_cases}
+                    for new_case in cases_json:
+                        by_name[new_case["name"]] = new_case
+                    merged_cases = list(by_name.values())
+                    # Re-tally verdicts so the summary reflects the full set.
+                    counts = {"PASS": 0, "FAIL": 0, "NOISE": 0, "SKIP": 0}
+                    for mc in merged_cases:
+                        counts[mc.get("verdict", "SKIP")] = counts.get(mc.get("verdict", "SKIP"), 0) + 1
+                    run["cases"] = merged_cases
+                    run["summary"] = {
+                        "total": len(merged_cases),
+                        "pass": counts["PASS"],
+                        "fail": counts["FAIL"],
+                        "noise": counts["NOISE"],
+                        "skip": counts["SKIP"],
+                    }
+                    print(
+                        f"\nMerged {len(cases_json)} re-run case(s) into {merge_target} "
+                        f"({len(merged_cases)} total)",
+                        file=sys.stderr,
+                    )
+            except Exception as e:
+                print(f"\nMerge into existing JSON failed ({e}); writing filtered subset instead.", file=sys.stderr)
+
         with open(out_path, "w") as f:
             json.dump(run, f, indent=2)
-        print(f"\nWrote {out_path} ({len(cases_json)} cases)", file=sys.stderr)
+        print(f"\nWrote {out_path} ({len(run['cases'])} cases)", file=sys.stderr)
 
     # Exit code: 0 if no FAIL (NOISE / SKIP are not regressions on their own).
     if n_fail > 0:
