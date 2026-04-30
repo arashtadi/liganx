@@ -1351,7 +1351,7 @@ export default function NewJobPage() {
                   sub: "~20 s/cell · MIT · Sequence-input",
                   body:
                     "MIT/Recursion's open-source AlphaFold-3-class biomolecular foundation model. Predicts pose + binding affinity end-to-end from sequence + SMILES. Different methodology from Vina/GNINA — useful as a cross-validation third opinion.",
-                  badge: "coming" as const,  // pod-side install pending; API returns 503 with helpful message
+                  badge: "beta" as const,  // live as of 2026-04-30 on a dedicated RTX 4090 pod (see runpod/BOLTZ2_INSTALL.md)
                 },
               ].map((opt) => (
                 <button
@@ -1394,11 +1394,12 @@ export default function NewJobPage() {
               </p>
             )}
             {engine === "boltz2" && (
-              <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
-                Boltz-2 is currently being installed on the GPU pod (see{" "}
-                <a href="https://github.com/arashtadi/liganx/blob/main/runpod/BOLTZ2_INSTALL.md" target="_blank" rel="noopener noreferrer" className="underline">install runbook</a>
-                ). Submitting now returns a 503 with this message. Pick QuickVina2-GPU or
-                GNINA for jobs you want to run today.
+              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                Each cell reports a predicted log<sub>10</sub> IC<sub>50</sub> (μM) and a 0–1
+                binder probability — different units from Vina kcal/mol, so the absolute
+                numbers won&rsquo;t match across engines. The matrix Δ (mutant − WT) is still
+                a meaningful direction signal. First request after the pod warms up
+                takes ~60–90 s while the model loads; subsequent cells run in ~20 s.
               </p>
             )}
           </div>

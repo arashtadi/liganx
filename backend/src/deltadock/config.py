@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # we expose a separate setting in case we ever split.
     boltz2_enabled: bool = False
     boltz2_timeout_s: int = 180
+    # Separate pod URL for Boltz-2. Required when boltz2_enabled=True
+    # because Boltz-2 needs torch ≥ 2.6 + sm_89 (RTX 4090) which
+    # the QuickVina/GNINA pod's Blackwell GPU can't run. Empty string
+    # means "fall back to pod_dock_url" (legacy single-pod deploys).
+    # Production setting (2026-04-30):
+    #   BOLTZ2_POD_URL=https://yvdrklbbg9qlwa-7862.proxy.runpod.net
+    boltz2_pod_url: str = ""
     # Boltz-2 sampling controls. Defaults match the integration plan:
     # single-sequence (no MSA fetch) for fair WT/mutant comparison, one
     # sample because Boltz is deterministic at temperature=0.

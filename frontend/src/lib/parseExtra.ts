@@ -76,6 +76,22 @@ export interface ParsedExtra {
    *  pockets may have de novo waters this method doesn't see. The PoseDetail
    *  panel surfaces this with the explicit Phase 0 caveat copy. */
   water?: { displaced: number; pocketCount: number };
+  /** Boltz-2 affinity head 1 — log10(IC50 in μM). More-negative = stronger
+   *  binder. NOT a kcal/mol free-energy value; do NOT compare numerically
+   *  with Vina/GNINA scores. The matrix Δ math (mutant - WT) is still
+   *  meaningful as a direction signal. Present only on cells with
+   *  engine=boltz2. */
+  affValue?: number;
+  /** Boltz-2 affinity head 2 — model's probability that this ligand is a
+   *  real binder vs decoy (0..1). Hit-triage signal; useful as a
+   *  secondary confidence indicator. Present only on cells with
+   *  engine=boltz2. */
+  affProb?: number;
+  /** Number of residues passed to Boltz-2 as the pocket constraint
+   *  (CA atoms within the docking box). Empty constraint = Boltz-2's
+   *  learned pocket prior decided where to bind. Present only on
+   *  cells with engine=boltz2. */
+  pocketResidues?: number;
   /** When the mutation residue lies outside the Vina docking box (typically
    *  >11 Å from box center), single-conformation docking can't capture the
    *  geometric effect of the substitution — the mutated atoms are simply
@@ -186,6 +202,21 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
             pocketCount: parseInt(m[2], 10),
           };
         }
+        break;
+      }
+      case "aff_value": {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) out.affValue = n;
+        break;
+      }
+      case "aff_prob": {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) out.affProb = n;
+        break;
+      }
+      case "pocket_residues": {
+        const n = parseInt(v, 10);
+        if (Number.isFinite(n)) out.pocketResidues = n;
         break;
       }
       case "mutation_outside_pocket": {

@@ -362,6 +362,223 @@ def _drain_pending_validations(pending: list[dict], session: Session) -> None:
     log.info("Deferred validation: done")
 
 
+def _run_boltz2_dispatch(
+    session: Session,
+    job: Job,
+    cleaned_pdb: Path,
+    chain: str,
+    pocket_centre: tuple[float, float, float],
+    pocket_size: tuple[float, float, float],
+    pocket_source: str | None,
+    boltz2_pod_url: str,
+    compounds: list,
+    variants: list[str],
+) -> None:
+    """Boltz-2-only per-cell dispatch.
+
+    Called from `_run_real` when `job.engine == "boltz2"`. Independent
+    flow because Boltz-2 takes a sequence + ligand SMILES, not a PDBQT
+    receptor + box, so almost none of the Vina/GNINA scaffolding
+    applies. Skipped: receptor PDBQT prep, FoldX mutation builder,
+    Vina/GNINA dispatch, Vinardo rescoring, PoseBusters/ProLIF
+    validation. Those are all physics-pipeline concepts that don't
+    map onto a foundation-model prediction.
+
+    What we DO share with the Vina path: PDB fetch, PDBFixer cleanup,
+    pocket-box auto-detection (catalog → fpocket fallback → origin),
+    DocketResult row shape, R2 pose persistence, cooperative
+    cancellation between cells.
+
+    Per-cell behaviour:
+      - WT cell: dock the unmodified chain sequence.
+      - Mutation cell: apply substitution to the sequence string and
+        dock that. If the mutation references a residue not in the
+        chain (gap, wrong chain ID, wrong WT letter), write a clean
+        failure row instead of silently sending WT to the model.
+      - Pocket constraint: residues whose CA is within (min half-edge
+        of pocket box) Å of pocket centre. Empty list is OK; Boltz-2
+        falls back to its learned pocket prior.
+
+    Score field (DocketResult.best_score): we store affinity_pred_value
+    directly. It's log10(IC50 in μM), so more-negative = stronger binder
+    (matches Vina's sign convention even though the units are different).
+    The matrix renders Δ as (mutant - WT) — same direction signal
+    regardless of units.
+    """
+    # Late imports — module is only meaningful in the boltz2 path.
+    import sys
+    pipeline_path = Path(__file__).parents[3].parent / "pipeline"
+    if str(pipeline_path) not in sys.path:
+        sys.path.insert(0, str(pipeline_path))
+    from deltadock_pipeline.boltz2_dock import (
+        Boltz2DockConfig, Boltz2DockError, predict_one_boltz2,
+    )
+    from deltadock_pipeline.boltz2_seq import (
+        apply_mutation_to_sequence, extract_sequence_from_pdb,
+        pocket_residues_within,
+    )
+
+    cx, cy, cz = pocket_centre
+    sx, sy, sz = pocket_size
+
+    # Boltz-2 client config — picked up from the runtime settings so a
+    # restart with new env (longer timeout, MSA toggle) takes effect
+    # without code changes.
+    cfg = Boltz2DockConfig(
+        base_url=boltz2_pod_url,
+        timeout_s=settings.boltz2_timeout_s,
+        use_msa=settings.boltz2_use_msa,
+        num_samples=settings.boltz2_num_samples,
+    )
+
+    # Step 1: extract WT sequence + residue→index map from the cleaned PDB.
+    # Failures here are catastrophic for the whole job (no sequence → no
+    # boltz prediction possible), so let them propagate up to the run_job
+    # exception handler which marks the job FAILED with a useful reason.
+    try:
+        wt_sequence = extract_sequence_from_pdb(cleaned_pdb, chain)
+    except ValueError as e:
+        raise RuntimeError(
+            f"prep_step=extract_sequence pdb={cleaned_pdb.name} "
+            f"chain={chain}: {e}"
+        ) from e
+
+    # Step 2: build pocket-residue list (CA atoms inside the docking box).
+    # Use the smallest half-edge so the constraint stays inside the box
+    # the user expects — same convention as the Vina path's
+    # POCKET_RADIUS_A.
+    pocket_radius_a = min(sx, sy, sz) / 2.0
+    pocket_residues = pocket_residues_within(
+        cleaned_pdb, chain, pocket_centre, pocket_radius_a,
+    )
+    log.info(
+        "Boltz-2: WT sequence %d residues, pocket constraint %d residues",
+        len(wt_sequence.seq), len(pocket_residues),
+    )
+
+    # Step 3: per-variant sequence map. Same structure as receptor_for_variant
+    # in the Vina path. variant_extra carries telemetry that gets glued onto
+    # the per-cell `extra` string so the user sees what produced the score.
+    sequence_for_variant: dict[str, str | None] = {"WT": wt_sequence.seq}
+    variant_extra: dict[str, str | None] = {"WT": pocket_source}
+    for mut in [m for m in job.mutations.split(",") if m]:
+        new_seq, err = apply_mutation_to_sequence(wt_sequence, mut)
+        if err is not None:
+            log.warning("Boltz-2: mutation %s rejected: %s", mut, err)
+            sequence_for_variant[mut] = None
+            variant_extra[mut] = f"mutation_rejected: {err}"
+        else:
+            sequence_for_variant[mut] = new_seq
+            variant_extra[mut] = "boltz2_seq_mutation_applied"
+
+    # Step 4: per-cell loop. Boltz-2 has no native ligand-batch endpoint
+    # yet (see predict_batch_boltz2 stub), so we iterate compound × variant
+    # one HTTP call at a time. Each call is ~20 s on a warm RTX 4090.
+    with tempfile.TemporaryDirectory(prefix=f"boltz2-job{job.id}-") as work_str:
+        work = Path(work_str)
+        for compound in compounds:
+            if is_cancelled(session, job.id):
+                log.info("Job %s cancelled — stopping Boltz-2 loop", job.id)
+                raise JobCancelled()
+            for variant in variants:
+                if is_cancelled(session, job.id):
+                    raise JobCancelled()
+                seq = sequence_for_variant.get(variant)
+                if seq is None:
+                    # Mutation rejected upstream; emit a clean failure row.
+                    fail = variant_extra.get(variant) or "mutation_rejected"
+                    session.add(DockingResult(
+                        job_id=job.id, compound_id=compound.id, variant=variant,
+                        best_score=0.0, extra=fail,
+                    ))
+                    session.commit()
+                    continue
+
+                cell_dir = work / f"compound_{compound.id}_{variant}"
+                cell_dir.mkdir(exist_ok=True)
+                parts: list[str] = []
+                if variant_extra.get(variant):
+                    parts.append(variant_extra[variant])
+                parts.append("engine=boltz2")
+
+                try:
+                    result = predict_one_boltz2(
+                        receptor_sequence=seq,
+                        ligand_smiles=compound.smiles,
+                        work_dir=cell_dir,
+                        cfg=cfg,
+                        pocket_residues=pocket_residues or None,
+                        chain_id=chain,
+                    )
+                except Boltz2DockError as bde:
+                    log.warning(
+                        "Boltz-2 failed for c%s × %s: %s",
+                        compound.id, variant, bde,
+                    )
+                    session.add(DockingResult(
+                        job_id=job.id, compound_id=compound.id, variant=variant,
+                        best_score=0.0,
+                        extra="|".join(parts + [f"boltz2_failed: {str(bde)[:120]}"]),
+                    ))
+                    session.commit()
+                    continue
+                except Exception as e:
+                    log.exception(
+                        "Boltz-2 unexpected error for c%s × %s",
+                        compound.id, variant,
+                    )
+                    session.add(DockingResult(
+                        job_id=job.id, compound_id=compound.id, variant=variant,
+                        best_score=0.0,
+                        extra="|".join(parts + [f"boltz2_err:{type(e).__name__}:{str(e)[:80]}"]),
+                    ))
+                    session.commit()
+                    continue
+
+                # Boltz-2 returns the predicted protein-ligand COMPLEX as a
+                # single PDB. Persist it as the cell's pose so the 3D
+                # viewer can display it. Note that downstream code that
+                # extracts the ligand from a Vina pose (PDBQT format) won't
+                # work on this complex — but the JobPage Boltz-2 cell
+                # rendering uses a separate code path that knows how to
+                # parse a complex PDB. PoseBusters/ProLIF are intentionally
+                # skipped on Boltz-2 cells (they're physics validators that
+                # don't apply to ML predictions).
+                from .pose_store import get_pose_store
+                try:
+                    pose_uri = get_pose_store().write(
+                        job.id, compound.id, variant, result.predicted_pdb,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "Could not persist Boltz-2 pose for c%s × %s: %s",
+                        compound.id, variant, e,
+                    )
+                    pose_uri = str(result.predicted_pdb)
+
+                # Telemetry that the JobPage + parseExtra.ts surface back
+                # to the user: the raw affinity, the binder probability,
+                # pocket-residue count (so they know the constraint was
+                # honored).
+                parts.append(f"aff_value={result.affinity_pred_value:.3f}")
+                parts.append(f"aff_prob={result.affinity_probability_binary:.3f}")
+                parts.append(f"pocket_residues={len(pocket_residues)}")
+
+                session.add(DockingResult(
+                    job_id=job.id, compound_id=compound.id, variant=variant,
+                    best_score=float(result.score),
+                    pose_uri=pose_uri,
+                    extra="|".join(parts),
+                ))
+                session.commit()
+                log.info(
+                    "Boltz-2 c%s × %s: aff=%.3f prob=%.3f",
+                    compound.id, variant,
+                    result.affinity_pred_value,
+                    result.affinity_probability_binary,
+                )
+
+
 def _run_real(session: Session, job: Job) -> None:
     # Late import — keeps the placeholder-only path lightweight
     import sys
@@ -457,39 +674,32 @@ def _run_real(session: Session, job: Job) -> None:
         )
 
     # ── Boltz-2 ML engine (#104, third engine option) ─────────────────────
-    # Same flag-gated pattern as GNINA. Boltz-2 takes protein sequence + ligand
-    # SMILES, so the dispatch path differs from Vina/GNINA's PDBQT inputs —
-    # full wiring is the next phase of #104. For now we surface the flag and
-    # a clear error path so the API/UI can advertise the engine without
-    # silently falling back to a different scoring function.
-    boltz2_requested = (
+    # Boltz-2 takes a protein SEQUENCE + ligand SMILES — fundamentally
+    # different inputs from Vina/GNINA's PDBQT receptor. We still share
+    # the PDB fetch + clean step with the Vina path (the cleaned PDB is
+    # the source of the WT sequence), so the boltz2 branch fires AFTER
+    # cleaned_pdb is computed (~line 700) — see `if boltz2_dispatch:`
+    # below. Here we only fail fast if the user asked for boltz2 but the
+    # required config is missing.
+    boltz2_dispatch = (
         getattr(job, "engine", None) == "boltz2"
         and settings.boltz2_enabled
-        and pod_on
     )
-    if boltz2_requested:
-        # Sequence-input dispatch is implemented in pipeline/boltz2_dock.py
-        # but the runner-side path that extracts the protein sequence from
-        # the receptor PDB and routes per-cell predictions is being built
-        # in a follow-up. Until that lands, fail the job with a clear note
-        # rather than silently falling back to Vina (which would lie to
-        # the user about which engine produced their score).
-        log.warning(
-            "Job %s requested engine=boltz2; backend dispatch path is being "
-            "built in #104 phase 2 — see docs/boltz2_integration_plan.md",
-            job.id,
-        )
-        raise RuntimeError(
-            "engine=boltz2 dispatch is being built in #104 phase 2. "
-            "The Pod runbook is at runpod/BOLTZ2_INSTALL.md; the pipeline "
-            "client is at pipeline/deltadock_pipeline/boltz2_dock.py. "
-            "Job rejected rather than silently falling back to a different engine."
-        )
+    if boltz2_dispatch:
+        # Pod URL: dedicated boltz2 pod if configured, else fall back to
+        # the Vina/GNINA pod (legacy single-pod deploy).
+        boltz2_pod_url = settings.boltz2_pod_url or settings.pod_dock_url
+        if not boltz2_pod_url:
+            raise RuntimeError(
+                "engine=boltz2 requested but neither BOLTZ2_POD_URL nor "
+                "POD_DOCK_URL is configured."
+            )
+        log.info("Boltz-2 dispatch active for this job → %s", boltz2_pod_url)
     elif getattr(job, "engine", None) == "boltz2":
         log.warning(
-            "Job %s requested engine=boltz2 but BOLTZ2_ENABLED=%s pod_on=%s — "
+            "Job %s requested engine=boltz2 but BOLTZ2_ENABLED=%s — "
             "engine is not currently available; the API should have rejected at submit time",
-            job.id, settings.boltz2_enabled, pod_on,
+            job.id, settings.boltz2_enabled,
         )
         raise RuntimeError(
             "Boltz-2 engine not enabled on this deployment. "
@@ -699,6 +909,26 @@ def _run_real(session: Session, job: Job) -> None:
                 f"prep_step=fix_pdb pdb={pdb_id} chain={chain}: "
                 f"{type(last_err).__name__}: {last_err}"
             ) from last_err
+
+    # ── Boltz-2 dispatch branch ─────────────────────────────────────────
+    # Now that cleaned_pdb + pocket box are ready, route Boltz-2 jobs
+    # through their own loop and return — they don't need the WT-receptor
+    # PDBQT prep, FoldX mutant builder, or Vina/GNINA dispatch below.
+    # Everything from here down is for Vina/GNINA only.
+    if boltz2_dispatch:
+        _run_boltz2_dispatch(
+            session=session,
+            job=job,
+            cleaned_pdb=cleaned_pdb,
+            chain=chain,
+            pocket_centre=(cx, cy, cz),
+            pocket_size=(sx, sy, sz),
+            pocket_source=pocket_source,
+            boltz2_pod_url=boltz2_pod_url,
+            compounds=compounds,
+            variants=variants,
+        )
+        return
 
     # Step 2: prep WT receptor once. Cached across jobs. The WT receptor is
     # derived from cleaned_pdb so when the latter gets re-built (stale
