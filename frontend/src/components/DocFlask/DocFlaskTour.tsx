@@ -73,7 +73,7 @@ const NEW_JOB_TOUR: TourStep[] = [
     selector: '[data-tour="step-compounds"]',
     title: "Step 3 — add your compounds",
     body:
-      "Reference compounds are pre-loaded. Edit, paste a SMILES, or click Sketch to draw one in the 2D editor. Up to 5 on the free tier.",
+      "Pick the molecules you want to dock. Paste a SMILES, drop a .sdf/.smi/.csv, click Sketch to draw one, or hit \"Load all reference\" to fill in the curated set for this target. Up to 5 on the free tier.",
     pose: "pointing-down",
     side: "top",
   },

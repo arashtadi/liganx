@@ -152,12 +152,19 @@ export default function NewJobPage() {
       setChain(target.chain);
       setUniprot(target.uniprot);
     }
-    if (!autoFilledRef.current) {
-      // First target pick — load reference compounds only. No mutation
-      // pre-selection: chips render unchecked and the user opts in.
-      setCompounds(target.compounds.slice(0, 4).map((c) => ({ name: c.name, smiles: c.smiles })));
-      autoFilledRef.current = true;
-    }
+    // No compound auto-load. Users opt in by clicking "Load all reference"
+    // (the button is still present below the upload area for one-click
+    // pre-fill) OR by pasting / typing / sketching their own. Pre-loading
+    // ~4 reference compounds was nudging users toward the curated list
+    // without them choosing it; for a docking platform that's a real
+    // problem because the docked compound is the whole input. Empty
+    // compounds is the honest default — the user picks.
+    //
+    // autoFilledRef stays for mutation-related state below; removing the
+    // compound pre-load made the variable functionally a no-op for
+    // compounds, but the rest of the file still reads it as the
+    // "first-target-picked-yet?" sentinel for related side effects.
+    autoFilledRef.current = true;
     previousTargetIdRef.current = target.id;
   }, [target, customMode]);
 
@@ -1033,7 +1040,7 @@ export default function NewJobPage() {
         dataTour="step-compounds"
         icon={<Bolt />}
         title="Add compounds"
-        subtitle="Provide SMILES. Reference compounds for this target are pre-loaded — edit, remove, or add your own."
+        subtitle="Provide SMILES. Paste, upload, sketch, or click 'Load all reference' to fill in the curated set for this target."
         action={
           target && target.compounds.length > compounds.length ? (
             <button type="button" onClick={loadAllCompounds} className="btn-ghost btn-sm">
