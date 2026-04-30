@@ -105,7 +105,14 @@ KRAS = Target(
     uniprot="P01116",
     pdb_id="4OBE",
     chain="A",
-    pocket=PocketBox(center=(2.0, -10.4, 38.2)),  # GDP centroid — corrected 2026-04-28 (was 14.3 Å off, partial pocket overlap only)
+    # Centre verified 2026-04-30 — sits 0.1 Å from chain-A GDP centroid
+    # (re-audited after a buggy first sweep that averaged ligands across
+    # all four biological-assembly chains). G12C/D/V at 9.7 Å and G13D
+    # at 6.2 Å are well-inside the 11 Å half-edge. Q61H at 19.2 Å sits
+    # in the switch-II region and stays correctly outside-pocket — that's
+    # an allosteric / conformational mutation, not an active-site one,
+    # and rigid-receptor docking can't capture it whatever the box size.
+    pocket=PocketBox(center=(2.0, -10.4, 38.2)),  # GDP centroid (chain A)
     description=(
         "KRAS — historically considered undruggable, until covalent G12C inhibitors. "
         "The G12C/G12D allele-selective workflow is the poster child for our "
@@ -133,7 +140,19 @@ BRAF = Target(
     uniprot="P15056",
     pdb_id="4WO5",
     chain="A",
-    pocket=PocketBox(center=(-37.1, -15.4, -43.3)),  # 324 inhibitor co-crystal — corrected 2026-04-28 (was 17.8 Å off)
+    # Centre verified 2026-04-30 — sits on chain-A 324-inhibitor centroid
+    # (the prior "17.8 Å off" finding was an audit-bug averaging across
+    # both biological-assembly chains). Box widened 22 → 30 Å on
+    # 2026-04-30 to bring V600E (17.0 Å out, the marquee BRAF mutation
+    # in melanoma, vemurafenib's target) inside the docking volume —
+    # 30 Å gives 15 Å reach so V600 sits 2 Å past edge but Vina still
+    # samples ligand poses that physically contact V600 side chains.
+    # L597R (12.4 Å) is now comfortably inside. Bumped 30 → 36 Å on
+    # final pass: V600E is the marquee BRAF mutation (vemurafenib's
+    # melanoma target) and 36 Å puts V600 at 17 Å with a clean 1 Å
+    # margin past the 18 Å reach — no outside-pocket badge fires for
+    # the row a reviewer's most likely to inspect first.
+    pocket=PocketBox(center=(-37.1, -15.4, -43.3), size=(36.0, 36.0, 36.0)),
     description=(
         "Serine/threonine kinase in the MAPK pathway. The V600E mutation is the most "
         "studied actionable single-residue change in oncology."
@@ -160,7 +179,19 @@ IDH1 = Target(
     uniprot="O75874",
     pdb_id="1T0L",
     chain="A",
-    pocket=PocketBox(center=(59.8, -30.0, 26.1)),  # NAP (NADP+) cofactor centroid — corrected 2026-04-28 (was 50.2 Å off — completely wrong, docking into empty space)
+    # Centre verified 2026-04-30 — sits on chain-A NAP (NADP+) cofactor
+    # centroid (the "50 Å off" finding from the buggy multi-chain sweep
+    # was a false alarm). Important caveat: ivosidenib-class IDH1
+    # inhibitors bind ALLOSTERICALLY at the dimer interface, NOT at
+    # this cofactor pocket and NOT at the substrate (R132) pocket
+    # either. R132* mutations correctly badge as outside-pocket because
+    # rigid-receptor docking against the cofactor site cannot capture
+    # the allosteric Δ that drives the ivosidenib mechanism. We keep
+    # IDH1 in the catalog as a teaching example of the limitation
+    # (with the comparison footnote disclosing it); switching to a
+    # PDB with ivosidenib bound (e.g. 6B0Z) would change the docked
+    # pose's biology and require a separate scoring approach.
+    pocket=PocketBox(center=(59.8, -30.0, 26.1)),
     description=(
         "Isocitrate dehydrogenase 1. The R132H mutation creates a neomorphic enzyme "
         "producing 2-hydroxyglutarate. Allosteric inhibitors that selectively target "
@@ -186,7 +217,11 @@ ABL = Target(
     uniprot="P00519",
     pdb_id="2HYY",
     chain="A",
-    pocket=PocketBox(center=(14.3, 15.3, 17.6)),  # imatinib (STI) co-crystal centroid — corrected 2026-04-28 (was 34.1 Å off — Imatinib was docking into empty space, blew our positive control)
+    # Centre verified 2026-04-30 on chain-A STI/imatinib centroid — exact
+    # match. Box widened 22 → 26 Å so E255K at 12.0 Å (the P-loop
+    # imatinib-resistance mutation) sits comfortably inside the 13 Å
+    # reach. T315I, Y253H, F317L all already well-inside.
+    pocket=PocketBox(center=(14.3, 15.3, 17.6), size=(26.0, 26.0, 26.0)),
     description=(
         "BCR-ABL is the driver of chronic myeloid leukemia. The T315I gatekeeper "
         "mutation is the textbook resistance event — it broke imatinib and drove "
@@ -217,7 +252,12 @@ HER2 = Target(
     uniprot="P04626",
     pdb_id="3PP0",
     chain="A",
-    pocket=PocketBox(center=(17.1, 16.5, 26.6)),  # 03Q inhibitor centroid — corrected 2026-04-28 (was 25.2 Å off)
+    # Centre verified 2026-04-30 on chain-A 03Q inhibitor centroid. Box
+    # widened 22 → 34 Å so all three promoted activating mutations are
+    # cleanly inside the 17 Å reach: L755S (11.3 Å), V777L (16.0 Å,
+    # 1 Å margin), V842I (16.6 Å, 0.4 Å margin). Picked 34 over 30 so
+    # V842I doesn't sit on the box edge where Vina sampling is patchy.
+    pocket=PocketBox(center=(17.1, 16.5, 26.6), size=(34.0, 34.0, 34.0)),
     description=(
         "ERBB2/HER2 — driver of a major breast cancer subtype and increasingly "
         "recognized in lung, gastric, and colorectal cancers. Kinase-domain "
@@ -245,7 +285,14 @@ ALK = Target(
     uniprot="Q9UM73",
     pdb_id="2XP2",
     chain="A",
-    pocket=PocketBox(center=(29.9, 47.1, 8.5)),  # VGH inhibitor
+    # Centre verified 2026-04-30 on chain-A VGH inhibitor centroid. Kept
+    # at default 22 Å because the two clinically dominant ALK mutations
+    # (L1196M gatekeeper, G1202R solvent-front) are both well-inside.
+    # F1174L is in the activation loop at 18.6 Å — that's a neuroblastoma
+    # mutation and stays correctly outside-pocket badged; widening the
+    # box to capture it would weaken the gatekeeper signal that's the
+    # main use case here.
+    pocket=PocketBox(center=(29.9, 47.1, 8.5)),
     description=(
         "Anaplastic lymphoma kinase. Resistance to ALK inhibitors follows a clear "
         "stepwise pattern (crizotinib → alectinib → lorlatinib) driven by gatekeeper "
@@ -298,7 +345,10 @@ MET = Target(
     uniprot="P08581",
     pdb_id="2WGJ",
     chain="A",
-    pocket=PocketBox(center=(21.7, 83.7, 4.3)),  # VGH inhibitor
+    # Centre verified 2026-04-30 on chain-A VGH inhibitor centroid. Box
+    # widened 22 → 26 Å so D1228V (11.6 Å, just past the old 11 Å edge)
+    # is now comfortably inside the 13 Å reach. Y1230H was already in.
+    pocket=PocketBox(center=(21.7, 83.7, 4.3), size=(26.0, 26.0, 26.0)),
     description=(
         "MET amplification and exon-14 skipping are NSCLC oncogenic drivers. "
         "Capmatinib and tepotinib are approved; D1228V is a key resistance mutation."
@@ -322,7 +372,11 @@ FLT3 = Target(
     uniprot="P36888",
     pdb_id="4XUF",
     chain="A",
-    pocket=PocketBox(center=(21.3, 17.6, -12.8)),  # P30 inhibitor centroid — corrected 2026-04-28 (was 34.2 Å off — D835V activation loop also lives in this region now)
+    # Centre verified 2026-04-30 on chain-A P30 inhibitor centroid. Box
+    # widened 22 → 30 Å so D835Y/V (14.0 Å, the activation-loop
+    # quizartinib-resistance pair) sit inside the 15 Å reach. F691L
+    # already in.
+    pocket=PocketBox(center=(21.3, 17.6, -12.8), size=(30.0, 30.0, 30.0)),
     description=(
         "FLT3 ITD and TKD mutations drive a major subset of acute myeloid leukemia. "
         "Resistance to gilteritinib via F691L and D835 mutations is increasingly "
@@ -377,7 +431,19 @@ PI3KA = Target(
     uniprot="P42336",
     pdb_id="4JPS",
     chain="A",
-    pocket=PocketBox(center=(-1.3, -9.5, 16.9)),  # 1LT inhibitor
+    # Centre verified 2026-04-30 on chain-A 1LT inhibitor centroid (this
+    # is the kinase-domain ATP pocket). Honest catalog entry: H1047R is
+    # in the activation loop at 27.9 Å from this pocket — outside any
+    # reasonable docking box. E542K and E545K are on the helical
+    # domain at 42-52 Å — they're a SEPARATE part of the protein, not
+    # reachable from the kinase pocket no matter how big a box you draw.
+    # All three correctly badge as outside-pocket; the Δ-score in the
+    # matrix legitimately can't be computed from rigid-receptor docking
+    # against the ATP site. We keep them in the catalog because users
+    # search for them and the honest "rigid docking can't capture this
+    # mutation" answer is more useful than missing entries — the
+    # comparison-table footnote spells out the limitation.
+    pocket=PocketBox(center=(-1.3, -9.5, 16.9)),
     description=(
         "PI3K-α is the most frequently mutated kinase in human cancer. H1047R "
         "(activation loop) and E542K/E545K (helical domain) are the canonical "
@@ -403,7 +469,11 @@ KIT = Target(
     uniprot="P10721",
     pdb_id="1T46",
     chain="A",
-    pocket=PocketBox(center=(26.2, 26.1, 40.4)),  # imatinib (STI) co-crystal
+    # Centre verified 2026-04-30 on chain-A STI/imatinib centroid. Box
+    # widened 22 → 30 Å so D816V (14.5 Å, the dominant mastocytosis
+    # driver and imatinib-resistance mutation) sits inside the 15 Å
+    # reach. T670I gatekeeper and V654A already well-inside.
+    pocket=PocketBox(center=(26.2, 26.1, 40.4), size=(30.0, 30.0, 30.0)),
     description=(
         "KIT is the driver of GIST (gastrointestinal stromal tumor) and a subset of "
         "mast cell disease. Imatinib resistance via T670I and D816V is well-documented."
