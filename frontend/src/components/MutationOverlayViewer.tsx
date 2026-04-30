@@ -88,9 +88,19 @@ export default function MutationOverlayViewer(props: Props) {
   // viewer and the fullscreen viewer kept independent useState — opening
   // fullscreen reset Backbone, Pose, surface color, blend, etc. back to
   // defaults. Lifting up means both ViewerCanvas instances read the same
-  // values and writes propagate to both. Camera angle / zoom is still
-  // per-instance (lives in 3Dmol's viewer object, not React state) — that
-  // would need separate work to share.
+  // values and writes propagate to both.
+  //
+  // ── Camera state, also LIFTED ───────────────────────────────────────
+  // Camera angle / zoom lives in 3Dmol's viewer object (not React state),
+  // so opening fullscreen used to reset rotation back to the default
+  // pose-fit zoom even though filters survived. We now keep the active
+  // viewer's getView() copied into this ref ~4 times/sec, and the other
+  // ViewerCanvas applies it via setView() when it mounts (or when it
+  // becomes the active viewer again). Net effect: rotate the inline
+  // viewer, hit expand, fullscreen opens at the same orientation; close
+  // fullscreen, inline picks up whatever orientation you ended on. Refs
+  // (not state) so flipping fullscreen doesn't trigger a render storm.
+  const cameraViewRef = useRef<number[] | null>(null);
   const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("cartoon");
   const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
   const [showH, setShowH] = useState(false);
@@ -126,6 +136,7 @@ export default function MutationOverlayViewer(props: Props) {
     spinning, setSpinning,
     surfaceColor, setSurfaceColor,
     blend, setBlend,
+    cameraViewRef,
   };
 
   return (
@@ -135,6 +146,10 @@ export default function MutationOverlayViewer(props: Props) {
         {...sharedToolbar}
         onExpand={() => setFullscreen(true)}
         isFullscreen={false}
+        // Inline viewer is the camera authority while fullscreen is closed.
+        // When fullscreen opens we hand the role to the modal viewer so the
+        // hidden inline doesn't overwrite the user's rotations there.
+        cameraSyncActive={!fullscreen}
       />
       {fullscreen && createPortal(
         // Rendered into document.body via createPortal so the modal escapes
@@ -186,6 +201,8 @@ export default function MutationOverlayViewer(props: Props) {
                 onExpand={() => setFullscreen(false)}
                 className="h-full"
                 hideExpandButton  // header has its own close X
+                // Modal viewer owns the camera while it's mounted.
+                cameraSyncActive
               />
             </div>
           </div>
@@ -270,6 +287,8 @@ function ViewerCanvas({
   setSurfaceColor,
   blend,
   setBlend,
+  cameraViewRef,
+  cameraSyncActive,
 }: Props & {
   isFullscreen: boolean;
   onExpand: () => void;
@@ -286,6 +305,16 @@ function ViewerCanvas({
   setSurfaceColor: (c: SurfaceColor) => void;
   blend: number;
   setBlend: (n: number) => void;
+  /** Shared mutable view-matrix slot. Two ViewerCanvas siblings (inline +
+   *  fullscreen modal) read/write this so camera orientation survives the
+   *  fullscreen toggle. The active viewer copies its getView() into here
+   *  on a low-rate poll; the inactive viewer applies it on transition. */
+  cameraViewRef: { current: number[] | null };
+  /** True when this viewer is the camera authority — meaning it should
+   *  poll its own getView() into cameraViewRef and consume incoming view
+   *  updates. The inline instance is active while fullscreen is closed;
+   *  the modal instance is active for its entire lifetime. */
+  cameraSyncActive: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
@@ -661,6 +690,18 @@ function ViewerCanvas({
         viewer.render();
         viewer.resize();
 
+        // Restore camera from the parent-shared ref if there's a previous
+        // orientation to inherit. This is what makes "rotate inline → expand
+        // → fullscreen opens at the same angle" work. We do it AFTER the
+        // initial zoomTo/render so the default framing is the fallback for
+        // first-mount when the ref is still null.
+        if (cameraViewRef.current) {
+          try {
+            viewer.setView(cameraViewRef.current);
+            viewer.render();
+          } catch { /* setView shape mismatch — fall back to default fit */ }
+        }
+
         if (typeof ResizeObserver !== "undefined") {
           resizeObserver = new ResizeObserver(() => {
             try { viewer.resize(); viewer.render(); } catch { /* ignore */ }
@@ -691,6 +732,15 @@ function ViewerCanvas({
       cancelled = true;
       if (resizeObserver) resizeObserver.disconnect();
       if (viewerRef.current) {
+        // Snapshot the camera into the shared ref before tearing down,
+        // so a fast rotate-then-close-fullscreen flow doesn't lose the
+        // last 250 ms of rotation that the poll would otherwise miss.
+        if (cameraSyncActive) {
+          try {
+            const v = viewerRef.current.getView?.();
+            if (Array.isArray(v) && v.length > 0) cameraViewRef.current = v;
+          } catch { /* ignore */ }
+        }
         try { viewerRef.current.clear(); } catch { /* ignore */ }
         viewerRef.current = null;
       }
@@ -724,6 +774,44 @@ function ViewerCanvas({
       console.warn("spin toggle failed:", e);
     }
   }, [spinning]);
+
+  // ── Camera-state sync across fullscreen toggle ──────────────────────
+  // While this ViewerCanvas is the active camera authority, copy its
+  // current 3Dmol view into the parent-shared ref ~4× per second. The
+  // sibling ViewerCanvas reads from this ref on its load() / on its own
+  // active-flip restore (below). 250 ms is fast enough that a quick
+  // expand-click can't beat the poll, and slow enough that the cost is
+  // negligible (getView() returns a 16-float array — pure math, no GL).
+  // Stops polling when cameraSyncActive is false so the hidden inline
+  // viewer doesn't overwrite the modal's rotations while it's open.
+  useEffect(() => {
+    if (!cameraSyncActive) return;
+    const id = window.setInterval(() => {
+      const viewer = viewerRef.current;
+      if (!viewer || typeof viewer.getView !== "function") return;
+      try {
+        const v = viewer.getView();
+        if (Array.isArray(v) && v.length > 0) cameraViewRef.current = v;
+      } catch { /* ignore one-off getView hiccups */ }
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [cameraSyncActive, cameraViewRef]);
+
+  // When this viewer FLIPS to active (fullscreen modal closed → inline
+  // resumes; or the rare inline → modal-already-mounted handoff), apply
+  // whatever the sibling last wrote. Without this the inline viewer would
+  // silently keep its pre-fullscreen orientation while the user expects
+  // the orientation they last had in the modal.
+  useEffect(() => {
+    if (!cameraSyncActive) return;
+    const viewer = viewerRef.current;
+    if (!viewer || typeof viewer.setView !== "function") return;
+    if (!cameraViewRef.current) return;
+    try {
+      viewer.setView(cameraViewRef.current);
+      viewer.render();
+    } catch { /* ignore */ }
+  }, [cameraSyncActive, cameraViewRef]);
 
   // 3Dmol caches the canvas's bounding rect at construction time and uses it
   // for click→ray projection. When the page scrolls or the layout shifts
