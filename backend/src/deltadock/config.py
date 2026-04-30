@@ -106,6 +106,41 @@ class Settings(BaseSettings):
     # rescore for matrix screens.
     gnina_cnn_mode: str = "rescore"
 
+    # Boltz-2 ML pose+affinity engine — third engine option (#104). Defaults
+    # off so the engine picker stays inert until the Pod-side
+    # /predict_boltz2 endpoint is live (see runpod/BOLTZ2_INSTALL.md). When
+    # `boltz2_enabled=True` and the job picks `engine=boltz2`, the runner
+    # routes to predict_one_boltz2 in the pipeline. When the flag is off,
+    # the runner returns a 503-style error if a job comes in with
+    # engine=boltz2 — the API also rejects boltz2 at submit time when the
+    # flag is off, so this is belt-and-suspenders. Pod URL is the same
+    # base as QuickVina/GNINA (boltz endpoints live on the same pod) but
+    # we expose a separate setting in case we ever split.
+    boltz2_enabled: bool = False
+    boltz2_timeout_s: int = 180
+    # Boltz-2 sampling controls. Defaults match the integration plan:
+    # single-sequence (no MSA fetch) for fair WT/mutant comparison, one
+    # sample because Boltz is deterministic at temperature=0.
+    boltz2_use_msa: bool = False
+    boltz2_num_samples: int = 1
+
+    # Celery + Redis dispatch (#168, scaffold). When True, the API
+    # endpoint enqueues run_job onto a Celery worker via Redis instead
+    # of running it as a FastAPI BackgroundTask. Default False — the
+    # in-process path is preserved until Redis is provisioned and the
+    # worker container is deployed (see docs/celery_redis_migration_plan.md).
+    use_celery_dispatch: bool = False
+    # Broker URL for Celery. Set to a Redis URL like
+    # redis://default:<password>@<host>:<port>/0 once Redis is up.
+    # Empty string means "no broker configured" — the celery_app module
+    # will refuse to register if this is empty AND use_celery_dispatch
+    # is True (fail loud rather than silently swallow tasks).
+    celery_broker_url: str = ""
+    # Optional separate result backend. Default is to reuse the broker
+    # URL (Celery's eager_results=True for fast feedback during
+    # development; production switches to the broker URL).
+    celery_result_backend: str = ""
+
     # Email
     resend_api_key: str = ""
     email_from: str = "hello@deltadock.bio"

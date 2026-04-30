@@ -122,7 +122,7 @@ export default function NewJobPage() {
   // genuinely different ranking signal. The backend silently falls back to
   // QuickVina2 if GNINA_ENABLED is off on Fly, so picking GNINA is always
   // safe even if the Pod side hasn't been turned on yet.
-  const [engine, setEngine] = useState<"quickvina2_gpu" | "gnina">("quickvina2_gpu");
+  const [engine, setEngine] = useState<"quickvina2_gpu" | "gnina" | "boltz2">("quickvina2_gpu");
 
   // First-target-pick guard. Auto-loading the catalog's default compounds +
   // mutations is great on the FIRST target pick (saves typing). After that,
@@ -1327,7 +1327,7 @@ export default function NewJobPage() {
               GNINA_ENABLED flag is missing, so this is always a safe pick. */}
           <div className="lg:col-span-2">
             <div className="label mb-1.5">Scoring engine</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {[
                 {
                   value: "quickvina2_gpu" as const,
@@ -1335,6 +1335,7 @@ export default function NewJobPage() {
                   sub: "Default · ~3 s/cell · Vina-family",
                   body:
                     "The classical AutoDock Vina scoring function, OpenCL-accelerated on the Pod GPU. Best for speed and the de-facto reproducibility baseline (~22,000 Vina citations).",
+                  badge: null as null | "beta" | "coming",
                 },
                 {
                   value: "gnina" as const,
@@ -1342,6 +1343,15 @@ export default function NewJobPage() {
                   sub: "~10–30 s/cell · Vina + PDBbind CNN",
                   body:
                     "Vina fork from the Koes lab with a convolutional-neural-net pose-rescoring head trained on PDBbind. Genuinely different ranking signal — useful as a second opinion when Vina is borderline.",
+                  badge: null,
+                },
+                {
+                  value: "boltz2" as const,
+                  label: "Boltz-2 (ML)",
+                  sub: "~20 s/cell · MIT · Sequence-input",
+                  body:
+                    "MIT/Recursion's open-source AlphaFold-3-class biomolecular foundation model. Predicts pose + binding affinity end-to-end from sequence + SMILES. Different methodology from Vina/GNINA — useful as a cross-validation third opinion.",
+                  badge: "coming" as const,  // pod-side install pending; API returns 503 with helpful message
                 },
               ].map((opt) => (
                 <button
@@ -1355,9 +1365,21 @@ export default function NewJobPage() {
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="font-semibold text-ink dark:text-slate-100 text-sm">{opt.label}</div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="font-semibold text-ink dark:text-slate-100 text-sm truncate">{opt.label}</div>
+                      {opt.badge === "coming" && (
+                        <span className="shrink-0 text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                          Soon
+                        </span>
+                      )}
+                      {opt.badge === "beta" && (
+                        <span className="shrink-0 text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-delta-100 text-delta-700 dark:bg-delta-900/40 dark:text-delta-300">
+                          Beta
+                        </span>
+                      )}
+                    </div>
                     {engine === opt.value && (
-                      <span aria-hidden className="text-delta-600 dark:text-delta-400 text-xs">✓</span>
+                      <span aria-hidden className="text-delta-600 dark:text-delta-400 text-xs shrink-0">✓</span>
                     )}
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{opt.sub}</div>
@@ -1369,6 +1391,14 @@ export default function NewJobPage() {
               <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
                 Each cell will report both the Vina-style affinity and a 0–1 CNN confidence. Slower than
                 QuickVina2-GPU; budget ~10 minutes per matrix instead of ~2.
+              </p>
+            )}
+            {engine === "boltz2" && (
+              <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
+                Boltz-2 is currently being installed on the GPU pod (see{" "}
+                <a href="https://github.com/arashtadi/liganx/blob/main/runpod/BOLTZ2_INSTALL.md" target="_blank" rel="noopener noreferrer" className="underline">install runbook</a>
+                ). Submitting now returns a 503 with this message. Pick QuickVina2-GPU or
+                GNINA for jobs you want to run today.
               </p>
             )}
           </div>

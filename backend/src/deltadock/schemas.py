@@ -42,12 +42,20 @@ class JobCreate(BaseModel):
     # Whether to also dock against wild-type. Default True (most users want a
     # baseline for Δ); set False to skip WT and just dock the listed mutants.
     include_wt: bool = True
-    # Docking engine choice. "quickvina2_gpu" is the default fast Pod engine;
-    # "gnina" is the CNN-rescored Vina fork. The runner enforces availability
-    # via the GNINA_ENABLED config flag — if a user submits engine=gnina while
-    # the Pod-side endpoint isn't installed yet, the runner falls back to
-    # quickvina2_gpu (logged as engine_fallback). Free-form string keeps room
-    # for autodock_gpu / vanilla vina without another schema migration.
+    # Docking engine choice. Three options:
+    #   "quickvina2_gpu" — default; QuickVina2-GPU on the Pod, physics-empirical.
+    #   "gnina"          — Vina-fork with CNN pose rescoring (Koes lab).
+    #                      Gated by GNINA_ENABLED + pod_dock_url; falls back to
+    #                      quickvina2_gpu if either is missing (logged).
+    #   "boltz2"         — ML pose+affinity prediction model from MIT (#104).
+    #                      Gated by BOLTZ2_ENABLED + pod_dock_url. Unlike GNINA,
+    #                      a Boltz-2 request is REJECTED (not silently
+    #                      downgraded) when the engine isn't enabled — its
+    #                      methodology is so different from Vina that a silent
+    #                      fallback would mislead the user about what produced
+    #                      their score.
+    # Free-form string keeps room for autodock_gpu / vanilla vina without
+    # another schema migration.
     engine: str = Field(default="quickvina2_gpu", max_length=32)
     # Optional user-provided title for the History page. Defaults to a
     # synthesized label ("EGFR · 3 compounds · T790M") when null.

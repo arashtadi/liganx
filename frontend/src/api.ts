@@ -116,11 +116,14 @@ export interface JobCreatePayload {
   exhaustiveness?: number;
   /** Optional. Backend defaults to true. Set false to skip the WT row. */
   include_wt?: boolean;
-  /** Optional. Docking engine. Defaults to "quickvina2_gpu" (current Pod
-   *  GPU engine). "gnina" routes to GNINA — Vina derivative with CNN
-   *  pose rescoring. Backend silently falls back to quickvina2_gpu when
-   *  GNINA_ENABLED is off, so this is always safe to send. */
-  engine?: "quickvina2_gpu" | "gnina";
+  /** Optional. Docking engine. Three options:
+   *  "quickvina2_gpu" (default): QuickVina2-GPU on the Pod, Vina-family physics-empirical.
+   *  "gnina": Vina-fork with CNN pose rescoring. Backend silently falls back
+   *           to quickvina2_gpu when GNINA_ENABLED is off, so always safe to send.
+   *  "boltz2": MIT/Recursion Boltz-2 ML pose+affinity model. REJECTED at submit
+   *           with a 503 if BOLTZ2_ENABLED is off — methodology is too different
+   *           to silently fall back. See runpod/BOLTZ2_INSTALL.md for pod-side install. */
+  engine?: "quickvina2_gpu" | "gnina" | "boltz2";
   /** Optional human-readable title shown in the History page. */
   title?: string | null;
   /** Optional tags for grouping in the History page. */

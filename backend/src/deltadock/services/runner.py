@@ -456,6 +456,46 @@ def _run_real(session: Session, job: Job) -> None:
             job.id, settings.gnina_enabled, pod_on,
         )
 
+    # ── Boltz-2 ML engine (#104, third engine option) ─────────────────────
+    # Same flag-gated pattern as GNINA. Boltz-2 takes protein sequence + ligand
+    # SMILES, so the dispatch path differs from Vina/GNINA's PDBQT inputs —
+    # full wiring is the next phase of #104. For now we surface the flag and
+    # a clear error path so the API/UI can advertise the engine without
+    # silently falling back to a different scoring function.
+    boltz2_requested = (
+        getattr(job, "engine", None) == "boltz2"
+        and settings.boltz2_enabled
+        and pod_on
+    )
+    if boltz2_requested:
+        # Sequence-input dispatch is implemented in pipeline/boltz2_dock.py
+        # but the runner-side path that extracts the protein sequence from
+        # the receptor PDB and routes per-cell predictions is being built
+        # in a follow-up. Until that lands, fail the job with a clear note
+        # rather than silently falling back to Vina (which would lie to
+        # the user about which engine produced their score).
+        log.warning(
+            "Job %s requested engine=boltz2; backend dispatch path is being "
+            "built in #104 phase 2 — see docs/boltz2_integration_plan.md",
+            job.id,
+        )
+        raise RuntimeError(
+            "engine=boltz2 dispatch is being built in #104 phase 2. "
+            "The Pod runbook is at runpod/BOLTZ2_INSTALL.md; the pipeline "
+            "client is at pipeline/deltadock_pipeline/boltz2_dock.py. "
+            "Job rejected rather than silently falling back to a different engine."
+        )
+    elif getattr(job, "engine", None) == "boltz2":
+        log.warning(
+            "Job %s requested engine=boltz2 but BOLTZ2_ENABLED=%s pod_on=%s — "
+            "engine is not currently available; the API should have rejected at submit time",
+            job.id, settings.boltz2_enabled, pod_on,
+        )
+        raise RuntimeError(
+            "Boltz-2 engine not enabled on this deployment. "
+            "Set BOLTZ2_ENABLED=1 on the API once the Pod-side endpoint is live."
+        )
+
     if not pod_on and not runpod_on:
         log.info("No remote engine configured — running Vina locally")
 

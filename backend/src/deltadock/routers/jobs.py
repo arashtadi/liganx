@@ -10,6 +10,8 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from ..auth import CurrentUser, current_user, current_user_or_none, verified_user
+from ..celery_app import dispatch_job
+from ..config import get_settings
 from ..db import get_session
 from ..models import Compound, DockingResult, Job, JobStatus
 from ..schemas import (
@@ -20,7 +22,6 @@ from ..schemas import (
     JobUpdate,
 )
 from ..services.rate_limit import JOBS_LIMIT
-from ..services.runner import run_job_in_background
 
 # Same shape used in structures.py: variant must look like "WT" or "T790M"
 # style. URL-controlled values get baked into a path lookup, so we validate
@@ -253,6 +254,32 @@ def create_job(
             },
         )
 
+    # Engine availability check. Boltz-2 is rejected at submit (not silently
+    # downgraded) when the deployment doesn't have it enabled, because the
+    # methodology is so different from Vina that falling through would lie
+    # to the user about what produced their score. GNINA's runner-side
+    # fallback to QuickVina is acceptable because they share the same Vina
+    # scoring family — Boltz-2's affinity_pred_value is a different unit
+    # entirely (log10 IC50 μM vs Vina kcal/mol).
+    cfg = get_settings()
+    if payload.engine == "boltz2" and not cfg.boltz2_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "engine=boltz2 is not currently available on this deployment. "
+                    "Boltz-2 needs the Pod-side /predict_boltz2 endpoint installed "
+                    "(see runpod/BOLTZ2_INSTALL.md) and BOLTZ2_ENABLED=1 set on the API. "
+                    "Pick engine=quickvina2_gpu or engine=gnina for now."
+                ),
+                "engine_requested": payload.engine,
+                "available": [
+                    "quickvina2_gpu",
+                    *(["gnina"] if cfg.gnina_enabled else []),
+                ],
+            },
+        )
+
     # Pre-flight mutation residue check. The runner can now verify that
     # every requested mutation maps to a residue that's actually modeled
     # in the user's chosen PDB chain — and that the wildtype letter
@@ -304,8 +331,13 @@ def create_job(
     session.commit()
     session.refresh(job)
 
-    # Phase 1: run inline in a background task. Phase 2: dispatch to Celery + RunPod.
-    background.add_task(run_job_in_background, job.id)
+    # Dispatch the job. Routes through celery_app.dispatch_job which
+    # picks Celery (when USE_CELERY_DISPATCH=True and Redis is configured)
+    # or FastAPI BackgroundTasks (default). The behaviour is identical
+    # from the API's point of view; the wrapper exists so the migration
+    # to Celery (#168) can flip behind a feature flag without touching
+    # this site again. See docs/celery_redis_migration_plan.md.
+    dispatch_job(job.id, background_tasks=background)
 
     return _to_out(job)
 
