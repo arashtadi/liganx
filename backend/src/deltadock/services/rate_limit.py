@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Callable
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +81,12 @@ def rate_limit(scope: str, limit: RateLimit) -> Callable:
         def create_job(...): ...
 
     On 429 we set Retry-After so well-behaved clients can back off.
+    On 2xx we attach X-RateLimit-Limit / -Remaining / -Reset to EVERY
+    response from this scope so well-behaved clients can pre-emptively
+    back off before they hit the wall — this addresses the audit
+    finding that clients had no signal until they were blocked.
     """
-    def dependency(request: Request) -> None:
+    def dependency(request: Request, response: Response) -> None:
         ip = _client_ip(request)
         # Health checks from Fly's internal proxy and our own monitoring
         # shouldn't count toward the limit. Whitelist the loopback + Fly's
@@ -91,20 +95,26 @@ def rate_limit(scope: str, limit: RateLimit) -> Callable:
             return
 
         key = (ip, scope)
-        now = time.monotonic()
-        cutoff = now - limit.window_seconds
+        # Use BOTH a monotonic clock (for window math — immune to NTP
+        # jitter) and the wall clock (for the X-RateLimit-Reset header,
+        # which clients expect as a Unix timestamp). Computing a delta
+        # off monotonic and adding to wall-clock now keeps both honest.
+        mono_now = time.monotonic()
+        wall_now = time.time()
+        cutoff = mono_now - limit.window_seconds
 
         with _lock:
             bucket = _buckets[key]
             # Drop entries outside the window from the LEFT (oldest first).
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
-            if len(bucket) >= limit.max_requests:
+            current = len(bucket)
+            if current >= limit.max_requests:
                 # Compute Retry-After based on when the oldest entry expires.
-                retry_after = max(1, int(bucket[0] + limit.window_seconds - now + 1))
+                retry_after = max(1, int(bucket[0] + limit.window_seconds - mono_now + 1))
                 log.info(
                     "rate-limit hit: ip=%s scope=%s count=%d/%d retry_after=%ds",
-                    ip, scope, len(bucket), limit.max_requests, retry_after,
+                    ip, scope, current, limit.max_requests, retry_after,
                 )
                 raise HTTPException(
                     status_code=429,
@@ -113,9 +123,27 @@ def rate_limit(scope: str, limit: RateLimit) -> Callable:
                         f"{limit.max_requests} requests per {limit.label}. "
                         f"Try again in {retry_after} seconds."
                     ),
-                    headers={"Retry-After": str(retry_after)},
+                    headers={
+                        "Retry-After": str(retry_after),
+                        "X-RateLimit-Limit": str(limit.max_requests),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(int(wall_now + retry_after)),
+                    },
                 )
-            bucket.append(now)
+            bucket.append(mono_now)
+            # Compute when the OLDEST in-window request will expire — that's
+            # when the next slot frees up. If the bucket is now empty
+            # (impossible after the append above, but guard for safety),
+            # reset is "now + window".
+            oldest = bucket[0] if bucket else mono_now
+            reset_in = max(0, int(oldest + limit.window_seconds - mono_now))
+
+        # Attach pre-emptive rate-limit headers on every successful call so
+        # clients can decide to slow down before being blocked. -1 because
+        # we just appended this request — Remaining is what's left AFTER it.
+        response.headers["X-RateLimit-Limit"] = str(limit.max_requests)
+        response.headers["X-RateLimit-Remaining"] = str(max(0, limit.max_requests - current - 1))
+        response.headers["X-RateLimit-Reset"] = str(int(wall_now + reset_in))
 
     return dependency
 

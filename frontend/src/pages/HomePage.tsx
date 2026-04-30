@@ -160,10 +160,22 @@ function MatrixPreview() {
           ))}
         </tbody>
       </table>
-      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400">
-        <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Compound X</span> is predicted to bind
-        the <strong className="dark:text-slate-200">T790M mutant</strong> 1.7 kcal/mol better than wild-type — a candidate
-        for resistance.
+      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 space-y-1.5">
+        <div>
+          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Compound X</span> is predicted to bind
+          the <strong className="dark:text-slate-200">T790M mutant</strong> 1.7 kcal/mol better than wild-type — a candidate
+          for resistance.
+        </div>
+        {/* Honesty note added 2026-04-30 after a medicinal-chemistry audit:
+            Vina/QuickVina2 has a documented score noise floor of roughly
+            ±1 kcal/mol at default exhaustiveness. A 1.7 kcal/mol Δ is real
+            signal but not enormous — flagging this near the headline
+            example keeps the marketing aligned with what the method can
+            actually resolve. The full job UI flags Δ < 1 kcal/mol as
+            within-noise. */}
+        <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+          Vina scoring noise is roughly ±1 kcal/mol at default exhaustiveness — Δs above ~1 kcal/mol are interpretable, smaller deltas live near the noise floor.
+        </div>
       </div>
     </div>
   );
@@ -293,7 +305,7 @@ function FeatureGrid() {
     {
       icon: <Library />,
       title: "Curated mutation library",
-      body: "30+ clinically actionable mutations across EGFR, KRAS, BRAF, ALK, MET, ABL, BTK, KIT and more — with verified pocket boxes.",
+      body: "40 clinically actionable mutations across 13 kinase / GTPase / kinase-like targets (EGFR, KRAS, BRAF, IDH1, ABL, HER2, ALK, ROS1, MET, FLT3, BTK, PI3Kα, KIT) — each with a verified pocket box and first-line standard-of-care references.",
     },
     {
       icon: <Sparkles />,
@@ -430,7 +442,12 @@ function Comparison() {
               // they're sequential on the same engine, not user-pickable
               // alternative engines, so this lands as "partial".
               ["Multiple scoring engines",       false,     true,      "partial"],
-              ["CNN-based pose rescoring",       false,     true,      false],
+              // Maestro changed from false → "partial" 2026-04-30 after a
+              // medicinal-chemistry audit pointed out Glide-DLDP and other
+              // ML-rescoring add-ons. Liganx still differentiates by shipping
+              // GNINA's CNN inline (no separate add-on / module purchase),
+              // but a flat "false" was overstating Maestro's gap.
+              ["CNN-based pose rescoring",       false,     true,      "partial"],
               // Row labels generalized so the Schrödinger ✓ doesn't
               // imply they use the same OSS tools we do (PoseBusters,
               // RDKit). Schrödinger has equivalent functionality via
@@ -468,6 +485,35 @@ function Comparison() {
         <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 text-center">
           Reflects publicly known features as of April 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
         </p>
+
+        {/* Method-honesty footnote added 2026-04-30 after a medicinal-chemistry
+            + structural-biology audit. Two failure modes a working scientist
+            would catch on close reading: (1) FoldX has academic licensing
+            we surface as a bullet, (2) when FoldX isn't installed we fall
+            back to PDBFixer applyMutations which substitutes the residue
+            but does NOT minimise the structure — drastic substitutions
+            can leave clash artefacts that move the score in ways that
+            aren't pure binding-affinity signal. Saying so up front is
+            cheaper than having a reviewer write the same thing on Twitter. */}
+        <div className="mt-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40 p-4 text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mb-1.5">
+            Method limitations we publish on purpose
+          </div>
+          <ul className="list-disc pl-5 space-y-1.5">
+            <li>
+              <strong>Vina noise floor.</strong> Vina/QuickVina2 scoring has roughly ±1 kcal/mol noise at default exhaustiveness. We surface a "within-noise" badge for any Δ inside that band so a reader doesn't over-interpret 0.3 kcal/mol shifts.
+            </li>
+            <li>
+              <strong>Mutant-receptor build path.</strong> Our default mutant builder is FoldX BuildModel where an academic licence permits it; on environments without FoldX we fall back to PDBFixer's residue substitution, which applies the new identity but does <em>not</em> energy-minimise the structure. Drastic side-chain changes (e.g. small→large) can introduce clash signal in the Δ that isn't pure binding affinity. Submitting the same mutation in both modes and comparing flags this when it matters.
+            </li>
+            <li>
+              <strong>FoldX academic licensing.</strong> FoldX is free for academic use under its own EULA but requires a commercial licence for industry workflows. Liganx ships the FoldX call path; users running commercial work should verify their licence with the FoldX team at the Centre for Genomic Regulation directly.
+            </li>
+            <li>
+              <strong>Single-conformation rigid-receptor docking.</strong> We dock against one PDB conformation per (target, mutation). Mutations far from the binding pocket — typical for activation-loop, allosteric, or distant-domain residues — get an "outside pocket" badge instead of a possibly-misleading Δ, and the matrix shows them as not-scored rather than zero.
+            </li>
+          </ul>
+        </div>
       </Container>
     </section>
   );

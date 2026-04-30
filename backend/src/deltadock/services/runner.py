@@ -699,13 +699,15 @@ def _run_real(session: Session, job: Job) -> None:
             pass
         return None
 
-    # The Vina box only "sees" atoms within ~half-edge of box center. Box
-    # is 22 Å so half-edge is 11 Å. ANY mutation residue whose CA is more
-    # than that distance away can't influence the dock — even FLT3 D835V
-    # at 12.6 Å (just outside the box) reproducibly produces identical WT
-    # and mutant scores. We use the strict 11 Å so we honestly tag every
-    # such case rather than mislead the user with apparent "no effect".
-    POCKET_RADIUS_A = 11.0
+    # The Vina box only "sees" atoms within ~half-edge of box center. The
+    # threshold for the "outside_pocket" badge is therefore the smallest
+    # half-edge of the actual docking box, NOT a hardcoded constant —
+    # otherwise widening a target's box (e.g. EGFR went from 22 → 30 Å on
+    # 2026-04-30 to capture L858R on the activation loop) leaves the badge
+    # firing on residues Vina can in fact sample. Using the box's own
+    # half-edge ties the honest-tagging logic to the actual sampling
+    # volume, so any future per-target box adjustments stay consistent.
+    POCKET_RADIUS_A = min(sx, sy, sz) / 2.0
 
     FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
     # Pre-compute pocket-distance for each mutation. Outside-pocket mutations

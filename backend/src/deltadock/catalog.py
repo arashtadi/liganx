@@ -60,7 +60,20 @@ EGFR = Target(
     uniprot="P00533",
     pdb_id="2ITY",
     chain="A",
-    pocket=PocketBox(center=(-50.5, -0.7, -21.6)),  # gefitinib (IRE) co-crystal
+    # Centroid of the five promoted EGFR mutations (T790, L858, C797, G719,
+    # L792) on chain A — measured directly from the cleaned WT PDB on
+    # 2026-04-30 after an audit found L858R sitting 16.6 Å from the prior
+    # gefitinib-co-crystal centre (5.6 Å beyond the 22 Å docking box).
+    # Box widened to 30 Å so the 14 Å reach covers L858 (the worst-case
+    # residue, 14.1 Å from this centroid) with ~1 Å margin while still
+    # encompassing the canonical ATP pocket. Trade-off vs the prior
+    # IRE-centred box: Vina now samples a slightly larger volume that
+    # extends toward the activation loop — modestly slower per cell, but
+    # the activating L858R variant goes from "outside_pocket — won't show
+    # a Δ" to actually scoreable, which is the headline EGFR mutation in
+    # NSCLC. Re-verify with `scripts/verify_catalog.py` (or the manual
+    # sweep) if these residues change.
+    pocket=PocketBox(center=(-52.7, -1.0, -24.4), size=(30.0, 30.0, 30.0)),
     description=(
         "Epidermal growth factor receptor — the canonical kinase target for non-small "
         "cell lung cancer. Resistance mutations are the textbook example of why "

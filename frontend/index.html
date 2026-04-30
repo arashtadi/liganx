@@ -10,6 +10,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Liganx — mutation-aware structural biology. Compare wild-type vs. mutant binding for any protein, any compound." />
     <title>Liganx — Mutation-aware structural biology</title>
+
+    <!-- Social card metadata. The og-image.png in public/ is 1200x630 (LinkedIn /
+         Slack / Twitter spec) so a shared liganx.com link unfurls with the
+         brand mark + tagline instead of a blank preview. og: namespace covers
+         Facebook / LinkedIn / Slack; the four twitter:* tags cover Twitter/X. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://liganx.com/" />
+    <meta property="og:title" content="Liganx — Mutation-aware molecular docking" />
+    <meta property="og:description" content="Pick a clinically relevant mutation. Pick your compounds. We dock against wild-type and mutant in parallel and show exactly which compounds gain selectivity." />
+    <meta property="og:image" content="https://liganx.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Liganx — Mutation-aware molecular docking" />
+    <meta name="twitter:description" content="WT vs mutant in one matrix. Vina + GNINA. Free for academic use." />
+    <meta name="twitter:image" content="https://liganx.com/og-image.png" />
     <!-- Inline theme bootstrap: runs before React mounts so the .dark class
          is set on <html> before first paint. Prevents flash-of-wrong-theme
          when user has dark mode saved.

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="50%" stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b6cf6"/>
+      <stop offset="100%" stop-color="#14b8a6"/>
+    </linearGradient>
+    <linearGradient id="title-grad" x1="0" y1="0" x2="900" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#5eead4"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="200" cy="120" r="180" fill="#3b6cf6" opacity="0.18"/>
+  <circle cx="1050" cy="540" r="220" fill="#14b8a6" opacity="0.18"/>
+
+  <g transform="translate(80,80)">
+    <path d="M40 8 L73 64 L7 64 Z" fill="url(#brand)"/>
+    <path d="M27 53 L40 35 L53 53" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <text x="100" y="50" font-family="-apple-system, system-ui, sans-serif" font-size="36" font-weight="700" fill="#f1f5f9">Liganx</text>
+  </g>
+
+  <text x="80" y="290" font-family="-apple-system, system-ui, sans-serif" font-size="76" font-weight="800" fill="#f1f5f9">Mutation-aware</text>
+  <text x="80" y="370" font-family="-apple-system, system-ui, sans-serif" font-size="76" font-weight="800" fill="url(#title-grad)">molecular docking.</text>
+
+  <text x="80" y="450" font-family="-apple-system, system-ui, sans-serif" font-size="28" font-weight="400" fill="#cbd5e1">Find compounds that prefer the mutant. WT vs mutant in one matrix.</text>
+
+  <g transform="translate(80,510)" font-family="-apple-system, system-ui, sans-serif" font-size="20" fill="#94a3b8">
+    <text x="0" y="20">Vina + GNINA · No install · Free for academic use</text>
+  </g>
+
+  <text x="1120" y="600" text-anchor="end" font-family="-apple-system, system-ui, sans-serif" font-size="20" fill="#5eead4">liganx.com</text>
+</svg>
