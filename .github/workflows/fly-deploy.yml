@@ -4,6 +4,14 @@ name: Fly Deploy
 # backend, pipeline, Dockerfile, or fly config. Frontend (Vercel) auto-deploys
 # from the same push via Vercel's GitHub integration — no action needed here.
 #
+# A scientific-correctness gate runs BEFORE the deploy: backend/scripts/
+# verify_catalog.py checks every catalog target's pocket centre against the
+# RCSB co-crystal ligand and confirms every promoted mutation either fits
+# inside its docking box or is on the documented outside-pocket exemption
+# list. If verification fails, the deploy step never runs. This protects
+# against the regression class that hit us on 2026-04-30 (17 of 40 mutations
+# silently drifted outside their boxes after a prior pocket-coords fix).
+#
 # Required repo secret:
 #   FLY_API_TOKEN  — generate locally with `fly auth token` and add at
 #                    https://github.com/<org>/<repo>/settings/secrets/actions
@@ -23,9 +31,32 @@ on:
   workflow_dispatch:
 
 jobs:
+  verify-catalog:
+    name: Verify catalog scientific correctness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Match the prod runtime (3.12 in the Dockerfile). The verify
+          # script is stdlib-only — no pip install needed — so we use the
+          # plain interpreter.
+          python-version: "3.12"
+      - name: Run verify_catalog.py
+        # The script imports backend/src/deltadock/catalog.py and downloads
+        # each target's PDB from RCSB to confirm the configured pocket
+        # centres match the canonical co-crystal ligand on chain A. Exits
+        # non-zero on any regression. Exit 2 indicates a transient network
+        # problem (RCSB timeout) and the workflow re-runs cleanly on retry.
+        run: python backend/scripts/verify_catalog.py
+
   deploy:
     name: Deploy backend to Fly
     runs-on: ubuntu-latest
+    # Blocking dependency: only deploy after the catalog passes. If
+    # verify-catalog fails, the deploy job is skipped entirely — broken
+    # science never reaches production.
+    needs: verify-catalog
     concurrency:
       # Cancel any in-flight deploy so a fresh push always wins.
       group: fly-deploy
