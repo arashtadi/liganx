@@ -60,20 +60,22 @@ primary_region = "iad"
   memory = "4gb"
   cpus = 2
 
-# Persistent volume for the pose store (R2 fallback).
+# Persistent volume for the pose store AND the PDB / receptor caches.
+# Fly only supports one volume mount per machine, so we tuck the
+# receptor and PDB caches inside the same mount under a `cache/`
+# subdirectory. LIGANX_CACHE_ROOT is set to /var/lib/liganx/poses/cache
+# so the runner's PDB_CACHE = $ROOT/pdb and RECEPTOR_CACHE = $ROOT/receptors
+# both land on the persistent volume. POSE_CACHE_DIR keeps using the
+# volume root (/var/lib/liganx/poses) so existing pose URLs in the DB
+# stay valid.
+#
+# Why the cohabitation: previously the receptor cache lived on ephemeral
+# disk and got wiped on every deploy, which meant the 3D viewer for any
+# historical job would 404. Promoting it onto this volume fixes that
+# without needing a second volume (which Fly machines don't support
+# anyway). The volume is 1 GB and currently ~18 MB used; pdb +
+# receptor caches together typically run under 100 MB.
 [[mounts]]
   source = "liganx_pose_cache"
   destination = "/var/lib/liganx/poses"
   initial_size = "1gb"
-
-# Persistent volume for the receptor + PDB caches. Previously these lived on
-# ephemeral disk, which meant every deploy wiped them and the 3D viewer for
-# any historical job would 404 on /structures/{pdb_id}/{chain}/{variant}.
-# Mounted at a separate path (not nested under /var/lib/liganx) so it doesn't
-# collide with the poses volume's mount point. The runner reads
-# LIGANX_CACHE_ROOT from env (set on Fly to /var/lib/liganx-cache) so the
-# code lookups land here automatically.
-[[mounts]]
-  source = "liganx_cache"
-  destination = "/var/lib/liganx-cache"
-  initial_size = "2gb"
