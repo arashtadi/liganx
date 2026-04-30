@@ -66,6 +66,16 @@ export interface ParsedExtra {
    *  When present, the matrix shows it as a small subtitle under the
    *  primary Vina score; PoseDetail surfaces it as a top-level Metric. */
   vinardo?: number;
+  /** Phase 0 crystallographic-water displacement counts (#103). The runner
+   *  writes `water=N/M` where N is the number of pose-displaced waters and
+   *  M is the count of crystallographic waters within the pocket sphere
+   *  (8 Å of pocket centre by default).
+   *
+   *  Honest framing: this is NOT WaterMap. It is geometric overlap with
+   *  deposited PDB waters; high B-factor waters are unreliable; mutant
+   *  pockets may have de novo waters this method doesn't see. The PoseDetail
+   *  panel surfaces this with the explicit Phase 0 caveat copy. */
+  water?: { displaced: number; pocketCount: number };
   /** When the mutation residue lies outside the Vina docking box (typically
    *  >11 Å from box center), single-conformation docking can't capture the
    *  geometric effect of the substitution — the mutated atoms are simply
@@ -164,6 +174,17 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         const k = parseFloat(kStr);
         if ((verdict === "ok" || verdict === "mild" || verdict === "high") && Number.isFinite(k)) {
           out.strain = { verdict: verdict as "ok" | "mild" | "high", kcal: k };
+        }
+        break;
+      }
+      case "water": {
+        // Format: "<displaced>/<pocketCount>" — both non-negative integers.
+        const m = v.match(/^(\d+)\/(\d+)$/);
+        if (m) {
+          out.water = {
+            displaced: parseInt(m[1], 10),
+            pocketCount: parseInt(m[2], 10),
+          };
         }
         break;
       }

@@ -248,6 +248,75 @@ export default function PoseDetail({ pick, onClose }: Props) {
           </div>
         )}
 
+        {/* Phase 0 water-displacement analysis (#103). Only shown when the
+            runner produced counts — older results and PDBs without HOH records
+            won't have this. We deliberately surface this with the "Phase 0,
+            not WaterMap" caveat copy so users don't over-interpret. */}
+        {ext.water && (
+          <div>
+            <div className="label flex items-center gap-2">
+              Water analysis
+              <span className="text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                Phase 0
+              </span>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 p-3 text-sm">
+              <div className="flex items-baseline gap-3 flex-wrap">
+                <div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Displaced</div>
+                  <div className="text-xl font-bold tabular-nums text-ink dark:text-slate-100">
+                    {ext.water.displaced}
+                  </div>
+                </div>
+                <div className="text-slate-400 dark:text-slate-500 text-lg">/</div>
+                <div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Pocket waters</div>
+                  <div className="text-xl font-bold tabular-nums text-slate-700 dark:text-slate-300">
+                    {ext.water.pocketCount}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
+                {ext.water.pocketCount === 0 ? (
+                  <>
+                    No crystallographic waters in the pocket sphere of this PDB.
+                    Either the structure was deposited without solvent or the
+                    binding site is dehydrated. Phase 1 (3D-RISM) will fill this
+                    gap; for now this row carries no water signal.
+                  </>
+                ) : ext.water.displaced === 0 ? (
+                  <>
+                    Pose sits in a region with no crystallographic-water overlap.
+                    Common for buried hydrophobic binders. Doesn&apos;t mean no
+                    waters are displaced — just none from this structure&apos;s
+                    deposited set.
+                  </>
+                ) : (
+                  <>
+                    This pose displaces {ext.water.displaced} of {ext.water.pocketCount}{" "}
+                    crystallographic waters in the binding pocket. Conserved-water
+                    displacement typically carries thermodynamic cost; the WT-vs-mutant
+                    Δ in displacement is the interesting signal.
+                  </>
+                )}
+              </p>
+              <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-500 leading-snug italic">
+                Phase 0: geometric overlap with PDB-deposited HOH records, not WaterMap.
+                B-factors, conservation across structures, and de novo waters in mutant
+                pockets are not modelled in this Phase 0. See{" "}
+                <a
+                  href="https://github.com/arashtadi/liganx/blob/main/docs/water_displacement_plan.md"
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-delta-700 dark:text-delta-300 hover:underline"
+                >
+                  water_displacement_plan.md
+                </a>
+                {" "}for Phase 1 (3D-RISM) and Phase 2 (GIST).
+              </p>
+            </div>
+          </div>
+        )}
+
         <div>
           <div className="label">SMILES</div>
           <code className="block bg-slate-50 border border-slate-200 rounded-md p-2 text-[11px] font-mono text-slate-700 break-all dark:bg-slate-800/60 dark:border-slate-700 dark:text-slate-300">

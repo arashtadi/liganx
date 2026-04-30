@@ -992,6 +992,33 @@ def _run_real(session: Session, job: Job) -> None:
                 # Deferred — write a placeholder so the matrix UI knows to
                 # show "validation pending" rather than a missing column.
                 parts.append("validate=pending")
+
+            # ── Phase 0 water-displacement analysis (#103). Cheap, inline,
+            # fail-soft. Pulls HOH records from raw_pdb (preserved by
+            # fetch_pdb before strip_hetatm) and counts crystallographic
+            # waters the pose displaces vs the count of pocket waters.
+            # Format on extra: "water=N/M" where N=displaced, M=pocket
+            # waters. Frontend renders a Water Analysis panel from this
+            # plus a "Phase 0: not WaterMap" honesty caveat.
+            try:
+                from deltadock_pipeline.water import analyse_pose_water_displacement
+                wresult = analyse_pose_water_displacement(
+                    receptor_pdb=raw_pdb,
+                    pose_pdb=result.pose_pdbqt,
+                    pocket_centre=(cx, cy, cz),
+                    pose_id=f"c{compound.id}_{variant}",
+                )
+                # Compact representation for the extra string. Rich per-water
+                # detail isn't needed for Phase 0 because the JobPage panel
+                # surfaces just the counts + interpretation copy. Phase 1
+                # (3D-RISM) will warrant a separate JSON column.
+                parts.append(f"water={wresult.displaced_count}/{wresult.pocket_water_count}")
+            except Exception as we:
+                # Fail-soft: water analysis is informational, not blocking.
+                # Don't even log warning unless debug — it's expected to
+                # fail on cryo-EM PDBs without deposited waters.
+                log.debug("Water analysis skipped for c%s × %s: %s", compound.id, variant, we)
+
             from .pose_store import get_pose_store
             try:
                 pose_uri = get_pose_store().write(
