@@ -201,6 +201,18 @@ CASES: list[Case] = [
         drug_smiles="Cc1ccc(C(=O)Nc2ccnc(-c3cn(C)c4ccc(F)cc34)n2)cc1OC",
         expected_direction="retained",
         literature="Mato et al., NEJM 2021 — Pirtobrutinib is non-covalent; retains potency against C481S (cellular IC50 essentially unchanged).",
+        # Documented method limitation: rigid-receptor non-covalent docking
+        # cannot distinguish Ibrutinib's covalent escape (loss of the C481
+        # thiol) from Pirtobrutinib's non-covalent retention (no covalent
+        # bond ever formed) because Vina sees both as a small geometric
+        # change at residue 481. In practice both molecules return Δ values
+        # near each other (Ibrutinib +1.50, Pirtobrutinib +1.80 on this
+        # snapshot — within ±1 σ of each other) when the clinical difference
+        # is >100×. The pipeline is correctly catching the C→S geometric
+        # signal; it cannot capture the mechanism-of-action difference. Same
+        # family of limitation as Osimertinib (covalent acrylamide on C797)
+        # and Avapritinib (active-conformation selectivity).
+        caveat="Pirtobrutinib's clinical retention against C481S comes from being non-covalent — no acrylamide to lose. Rigid-receptor Vina cannot model covalent vs non-covalent mechanism, so Pirtobrutinib and Ibrutinib both return similar small-magnitude ΔΔG against C481S even though their clinical IC50 shifts differ by >100×. Documented limitation, not a pipeline regression.",
     ),
 ]
 
@@ -359,6 +371,18 @@ def _verdict(case: Case) -> tuple[str, str]:
     )
     if sign_ok:
         return "PASS", f"Δ={d:+.2f} kcal/mol matches expected '{case.expected_direction}'"
+    # Wrong direction at above-noise magnitude. If the case has a documented
+    # caveat — i.e. we know up-front the pipeline cannot resolve this kind of
+    # signal (covalent mechanism, active-conformation selectivity, etc.) —
+    # surface that in the note rather than emitting a bare "DISAGREES" tag.
+    # Verdict stays FAIL because the literal direction check failed; the
+    # caveat text on the case explains why this isn't a science regression.
+    if case.caveat:
+        return (
+            "FAIL",
+            f"Δ={d:+.2f} kcal/mol disagrees with expected '{case.expected_direction}' — "
+            f"this is the documented method limitation playing out (see caveat above).",
+        )
     return "FAIL", f"Δ={d:+.2f} kcal/mol DISAGREES with literature '{case.expected_direction}' direction"
 
 

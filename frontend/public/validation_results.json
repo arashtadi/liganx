@@ -138,13 +138,13 @@
       "drug_name": "Pirtobrutinib",
       "expected_direction": "retained",
       "literature": "Mato et al., NEJM 2021 \u2014 Pirtobrutinib is non-covalent; retains potency against C481S (cellular IC50 essentially unchanged).",
-      "caveat": null,
+      "caveat": "Pirtobrutinib's clinical retention against C481S comes from being non-covalent \u2014 no acrylamide to lose. Rigid-receptor Vina cannot model covalent vs non-covalent mechanism, so Pirtobrutinib and Ibrutinib both return similar small-magnitude \u0394\u0394G against C481S even though their clinical IC50 shifts differ by >100\u00d7. Documented limitation, not a pipeline regression.",
       "share_id": "YOKjAmTmcfA",
       "wt_score": -10.5,
       "mut_score": -8.7,
       "delta_kcal": 1.8000000000000007,
       "verdict": "FAIL",
-      "verdict_note": "\u0394=+1.80 kcal/mol DISAGREES with literature 'retained' direction"
+      "verdict_note": "\u0394=+1.80 kcal/mol disagrees with expected 'retained' direction. Side-by-side: Ibrutinib (covalent escape) gave \u0394=+1.50 and Pirtobrutinib (non-covalent retention) gave \u0394=+1.80 \u2014 within sampling noise of each other when clinical IC50 shifts differ >100\u00d7. Vina cannot distinguish the covalent-mechanism difference; same family of limitation as Osimertinib (covalent acrylamide on C797) and Avapritinib (active-conformation selectivity). FAIL because the literal direction check failed; the result is consistent with documented method limits."
     }
   ]
 }

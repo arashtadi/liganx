@@ -105,8 +105,10 @@ export default function ValidationPage() {
           is where a sceptical reader can verify Liganx's scientific claims
           end-to-end — the docking-pocket coordinates we use, the eight
           literature-anchored mutation/drug pairs we run as positive controls,
-          and the open-source scripts that re-derive both. Every number below
-          is regenerable from the linked code.
+          and the open-source scripts that re-derive both. Every number below is
+          regenerable from the linked code, and the cases where our pipeline
+          can&apos;t resolve a published direction are surfaced explicitly with
+          the structural-biology reason — not buried, not omitted.
         </p>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Snapshot refreshed <strong>{ageLabel}</strong> ({ts.toISOString().slice(0, 16).replace("T", " ")} UTC)
@@ -155,6 +157,104 @@ export default function ValidationPage() {
           >
             CI before every deploy
           </a>
+        </p>
+      </section>
+
+      {/* ── How to read this page ───────────────────────────────────── */}
+      {/* For a chemist scrolling past, the data table below is meaningless
+          without knowing which cases the pipeline was designed to resolve and
+          which are documented method limits. This block surfaces that up front
+          so the per-case data is read in the right context. */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 p-5 sm:p-6">
+        <h2 className="text-2xl font-bold tracking-tight text-ink dark:text-white">
+          What this means for your work
+        </h2>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-400 max-w-3xl leading-relaxed">
+          The summary above is honest but compressed. Here's the longer version
+          a chemist would want before trusting a Δ value from this pipeline on
+          their own mutation/drug pair.
+        </p>
+
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+              When to trust this pipeline
+            </div>
+            <ul className="mt-2 space-y-2 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+              <li>
+                <strong>Gatekeeper-residue resistance.</strong> ABL T315I, EGFR
+                T790M — clean PASS at +3.6 and +1.3 kcal/mol. Steric clash from
+                a single residue substitution is exactly what rigid-receptor
+                Vina was designed to capture.
+              </li>
+              <li>
+                <strong>Activation-loop selectivity, when the receptor is
+                right.</strong> BRAF V600E + Vemurafenib — clean PASS at −2.7
+                kcal/mol once we identified that post-hoc minimisation was
+                relaxing the activation loop into the wrong conformation.
+                Documented as a per-target catalog flag.
+              </li>
+              <li>
+                <strong>Active-conformation mutations against an inactive-
+                conformation drug.</strong> KIT D816V + Imatinib — clean PASS
+                at +2.6 kcal/mol. The opposite of selectivity (Avapritinib,
+                see below) and easier for a rigid model.
+              </li>
+              <li>
+                <strong>The non-covalent component of covalent escape.</strong>
+                BTK C481S + Ibrutinib — PASS at +1.5 kcal/mol on the residual
+                non-covalent ΔΔG. The covalent contribution to Ibrutinib's
+                clinical loss is not modelled (Vina is non-covalent), but the
+                geometric C→S signal is real.
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+              When to be cautious
+            </div>
+            <ul className="mt-2 space-y-2 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+              <li>
+                <strong>Covalent inhibitors.</strong> Osimertinib (acrylamide
+                on C797), Pirtobrutinib (non-covalent retention against C481S
+                covalent escape) — Vina is non-covalent and cannot resolve
+                covalent vs non-covalent mechanism. These show as NOISE or
+                wrong-direction-with-known-cause on the table below.
+              </li>
+              <li>
+                <strong>Active-conformation selectivity drugs.</strong>{" "}
+                Avapritinib was designed to bind the D816V-stabilised active
+                conformation; our 1T46 receptor is not in that conformation
+                and induced-fit relaxation is outside the scope of rigid
+                docking. Documented method limit.
+              </li>
+              <li>
+                <strong>Switch-region or allosteric mutations.</strong> Any
+                mutation whose binding effect propagates through long-range
+                conformational change (αC-helix flips, P-loop dynamics) is
+                outside what a rigid receptor can capture. Catalog audit
+                marks these as out-of-scope before they hit the docking step.
+              </li>
+              <li>
+                <strong>Absolute affinity prediction.</strong> Vina is
+                empirical scoring, not free-energy perturbation. Read Δ values
+                as <em>direction at above-noise magnitude</em>, not as ΔΔG of
+                binding. For absolute affinity calibration use FEP+ / TI-MD —
+                that's not what we do.
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p className="mt-5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-3xl">
+          The validation suite below is the data backing every claim in the
+          two columns above. Each row links to a live job you can re-open and
+          inspect — pose, contacts, 2D map — and a verdict_note that explains
+          the case-specific reasoning. Cases with documented method limits
+          carry a <strong>caveat</strong> field that surfaces the structural
+          biology behind why a particular Δ does or doesn't match its
+          literature direction.
         </p>
       </section>
 

@@ -503,12 +503,15 @@ function Comparison() {
             <Link
               to="/validation"
               className="text-[11px] text-delta-700 dark:text-delta-300 font-semibold hover:underline"
-              title="Live scientific-validation page — pocket-coordinate audit + 8 literature-anchored positive controls"
+              title="Live scientific-validation page — 5/8 PASS, 2/8 documented method limits, 1/8 explained-FAIL across the literature-anchored suite"
             >
               See full validation report →
             </Link>
           </div>
           <ul className="list-disc pl-5 space-y-1.5">
+            <li>
+              <strong>Eight literature-anchored controls, public verdict.</strong> ABL T315I, EGFR T790M, BRAF V600E, KIT D816V, BTK C481S — five of eight PASS at above-noise magnitude in the published direction. Two NOISE results sit in documented method-limit territory (covalent acrylamides, active-conformation selectivity). One FAIL is explained candidly with the structural reason. The full per-case verdict and the open-source script that re-derives it are public.
+            </li>
             <li>
               <strong>Vina noise floor.</strong> Vina/QuickVina2 scoring has roughly ±1 kcal/mol noise at default exhaustiveness. We surface a "within-noise" badge for any Δ inside that band so a reader doesn't over-interpret 0.3 kcal/mol shifts.
             </li>
