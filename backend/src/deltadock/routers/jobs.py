@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from ..auth import CurrentUser, current_user, current_user_or_none, verified_user
@@ -457,6 +458,26 @@ def list_jobs(
     Filtering is done in app code (not RLS) because the backend connects as
     the privileged postgres role which bypasses RLS. The DB-side RLS policies
     are still in place as defense-in-depth.
+
+    Performance: this is the History-page hot path. We deliberately return a
+    SLIM JobOut here — empty `results`, no `pdb_quality`, and no per-compound
+    `admet`. Reasoning:
+
+      • The History UI only reads id/share_id/pdb_id/chain/uniprot_id/
+        mutations/status/title/tags/created_at + compounds[].name/smiles for
+        client-side search. It never opens results, ADMET, or pdb_quality
+        from the list response — those are computed lazily on JobPage when
+        a user actually drills in.
+      • _admet_for() runs RDKit per compound; on a cold LRU cache with 25
+        jobs × ~5 compounds each it added 1-3s of pure compute.
+      • _pdb_quality_for() does a crossdock-cache file lookup per job.
+      • Loading job.results lazily triggers an N+1 query per job (25 extra
+        round-trips per page).
+
+    We also use selectinload(Job.compounds) so all compounds load in one
+    bulk SELECT keyed on job_id IN (...) instead of 25 separate queries.
+    The user_id filter is already covered by idx_job_user_created from
+    migration 001.
     """
     stmt = (
         select(Job)
@@ -464,8 +485,39 @@ def list_jobs(
         .order_by(Job.created_at.desc())
         .offset(offset)
         .limit(limit)
+        .options(selectinload(Job.compounds))  # one bulk query, not N+1
     )
-    return [_to_out(j) for j in session.exec(stmt)]
+    return [_to_summary_out(j) for j in session.exec(stmt)]
+
+
+def _to_summary_out(job: Job) -> JobOut:
+    """Slim JobOut for the History list view. Same schema as _to_out so the
+    frontend Job type doesn't need to fork — we just zero out the expensive
+    fields the History page never reads. See list_jobs() for the rationale."""
+    return JobOut(
+        id=job.id,
+        share_id=job.share_id,
+        pdb_id=job.pdb_id,
+        chain=job.chain,
+        uniprot_id=job.uniprot_id,
+        mutations=[m for m in job.mutations.split(",") if m],
+        status=job.status,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        exhaustiveness=job.exhaustiveness,
+        include_wt=job.include_wt,
+        engine=job.engine,
+        user_id=job.user_id,
+        title=job.title,
+        tags=list(job.tags or []),
+        compounds=[
+            # admet=None is the default; History page renders nothing from it.
+            CompoundOut(id=c.id, name=c.name, smiles=c.smiles)
+            for c in job.compounds
+        ],
+        # results + pdb_quality intentionally omitted (default empty / None).
+    )
 
 
 @router.get("/{job_key}/poses/{compound_id}/{variant}", response_class=PlainTextResponse)
