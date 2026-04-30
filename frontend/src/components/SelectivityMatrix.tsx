@@ -580,6 +580,12 @@ function ScoreCell({
               !
             </span>
           )}
+          {/* PoseBusters verdict ribbon. Show high/medium/low (the real
+              outcomes) AND the derived "skipped" state (timeout / couldn't
+              start) — the skipped badge exists specifically so an empty
+              matrix cell doesn't look like a validation failure when really
+              we just didn't finish the check. Hide only "unknown", which
+              means PB never ran at all (older jobs, full pipeline crash). */}
           {ext.confidence && ext.confidence !== "unknown" && (
             <ConfidenceRibbon
               confidence={ext.confidence}

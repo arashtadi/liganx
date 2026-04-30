@@ -11,7 +11,21 @@
  * keys give undefined.
  */
 export interface ParsedExtra {
-  confidence?: "high" | "medium" | "low" | "unknown";
+  /** PoseBusters verdict mapped to a 5-state UX category:
+   *   high   — every check passed (green "Passed" ribbon)
+   *   medium — 1–2 checks failed, often format quirks (amber "Caution" ribbon)
+   *   low    — 3+ checks failed (rose "Suspect" ribbon)
+   *   skipped — the check timed out or was bypassed by the runner. NOT a
+   *      failure: the pose itself is fine; we just don't have a verdict.
+   *      Rendered as a slate "Skipped" ribbon so users don't conflate this
+   *      with "validation failed" or with cells where PB never ran at all.
+   *   unknown — PoseBusters didn't run on this pose at all (older job, or
+   *      validation pipeline crashed entirely). Renders as "Unchecked".
+   *
+   * The "skipped" state is derived: the backend writes
+   *   posebusters=check_skipped: <reason>
+   * and we promote that here so the UI doesn't have to grep the string. */
+  confidence?: "high" | "medium" | "low" | "skipped" | "unknown";
   poseBusters?: string;
   foldxDDG?: number;
   contacts?: { residue: string; type: string; distance?: number }[];
@@ -108,10 +122,11 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
       case "posebusters":
         out.poseBusters = v;
         break;
-      case "foldx_ddg":
+      case "foldx_ddg": {
         const f = parseFloat(v);
         if (!Number.isNaN(f)) out.foldxDDG = f;
         break;
+      }
       case "contacts":
         // Backwards-compatible: 2-field "RES:Type" or 3-field "RES:Type:Å"
         // The third field, when present, is the closest atom-pair distance
@@ -148,7 +163,7 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         const [verdict, kStr] = v.split(":");
         const k = parseFloat(kStr);
         if ((verdict === "ok" || verdict === "mild" || verdict === "high") && Number.isFinite(k)) {
-          out.strain = { verdict, kcal: k };
+          out.strain = { verdict: verdict as "ok" | "mild" | "high", kcal: k };
         }
         break;
       }
@@ -162,5 +177,23 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
       // ignore err, validate_err, foldx_failed prefixes etc.
     }
   }
+
+  // Promote PoseBusters timeouts / explicit skips into a derived "skipped"
+  // confidence so the UI can render a distinct slate badge instead of
+  // collapsing to "Unchecked" (which reads as "validation failed" to users
+  // scanning the matrix). The backend writes one of:
+  //   posebusters=check_skipped: timeout
+  //   posebusters=check_skipped: <other reason>
+  //   posebusters=passed all 0 checks   ← PB couldn't even start, treat as skipped
+  // Only override when the backend left confidence at "unknown" / undefined —
+  // if it explicitly wrote high/medium/low we trust that.
+  if (
+    (out.confidence === "unknown" || out.confidence === undefined) &&
+    out.poseBusters &&
+    (/check_skipped/i.test(out.poseBusters) || /passed all 0 checks/i.test(out.poseBusters))
+  ) {
+    out.confidence = "skipped";
+  }
+
   return out;
 }

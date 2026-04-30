@@ -16,7 +16,7 @@ import { Shield } from "./Icons";
  */
 
 interface Props {
-  confidence?: "high" | "medium" | "low" | "unknown";
+  confidence?: "high" | "medium" | "low" | "skipped" | "unknown";
   detail?: string;
   size?: "sm" | "md";
   /** Show the rich hover popover explaining what failed and why. Defaults to
@@ -30,6 +30,12 @@ const STYLES = {
   high:    { bg: "bg-emerald-50 dark:bg-emerald-900/20",  text: "text-emerald-800 dark:text-emerald-300", ring: "ring-emerald-200 dark:ring-emerald-800/40", label: "Passed" },
   medium:  { bg: "bg-amber-50 dark:bg-amber-900/20",      text: "text-amber-900 dark:text-amber-300",     ring: "ring-amber-200 dark:ring-amber-800/40",     label: "Caution" },
   low:     { bg: "bg-rose-50 dark:bg-rose-900/20",        text: "text-rose-800 dark:text-rose-300",       ring: "ring-rose-200 dark:ring-rose-800/40",       label: "Suspect" },
+  // "Skipped" = PoseBusters check ran out of wallclock or couldn't start —
+  // we don't have a verdict, but the docked pose itself is unaffected. Use
+  // a slate-blue tone (cool, neutral) so it's visually distinct from the
+  // green Passed and the warm amber/rose failure states. Explicitly NOT a
+  // failure — the score still ships.
+  skipped: { bg: "bg-slate-50 dark:bg-slate-800/40",      text: "text-slate-700 dark:text-slate-300",     ring: "ring-slate-300 dark:ring-slate-600",        label: "Skipped" },
   unknown: { bg: "bg-slate-100 dark:bg-slate-700/40",     text: "text-slate-600 dark:text-slate-400",     ring: "ring-slate-200 dark:ring-slate-600",        label: "Unchecked" },
 } as const;
 
@@ -37,6 +43,7 @@ const HEADLINE: Record<NonNullable<Props["confidence"]>, string> = {
   high:    "Every physics check passed.",
   medium:  "A couple of checks failed — often format quirks, not real problems.",
   low:     "Multiple physics checks failed. Treat this score with skepticism.",
+  skipped: "PoseBusters didn’t finish in time on this cell — the score is still real, we just don’t have a verdict.",
   unknown: "PoseBusters didn’t run on this pose.",
 };
 
@@ -148,6 +155,17 @@ export default function ConfidenceRibbon({
           {confidence === "high" && (
             <div className="text-emerald-300/90">
               Every check this pose was tested against came back clean.
+            </div>
+          )}
+
+          {confidence === "skipped" && (
+            <div className="text-slate-300">
+              PoseBusters ran out of wallclock budget on this cell during the
+              parallel validation pass. The Vina score, Vinardo rescore, and
+              ProLIF contacts are unaffected — only the geometry sanity-check
+              verdict is missing. Compare against another cell in the matrix
+              that has a green &ldquo;Passed&rdquo; badge to gauge whether
+              the binding mode looks reasonable.
             </div>
           )}
 
