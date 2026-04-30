@@ -150,6 +150,35 @@ export default function SelectivityMatrix({
               </span>
             )}
           </p>
+          {/* Pose-validation legend — three small inline pills with one-line
+              explanations. Without this, users see "Passed"/"Caution"/"Skipped"
+              badges in cells with no clue what produced them. The detailed
+              tooltip (hover any badge) goes deeper; this is the at-a-glance
+              read so people understand the column without having to hover. */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <span className="font-semibold text-slate-600 dark:text-slate-300">
+              Pose validation:
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <strong className="font-semibold">Passed</strong> — all PoseBusters checks clean
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <strong className="font-semibold">Caution</strong> — 1–2 quirks (often format only)
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500" />
+              <strong className="font-semibold">Suspect</strong> — 3+ physics checks failed
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-400" />
+              <strong className="font-semibold">Skipped</strong> — sanity check ran out of time; the score still ships
+            </span>
+            <span className="text-slate-400 dark:text-slate-500 italic">
+              hover any badge for the per-cell breakdown
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {selectable && (
@@ -591,7 +620,7 @@ function ScoreCell({
               confidence={ext.confidence}
               detail={ext.poseBusters}
               size="sm"
-              tooltip={false}
+              tooltip={true}
             />
           )}
         </div>

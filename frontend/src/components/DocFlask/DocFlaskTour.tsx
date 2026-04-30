@@ -255,6 +255,17 @@ export default function DocFlaskTour() {
     // to stop" behavior we want.
     if (neverAgain) markTourDismissed();
     setActive(false);
+    // Scroll back to the top of the page when the tour ends. Mid-tour the
+    // overlay scrolls to whichever element each step anchors on (often the
+    // Submit button at the bottom of the form), and dismissing leaves the
+    // user staring at the bottom of NewJobPage with no idea where to look
+    // next. Snap-back-to-top makes the page feel "reset" — same vibe as
+    // closing a modal. Smooth scroll so the motion reads as intentional;
+    // RAF-deferred so React commits the unmount before the scroll runs
+    // (otherwise some browsers race and the overlay's scroll lock interferes).
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+    });
   }
   function next() {
     if (stepIdx + 1 >= NEW_JOB_TOUR.length) {

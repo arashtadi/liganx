@@ -309,6 +309,51 @@ export default function InteractionDiagram({
         style={{ maxHeight: svgMaxHeight }}
         onMouseLeave={() => setHover(null)}
       >
+        {/* ── defs: gradients, filters, animations ─────────────────────── */}
+        <defs>
+          {/* Ligand-center radial gradient — deep indigo core → soft fade. */}
+          <radialGradient id="ligandFill" cx="0.4" cy="0.35" r="0.85">
+            <stop offset="0%" stopColor="#818cf8" />
+            <stop offset="55%" stopColor="#4f46e5" />
+            <stop offset="100%" stopColor="#312e81" />
+          </radialGradient>
+          {/* Soft outer halo for the ligand */}
+          <radialGradient id="ligandHalo" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.45" />
+            <stop offset="60%" stopColor="#6366f1" stopOpacity="0.12" />
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+          </radialGradient>
+          {/* Glow filter for hovered spokes / dots — uses Gaussian blur on a
+              copy of the source and composites it back on top. Keeps the
+              line's color but adds a soft chromatic haze. */}
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          {/* Subtle drop shadow under residue dots so they pop off the panel. */}
+          <filter id="dotShadow" x="-50%" y="-50%" width="200%" height="200%">
+            <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodColor="#0f172a" floodOpacity="0.35" />
+          </filter>
+        </defs>
+
+        {/* ── Decorative pocket ring + halo, behind everything ─────────── */}
+        {/* Faint dashed circle at the residue radius — gives the map a sense
+            of "binding pocket boundary" without claiming structural meaning. */}
+        <circle
+          cx={cx} cy={cy} r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeOpacity={0.08}
+          strokeWidth={1}
+          strokeDasharray="2 4"
+          className="text-slate-500"
+        />
+        {/* Soft glow under the ligand — reads as "this is where the action is" */}
+        <circle cx={cx} cy={cy} r={ligandRadius * 2.2} fill="url(#ligandHalo)" />
+
         {/* Spokes (rendered first so dots + labels stack on top) */}
         {items.map((item, i) => {
           const angle = (i / N) * 2 * Math.PI - Math.PI / 2;
@@ -332,14 +377,18 @@ export default function InteractionDiagram({
                 onMouseEnter={(e) => setHover({ kind: "contact", index: i, x: e.clientX, y: e.clientY })}
                 style={{ cursor: "help" }}
               />
-              {/* Visible line */}
+              {/* Visible line. Highlighted spokes get a chromatic glow via
+                  the SVG filter — gives a sense of "active connection" that
+                  flat lines can't. */}
               <line
                 x1={x0} y1={y0} x2={x} y2={y}
                 stroke={stroke}
-                strokeWidth={style.width}
+                strokeWidth={isHighlighted ? style.width + 0.5 : style.width}
                 strokeDasharray={style.dash}
-                opacity={isHighlighted ? 1 : isFaded ? 0.2 : 0.85}
-                style={{ pointerEvents: "none", transition: "opacity .12s" }}
+                strokeLinecap="round"
+                opacity={isHighlighted ? 1 : isFaded ? 0.18 : 0.78}
+                filter={isHighlighted ? "url(#glow)" : undefined}
+                style={{ pointerEvents: "none", transition: "opacity .12s, stroke-width .12s" }}
               />
               {/* H-bond gets an arrowhead on the residue end (acceptor → donor convention) */}
               {(item.type === "HBDonor" || item.type === "HBAcceptor") && (
@@ -396,11 +445,25 @@ export default function InteractionDiagram({
                 transition: "opacity .12s",
               }}
             >
-              {/* Halo on hover */}
+              {/* Glow halo on hover — chromatic ring that pulses outward.
+                  Two concentric circles: outer faint (more saturated colour),
+                  inner brighter ring framing the dot. */}
               {isHighlighted && (
-                <circle cx={x} cy={y} r={11} fill="none" stroke={dotFill} strokeWidth={1.5} opacity={0.6} />
+                <>
+                  <circle cx={x} cy={y} r={14} fill={dotFill} opacity={0.18} filter="url(#glow)" />
+                  <circle cx={x} cy={y} r={10.5} fill="none" stroke={dotFill} strokeWidth={1.25} opacity={0.7} />
+                </>
               )}
-              <circle cx={x} cy={y} r={7} fill={dotFill} stroke="white" strokeWidth={1.5} />
+              {/* Dot itself — slightly larger, with subtle drop shadow so it
+                  reads as floating above the panel. White ring keeps it
+                  legible regardless of dark/light theme. */}
+              <circle
+                cx={x} cy={y} r={7.5}
+                fill={dotFill}
+                stroke="white" strokeWidth={1.75}
+                filter="url(#dotShadow)"
+                style={{ transition: "r .12s" }}
+              />
               <text
                 x={x + dx} y={resY}
                 textAnchor={anchor as "start" | "middle" | "end"}
@@ -429,9 +492,19 @@ export default function InteractionDiagram({
           );
         })}
 
-        {/* Ligand disk */}
-        <circle cx={cx} cy={cy} r={ligandRadius}
-          fill="#3b6cf6" stroke="white" strokeWidth={3}
+        {/* Ligand disk — radial-gradient indigo with a soft outer glow ring.
+            Stacks: faint outer ring (depth) → main filled disk → label.
+            Uses the gradient defined in <defs> so the disk has a 3D-ish
+            sphere quality rather than the flat #3b6cf6 fill of v1. */}
+        <circle
+          cx={cx} cy={cy} r={ligandRadius + 4}
+          fill="none" stroke="#6366f1" strokeWidth={1.5} strokeOpacity={0.35}
+        />
+        <circle
+          cx={cx} cy={cy} r={ligandRadius}
+          fill="url(#ligandFill)"
+          stroke="white" strokeWidth={3}
+          filter="url(#dotShadow)"
         />
         <text
           x={cx} y={cy + 4}
@@ -440,6 +513,7 @@ export default function InteractionDiagram({
           fontSize={11}
           fontWeight={700}
           fill="white"
+          letterSpacing="0.2"
         >
           {ligandLabel.length > 9 ? ligandLabel.slice(0, 8) + "…" : ligandLabel}
         </text>
@@ -519,7 +593,9 @@ export default function InteractionDiagram({
 
   // Inline render — the diagram as it appears inside the page/rail.
   const inline = (
-    <div className={`relative bg-white rounded-lg border border-slate-200 p-3 dark:bg-slate-800 dark:border-slate-700 ${className}`}>
+    <div
+      className={`relative rounded-xl border border-slate-200 p-3 overflow-hidden bg-gradient-to-br from-white via-white to-indigo-50/40 dark:from-slate-800 dark:via-slate-800 dark:to-indigo-950/40 dark:border-slate-700 ${className}`}
+    >
       <button
         type="button"
         onClick={() => setFullscreen(true)}
