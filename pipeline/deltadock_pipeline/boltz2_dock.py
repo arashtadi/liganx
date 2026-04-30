@@ -40,6 +40,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -112,33 +113,47 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _post_json(url: str, body: dict, timeout_s: int) -> dict:
-    """POST a JSON body, return the parsed JSON response.
+def _http_request(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict | None = None,
+    timeout_s: int = 30,
+) -> dict:
+    """One HTTP request → parsed JSON response.
 
     User-Agent: Cloudflare's bot detection on the RunPod proxy returns
     HTTP 403 (error code 1010) for the default `Python-urllib/3.x` UA
     string. Setting a real-looking User-Agent unblocks the request.
-    Discovered the hard way during the first end-to-end smoke test —
-    every cell on the job came back as `boltz2_failed: HTTP 403 ...
-    error code: 1010`. Same fix would apply to any future urllib calls
-    against RunPod-proxied endpoints."""
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Liganx/1.0 (https://liganx.com)",
-        },
-        method="POST",
-    )
+
+    Per-call `timeout_s` is intentionally short (default 30 s) — every
+    request the runner makes against the boltz pod is now either
+    "kick off async job" (returns instantly with a job_id) or "poll
+    status" (returns instantly with status+optional result). Neither
+    one should ever sit waiting; the long-running compute happens in
+    the pod's background thread, which we observe via polling. A
+    short timeout means a stuck pod or proxy hiccup is detected
+    quickly instead of blocking the whole runner.
+    """
+    headers = {"User-Agent": "Liganx/1.0 (https://liganx.com)"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:300]
-        raise Boltz2DockError(f"HTTP {e.code} from {url}: {body}") from e
+        body_txt = e.read().decode("utf-8", errors="replace")[:300]
+        raise Boltz2DockError(f"HTTP {e.code} from {url}: {body_txt}") from e
     except urllib.error.URLError as e:
         raise Boltz2DockError(f"Network error talking to {url}: {e}") from e
+
+
+# Back-compat shim so any caller that still imports _post_json keeps working.
+def _post_json(url: str, body: dict, timeout_s: int) -> dict:
+    return _http_request(url, method="POST", body=body, timeout_s=timeout_s)
 
 
 def predict_one_boltz2(
@@ -198,14 +213,70 @@ def predict_one_boltz2(
         "num_samples": cfg.num_samples,
     }
 
-    url = cfg.base_url.rstrip("/") + "/predict_boltz2"
+    base = cfg.base_url.rstrip("/")
     log.info(
         "Dispatching Boltz-2 on Pod %s (seq_len=%d, smiles_len=%d, pocket=%d)",
         cfg.base_url, len(receptor_sequence), len(ligand_smiles),
         len(pocket_residues) if pocket_residues else 0,
     )
 
-    output = _post_json(url=url, body=payload, timeout_s=cfg.timeout_s)
+    # ── Async kick-off + poll pattern ─────────────────────────────────
+    # The original sync /predict_boltz2 endpoint died on Cloudflare's
+    # ~100 s edge timeout because the pod-side boltz subprocess takes
+    # 60-90 s to load the model into GPU on every call. The async
+    # endpoints sidestep that: kick-off returns instantly with a
+    # job_id, status polls return instantly with current state, and
+    # the long-running compute happens in a background thread on the
+    # pod that we never block on directly. None of our HTTP calls
+    # ever exceeds ~1 s, regardless of how long the GPU work runs.
+    kickoff = _http_request(
+        f"{base}/predict_boltz2_async",
+        method="POST", body=payload, timeout_s=30,
+    )
+    job_id = kickoff.get("job_id")
+    if not job_id:
+        # Fall back to the sync endpoint if the pod is still running an
+        # old build that doesn't expose /predict_boltz2_async. Lets us
+        # roll out the runner change before the pod has been updated.
+        log.warning(
+            "Pod %s did not return job_id from async endpoint — falling back to sync /predict_boltz2",
+            base,
+        )
+        output = _http_request(
+            f"{base}/predict_boltz2",
+            method="POST", body=payload, timeout_s=cfg.timeout_s,
+        )
+    else:
+        # Poll loop. 5 s interval = nice middle ground between snappy
+        # response detection and not hammering the proxy. Ceiling
+        # cfg.timeout_s (default 600 s) covers worst-case cold start
+        # plus inference. On timeout we return the most recent status
+        # so the failure mode is informative ("running for 600 s and
+        # still not done") rather than opaque.
+        deadline = time.time() + cfg.timeout_s
+        last_status: dict = {}
+        while time.time() < deadline:
+            time.sleep(5)
+            last_status = _http_request(
+                f"{base}/predict_boltz2_status/{job_id}",
+                method="GET", timeout_s=30,
+            )
+            st = last_status.get("status")
+            if st == "done":
+                output = last_status
+                break
+            if st == "error":
+                raise Boltz2DockError(
+                    f"Boltz-2 job_id={job_id} returned error after "
+                    f"{last_status.get('elapsed_s')} s: "
+                    f"{last_status.get('error', '<no detail>')}"
+                )
+            # status in {"queued", "running"}: keep polling.
+        else:
+            raise Boltz2DockError(
+                f"Boltz-2 job_id={job_id} did not finish within "
+                f"{cfg.timeout_s} s. Last status: {last_status}"
+            )
 
     pdb_b64 = output.get("predicted_pdb_b64")
     affinity_pred = output.get("affinity_pred_value")
