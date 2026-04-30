@@ -113,11 +113,22 @@ def _b64(data: bytes) -> str:
 
 
 def _post_json(url: str, body: dict, timeout_s: int) -> dict:
-    """POST a JSON body, return the parsed JSON response."""
+    """POST a JSON body, return the parsed JSON response.
+
+    User-Agent: Cloudflare's bot detection on the RunPod proxy returns
+    HTTP 403 (error code 1010) for the default `Python-urllib/3.x` UA
+    string. Setting a real-looking User-Agent unblocks the request.
+    Discovered the hard way during the first end-to-end smoke test —
+    every cell on the job came back as `boltz2_failed: HTTP 403 ...
+    error code: 1010`. Same fix would apply to any future urllib calls
+    against RunPod-proxied endpoints."""
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Liganx/1.0 (https://liganx.com)",
+        },
         method="POST",
     )
     try:
