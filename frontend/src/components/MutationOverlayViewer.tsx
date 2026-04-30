@@ -35,6 +35,19 @@ interface Props {
   /** Docked ligand pose as PDBQT text (best mode only). When present, drawn as
    *  element-colored sticks alongside the receptor. */
   posePdbqt?: string | null;
+  /** When true, `wtPdb` is interpreted as a complete protein-ligand COMPLEX
+   *  (protein chain + ligand chain in one PDB), not just a receptor. The
+   *  viewer renders the protein chain as backbone and the ligand chain as
+   *  stick, all from model 0. `mutantPdb` and `posePdbqt` are ignored.
+   *
+   *  Used for Boltz-2 cells where the AI model predicts the whole complex
+   *  in its own coordinate frame — the crystal WT receptor isn't comparable
+   *  (different coords) so we don't load it.
+   *
+   *  Expected chain layout (per boltz2_server_async.py):
+   *    chain `chain` (default "A") → protein (cartoon)
+   *    chain "L"                   → ligand (stick) */
+  isComplex?: boolean;
   /** Optional ProLIF contacts — drives per-residue side-chain coloring */
   contacts?: ContactSpec[];
   chain?: string;
@@ -259,6 +272,7 @@ function ViewerCanvas({
   wtPdb,
   mutantPdb,
   posePdbqt,
+  isComplex,
   contacts,
   chain,
   mutationResidue,
@@ -373,7 +387,14 @@ function ViewerCanvas({
   >([]);
 
   // Index of the pose model: depends on whether we loaded a mutant or not.
-  const poseModelIdx = mutantPdb ? 2 : 1;
+  // In complex mode the ligand lives INSIDE model 0 (alongside the protein
+  // chain), so there's no separate pose model — selectors target model 0
+  // with chain="L" or hetflag=true to pick out the ligand atoms.
+  const poseModelIdx = isComplex ? 0 : (mutantPdb ? 2 : 1);
+  // Ligand chain ID for complex mode. boltz2_server_async.py writes the
+  // ligand under chain "L" by convention (separate from the protein
+  // chain). When isComplex, we use this to apply the pose-style selector.
+  const COMPLEX_LIGAND_CHAIN = "L";
 
   /** Re-apply ALL styles to the viewer based on current control + blend state.
    *  Single source of truth — called from load() and from any control change.
@@ -489,7 +510,13 @@ function ViewerCanvas({
       }
       // "hidden" → leave backboneSpec empty so nothing renders for the bulk
       if (backboneStyle !== "hidden") {
-        safe("backbone", () => viewer.setStyle({ model: 0 }, backboneSpec));
+        // In complex mode the ligand atoms also live in model 0 under chain
+        // "L", so an unconstrained {model: 0} selector would draw cartoon
+        // through the ligand too — visually weird and overlaps with the
+        // pose stick rendering. Restrict the backbone to the protein chain.
+        const backboneSel: any = { model: 0 };
+        if (isComplex) backboneSel.chain = chain ?? "A";
+        safe("backbone", () => viewer.setStyle(backboneSel, backboneSpec));
       }
       setSurfaceComputing(false);
     }
@@ -526,8 +553,10 @@ function ViewerCanvas({
       if (showMut) safe("mut-side", () => viewer.addStyle(mutSel, { stick: { color: "#3b6cf6", radius: 0.32 } }));
     }
 
-    // Step 5: pose style on model poseModelIdx
-    if (posePdbqt) {
+    // Step 5: pose style on model poseModelIdx (or, in complex mode, on
+    // chain "L" inside model 0 — the ligand and protein share one PDB).
+    const havePose = !!posePdbqt || isComplex;
+    if (havePose) {
       let poseSpec: Record<string, any>;
       switch (poseStyle) {
         case "ballAndStick":
@@ -546,14 +575,24 @@ function ViewerCanvas({
         default:
           poseSpec = { stick: { colorscheme: "Jmol", radius: 0.22 } };
       }
-      safe("pose", () => viewer.setStyle({ model: poseModelIdx }, poseSpec));
+      const poseSel: any = { model: poseModelIdx };
+      if (isComplex) poseSel.chain = COMPLEX_LIGAND_CHAIN;
+      // addStyle (not setStyle) so the ligand stick is layered on TOP of
+      // the protein backbone in complex mode rather than overwriting it.
+      // For Vina-mode (pose is a separate model) setStyle works fine
+      // because the pose model has nothing else to overwrite, but addStyle
+      // is also correct there. Using addStyle uniformly keeps the code
+      // simple.
+      safe("pose", () => viewer.addStyle(poseSel, poseSpec));
     }
 
     // Step 6: hydrogen visibility on the ligand. Default is hidden (cleaner
     // view); user can toggle on. Receptor H atoms are usually absent (PDBFixer
     // omits them), so this mostly affects the ligand.
-    if (!showH && posePdbqt) {
-      safe("hide-H", () => viewer.setStyle({ model: poseModelIdx, elem: "H" }, {}));
+    if (!showH && havePose) {
+      const hSel: any = { model: poseModelIdx, elem: "H" };
+      if (isComplex) hSel.chain = COMPLEX_LIGAND_CHAIN;
+      safe("hide-H", () => viewer.setStyle(hSel, {}));
     }
   }
 
@@ -680,7 +719,14 @@ function ViewerCanvas({
         // pose (if we have it) since the user mostly cares about the binding
         // site. Falls back to mutation residue, then to whole structure.
         viewer.zoomTo();
-        if (posePdbqt) {
+        if (isComplex) {
+          // Frame on the ligand chain inside model 0 — that's where the
+          // user's eye should land in a complex view.
+          try {
+            viewer.zoomTo({ model: 0, chain: COMPLEX_LIGAND_CHAIN });
+            viewer.zoom(0.55);
+          } catch { /* fallback to whole-structure framing */ }
+        } else if (posePdbqt) {
           try { viewer.zoomTo({ model: poseModelIdx }); viewer.zoom(0.55); } catch { /* fallback */ }
         } else if (mutationResidue != null) {
           const sel: any = { model: 0, resi: mutationResidue };
@@ -746,7 +792,7 @@ function ViewerCanvas({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wtPdb, mutantPdb, posePdbqt, JSON.stringify(contacts), chain, mutationResidue, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2], pocketRadius, isFullscreen]);
+  }, [wtPdb, mutantPdb, posePdbqt, isComplex, JSON.stringify(contacts), chain, mutationResidue, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2], pocketRadius, isFullscreen]);
 
   // Re-apply ALL styles whenever any control changes (blend slider, backbone,
   // pose, H toggle). Single re-render path keeps the scene consistent.

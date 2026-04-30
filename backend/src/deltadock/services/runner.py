@@ -537,13 +537,14 @@ def _run_boltz2_dispatch(
 
                 # Boltz-2 returns the predicted protein-ligand COMPLEX as a
                 # single PDB. Persist it as the cell's pose so the 3D
-                # viewer can display it. Note that downstream code that
-                # extracts the ligand from a Vina pose (PDBQT format) won't
-                # work on this complex — but the JobPage Boltz-2 cell
-                # rendering uses a separate code path that knows how to
-                # parse a complex PDB. PoseBusters/ProLIF are intentionally
-                # skipped on Boltz-2 cells (they're physics validators that
-                # don't apply to ML predictions).
+                # viewer can display it.
+                # PoseBusters/strain are deliberately skipped — they're
+                # physics validators that flag ML-generated geometries
+                # as "Suspect" even when the binding mode is fine.
+                # ProLIF is NOT a physics validator (it just measures
+                # contacts), so we do run it — split the complex into
+                # protein-only + ligand-only PDBs first, then call the
+                # same subprocess-isolated runner the Vina path uses.
                 from .pose_store import get_pose_store
                 try:
                     pose_uri = get_pose_store().write(
@@ -563,6 +564,51 @@ def _run_boltz2_dispatch(
                 parts.append(f"aff_value={result.affinity_pred_value:.3f}")
                 parts.append(f"aff_prob={result.affinity_probability_binary:.3f}")
                 parts.append(f"pocket_residues={len(pocket_residues)}")
+
+                # ProLIF on the Boltz-2 complex. Fail-soft — if anything
+                # goes wrong (split fails, ProLIF subprocess crashes, no
+                # contacts found), we just skip the contacts segment and
+                # the user sees the cell without a 2D map / contact list.
+                # Same pattern the Vina path uses for ProLIF errors.
+                try:
+                    from deltadock_pipeline.boltz2_seq import split_complex_pdb
+                    from deltadock_pipeline.validate import _run_prolif_safe
+                    protein_only, ligand_only = split_complex_pdb(
+                        result.predicted_pdb, cell_dir,
+                        ligand_chain="L", protein_chain=chain,
+                    )
+                    contacts = _run_prolif_safe(
+                        pose_pdb=ligand_only,
+                        receptor_pdb=protein_only,
+                        ligand_smiles=compound.smiles,
+                        timeout=60.0,
+                    )
+                    if contacts:
+                        # Same compact format the Vina path uses so the
+                        # frontend's parseExtra.ts can read both: comma-
+                        # separated list of "RES:Type:distance" tokens.
+                        # We don't have a distance from ProLIF's bare
+                        # output here, so we elide the third field;
+                        # parseExtra handles 2-field tokens fine.
+                        toks = []
+                        for c in contacts:
+                            res = c.get("residue") or c.get("res") or ""
+                            typ = c.get("type") or c.get("interaction") or "Contact"
+                            if res:
+                                toks.append(f"{res}:{typ}")
+                        if toks:
+                            parts.append("contacts=" + ",".join(toks))
+                            parts.append("prolif=ok")
+                        else:
+                            parts.append("prolif=empty")
+                    else:
+                        parts.append("prolif=empty")
+                except Exception as pe:
+                    log.warning(
+                        "Boltz-2 ProLIF failed for c%s × %s: %s",
+                        compound.id, variant, pe,
+                    )
+                    parts.append(f"prolif=err:{str(pe)[:40]}")
 
                 session.add(DockingResult(
                     job_id=job.id, compound_id=compound.id, variant=variant,

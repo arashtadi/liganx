@@ -157,6 +157,62 @@ def apply_mutation_to_sequence(
     return "".join(seq_list), None
 
 
+def split_complex_pdb(
+    complex_pdb: Path | str,
+    out_dir: Path | str,
+    *,
+    ligand_chain: str = "L",
+    protein_chain: str | None = None,
+) -> tuple[Path, Path]:
+    """Split a Boltz-2 predicted complex PDB into protein-only + ligand-only.
+
+    ProLIF takes a protein PDB + a ligand PDB (with the ligand SMILES used
+    as a bond-order template) — but Boltz-2 returns one combined PDB
+    where the ligand sits as chain "L" alongside the protein. Splitting
+    is straightforward: walk the lines, route each ATOM/HETATM into one
+    file based on chain ID. Everything else (HEADER, REMARK, END) gets
+    copied to both so 3Dmol/ProLIF parsers stay happy.
+
+    Returns (protein_pdb_path, ligand_pdb_path).
+
+    `protein_chain` is an optional whitelist — if None, every chain
+    that ISN'T `ligand_chain` is considered protein. For Boltz-2 with
+    a single protein chain "A" + ligand "L", leaving this None is fine.
+    """
+    complex_pdb = Path(complex_pdb)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    protein_path = out_dir / f"{complex_pdb.stem}.protein.pdb"
+    ligand_path = out_dir / f"{complex_pdb.stem}.ligand.pdb"
+
+    # We append END manually at the bottom of each file so PDB parsers
+    # see a clean termination even if the source PDB had its END after
+    # the last record we routed.
+    with (complex_pdb.open() as fh,
+          protein_path.open("w") as p_fh,
+          ligand_path.open("w") as l_fh):
+        for line in fh:
+            if line.startswith(("ATOM", "HETATM")):
+                if len(line) < 22:
+                    continue
+                ch = line[21]
+                if ch == ligand_chain:
+                    l_fh.write(line)
+                elif protein_chain is None or ch == protein_chain:
+                    p_fh.write(line)
+            elif line.startswith(("HEADER", "TITLE", "CRYST1")):
+                p_fh.write(line)
+                l_fh.write(line)
+            # REMARK, MODEL, TER, END, etc. are intentionally skipped to
+            # keep both output files minimal — ProLIF + RDKit only need
+            # the ATOM/HETATM records.
+        p_fh.write("END\n")
+        l_fh.write("END\n")
+
+    return protein_path, ligand_path
+
+
 def pocket_residues_within(
     pdb_path: Path | str,
     chain: str,

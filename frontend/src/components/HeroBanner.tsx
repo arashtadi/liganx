@@ -72,11 +72,23 @@ export default function HeroBanner({
   // 5 retries with exponential backoff (capped at 5s) covers the streaming
   // race comfortably without hammering the server on a permanent failure.
   const retryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 5000);
+
+  // Detect Boltz-2 cells from the picked row's extra (engine=boltz2).
+  // Boltz-2's pose IS the entire predicted protein-ligand complex in its
+  // own coordinate frame — the crystal WT/mutant receptor PDBs aren't
+  // comparable (different coords) and trying to overlay them produces a
+  // disjointed view where the crystal protein and the predicted complex
+  // float next to each other. So for Boltz-2 cells we DON'T fetch the
+  // crystal structures at all; the pose alone has everything the viewer
+  // needs to render.
+  const pickExt = pick ? parseExtra(pick.extra) : null;
+  const isBoltz2Cell = !!pickExt?.engine && pickExt.engine.startsWith("boltz2");
+
   const wtQuery = useQuery({
     queryKey: ["structure", pdbId, chain, "WT"],
     queryFn: () => api.structure(pdbId, chain, "WT"),
     staleTime: 5 * 60 * 1000,
-    enabled: pick != null,
+    enabled: pick != null && !isBoltz2Cell,
     retry: 5,
     retryDelay,
   });
@@ -84,7 +96,7 @@ export default function HeroBanner({
     queryKey: ["structure", pdbId, chain, pick?.variant ?? ""],
     queryFn: () => api.structure(pdbId, chain, pick!.variant),
     staleTime: 5 * 60 * 1000,
-    enabled: pick != null && pick.variant !== "WT",
+    enabled: pick != null && pick.variant !== "WT" && !isBoltz2Cell,
     retry: 5,
     retryDelay,
   });
@@ -133,14 +145,19 @@ export default function HeroBanner({
   // the canvas has no ligand. Better to keep the skeleton up until the
   // pose lands, so what the user sees inside the viewer always matches the
   // values shown in the matrix cell.
-  const wtReady = !!wtQuery.data;
-  const mutReady = variant === "WT" || !!mutQuery.data || mutQuery.isError;
+  // For Boltz-2 cells the "wtReady" / "mutReady" gates are vestigial —
+  // those queries are disabled and the pose alone is what the viewer
+  // needs. Treat them as always-ready in that mode so we don't block
+  // the viewer waiting on data we'll never request.
+  const wtReady = isBoltz2Cell ? true : !!wtQuery.data;
+  const mutReady = isBoltz2Cell || variant === "WT" || !!mutQuery.data || mutQuery.isError;
   const poseReady = jobId == null || !!poseQuery.data || poseQuery.isError;
-  const wtFetching = wtQuery.isLoading || wtQuery.isFetching;
-  const mutFetching = variant !== "WT" && (mutQuery.isLoading || mutQuery.isFetching);
+  const wtFetching = !isBoltz2Cell && (wtQuery.isLoading || wtQuery.isFetching);
+  const mutFetching = !isBoltz2Cell && variant !== "WT" && (mutQuery.isLoading || mutQuery.isFetching);
   const poseFetching = jobId != null && (poseQuery.isLoading || poseQuery.isFetching);
   // Failed AFTER all retries — show explicit error UX with manual retry.
-  const wtFailed = !wtQuery.data && wtQuery.isError && !wtQuery.isFetching;
+  // Skipped for Boltz-2 (we never asked for the crystal).
+  const wtFailed = !isBoltz2Cell && !wtQuery.data && wtQuery.isError && !wtQuery.isFetching;
   const loadingPdb =
     (!wtReady && wtFetching) ||
     (!mutReady && mutFetching) ||
@@ -228,12 +245,21 @@ export default function HeroBanner({
             </div>
           ) : (
             <MutationOverlayViewer
-              wtPdb={wtQuery.data ?? null}
-              mutantPdb={mutQuery.data ?? null}
-              posePdbqt={poseQuery.data ?? null}
+              // For Boltz-2 the pose IS a complete protein-ligand complex
+              // in the model's own coordinate frame. Pass it as wtPdb (the
+              // single PDB the viewer renders) and set isComplex so the
+              // viewer splits backbone style onto the protein chain and
+              // pose style onto the ligand chain. The crystal queries are
+              // disabled in this mode — overlaying them would put the
+              // crystal protein and the predicted complex at totally
+              // different coords next to each other (the bug we just hit).
+              wtPdb={isBoltz2Cell ? (poseQuery.data ?? null) : (wtQuery.data ?? null)}
+              mutantPdb={isBoltz2Cell ? null : (mutQuery.data ?? null)}
+              posePdbqt={isBoltz2Cell ? null : (poseQuery.data ?? null)}
+              isComplex={isBoltz2Cell}
               contacts={ext.contacts}
               chain={chain}
-              mutationResidue={mutationResidue ?? undefined}
+              mutationResidue={isBoltz2Cell ? undefined : (mutationResidue ?? undefined)}
               pocketCenter={pocketCenter}
               variantLabel={variant}
               contextLabel={`${compound.name ?? `Compound #${compound.id}`} × ${variant}`}
