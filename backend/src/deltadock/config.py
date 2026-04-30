@@ -92,6 +92,20 @@ class Settings(BaseSettings):
     # Off by default — flip on via env (DEFER_VALIDATION=1) when ready.
     defer_validation: bool = False
 
+    # Whether to honor `engine=gnina` on incoming jobs. Defaults False so the
+    # picker stays dark in production until the Pod-side /dock_gnina endpoint
+    # is installed (see pod/GNINA_INSTALL.md). Flip via Fly secret
+    # `GNINA_ENABLED=1` once the Pod has the binary + endpoints. When false,
+    # the runner ignores `job.engine` and always uses QuickVina2-GPU — so
+    # the schema column can ship safely even before the Pod side lands.
+    gnina_enabled: bool = False
+    gnina_timeout_s: int = 120
+    # Default GNINA CNN scoring mode for jobs that pick `engine=gnina`.
+    # "rescore" is fast (~10-30 s/cell), "refine" is slower (~30-90 s) but
+    # uses the CNN gradient to refine the pose itself. Most users want
+    # rescore for matrix screens.
+    gnina_cnn_mode: str = "rescore"
+
     # Email
     resend_api_key: str = ""
     email_from: str = "hello@deltadock.bio"

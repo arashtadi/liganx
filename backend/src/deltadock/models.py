@@ -69,6 +69,21 @@ class Job(SQLModel, table=True):
     # cares about absolute mutant binding.
     include_wt: bool = Field(default=True)
 
+    # Which docking engine to use for this job. Free-form string keeps the
+    # column forward-compatible with engines we haven't shipped yet
+    # (autodock_gpu, vanilla vina, etc.). Current values:
+    #   "quickvina2_gpu"  — DEFAULT. Pod-hosted Vina derivative on NVIDIA GPU.
+    #                       Best balance of speed + Vina-family compatibility.
+    #   "gnina"           — Vina fork with CNN-based pose rescoring (Koes lab,
+    #                       trained on PDBbind). Slower per cell (~2-3x) but
+    #                       genuinely different ranking signal. Behind the
+    #                       GNINA_ENABLED Fly secret until the Pod-side
+    #                       /dock_gnina endpoint is installed.
+    # The runner reads this field to dispatch to the right Pod endpoint;
+    # falling through to the QuickVina engine is the safe default if the
+    # value is unknown. NULL on legacy rows ⇒ treated as quickvina2_gpu.
+    engine: Optional[str] = Field(default="quickvina2_gpu", index=True)
+
     # Status
     status: JobStatus = Field(default=JobStatus.PENDING, index=True)
     error_message: Optional[str] = None

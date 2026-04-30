@@ -424,6 +424,38 @@ def _run_real(session: Session, job: Job) -> None:
         else:
             log.info("RunPod serverless dispatch enabled → endpoint %s", settings.runpod_endpoint_id)
 
+    # GNINA dispatch is opt-in per-job via job.engine. The Pod-side endpoint
+    # /dock_gnina has to be installed first (see pod/GNINA_INSTALL.md) and
+    # the GNINA_ENABLED Fly secret set. When all that's in place, jobs that
+    # arrive with engine=gnina dispatch through the GNINA client; everything
+    # else continues to use QuickVina2-GPU. We deliberately do NOT use
+    # GNINA as an automatic fallback — users picked their engine on
+    # purpose, falling them back silently to a different scoring function
+    # would be misleading.
+    gnina_requested = (
+        getattr(job, "engine", None) == "gnina"
+        and settings.gnina_enabled
+        and pod_on  # GNINA hits the same Pod, so requires pod_dock_url
+    )
+    if gnina_requested:
+        from deltadock_pipeline.gnina_dock import (
+            dock_one_gnina, dock_batch_gnina, GninaDockConfig, GninaDockError, GninaBatchLigand,
+        )
+        gnina_cfg = GninaDockConfig(
+            base_url=settings.pod_dock_url,
+            timeout_s=settings.gnina_timeout_s,
+            cnn_mode=settings.gnina_cnn_mode,
+        )
+        log.info("GNINA dispatch active for this job (cnn=%s)", settings.gnina_cnn_mode)
+    elif getattr(job, "engine", None) == "gnina":
+        # User asked for GNINA but the flag's off OR Pod isn't configured.
+        # Log loudly so we can spot misconfiguration; the runner will fall
+        # through to QuickVina2-GPU below.
+        log.warning(
+            "Job %s requested engine=gnina but GNINA_ENABLED=%s pod_on=%s — falling back to quickvina2_gpu",
+            job.id, settings.gnina_enabled, pod_on,
+        )
+
     if not pod_on and not runpod_on:
         log.info("No remote engine configured — running Vina locally")
 
@@ -1146,7 +1178,30 @@ def _run_real(session: Session, job: Job) -> None:
                     # so one bad call doesn't take down the whole job.
                     engine_used = "local"
                     result = None
-                    if pod_on:
+                    # When the user picked engine=gnina on this job AND the
+                    # feature flag is on AND the Pod is reachable, GNINA
+                    # takes priority over QuickVina2-GPU for the cell. Same
+                    # error-handling shape: GNINA failure → fall through to
+                    # Pod (QuickVina), then to local Vina, just like the
+                    # Pod path does for RunPod overflow.
+                    if gnina_requested:
+                        try:
+                            result = dock_one_gnina(
+                                receptor_pdbqt=receptor,
+                                ligand_pdbqt=lig_pdbqt,
+                                box=box,
+                                work_dir=run_dir,
+                                cfg=gnina_cfg,
+                                exhaustiveness=exhaustiveness,
+                                num_modes=9,
+                            )
+                            engine_used = f"gnina_{settings.gnina_cnn_mode}"
+                        except GninaDockError as gde:
+                            log.warning("GNINA failed for c%s × %s: %s — falling back to QuickVina2-GPU",
+                                        compound.id, variant, gde)
+                            # Don't set engine_used yet — let the Pod branch
+                            # below run and overwrite engine_used appropriately.
+                    if result is None and pod_on:
                         try:
                             result = dock_one_pod(
                                 receptor_pdbqt=receptor,
@@ -1184,7 +1239,12 @@ def _run_real(session: Session, job: Job) -> None:
                                 log.warning("Pod GPU failed for c%s × %s: %s — falling back to local",
                                             compound.id, variant, pde)
                                 engine_used = "local_after_pod_fail"
-                    elif runpod_on:
+                    # RunPod-only path: Pod not configured (or GNINA path
+                    # already covered Pod). Pod-busy overflow is handled
+                    # inside the `if result is None and pod_on:` branch
+                    # above; this branch fires only when there's no Pod
+                    # at all so RunPod is the *primary* remote engine.
+                    if result is None and runpod_on and not pod_on:
                         try:
                             result = dock_one_runpod(
                                 receptor_pdbqt=receptor,

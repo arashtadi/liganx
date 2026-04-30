@@ -42,6 +42,13 @@ class JobCreate(BaseModel):
     # Whether to also dock against wild-type. Default True (most users want a
     # baseline for Δ); set False to skip WT and just dock the listed mutants.
     include_wt: bool = True
+    # Docking engine choice. "quickvina2_gpu" is the default fast Pod engine;
+    # "gnina" is the CNN-rescored Vina fork. The runner enforces availability
+    # via the GNINA_ENABLED config flag — if a user submits engine=gnina while
+    # the Pod-side endpoint isn't installed yet, the runner falls back to
+    # quickvina2_gpu (logged as engine_fallback). Free-form string keeps room
+    # for autodock_gpu / vanilla vina without another schema migration.
+    engine: str = Field(default="quickvina2_gpu", max_length=32)
     # Optional user-provided title for the History page. Defaults to a
     # synthesized label ("EGFR · 3 compounds · T790M") when null.
     title: str | None = Field(default=None, max_length=200)
@@ -115,6 +122,9 @@ class JobOut(BaseModel):
     # legacy behaviour for jobs created before these fields existed.
     exhaustiveness: int = 8
     include_wt: bool = True
+    # Echo the engine the job was submitted with so the matrix UI can label
+    # which engine produced these scores. None on legacy rows = quickvina2_gpu.
+    engine: str | None = "quickvina2_gpu"
     # Owner — UUID of auth.users(id). Null for anonymous legacy jobs (none
     # remain after the wipe, but kept nullable so account deletion sets to
     # NULL rather than cascading the data away). The frontend uses this to

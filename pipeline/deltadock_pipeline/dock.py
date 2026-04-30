@@ -47,6 +47,14 @@ class DockingMode:
     affinity_kcal_mol: float
     rmsd_lb: float
     rmsd_ub: float
+    # CNN-based scores from GNINA. None for vanilla Vina / QuickVina engines.
+    # cnn_score: 0–1 confidence that this is a real binding pose
+    #            (PDBBind-trained classifier head). Higher is more confident.
+    # cnn_affinity: CNN's pK_d estimate. POSITIVE = stronger (opposite sign
+    #               from Vina's kcal/mol affinity, so don't accidentally
+    #               compare them numerically without unit conversion).
+    cnn_score: float | None = None
+    cnn_affinity: float | None = None
 
 
 @dataclass
