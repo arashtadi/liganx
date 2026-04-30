@@ -86,12 +86,15 @@ Implementation:
   `pip install boltz`, download model weights (~5 GB — fits on existing
   /workspace volume).
 - Per-job: write a YAML manifest with WT or mutant sequence + ligand
-  SMILES, call `boltz predict <yaml> --use_msa_server False
-  --output_format pdb`, parse the JSON output, return
-  `(affinity_pred_value, affinity_probability_binary, predicted_pdb)`.
-- Use `--use_msa_server False` (single-sequence mode) so WT and mutant
-  predictions don't depend on MSA construction differences. Faster too —
-  no Colabfold MSA fetch.
+  SMILES, call `boltz predict <yaml> --output_format pdb`, parse the
+  JSON output, return `(affinity_pred_value, affinity_probability_binary,
+  predicted_pdb)`.
+- Boltz's `--use_msa_server` is a Click boolean **flag** (not a
+  value-taking option), default False. Single-sequence mode is the
+  default and what we want — WT and mutant predictions don't depend
+  on MSA construction differences. To enable MSA later, append the
+  flag with no value; do NOT write `--use_msa_server False` (Click
+  rejects "False" as an unexpected positional argument).
 - Pass a pocket hint via `pocket` field in the YAML (template chain ID
   + ligand contact residues from our catalog) so Boltz-2 anchors the
   ligand near the canonical site rather than searching the whole

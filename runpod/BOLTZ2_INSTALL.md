@@ -63,7 +63,11 @@ properties:
       binder: B
 EOF
 
-boltz predict /tmp/boltz_smoke.yaml --use_msa_server False --output_format pdb --cache /workspace/boltz2_cache 2>&1 | tail -20
+boltz predict /tmp/boltz_smoke.yaml --output_format pdb --cache /workspace/boltz2_cache 2>&1 | tail -50
+
+# IMPORTANT: do NOT pass `--use_msa_server False` — it's a Click flag, not
+# a value-taking option. Default is already False (single-sequence mode,
+# which is what we want for fair WT/mutant comparison). Just omit it.
 ```
 
 If you see the predicted complex PDB written and an
@@ -124,9 +128,10 @@ def predict_boltz2(payload: dict) -> dict:
         "--output_format", "pdb",
         "--diffusion_samples", str(n_samples),
     ]
-    if not use_msa:
+    # --use_msa_server is a Click flag (default False = single-sequence mode).
+    # If the caller wants MSA, append the flag with no value; otherwise omit.
+    if use_msa:
         cmd.append("--use_msa_server")
-        cmd.append("False")
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if proc.returncode != 0:
@@ -228,7 +233,7 @@ but if a long protein is submitted, prediction can OOM. Set
 to the kinase domain (we already do this for Vina via the catalog
 `pdb_id` — Boltz can reuse the same trimmed sequence).
 
-**MSA server timeouts.** `--use_msa_server False` skips MSA construction
+**MSA server timeouts.** `(no MSA flag — default is False)` skips MSA construction
 entirely and uses single-sequence mode. This is what we want for the
 mutation-comparison use case (so WT and mutant predictions don't
 diverge because of MSA fetch differences). It's also faster.
