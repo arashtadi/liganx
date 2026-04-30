@@ -24,7 +24,7 @@ export default function App() {
     <AuthProvider>
       <div className="min-h-screen flex flex-col">
         <Header />
-        <main className="flex-1 mx-auto w-full max-w-6xl px-4 sm:px-6 py-8">
+        <Main>
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/new" element={<RequireAuth><NewJobPage /></RequireAuth>} />
@@ -42,7 +42,7 @@ export default function App() {
             {/* Catch-all 404 — used to leak through as a blank page */}
             <Route path="*" element={<NotFound />} />
           </Routes>
-        </main>
+        </Main>
         <Footer />
         {/* First-run tour mascot. Self-gates on route + localStorage —
             renders nothing for users who've seen it or are off the
@@ -55,6 +55,37 @@ export default function App() {
         <ProfileCompletionModal />
       </div>
     </AuthProvider>
+  );
+}
+
+/**
+ * Page wrapper that decides whether to constrain the column.
+ *
+ * Internal pages (NewJob, History, Job, Settings, Library, etc.) are dense
+ * data UIs that read better in a centered max-w-6xl column with horizontal
+ * padding — exactly what we had before. The marketing HomePage at "/", on
+ * the other hand, wants to do edge-to-edge gradient bands and section
+ * stripes (Schrödinger / Stripe / Vercel pattern), so it opts out of any
+ * outer max-width and handles its own internal centering per section.
+ *
+ * We keep the "centered column" as the default to avoid touching every
+ * other page; only "/" gets the full-bleed escape hatch. If we add another
+ * marketing-ish route later (e.g. /pricing, /about) just extend the array.
+ */
+function Main({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  const fullBleedRoutes = ["/"];
+  const fullBleed = fullBleedRoutes.includes(pathname);
+  return (
+    <main
+      className={
+        fullBleed
+          ? "flex-1 w-full"
+          : "flex-1 mx-auto w-full max-w-6xl px-4 sm:px-6 py-8"
+      }
+    >
+      {children}
+    </main>
   );
 }
 

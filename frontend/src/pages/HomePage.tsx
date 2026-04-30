@@ -4,9 +4,21 @@ import {
 } from "../components/Icons";
 import { useAuth } from "../lib/auth";
 
+/**
+ * Marketing landing page. Renders as a stack of FULL-BLEED section bands
+ * (Schrödinger / Stripe / Vercel pattern): each <section> spans 100% of
+ * the viewport for its background, while a child <Container> centers the
+ * actual content at max-w-6xl. App.tsx detects "/" and drops the outer
+ * max-w-6xl wrapper so this page can paint edge to edge — internal
+ * pages (NewJob, History, Job, Settings) keep their constrained column
+ * because they're dense data UIs that read worse stretched.
+ *
+ * Bands alternate background tone (white → slate-50 → white …) so the
+ * page has visual rhythm without needing dividers.
+ */
 export default function HomePage() {
   return (
-    <div className="space-y-20">
+    <div className="flex flex-col">
       <Hero />
       <LogoStrip />
       <HowItWorks />
@@ -18,52 +30,69 @@ export default function HomePage() {
   );
 }
 
+/**
+ * Section content centerer. Pair with a full-width <section> that owns
+ * the background; this just constrains the inner content + adds the
+ * standard horizontal padding so it never touches the viewport edge on
+ * mobile.
+ */
+function Container({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`mx-auto w-full max-w-6xl px-4 sm:px-6 ${className}`}>{children}</div>
+  );
+}
+
 /* ─── Hero ──────────────────────────────────────────────────────────── */
 
 function Hero() {
   return (
-    <section className="relative overflow-hidden rounded-3xl bg-white border border-slate-200/80 shadow-soft dark:bg-slate-900 dark:border-slate-800">
-      {/* background flourish */}
+    <section className="relative overflow-hidden bg-white dark:bg-slate-950 border-b border-slate-200/80 dark:border-slate-800">
+      {/* Background flourishes — full-bleed so the gradient blobs read as
+          atmospheric color across the whole viewport, not just inside a
+          centered card. Anchored to viewport corners with negative offsets
+          so they bleed past the edge on big monitors. */}
       <div className="pointer-events-none absolute inset-0 bg-hero-grid" />
-      <div className="pointer-events-none absolute -top-32 -right-32 w-96 h-96 rounded-full bg-delta-100/60 blur-3xl dark:bg-delta-700/30" />
-      <div className="pointer-events-none absolute -bottom-32 -left-32 w-96 h-96 rounded-full bg-accent-400/20 blur-3xl dark:bg-accent-500/20" />
+      <div className="pointer-events-none absolute -top-32 -right-32 w-[40rem] h-[40rem] rounded-full bg-delta-100/60 blur-3xl dark:bg-delta-700/30" />
+      <div className="pointer-events-none absolute -bottom-32 -left-32 w-[40rem] h-[40rem] rounded-full bg-accent-400/20 blur-3xl dark:bg-accent-500/20" />
 
-      <div className="relative grid grid-cols-1 lg:grid-cols-5 gap-8 p-8 sm:p-12 lg:p-14">
-        <div className="lg:col-span-3 flex flex-col justify-center">
-          <div className="eyebrow flex items-center gap-2">
-            <Sparkles size={14} /> Mutation-aware docking
+      <Container className="relative py-16 sm:py-20 lg:py-28">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+          <div className="lg:col-span-3 flex flex-col justify-center">
+            <div className="eyebrow flex items-center gap-2">
+              <Sparkles size={14} /> Mutation-aware docking
+            </div>
+            <h1 className="mt-4 text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-ink dark:text-white leading-[1.05]">
+              Find compounds that
+              <br />
+              <span className="bg-gradient-to-r from-delta-600 to-accent-500 bg-clip-text text-transparent dark:from-delta-400 dark:to-accent-400">
+                prefer the mutant.
+              </span>
+            </h1>
+            <p className="mt-6 text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
+              Pick a clinically relevant mutation. Pick your compounds. We dock against
+              wild-type <em>and</em> mutant in parallel and show exactly which compounds
+              gain selectivity — no PyMOL, FoldX, or AutoDock setup.
+            </p>
+            <div className="mt-8 flex flex-wrap items-center gap-3">
+              <Link to="/new" className="btn-primary btn-lg">
+                Start a docking run <ArrowRight size={16} />
+              </Link>
+              <Link to="/library" className="btn-secondary btn-lg">
+                Browse mutation library
+              </Link>
+            </div>
+            <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+              <span className="flex items-center gap-1.5"><Check /> No install</span>
+              <span className="flex items-center gap-1.5"><Check /> Vina + GNINA. Two engines.</span>
+              <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
+            </div>
           </div>
-          <h1 className="mt-4 text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-ink dark:text-white leading-[1.05]">
-            Find compounds that
-            <br />
-            <span className="bg-gradient-to-r from-delta-600 to-accent-500 bg-clip-text text-transparent dark:from-delta-400 dark:to-accent-400">
-              prefer the mutant.
-            </span>
-          </h1>
-          <p className="mt-6 text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
-            Pick a clinically relevant mutation. Pick your compounds. We dock against
-            wild-type <em>and</em> mutant in parallel and show exactly which compounds
-            gain selectivity — no PyMOL, FoldX, or AutoDock setup.
-          </p>
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link to="/new" className="btn-primary btn-lg">
-              Start a docking run <ArrowRight size={16} />
-            </Link>
-            <Link to="/library" className="btn-secondary btn-lg">
-              Browse mutation library
-            </Link>
-          </div>
-          <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
-            <span className="flex items-center gap-1.5"><Check /> No install</span>
-            <span className="flex items-center gap-1.5"><Check /> Vina + GNINA. Two engines.</span>
-            <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
+
+          <div className="lg:col-span-2 flex items-center justify-center">
+            <MatrixPreview />
           </div>
         </div>
-
-        <div className="lg:col-span-2 flex items-center justify-center">
-          <MatrixPreview />
-        </div>
-      </div>
+      </Container>
     </section>
   );
 }
@@ -144,18 +173,20 @@ function MatrixPreview() {
 
 function LogoStrip() {
   return (
-    <section className="text-center">
-      <p className="text-xs uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500 font-semibold">
-        Built on tools the community already trusts
-      </p>
-      <div className="mt-5 flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-slate-400 dark:text-slate-500">
-        <Pill>AutoDock Vina</Pill>
-        <Pill>RDKit</Pill>
-        <Pill>FoldX</Pill>
-        <Pill>Mol*</Pill>
-        <Pill>ProLIF</Pill>
-        <Pill>RunPod</Pill>
-      </div>
+    <section className="bg-slate-50 dark:bg-slate-900/40 border-b border-slate-200/80 dark:border-slate-800/60">
+      <Container className="py-10 text-center">
+        <p className="text-xs uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500 font-semibold">
+          Built on tools the community already trusts
+        </p>
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-slate-400 dark:text-slate-500">
+          <Pill>AutoDock Vina</Pill>
+          <Pill>RDKit</Pill>
+          <Pill>FoldX</Pill>
+          <Pill>Mol*</Pill>
+          <Pill>ProLIF</Pill>
+          <Pill>RunPod</Pill>
+        </div>
+      </Container>
     </section>
   );
 }
@@ -189,24 +220,26 @@ function HowItWorks() {
     },
   ];
   return (
-    <section>
-      <SectionHead eyebrow="How it works" title="From mutation to selectivity matrix in three clicks." />
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {steps.map((s) => (
-          <div key={s.n} className="card relative">
-            <div className="absolute top-4 right-4 text-7xl font-black text-slate-100 dark:text-slate-800 select-none leading-none">
-              {s.n}
-            </div>
-            <div className="relative">
-              <div className="w-10 h-10 rounded-lg bg-delta-50 text-delta-600 dark:bg-delta-900/40 dark:text-delta-300 flex items-center justify-center mb-3">
-                {s.icon}
+    <section className="bg-white dark:bg-slate-950">
+      <Container className="py-16 sm:py-20">
+        <SectionHead eyebrow="How it works" title="From mutation to selectivity matrix in three clicks." />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {steps.map((s) => (
+            <div key={s.n} className="card relative">
+              <div className="absolute top-4 right-4 text-7xl font-black text-slate-100 dark:text-slate-800 select-none leading-none">
+                {s.n}
               </div>
-              <h3 className="font-semibold text-ink dark:text-slate-100 mb-1.5">{s.title}</h3>
-              <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{s.body}</p>
+              <div className="relative">
+                <div className="w-10 h-10 rounded-lg bg-delta-50 text-delta-600 dark:bg-delta-900/40 dark:text-delta-300 flex items-center justify-center mb-3">
+                  {s.icon}
+                </div>
+                <h3 className="font-semibold text-ink dark:text-slate-100 mb-1.5">{s.title}</h3>
+                <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{s.body}</p>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </Container>
     </section>
   );
 }
@@ -269,10 +302,11 @@ function FeatureGrid() {
     },
   ];
   return (
-    <section>
-      <SectionHead eyebrow="What you get" title="Everything an early-discovery med-chemist actually wants." />
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {features.map((f) => (
+    <section className="bg-white dark:bg-slate-950">
+      <Container className="py-16 sm:py-20">
+        <SectionHead eyebrow="What you get" title="Everything an early-discovery med-chemist actually wants." />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {features.map((f) => (
           <div
             key={f.title}
             className="card hover:border-delta-300 hover:shadow-glow dark:hover:border-delta-500 transition-all relative"
@@ -289,7 +323,8 @@ function FeatureGrid() {
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{f.body}</p>
           </div>
         ))}
-      </div>
+        </div>
+      </Container>
     </section>
   );
 }
@@ -327,10 +362,11 @@ function WhatsNew() {
     },
   ];
   return (
-    <section>
-      <SectionHead eyebrow="What's new" title="Recently shipped." />
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {items.map((it) => (
+    <section className="bg-slate-50 dark:bg-slate-900/40 border-y border-slate-200/80 dark:border-slate-800/60">
+      <Container className="py-16 sm:py-20">
+        <SectionHead eyebrow="What's new" title="Recently shipped." />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {items.map((it) => (
           <div
             key={it.title}
             className="card relative ring-1 ring-slate-200/70 dark:ring-slate-700/60 overflow-hidden"
@@ -352,7 +388,8 @@ function WhatsNew() {
             <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{it.body}</p>
           </div>
         ))}
-      </div>
+        </div>
+      </Container>
     </section>
   );
 }
@@ -361,8 +398,9 @@ function WhatsNew() {
 
 function Comparison() {
   return (
-    <section>
-      <SectionHead eyebrow="Where we sit" title="The missing middle." />
+    <section className="bg-white dark:bg-slate-950">
+      <Container className="py-16 sm:py-20">
+        <SectionHead eyebrow="Where we sit" title="The missing middle." />
       <div className="card overflow-hidden p-0">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
@@ -427,9 +465,10 @@ function Comparison() {
       {/* Light disclaimer below the comparison. Comparison tables age fast;
           flagging the snapshot date and licensing variance keeps the
           page hard to challenge as competitor capabilities shift. */}
-      <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 text-center">
-        Reflects publicly known features as of April 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
-      </p>
+        <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 text-center">
+          Reflects publicly known features as of April 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
+        </p>
+      </Container>
     </section>
   );
 }
@@ -446,11 +485,14 @@ function CompCell({ value }: { value: boolean | "partial" | "coming" | string })
 function CTAStrip() {
   const { user } = useAuth();
   return (
-    <section className="rounded-3xl overflow-hidden relative bg-gradient-to-br from-delta-600 to-accent-500 text-white p-10 sm:p-14 text-center">
-      <div className="absolute inset-0 opacity-20" style={{
-        backgroundImage: "radial-gradient(circle at 30% 30%, rgba(255,255,255,0.5), transparent 50%)",
+    <section className="relative overflow-hidden bg-gradient-to-br from-delta-600 to-accent-500 text-white">
+      {/* Soft radial highlight in the top-left to break up the flat
+          gradient — matches the inner-card look the rounded version had,
+          but spans the whole viewport now. */}
+      <div className="absolute inset-0 opacity-20 pointer-events-none" style={{
+        backgroundImage: "radial-gradient(circle at 25% 25%, rgba(255,255,255,0.5), transparent 55%)",
       }} />
-      <div className="relative">
+      <Container className="relative py-16 sm:py-20 text-center">
         <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">
           Stop hand-rolling mutation-aware docking.
         </h2>
@@ -478,7 +520,7 @@ function CTAStrip() {
             {user ? "Run your first job" : "Already a user? Run a job"} <ArrowRight size={16} />
           </Link>
         </div>
-      </div>
+      </Container>
     </section>
   );
 }
