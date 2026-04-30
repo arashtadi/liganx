@@ -55,6 +55,15 @@ jobs:
           python-version: "3.12"
 
       - name: Run validation suite
+        # continue-on-error so a real validation FAIL (a case disagreed with
+        # literature direction — exit 1) doesn't prevent the JSON refresh.
+        # FAIL outcomes are honest data we want on the public page; the
+        # script's exit code matters for human review, not for the commit
+        # gate. The 'Validation outcome summary' step at the end still
+        # marks the run as failed if any case FAILed, so the workflow
+        # status reflects reality.
+        id: validate
+        continue-on-error: true
         env:
           LIGANX_BEARER_TOKEN: ${{ inputs.bearer_token }}
           LIGANX_VALIDATE_JSON_OUT: frontend/public/validation_results.json
@@ -62,6 +71,9 @@ jobs:
           python backend/scripts/validate_positive_controls.py
 
       - name: Commit refreshed JSON if changed
+        # Run regardless of the validate step's exit code so FAIL outcomes
+        # still publish their numbers. The page is the point of the suite.
+        if: always()
         run: |
           git config user.name  "liganx-validation-bot[bot]"
           git config user.email "liganx-validation-bot@users.noreply.github.com"
@@ -73,13 +85,16 @@ jobs:
           git commit -m "Refresh validation snapshot via GH Actions (refresh-validation.yml)"
           git push origin HEAD:main
 
-      - name: Frontend deploy reminder
-        # The Vercel project doesn't have GitHub auto-deploy wired up
-        # (it's a cross-project alias to a separate 'liganx' Vercel
-        # project — see deploy-frontend.sh for the rationale). Until
-        # that's fixed, the JSON change won't reach liganx.com until
-        # somebody runs deploy-frontend.sh. Print a reminder so it
-        # doesn't get forgotten.
-        if: success()
+      - name: Validation outcome summary
+        # Surface the underlying validate step's exit code as the workflow's
+        # final status. continue-on-error: true on the validate step lets
+        # the JSON commit still happen on FAIL; this step then re-fails
+        # the workflow so the user knows a case disagreed with literature
+        # and investigates.
+        if: always()
         run: |
-          echo "::notice::Validation JSON refreshed and committed. Run ./deploy-frontend.sh locally to publish to liganx.com."
+          if [ "${{ steps.validate.outcome }}" = "failure" ]; then
+            echo "::warning::At least one case disagreed with the literature direction. JSON committed; review /validation page on liganx.com."
+            exit 1
+          fi
+          echo "::notice::All validation cases passed direction check. JSON refreshed and committed."
