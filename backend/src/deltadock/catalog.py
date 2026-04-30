@@ -50,6 +50,19 @@ class Target:
     indications: list[str]  # cancers / diseases this is relevant in
     mutations: list[Mutation] = field(default_factory=list)
     compounds: list[ReferenceCompound] = field(default_factory=list)
+    # Whether to run a short OpenMM amber99sb-ildn vacuum minimisation on
+    # the mutant receptor after PDBFixer applies the residue substitution.
+    # Default True — relieves substitution clash artefacts and is what
+    # unlocked clean signal on ABL T315I, EGFR T790M, KIT D816V, BTK C481S.
+    # Set False per-target when the minimisation does more harm than good:
+    # specifically for activation-loop residues whose mutation drives a
+    # global conformational change that the local-energy-minimum the
+    # forcefield finds doesn't capture. BRAF V600E is the canonical
+    # example — the validation suite went -2.90 → -0.70 → +2.20 across
+    # three samples once minimisation was enabled, because the relaxed
+    # V600E pocket finds a local minimum far from the active-state
+    # geometry Vemurafenib was designed against.
+    minimize_mutant: bool = True
 
 
 # ─── Targets ──────────────────────────────────────────────────────────────
@@ -158,6 +171,21 @@ BRAF = Target(
         "studied actionable single-residue change in oncology."
     ),
     indications=["melanoma", "thyroid cancer", "colorectal cancer"],
+    # Disable mutant minimisation for BRAF (added 2026-04-30 after the
+    # validation suite caught the regression). V600E is an activation-
+    # loop residue and Vemurafenib's selectivity comes from binding the
+    # active-state conformation. The OpenMM vacuum minimisation we apply
+    # to other targets settles V600E into a different local minimum that
+    # reads to Vina as a worse pocket — values went -2.90 (un-minimised)
+    # → -0.70 → +2.20 (minimised) across three samples, a swing larger
+    # than the clinical IC50 shift. Skipping minimisation here recovers
+    # the clean -2.9 PASS that put BRAF V600E at the top of our case
+    # studies. The trade-off: residues that ARE relaxed elsewhere keep
+    # any substitution clashes here; for V600E specifically that's
+    # acceptable because it's a like-for-like swap in side-chain volume
+    # (Val and Glu are similarly sized; the biology is electrostatic +
+    # conformational, not steric clash).
+    minimize_mutant=False,
     mutations=[
         Mutation("V600E", "V600E — activating",   "Vemurafenib/dabrafenib indication"),
         Mutation("V600K", "V600K — activating",   "Less frequent V600 variant"),

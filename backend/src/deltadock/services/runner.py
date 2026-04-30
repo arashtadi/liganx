@@ -577,7 +577,13 @@ def _run_real(session: Session, job: Job) -> None:
     # to WT prep), but we share one PREP_VERSION for simplicity — the
     # extra ~10 s of WT re-prep on first hit per target is fine and avoids
     # a divergent versioning scheme that's easy to get wrong.
-    PREP_VERSION = "v3-openmm-min"
+    #
+    # v4 (2026-04-30): per-target minimize_mutant flag (catalog.py Target).
+    # BRAF flips to False because V600E activation-loop biology doesn't
+    # survive a local-energy-minimum search — the validation suite went
+    # -2.90 → -0.70 → +2.20 across three samples. Bumping to v4 forces
+    # BRAF mutant rebuilds with minimisation skipped on next request.
+    PREP_VERSION = "v4-per-target-min"
 
     def _is_stale(path: Path) -> bool:
         """A cache file is stale if its sibling .prep_version marker is missing
@@ -782,6 +788,12 @@ def _run_real(session: Session, job: Job) -> None:
                         chain=chain,
                         mutation_code=mut,
                         out_path=fresh_pdb,
+                        # Per-target opt-out from the post-PDBFixer OpenMM
+                        # vacuum minimisation. Default True; BRAF flips this
+                        # to False because V600E activation-loop biology
+                        # doesn't survive a local-minimum search. See the
+                        # Target.minimize_mutant docstring in catalog.py.
+                        minimize=catalog_target.minimize_mutant if catalog_target else True,
                     )
                     prepare_receptor(fresh_pdb, fresh_pdbqt, chain=chain)
                     _stamp(fresh_pdbqt)
@@ -828,6 +840,9 @@ def _run_real(session: Session, job: Job) -> None:
                         chain=chain,
                         mutation_code=mut,
                         out_path=mut_pdb_out,
+                        # Per-target minimisation flag — see other call site
+                        # plus catalog.py Target.minimize_mutant docstring.
+                        minimize=catalog_target.minimize_mutant if catalog_target else True,
                     )
                     prepare_receptor(mut_pdb_out, mut_receptor_out, chain=chain)
                     _stamp(mut_pdb_out)
