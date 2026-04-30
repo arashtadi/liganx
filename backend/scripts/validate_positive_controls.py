@@ -238,13 +238,50 @@ def _submit(case: Case) -> str:
     return job["share_id"]
 
 
-def _poll(case: Case, max_wait_s: int = 600, interval_s: int = 8) -> dict:
+def _poll(case: Case, max_wait_s: int = 900, interval_s: int = 8) -> dict:
+    """Poll the public GET /jobs/{share_id} endpoint until the job lands in
+    a terminal state. Two hardening lessons baked in here:
+
+    1. **Transient HTTP 500s do not abort the case.** Run #5 of the
+       validation suite hit a brief window where /jobs/{id} GETs returned
+       500 (the backend was busy serving in-flight docking jobs from
+       earlier runs). The prior version of this loop bubbled the first
+       error straight up to the caller, the caller marked the case SKIP,
+       and we lost real numbers that the backend was about to deliver.
+       Now we treat 500s as soft errors — log, sleep, retry, up to
+       MAX_TRANSIENT_RETRIES consecutive failures before giving up.
+
+    2. **max_wait_s lifted from 600 → 900 seconds.** At exhaustiveness=16
+       a typical cell takes 60-180s on the GPU pod; the prior 10-minute
+       cap was tight when the pod queues up multiple cells in parallel.
+       15 min is generous and still bounded.
+    """
+    MAX_TRANSIENT_RETRIES = 5
     start = time.time()
     last_status = None
+    transient_failures = 0
     while time.time() - start < max_wait_s:
-        # Public GET /jobs/{share_id} doesn't need auth — reading by share-link
-        # is intentional, the bearer is only required to submit.
-        j = _request("GET", f"/jobs/{case.share_id}", timeout=30)
+        try:
+            # Public GET /jobs/{share_id} doesn't need auth — reading by share-link
+            # is intentional, the bearer is only required to submit.
+            j = _request("GET", f"/jobs/{case.share_id}", timeout=30)
+            transient_failures = 0  # reset on any successful read
+        except RuntimeError as e:
+            msg = str(e)
+            # 5xx and connection errors are transient — backend overload,
+            # network blip, etc. 4xx is a hard error (bad share_id, etc.)
+            # and we surface immediately.
+            is_transient = "HTTP 5" in msg or "timed out" in msg.lower() or "Connection" in msg
+            if is_transient and transient_failures < MAX_TRANSIENT_RETRIES:
+                transient_failures += 1
+                print(
+                    f"  [{case.share_id}] transient poll error "
+                    f"({transient_failures}/{MAX_TRANSIENT_RETRIES}): {msg[:120]}",
+                    file=sys.stderr,
+                )
+                time.sleep(interval_s * 2)  # back off a bit
+                continue
+            raise
         status = j.get("status")
         if status != last_status:
             print(f"  [{case.share_id}] status={status} (t+{int(time.time()-start)}s)", file=sys.stderr)
