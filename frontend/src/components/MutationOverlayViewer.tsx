@@ -542,7 +542,22 @@ function ViewerCanvas({
 
     // Step 4: WT/mutant side-chain swap at the mutation residue, controlled
     // by the blend slider's three-zone show/hide.
-    if (mutationResidue != null) {
+    // Special case for isComplex+mutantPdb (Boltz-2 aligned): control visibility
+    // of the entire mutant complex (model 1) via the blend slider instead of
+    // individual side chains, since the fold may be significantly different.
+    if (isComplex && mutantPdb) {
+      // Three-zone blend: <0.25 = WT only, 0.25-0.75 = both, >0.75 = mutant only
+      const showWt = blend < 0.75;
+      const showMut = blend > 0.25;
+      if (!showWt) {
+        // Hide the entire WT complex backbone when mutant is dominant
+        safe("hide-wt-bb", () => viewer.setStyle({ model: 0, chain: chain ?? "A" }, {}));
+      }
+      if (!showMut) {
+        // Hide the entire mutant complex backbone when WT is dominant
+        safe("hide-mut-bb", () => viewer.setStyle({ model: 1, chain: chain ?? "A" }, {}));
+      }
+    } else if (mutationResidue != null) {
       const wtSel: any = { model: 0, resi: mutationResidue };
       if (chain) wtSel.chain = chain;
       const mutSel: any = { model: 1, resi: mutationResidue };
@@ -555,6 +570,9 @@ function ViewerCanvas({
 
     // Step 5: pose style on model poseModelIdx (or, in complex mode, on
     // chain "L" inside model 0 — the ligand and protein share one PDB).
+    // Special case: isComplex+mutantPdb (Boltz-2 aligned) → apply pose style
+    // to chain "L" on BOTH model 0 (WT complex) and model 1 (mutant complex),
+    // controlled by blend slider visibility.
     const havePose = !!posePdbqt || isComplex;
     if (havePose) {
       let poseSpec: Record<string, any>;
@@ -584,6 +602,13 @@ function ViewerCanvas({
       // is also correct there. Using addStyle uniformly keeps the code
       // simple.
       safe("pose", () => viewer.addStyle(poseSel, poseSpec));
+
+      // When isComplex+mutantPdb, also style the ligand in model 1 (mutant
+      // complex). The blend slider controls visibility of both.
+      if (isComplex && mutantPdb) {
+        const mutPoseSel: any = { model: 1, chain: COMPLEX_LIGAND_CHAIN };
+        safe("pose-mut", () => viewer.addStyle(mutPoseSel, poseSpec));
+      }
     }
 
     // Step 6: hydrogen visibility on the ligand. Default is hidden (cleaner
@@ -676,7 +701,11 @@ function ViewerCanvas({
         // Model 1: mutant (loaded but invisible by default — applyAllStyles
         // controls visibility). If the mutant PDB looks bad, skip it and let
         // the WT view stand on its own rather than failing the whole viewer.
-        if (mutantPdb && mutationResidue != null) {
+        // In isComplex+mutantPdb mode (Boltz-2 aligned WT/mutant overlay),
+        // mutantPdb is a full complex (protein + ligand). In normal Vina mode,
+        // mutantPdb is just the receptor structure and mutationResidue gates
+        // the load.
+        if (mutantPdb && (mutationResidue != null || isComplex)) {
           if (looksLikePdb(mutantPdb)) {
             try {
               viewer.addModel(mutantPdb, "pdb");

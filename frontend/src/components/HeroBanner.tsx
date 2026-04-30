@@ -81,8 +81,12 @@ export default function HeroBanner({
   // float next to each other. So for Boltz-2 cells we DON'T fetch the
   // crystal structures at all; the pose alone has everything the viewer
   // needs to render.
+  // EXCEPTION: when boltz2AlignedRmsd is present (mutant aligned to WT with
+  // RMSD < 3.0 Å), fetch the WT pose too so we can overlay both complexes
+  // in the 3D viewer with the blend slider.
   const pickExt = pick ? parseExtra(pick.extra) : null;
   const isBoltz2Cell = !!pickExt?.engine && pickExt.engine.startsWith("boltz2");
+  const boltz2Aligned = isBoltz2Cell && pickExt?.boltz2AlignedRmsd != null;
 
   const wtQuery = useQuery({
     queryKey: ["structure", pdbId, chain, "WT"],
@@ -105,6 +109,16 @@ export default function HeroBanner({
     queryFn: () => api.pose(jobId!, pick!.compound.id, pick!.variant),
     staleTime: 5 * 60 * 1000,
     enabled: jobId != null && pick != null,
+    retry: 5,
+    retryDelay,
+  });
+  // For boltz2Aligned cells, also fetch the WT pose so we can overlay both
+  // complexes in the viewer (mutant pose is in poseQuery, WT pose here).
+  const wtPoseQuery = useQuery({
+    queryKey: ["pose", jobId, pick?.compound.id ?? 0, "WT"],
+    queryFn: () => api.pose(jobId!, pick!.compound.id, "WT"),
+    staleTime: 5 * 60 * 1000,
+    enabled: jobId != null && pick != null && boltz2Aligned,
     retry: 5,
     retryDelay,
   });
@@ -149,19 +163,22 @@ export default function HeroBanner({
   // those queries are disabled and the pose alone is what the viewer
   // needs. Treat them as always-ready in that mode so we don't block
   // the viewer waiting on data we'll never request.
-  const wtReady = isBoltz2Cell ? true : !!wtQuery.data;
+  const wtReady = isBoltz2Cell && !boltz2Aligned ? true : !!wtQuery.data;
   const mutReady = isBoltz2Cell || variant === "WT" || !!mutQuery.data || mutQuery.isError;
   const poseReady = jobId == null || !!poseQuery.data || poseQuery.isError;
+  const wtPoseReady = !boltz2Aligned || !!wtPoseQuery.data || wtPoseQuery.isError;
   const wtFetching = !isBoltz2Cell && (wtQuery.isLoading || wtQuery.isFetching);
   const mutFetching = !isBoltz2Cell && variant !== "WT" && (mutQuery.isLoading || mutQuery.isFetching);
   const poseFetching = jobId != null && (poseQuery.isLoading || poseQuery.isFetching);
+  const wtPoseFetching = boltz2Aligned && (wtPoseQuery.isLoading || wtPoseQuery.isFetching);
   // Failed AFTER all retries — show explicit error UX with manual retry.
   // Skipped for Boltz-2 (we never asked for the crystal).
   const wtFailed = !isBoltz2Cell && !wtQuery.data && wtQuery.isError && !wtQuery.isFetching;
   const loadingPdb =
     (!wtReady && wtFetching) ||
     (!mutReady && mutFetching) ||
-    (!poseReady && poseFetching);
+    (!poseReady && poseFetching) ||
+    (!wtPoseReady && wtPoseFetching);
 
   return (
     <section className="card relative overflow-hidden p-0">
@@ -253,8 +270,24 @@ export default function HeroBanner({
               // disabled in this mode — overlaying them would put the
               // crystal protein and the predicted complex at totally
               // different coords next to each other (the bug we just hit).
-              wtPdb={isBoltz2Cell ? (poseQuery.data ?? null) : (wtQuery.data ?? null)}
-              mutantPdb={isBoltz2Cell ? null : (mutQuery.data ?? null)}
+              //
+              // EXCEPTION: when boltz2AlignedRmsd is present, the mutant
+              // pose has been aligned to the WT pose (RMSD < 3.0 Å). In this
+              // case pass both poses so the viewer can overlay them with the
+              // blend slider: wtPdb = WT aligned complex, mutantPdb = mutant
+              // aligned complex, isComplex=true for both.
+              wtPdb={
+                isBoltz2Cell
+                  ? boltz2Aligned
+                    ? (wtPoseQuery.data ?? null)
+                    : (poseQuery.data ?? null)
+                  : (wtQuery.data ?? null)
+              }
+              mutantPdb={
+                isBoltz2Cell && boltz2Aligned
+                  ? (poseQuery.data ?? null)
+                  : (isBoltz2Cell ? null : (mutQuery.data ?? null))
+              }
               posePdbqt={isBoltz2Cell ? null : (poseQuery.data ?? null)}
               isComplex={isBoltz2Cell}
               contacts={ext.contacts}

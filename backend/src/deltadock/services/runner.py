@@ -501,6 +501,10 @@ def _run_boltz2_dispatch(
     # Step 4: per-cell loop. Boltz-2 has no native ligand-batch endpoint
     # yet (see predict_batch_boltz2 stub), so we iterate compound × variant
     # one HTTP call at a time. Each call is ~20 s on a warm RTX 4090.
+    #
+    # Track WT predicted complexes by (compound_id, "WT") so we can align
+    # mutant complexes to them. Key: (compound_id, "WT"), value: Path to predicted_pdb.
+    wt_predicted_pdbs: dict[tuple[int, str], Path] = {}
     total_cells = len(compounds) * len(variants)
     cell_idx = 0
     with tempfile.TemporaryDirectory(prefix=f"boltz2-job{job.id}-") as work_str:
@@ -543,6 +547,9 @@ def _run_boltz2_dispatch(
                         pocket_residues=pocket_residues or None,
                         chain_id=chain,
                     )
+                    # Track WT poses for later alignment of mutants
+                    if variant == "WT":
+                        wt_predicted_pdbs[(compound.id, "WT")] = result.predicted_pdb
                 except Boltz2DockError as bde:
                     log.warning(
                         "Boltz-2 failed for c%s × %s: %s",
@@ -579,16 +586,55 @@ def _run_boltz2_dispatch(
                 # protein-only + ligand-only PDBs first, then call the
                 # same subprocess-isolated runner the Vina path uses.
                 from .pose_store import get_pose_store
+
+                # For non-WT variants, attempt Cα alignment to the WT predicted
+                # complex (when available). If alignment succeeds with RMSD < 3.0 Å,
+                # overwrite the mutant pose with the aligned version.
+                pose_to_write = result.predicted_pdb
+                alignment_note = None
+                if variant != "WT" and (compound.id, "WT") in wt_predicted_pdbs:
+                    try:
+                        from deltadock_pipeline.boltz2_align import align_complex_to
+                        wt_pdb = wt_predicted_pdbs[(compound.id, "WT")]
+                        aligned_out = cell_dir / f"aligned_{variant}.pdb"
+                        rmsd, ok_flag = align_complex_to(
+                            target_pdb=wt_pdb,
+                            source_pdb=pose_to_write,
+                            out_pdb=aligned_out,
+                            chain_id=chain,
+                        )
+                        if ok_flag:
+                            # RMSD < 3.0 Å — overlay is meaningful
+                            pose_to_write = aligned_out
+                            alignment_note = f"boltz2_aligned_to_wt={rmsd}A"
+                            log.info(
+                                "Boltz-2 c%s × %s: aligned to WT, RMSD=%.1f Å",
+                                compound.id, variant, rmsd,
+                            )
+                        else:
+                            # RMSD >= 3.0 Å — fold has diverged, skip overlay
+                            alignment_note = f"boltz2_alignment_skipped: RMSD={rmsd}A >= 3.0A (fold diverged)"
+                            log.info(
+                                "Boltz-2 c%s × %s: alignment RMSD=%.1f Å >= 3.0 — skipping (fold diverged)",
+                                compound.id, variant, rmsd,
+                            )
+                    except Exception as ae:
+                        alignment_note = f"boltz2_alignment_skipped: {type(ae).__name__}:{str(ae)[:60]}"
+                        log.warning(
+                            "Boltz-2 c%s × %s alignment failed: %s",
+                            compound.id, variant, ae,
+                        )
+
                 try:
                     pose_uri = get_pose_store().write(
-                        job.id, compound.id, variant, result.predicted_pdb,
+                        job.id, compound.id, variant, pose_to_write,
                     )
                 except Exception as e:
                     log.warning(
                         "Could not persist Boltz-2 pose for c%s × %s: %s",
                         compound.id, variant, e,
                     )
-                    pose_uri = str(result.predicted_pdb)
+                    pose_uri = str(pose_to_write)
 
                 # Telemetry that the JobPage + parseExtra.ts surface back
                 # to the user: the raw affinity, the binder probability,
@@ -597,6 +643,11 @@ def _run_boltz2_dispatch(
                 parts.append(f"aff_value={result.affinity_pred_value:.3f}")
                 parts.append(f"aff_prob={result.affinity_probability_binary:.3f}")
                 parts.append(f"pocket_residues={len(pocket_residues)}")
+
+                # Append alignment outcome to the extra string so the frontend
+                # can detect whether this mutant was aligned and at what RMSD.
+                if alignment_note:
+                    parts.append(alignment_note)
 
                 # ProLIF on the Boltz-2 complex. Fail-soft — if anything
                 # goes wrong (split fails, ProLIF subprocess crashes, no

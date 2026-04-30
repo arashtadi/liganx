@@ -92,6 +92,12 @@ export interface ParsedExtra {
    *  learned pocket prior decided where to bind. Present only on
    *  cells with engine=boltz2. */
   pocketResidues?: number;
+  /** Boltz-2 mutant → WT alignment RMSD in Angstroms. Present only when
+   *  the mutant complex was successfully aligned to the WT complex by Cα
+   *  atoms (RMSD < 3.0 Å). The 3D viewer can use this to determine whether
+   *  to enable the overlay slider. Above 3.0 Å the fold has diverged
+   *  significantly and overlay is misleading — slider stays hidden. */
+  boltz2AlignedRmsd?: number;
   /** When the mutation residue lies outside the Vina docking box (typically
    *  >11 Å from box center), single-conformation docking can't capture the
    *  geometric effect of the substitution — the mutated atoms are simply
@@ -224,6 +230,13 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         const m = v.match(/^([\d.]+)A?$/);
         const dist = m ? parseFloat(m[1]) : NaN;
         if (Number.isFinite(dist)) out.outsidePocketA = dist;
+        break;
+      }
+      case "boltz2_aligned_to_wt": {
+        // Format: "<rmsd>A" — e.g. "1.2A"
+        const m = v.match(/^([\d.]+)A?$/);
+        const rmsd = m ? parseFloat(m[1]) : NaN;
+        if (Number.isFinite(rmsd)) out.boltz2AlignedRmsd = rmsd;
         break;
       }
       // ignore err, validate_err, foldx_failed prefixes etc.
