@@ -235,8 +235,58 @@ export interface CatalogTarget {
   compounds: CatalogCompound[];
 }
 
+/** Typed current-user profile, returned by GET /me/profile and echoed
+ *  by PUT. Mirrors Supabase user_metadata into a SQL-queryable shape.
+ *  All fields except user_id and marketing_opt_in can be null because
+ *  OAuth users sign up without filling in the profile form. */
+export interface UserProfile {
+  user_id: string;
+  full_name?: string | null;
+  organization?: string | null;
+  role?: string | null;
+  researchgate_url?: string | null;
+  marketing_opt_in: boolean;
+  signup_source?: string | null;
+}
+
+/** PATCH-style payload for PUT /me/profile. All fields optional —
+ *  only the ones present in the request are updated. Empty string
+ *  clears the field. */
+export interface UserProfileUpdate {
+  full_name?: string;
+  organization?: string;
+  role?: string;
+  researchgate_url?: string;
+  marketing_opt_in?: boolean;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
+
+  // ── Current-user profile (typed mirror of Supabase user_metadata) ──
+  // Reads from public.user_profile via the backend so we get clean
+  // typed columns instead of squinting at session.user.user_metadata.
+  // PUT is PATCH-style — only fields you include are touched. Empty
+  // string clears a column (so user can blank out their org if they
+  // want).
+  getMyProfile: () => request<UserProfile>("/me/profile"),
+  updateMyProfile: (patch: UserProfileUpdate) =>
+    request<UserProfile>("/me/profile", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  /** Mark the OAuth complete-profile modal as dismissed. Persists
+   *  across browsers/devices because it lives on the user_profile
+   *  row rather than localStorage. Idempotent — calling twice is fine. */
+  dismissOnboarding: async (): Promise<void> => {
+    const r = await fetch(`${BASE}/me/profile/dismiss-onboarding`, {
+      method: "POST",
+      headers: { ...(await authHeader()) },
+    });
+    if (!r.ok && r.status !== 204) {
+      throw new ApiError(r.status, `${r.status} ${r.statusText}`);
+    }
+  },
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves

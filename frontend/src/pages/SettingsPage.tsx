@@ -28,11 +28,13 @@
  * propagates to the header avatar without a page reload.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Link } from "react-router-dom";
-import { useAuth } from "../lib/auth";
+import { useAuth, SIGNUP_ROLES } from "../lib/auth";
 import { supabase } from "../lib/supabase";
+import { api, ApiError } from "../api";
+import type { UserProfile } from "../api";
 import {
   isDocFlaskTourDismissed,
   resetDocFlaskTour,
@@ -71,6 +73,7 @@ export default function SettingsPage() {
       </header>
 
       <ProfilePictureCard userEmail={user.email ?? ""} initialAvatarUrl={initialAvatar} />
+      <ProfileFieldsCard />
       <EmailCard currentEmail={user.email ?? ""} />
       <PasswordCard
         signedInWithPasswordOnly={!user.app_metadata?.providers?.some(
@@ -433,6 +436,188 @@ function DocFlaskCard() {
           />
         </button>
       </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Profile fields                                                             */
+/* -------------------------------------------------------------------------- */
+//
+// Editable mirror of the sign-up form: full_name, organization, role,
+// ResearchGate URL, marketing opt-in. Reads from /me/profile (typed
+// public.user_profile), writes via PUT /me/profile. The Supabase
+// user_metadata JSON stays in sync from the metadata side via the
+// trigger; writes from this card update the typed table directly,
+// which is the source of truth the History/Insights UI reads from.
+//
+// Why a separate card instead of bundling into the Profile picture
+// card: keeps the diff readable, lets us add/remove fields here
+// without touching the avatar upload logic, and matches the visual
+// pattern of the existing Email/Password/DocFlask cards.
+
+function ProfileFieldsCard() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  // Single source of truth for the form state. We hydrate it from
+  // GET /me/profile on mount; on save we PUT back the diff and
+  // refresh from the server response so any server-side normalization
+  // (e.g. trimming, role validation) is reflected in the UI.
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    api.getMyProfile()
+      .then((p) => {
+        if (mounted) {
+          setProfile(p);
+          setLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (mounted) {
+          setErr(e instanceof ApiError ? e.message : "Failed to load profile");
+          setLoading(false);
+        }
+      });
+    return () => { mounted = false; };
+  }, []);
+
+  if (loading) {
+    return (
+      <section className="card p-6">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <Spinner size={14} /> Loading profile…
+        </div>
+      </section>
+    );
+  }
+  if (!profile) {
+    return null;
+  }
+
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!profile) return;
+    setErr(null);
+    setOk(null);
+    // Soft-validate ResearchGate URL — same rule as sign-up.
+    if (profile.researchgate_url && !/^https?:\/\//i.test(profile.researchgate_url)) {
+      setErr("ResearchGate URL must start with https://");
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await api.updateMyProfile({
+        full_name: profile.full_name ?? "",
+        organization: profile.organization ?? "",
+        role: profile.role ?? "",
+        researchgate_url: profile.researchgate_url ?? "",
+        marketing_opt_in: profile.marketing_opt_in,
+      });
+      setProfile(updated);
+      setOk("Saved");
+      // Auto-clear the success message after 3 s so the panel doesn't
+      // accumulate stale "Saved" notices.
+      setTimeout(() => setOk(null), 3000);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card p-6">
+      <h2 className="text-lg font-semibold text-ink dark:text-white mb-1">
+        Profile
+      </h2>
+      <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">
+        These details help us tailor Liganx to your work and credit your contributions back to you.
+      </p>
+
+      <form onSubmit={onSave} className="space-y-4">
+        <div>
+          <label className="label">Full name</label>
+          <input
+            type="text"
+            className="input"
+            value={profile.full_name ?? ""}
+            onChange={(e) => setProfile({ ...profile, full_name: e.target.value })}
+            disabled={saving}
+            placeholder="Jane Smith"
+          />
+        </div>
+        <div>
+          <label className="label">Company / Institution</label>
+          <input
+            type="text"
+            className="input"
+            value={profile.organization ?? ""}
+            onChange={(e) => setProfile({ ...profile, organization: e.target.value })}
+            disabled={saving}
+            placeholder="MIT, Genentech, Stanford…"
+          />
+        </div>
+        <div>
+          <label className="label">Role</label>
+          <select
+            className="input"
+            value={profile.role ?? ""}
+            onChange={(e) => setProfile({ ...profile, role: e.target.value })}
+            disabled={saving}
+          >
+            <option value="">— Select —</option>
+            {SIGNUP_ROLES.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">ResearchGate profile</label>
+          <input
+            type="url"
+            className="input"
+            value={profile.researchgate_url ?? ""}
+            onChange={(e) => setProfile({ ...profile, researchgate_url: e.target.value })}
+            disabled={saving}
+            placeholder="https://www.researchgate.net/profile/…"
+          />
+        </div>
+        <label className="flex items-start gap-2.5 cursor-pointer select-none pt-1">
+          <input
+            type="checkbox"
+            className="mt-0.5 w-4 h-4 rounded border-slate-300 text-delta-600 focus:ring-delta-500 dark:border-slate-600 dark:bg-slate-800"
+            checked={profile.marketing_opt_in}
+            onChange={(e) => setProfile({ ...profile, marketing_opt_in: e.target.checked })}
+            disabled={saving}
+          />
+          <span className="text-sm text-slate-700 dark:text-slate-300 leading-snug">
+            Send me product updates and the occasional research newsletter.
+          </span>
+        </label>
+
+        {err && (
+          <div className="rounded-md bg-rose-50 border border-rose-200 px-3 py-2 text-sm text-rose-800 dark:bg-rose-900/20 dark:border-rose-800/40 dark:text-rose-200">
+            {err}
+          </div>
+        )}
+        {ok && (
+          <div className="rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:border-emerald-800/40 dark:text-emerald-200">
+            {ok}
+          </div>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            {saving ? <Spinner size={14} className="mr-2" /> : null}
+            Save profile
+          </button>
+        </div>
+      </form>
     </section>
   );
 }

@@ -17,6 +17,7 @@ import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
 import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
+import ProfileCompletionModal from "./components/ProfileCompletionModal";
 
 export default function App() {
   return (
@@ -48,6 +49,10 @@ export default function App() {
             tour-eligible pages. Mounted once at app root so the tour
             survives client-side route transitions. */}
         <DocFlaskTour />
+        {/* Auto-shows when a signed-in user has incomplete profile
+            (missing organization or role) and hasn't dismissed it.
+            Designed for OAuth users who skip the SignupPage form. */}
+        <ProfileCompletionModal />
       </div>
     </AuthProvider>
   );
