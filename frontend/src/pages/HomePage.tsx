@@ -54,7 +54,7 @@ function Hero() {
           </div>
           <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
             <span className="flex items-center gap-1.5"><Check /> No install</span>
-            <span className="flex items-center gap-1.5"><Check /> Vina under the hood</span>
+            <span className="flex items-center gap-1.5"><Check /> Vina + GNINA. Two engines.</span>
             <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
           </div>
         </div>
@@ -222,7 +222,13 @@ function FeatureGrid() {
     {
       icon: <Bolt />,
       title: "GPU-accelerated docking",
-      body: "QuickVina2-GPU on RunPod with batched dispatch — typical cells finish in seconds, not minutes. Real Vina scoring, not a placeholder.",
+      body: "QuickVina2-GPU on a dedicated RunPod NVIDIA Blackwell GPU with batched dispatch — typical cells finish in seconds, not minutes. Real Vina scoring, not a placeholder.",
+    },
+    {
+      icon: <Sparkles />,
+      title: "Choose your scoring engine",
+      body: "Pick QuickVina2-GPU (fast Vina-family) or GNINA — the Vina derivative with a CNN-based pose-rescoring head trained on PDBbind. Two genuinely different ranking signals on the same job, side-by-side. Most free tools give you one.",
+      isNew: true,
     },
     {
       icon: <Sparkles />,
@@ -377,6 +383,15 @@ function Comparison() {
               ["WT-vs-mutant matrix",            false,     true,      "partial"],
               ["No install required",            true,      true,      false],
               ["Plain-English interpretation",   false,     true,      false],
+              // Engine-choice row added 2026-04-30 alongside the GNINA
+              // ship. Free servers ship one fixed engine (mostly Vina,
+              // sometimes a stripped FlexX / SwissDock variant). Liganx
+              // exposes QuickVina2-GPU + GNINA per job. Schrödinger has
+              // multiple scoring stages (Glide HTVS / SP / XP) but
+              // they're sequential on the same engine, not user-pickable
+              // alternative engines, so this lands as "partial".
+              ["Multiple scoring engines",       false,     true,      "partial"],
+              ["CNN-based pose rescoring",       false,     true,      false],
               // Row labels generalized so the Schrödinger ✓ doesn't
               // imply they use the same OSS tools we do (PoseBusters,
               // RDKit). Schrödinger has equivalent functionality via
