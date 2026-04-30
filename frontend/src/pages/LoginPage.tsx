@@ -1,10 +1,23 @@
-// Sign-in page. Email + password is the primary path; Google sign-in is the
-// secondary CTA. Forgot-password link sends a magic email via Supabase.
+// Sign-in page.
+//
+// Layout choices:
+//   • Google button is at the TOP of the form, branded, before the email
+//     fields. OAuth converts ~3x faster than typing email + password and
+//     this ordering nudges users toward the faster path. The official
+//     multicolor G mark is the recognition shortcut.
+//   • Email + password is below, separated by an "or sign in with email"
+//     divider so it reads as the secondary path, not the only path.
+//   • The "New to Liganx?" CTA at the bottom is a real outlined button —
+//     not a tiny gray text link. The previous treatment buried sign-up
+//     to the point new visitors might leave thinking the page wasn't
+//     for them. Now both paths (existing user → Sign in, new user →
+//     Create account) are first-class buttons.
 
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { Spinner } from "../components/Icons";
+import GoogleSignInButton from "../components/GoogleSignInButton";
 
 export default function LoginPage() {
   const { signInWithPassword, signInWithGoogle } = useAuth();
@@ -14,6 +27,10 @@ export default function LoginPage() {
   // post-login destination. ?next=/history sends them to history (used when
   // a protected link redirected them here).
   const next = search.get("next") || "/new";
+  // Preserve the `next` param when bouncing to /signup so users who hit a
+  // protected page, redirected to login, then chose "Create account" still
+  // land back where they wanted to go after verification.
+  const signupHref = `/signup${search.get("next") ? `?next=${encodeURIComponent(search.get("next")!)}` : ""}`;
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -48,6 +65,19 @@ export default function LoginPage() {
     <div className="mx-auto max-w-md py-12 animate-fade-in">
       <h1 className="text-3xl font-bold tracking-tight mb-1">Sign in</h1>
       <p className="muted mb-6">Welcome back. Pick up where you left off.</p>
+
+      {/* Google goes FIRST — the recognition badge + faster conversion path. */}
+      <GoogleSignInButton
+        label="Continue with Google"
+        onClick={onGoogle}
+        busy={busy}
+      />
+
+      <div className="my-5 flex items-center gap-3 text-xs uppercase tracking-wider text-slate-400">
+        <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+        or sign in with email
+        <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+      </div>
 
       <form onSubmit={onSubmit} className="space-y-4">
         <div>
@@ -91,26 +121,22 @@ export default function LoginPage() {
         </button>
       </form>
 
-      <div className="my-5 flex items-center gap-3 text-xs uppercase tracking-wider text-slate-400">
-        <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" /> or
-        <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
-      </div>
-
-      <button
-        type="button"
-        onClick={onGoogle}
-        disabled={busy}
-        className="btn btn-secondary w-full"
-      >
-        Continue with Google
-      </button>
-
-      <p className="mt-6 text-sm text-center text-slate-600 dark:text-slate-400">
-        New to Liganx?{" "}
-        <Link to={`/signup${search.get("next") ? `?next=${encodeURIComponent(search.get("next")!)}` : ""}`} className="text-delta-600 hover:underline dark:text-delta-400 font-semibold">
+      {/* New-user CTA. Previously a tiny grey text link tucked at the bottom;
+          now it's a real outlined button so the "I don't have an account
+          yet" path has the same visual weight as the existing-user paths
+          above. The card framing also separates it from the sign-in form so
+          new visitors immediately see the alternative without scanning. */}
+      <div className="mt-8 rounded-xl border border-delta-200 bg-delta-50/40 p-4 text-center dark:border-delta-800/60 dark:bg-delta-900/15">
+        <p className="text-sm text-slate-700 dark:text-slate-200 mb-3">
+          New to Liganx? <span className="text-slate-500 dark:text-slate-400">Free tier — 5 dockings, 2 mutations per submit.</span>
+        </p>
+        <Link
+          to={signupHref}
+          className="inline-flex w-full items-center justify-center rounded-lg border-2 border-delta-500 bg-white px-4 py-2.5 text-[15px] font-semibold text-delta-700 shadow-sm transition-colors hover:bg-delta-50 active:bg-delta-100 dark:border-delta-400 dark:bg-slate-800 dark:text-delta-300 dark:hover:bg-slate-750"
+        >
           Create an account
         </Link>
-      </p>
+      </div>
     </div>
   );
 }
