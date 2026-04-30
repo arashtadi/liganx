@@ -200,6 +200,28 @@ class JobCancelled(Exception):
     and leaves the status as CANCELLED (does NOT overwrite with FAILED)."""
 
 
+def set_stage(session: Session, job_id: int, stage: str | None) -> None:
+    """Write a short stage slug onto the job row so the JobPage's progress
+    banner can show the user what's happening RIGHT NOW.
+
+    Stages are short slugs the frontend translates to friendly labels
+    ("fetching_pdb" → "Fetching protein structure"). Free-form text means
+    we can add new stages without coordinating a migration each time.
+
+    Cheap: one short UPDATE, no transaction wrap. Caller should already
+    have an open session. Session.refresh(job) before reading stage in
+    the same call site, since SQLModel doesn't auto-invalidate after
+    a bare UPDATE.
+    """
+    fresh = session.get(Job, job_id)
+    if fresh is None:
+        return
+    fresh.stage = stage
+    fresh.updated_at = datetime.utcnow()
+    session.add(fresh)
+    session.commit()
+
+
 def is_cancelled(session: Session, job_id: int) -> bool:
     """Cheap re-read of the job's status from the DB. Used between cells
     in the per-cell loop. Refreshes the in-memory copy so callers see the
@@ -249,6 +271,10 @@ def run_job_in_background(job_id: int) -> None:
             session.refresh(job)
             if job.status != JobStatus.CANCELLED:
                 job.status = JobStatus.COMPLETED
+                # Clear the pre-flight stage marker — the job is done, the
+                # frontend's progress banner shouldn't keep showing
+                # "validating_poses" or whatever the last stage was.
+                job.stage = None
                 job.updated_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
@@ -435,6 +461,7 @@ def _run_boltz2_dispatch(
     # Failures here are catastrophic for the whole job (no sequence → no
     # boltz prediction possible), so let them propagate up to the run_job
     # exception handler which marks the job FAILED with a useful reason.
+    set_stage(session, job.id, "extracting_sequence")
     try:
         wt_sequence = extract_sequence_from_pdb(cleaned_pdb, chain)
     except ValueError as e:
@@ -474,6 +501,8 @@ def _run_boltz2_dispatch(
     # Step 4: per-cell loop. Boltz-2 has no native ligand-batch endpoint
     # yet (see predict_batch_boltz2 stub), so we iterate compound × variant
     # one HTTP call at a time. Each call is ~20 s on a warm RTX 4090.
+    total_cells = len(compounds) * len(variants)
+    cell_idx = 0
     with tempfile.TemporaryDirectory(prefix=f"boltz2-job{job.id}-") as work_str:
         work = Path(work_str)
         for compound in compounds:
@@ -483,6 +512,10 @@ def _run_boltz2_dispatch(
             for variant in variants:
                 if is_cancelled(session, job.id):
                     raise JobCancelled()
+                cell_idx += 1
+                # Stage tells the user which cell we're on right now —
+                # critical for Boltz-2 because each cell takes ~130 s.
+                set_stage(session, job.id, f"predicting_{cell_idx}_of_{total_cells}")
                 seq = sequence_for_variant.get(variant)
                 if seq is None:
                     # Mutation rejected upstream; emit a clean failure row.
@@ -815,6 +848,7 @@ def _run_real(session: Session, job: Job) -> None:
     # with heterogens) AND what we use to prep the WT receptor.
     # Each prep step is wrapped to convert a generic "list index out of range"
     # style traceback into a step-tagged error the user can act on.
+    set_stage(session, job.id, "fetching_pdb")
     PDB_CACHE.mkdir(parents=True, exist_ok=True)
     try:
         raw_pdb = fetch_pdb(pdb_id, PDB_CACHE)
@@ -898,6 +932,7 @@ def _run_real(session: Session, job: Job) -> None:
 
     cleaned_pdb = PDB_CACHE / f"{pdb_id}_{chain}.clean.pdb"
     if _is_stale(cleaned_pdb):
+        set_stage(session, job.id, "cleaning_pdb")
         log.info("Cleaning %s with PDBFixer (prep %s)", pdb_id, PREP_VERSION)
         # Two-attempt loop. First attempt may use a cached raw_pdb that's
         # truncated (RCSB CloudFront has flaky cold-cache hits) or partially
@@ -976,6 +1011,7 @@ def _run_real(session: Session, job: Job) -> None:
         )
         return
 
+    set_stage(session, job.id, "preparing_receptor")
     # Step 2: prep WT receptor once. Cached across jobs. The WT receptor is
     # derived from cleaned_pdb so when the latter gets re-built (stale
     # invalidation), the WT PDBQT must also be rebuilt — otherwise it'd
@@ -1059,6 +1095,7 @@ def _run_real(session: Session, job: Job) -> None:
             pocket_hints[mut] = None
 
     for mut in [m for m in job.mutations.split(",") if m]:
+        set_stage(session, job.id, f"building_mutant_{mut}")
         # PRECACHE FIRST — many mutant receptors were built offline with FoldX
         # and baked into the Docker image (see backend/precache/receptors/).
         # Without this check, prod (where FoldX isn't installed) would
@@ -1217,6 +1254,7 @@ def _run_real(session: Session, job: Job) -> None:
             receptor_pdb_for_variant[mut] = cleaned_pdb
             variant_extra[mut] = f"foldx_failed: {e}"
 
+    set_stage(session, job.id, "preparing_compounds")
     # Step 4+5: prep each ligand and dock against each variant's receptor.
     # We check job.status between cells (cooperative cancellation) — if the
     # user has hit POST /jobs/{key}/cancel via the UI, we bail out as soon
@@ -1498,7 +1536,9 @@ def _run_real(session: Session, job: Job) -> None:
                     session.add(job)
                     session.commit()
                     log.info("Job %s docking phase complete; running validation in background", job.id)
+            set_stage(session, job.id, "validating_poses" if pending_validations else None)
             _drain_pending_validations(pending_validations, session)
+            set_stage(session, job.id, None)
             return  # batched path done; skip the legacy per-cell loop below
 
         # ── Legacy per-cell dispatch (untouched). Kept as fallback for
@@ -1711,7 +1751,9 @@ def _run_real(session: Session, job: Job) -> None:
                 session.add(job)
                 session.commit()
                 log.info("Job %s docking phase complete; running validation in background", job.id)
+        set_stage(session, job.id, "validating_poses" if pending_validations else None)
         _drain_pending_validations(pending_validations, session)
+        set_stage(session, job.id, None)
 
 
 def _catalog_by_pdb(pdb_id: str):

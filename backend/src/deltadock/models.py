@@ -88,6 +88,15 @@ class Job(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.PENDING, index=True)
     error_message: Optional[str] = None
 
+    # Free-form stage slug the runner writes as it advances through pre-
+    # flight phases (fetching_pdb / cleaning_pdb / preparing_receptor /
+    # building_mutant_T315I / preparing_compounds / docking_3_of_8 /
+    # validating_poses, etc.). NULL when the job is PENDING or terminal.
+    # The JobPage's progress banner renders a friendly label from this
+    # slug instead of guessing from elapsed time. See migration
+    # 004_job_stage.sql for the column definition.
+    stage: Optional[str] = None
+
     # Owner — UUID referencing auth.users(id) in Supabase. Nullable so legacy
     # rows survive an account deletion (FK is ON DELETE SET NULL). The runner
     # never reads this field; it's used by the API layer to scope GET /jobs

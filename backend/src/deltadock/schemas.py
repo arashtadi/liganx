@@ -123,6 +123,13 @@ class JobOut(BaseModel):
     mutations: list[str]
     status: JobStatus
     error_message: str | None
+    # Live-updated stage slug the runner writes as it advances through
+    # pre-flight + docking phases (fetching_pdb / cleaning_pdb /
+    # building_mutant_T315I / docking_3_of_8 / validating_poses, etc.).
+    # The frontend's progress banner renders a friendly label from
+    # this slug instead of guessing the active stage from elapsed
+    # time. NULL when the job hasn't started or has terminated.
+    stage: str | None = None
     created_at: datetime
     updated_at: datetime
     # Echo the docking knobs so the UI can label the matrix accurately

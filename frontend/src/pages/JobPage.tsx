@@ -751,6 +751,44 @@ interface Stage {
   budgetS: number;
 }
 
+/** Translate a runner-emitted stage slug into a friendly UI label.
+ *  Returns null for slugs we don't recognize so the caller can fall back
+ *  to timing-driven stage detection. The runner prefers short snake_case
+ *  slugs so we can add new stages without renegotiating with the
+ *  frontend; the friendly labels live entirely on this side. */
+function labelForStageSlug(slug: string | null | undefined): string | null {
+  if (!slug) return null;
+  if (slug === "fetching_pdb") return "Fetching protein structure";
+  if (slug === "cleaning_pdb") return "Cleaning structure (PDBFixer)";
+  if (slug === "preparing_receptor") return "Preparing receptor (Meeko)";
+  if (slug === "preparing_compounds") return "Preparing compounds (Meeko)";
+  if (slug === "extracting_sequence") return "Extracting protein sequence";
+  if (slug === "validating_poses") return "Validating poses (PoseBusters / ProLIF)";
+  // Pattern-based slugs:
+  let m = slug.match(/^building_mutant_(.+)$/);
+  if (m) return `Building mutant receptor (${m[1]})`;
+  m = slug.match(/^docking_(\d+)_of_(\d+)$/);
+  if (m) return `Docking · ${m[1]} of ${m[2]}`;
+  m = slug.match(/^predicting_(\d+)_of_(\d+)$/);
+  if (m) return `Predicting complex (Boltz-2) · ${m[1]} of ${m[2]}`;
+  return null;
+}
+
+/** Match a runner stage slug to the closest pre-flight stage key so the
+ *  stepper can highlight the right pill when backend-driven stages are
+ *  available. Returns null when the slug doesn't fit the pre-flight set. */
+function preflightKeyForStageSlug(slug: string | null | undefined): string | null {
+  if (!slug) return null;
+  if (slug === "fetching_pdb") return "fetch";
+  if (slug === "cleaning_pdb") return "clean";
+  if (slug === "preparing_receptor") return "receptor";
+  if (slug === "preparing_compounds") return "ligand";
+  if (slug === "extracting_sequence") return "seq";
+  if (slug.startsWith("building_mutant_")) return "mutants";
+  if (slug.startsWith("predicting_")) return "predict";
+  return null;
+}
+
 function preflightStages(job: Job): Stage[] {
   const isBoltz2 = (job.engine ?? "").startsWith("boltz2");
   const hasMutations = job.mutations.length > 0;
@@ -799,16 +837,31 @@ function StreamingBanner({ job }: { job: Job }) {
   const elapsedS = Math.max(0, (now - new Date(job.created_at).getTime()) / 1000);
 
   // ── Stage detection ────────────────────────────────────────────────
-  // If any cells are done OR validation is the only thing left, we're
-  // past pre-flight. Otherwise pick the active pre-flight stage based
-  // on elapsed time vs each stage's budget.
+  // PREFER the backend-emitted stage slug when available — it's the
+  // ground truth ('the runner is currently in step X'). Fall back to
+  // timing + cell-count heuristics for legacy jobs that pre-date the
+  // job.stage column or when the runner hasn't written a slug yet
+  // (very early in the job, before the first set_stage call lands).
   const stages = preflightStages(job);
   const allCellsDone = total > 0 && done >= total;
   const validatingOnly = allCellsDone && job.status === "running";
   const dockingActive = done > 0 && !allCellsDone;
+  const backendLabel = labelForStageSlug(job.stage);
+  const backendPreflightKey = preflightKeyForStageSlug(job.stage);
   let activeKey: string;
   let stageLabel: string;
-  if (validatingOnly) {
+  if (backendLabel) {
+    // Backend has spoken — trust it. The active step in the stepper
+    // is whichever pre-flight key the slug maps to (or "docking" /
+    // "validate" / "predict" for non-pre-flight stages, which the
+    // stepper hides anyway).
+    stageLabel = backendLabel;
+    activeKey = backendPreflightKey
+      ?? (job.stage?.startsWith("docking_") ? "docking"
+        : job.stage?.startsWith("predicting_") ? "predict"
+        : job.stage === "validating_poses" ? "validate"
+        : "");
+  } else if (validatingOnly) {
     activeKey = "validate";
     stageLabel = "Validating poses (PoseBusters / ProLIF)";
   } else if (dockingActive) {

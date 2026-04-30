@@ -102,6 +102,15 @@ export interface Job {
    *  has more (receptor PDBQT prep, FoldX mutants), Boltz-2 has
    *  fewer (sequence extraction, no PDBQT). */
   engine?: "quickvina2_gpu" | "gnina" | "boltz2" | string | null;
+  /** Live-updated stage slug the runner writes as it advances through
+   *  pre-flight + docking phases. The progress banner translates the
+   *  slug into a friendly label ('cleaning_pdb' → 'Cleaning structure
+   *  with PDBFixer', 'docking_3_of_8' → 'Docking 3 of 8', etc.). NULL
+   *  when the job hasn't started or has terminated. Slugs we currently
+   *  emit: fetching_pdb, cleaning_pdb, preparing_receptor,
+   *  building_mutant_<MUT>, preparing_compounds, extracting_sequence,
+   *  predicting_<i>_of_<n>, validating_poses. */
+  stage?: string | null;
   /** User-editable display title. Falls back to a synthesized label
    *  ("EGFR · 4 compounds · T790M+C797S") when null. */
   title: string | null;
