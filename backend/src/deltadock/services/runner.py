@@ -406,7 +406,12 @@ def _run_real(session: Session, job: Job) -> None:
         from deltadock_pipeline.pod_dock import dock_batch_pod, BatchLigand
         log.info("Pod GPU batch dispatch enabled (one HTTP call per variant)")
 
-    runpod_on = settings.runpod_enabled and not pod_on  # Pod takes precedence
+    # RunPod serverless can run *alongside* Pod GPU as a burst-overflow path:
+    # when the Pod is busy / 5xx / timing out, individual cells fall through
+    # to RunPod instead of dropping straight to local CPU. When Pod is off,
+    # RunPod is the primary remote engine. When both are off, everything
+    # runs locally.
+    runpod_on = settings.runpod_enabled
     if runpod_on:
         from deltadock_pipeline.runpod_dock import dock_one_runpod, RunPodConfig, RunPodError
         runpod_cfg = RunPodConfig(
@@ -414,7 +419,10 @@ def _run_real(session: Session, job: Job) -> None:
             endpoint_id=settings.runpod_endpoint_id,
             timeout_s=settings.runpod_timeout_s,
         )
-        log.info("RunPod serverless dispatch enabled → endpoint %s", settings.runpod_endpoint_id)
+        if pod_on:
+            log.info("RunPod serverless burst overflow enabled → endpoint %s", settings.runpod_endpoint_id)
+        else:
+            log.info("RunPod serverless dispatch enabled → endpoint %s", settings.runpod_endpoint_id)
 
     if not pod_on and not runpod_on:
         log.info("No remote engine configured — running Vina locally")
@@ -1029,11 +1037,35 @@ def _run_real(session: Session, job: Job) -> None:
                             )
                             _finalize_cell(c, variant, receptor, receptor_pdb, cell_dir, result, "pod_gpu_after_batch_fail")
                         except Exception as e:
-                            log.warning("Per-cell fallback failed for c%s × %s: %s", c.id, variant, e)
-                            session.add(DockingResult(
-                                job_id=job.id, compound_id=c.id, variant=variant,
-                                best_score=0.0, extra=f"docking_failed: {e}",
-                            ))
+                            # Per-cell Pod retry failed too. Burst overflow:
+                            # try RunPod serverless if configured before
+                            # giving up on this cell.
+                            if runpod_on:
+                                log.warning("Per-cell Pod fallback failed for c%s × %s: %s — overflowing to RunPod",
+                                            c.id, variant, e)
+                                try:
+                                    result = dock_one_runpod(
+                                        receptor_pdbqt=receptor,
+                                        ligand_pdbqt=prepped[c.id],
+                                        box=box,
+                                        work_dir=cell_dir,
+                                        cfg=runpod_cfg,
+                                        exhaustiveness=exhaustiveness,
+                                        num_modes=9,
+                                    )
+                                    _finalize_cell(c, variant, receptor, receptor_pdb, cell_dir, result, "runpod_after_batch_fail")
+                                except Exception as e2:
+                                    log.warning("RunPod also failed for c%s × %s: %s", c.id, variant, e2)
+                                    session.add(DockingResult(
+                                        job_id=job.id, compound_id=c.id, variant=variant,
+                                        best_score=0.0, extra=f"docking_failed: {e2}",
+                                    ))
+                            else:
+                                log.warning("Per-cell fallback failed for c%s × %s: %s", c.id, variant, e)
+                                session.add(DockingResult(
+                                    job_id=job.id, compound_id=c.id, variant=variant,
+                                    best_score=0.0, extra=f"docking_failed: {e}",
+                                ))
                     session.commit()
                     continue
 
@@ -1127,9 +1159,31 @@ def _run_real(session: Session, job: Job) -> None:
                             )
                             engine_used = "pod_gpu"
                         except PodDockError as pde:
-                            log.warning("Pod GPU failed for c%s × %s: %s — falling back to local",
-                                        compound.id, variant, pde)
-                            engine_used = "local_after_pod_fail"
+                            # Burst overflow: Pod busy / down → try RunPod
+                            # serverless before falling to local CPU. This
+                            # is the whole point of having both engines on.
+                            if runpod_on:
+                                log.warning("Pod GPU failed for c%s × %s: %s — overflowing to RunPod serverless",
+                                            compound.id, variant, pde)
+                                try:
+                                    result = dock_one_runpod(
+                                        receptor_pdbqt=receptor,
+                                        ligand_pdbqt=lig_pdbqt,
+                                        box=box,
+                                        work_dir=run_dir,
+                                        cfg=runpod_cfg,
+                                        exhaustiveness=exhaustiveness,
+                                        num_modes=9,
+                                    )
+                                    engine_used = "runpod_after_pod_busy"
+                                except RunPodError as rpe:
+                                    log.warning("RunPod also failed for c%s × %s: %s — falling back to local",
+                                                compound.id, variant, rpe)
+                                    engine_used = "local_after_pod_and_runpod_fail"
+                            else:
+                                log.warning("Pod GPU failed for c%s × %s: %s — falling back to local",
+                                            compound.id, variant, pde)
+                                engine_used = "local_after_pod_fail"
                     elif runpod_on:
                         try:
                             result = dock_one_runpod(
