@@ -569,7 +569,15 @@ def _run_real(session: Session, job: Job) -> None:
     # v2 = numbering-preserving fix_pdb (skips findMissingResidues that used
     # to silently renumber every residue). Bumping this is the cleanest way
     # to force a one-time precache rebuild without manual file deletion.
-    PREP_VERSION = "v2"
+    # v3 (2026-04-30): mutant builds now run a 200-step amber99sb-ildn vacuum
+    # minimisation after PDBFixer applyMutations to relieve substitution
+    # clash artefacts. Bumping the prep version invalidates every cached
+    # mutant *.clean.pdb and *.pdbqt so the next request rebuilds with the
+    # new minimised structure. WT-only caches are unaffected (no change
+    # to WT prep), but we share one PREP_VERSION for simplicity — the
+    # extra ~10 s of WT re-prep on first hit per target is fine and avoids
+    # a divergent versioning scheme that's easy to get wrong.
+    PREP_VERSION = "v3-openmm-min"
 
     def _is_stale(path: Path) -> bool:
         """A cache file is stale if its sibling .prep_version marker is missing

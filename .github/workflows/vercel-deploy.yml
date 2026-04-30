@@ -1,0 +1,71 @@
+name: Vercel Deploy (frontend)
+
+# Auto-deploys the frontend to Vercel on every push to main that touches
+# frontend code OR changes the validation_results.json (so a refresh-
+# validation workflow run actually reaches liganx.com without anyone
+# remembering to run deploy-frontend.sh locally).
+#
+# The Vercel project this aliases ('liganx') doesn't have native GitHub
+# auto-deploy because it was created before the team integration was
+# set up — vercel deploy creates a new 'frontend' deployment and we
+# alias it cross-project to liganx.com via the Vercel API. That logic
+# lives in deploy-frontend.sh; this workflow just runs that script
+# inside CI on the right path triggers.
+#
+# Required repo secret:
+#   VERCEL_TOKEN — generate at https://vercel.com/account/tokens.
+#                  Already set via `gh secret set` (see git history for
+#                  the exact rotation event).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Anything that affects what's served on liganx.com:
+      - "frontend/**"
+      - "deploy-frontend.sh"
+      - ".github/workflows/vercel-deploy.yml"
+  # Manual trigger so we can re-deploy without a code change (e.g. after
+  # rotating an env var on the Vercel project).
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build + alias to liganx.com
+    runs-on: ubuntu-latest
+    concurrency:
+      # If a second push comes in while a deploy is mid-flight, queue it
+      # rather than cancelling — Vercel deploys are atomic so partial
+      # cancellation isn't a problem, but we don't want to thrash on
+      # rapid-fire commits.
+      group: vercel-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The Vercel CLI bundles its own Node runtime but installing it
+      # globally via npm is the friction-free path here. Pinned to a
+      # known-working version so a sudden CLI breaking change can't
+      # silently break our deploy path.
+      - name: Install Vercel CLI
+        run: npm install -g vercel@52.0.0
+
+      - name: Run deploy-frontend.sh
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: bash ./deploy-frontend.sh
+
+      - name: Live-bundle sanity check
+        # Confirm the alias actually flipped — fetch the index.html and
+        # report the bundle hash. Doesn't fail the workflow on its own
+        # because Vercel's edge cache can take ~20s to propagate, but
+        # surfaces the new bundle name in the workflow log so we have
+        # a paper trail.
+        run: |
+          echo "Live bundle on liganx.com:"
+          curl -sf https://liganx.com/ | grep -oE 'index-[A-Za-z0-9_-]+\.js' | head -1 || echo "(not yet visible — edge cache lag)"

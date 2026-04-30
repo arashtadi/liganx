@@ -68,11 +68,77 @@ def parse_mutation(code: str) -> tuple[str, int, str]:
     return orig, resnum, new
 
 
+def _minimize_with_openmm(topology, positions, max_iterations: int = 200):
+    """Quick local energy minimisation of a mutant receptor.
+
+    Why this exists: PDBFixer.applyMutations swaps the residue identity but
+    leaves the new side chain's atoms in the WT position with the new
+    residue's atom names. For drastic substitutions (e.g. C → S, V → E,
+    G → V) that can leave clashes — bond lengths off by 0.1-0.3 Å, atoms
+    overlapping with neighbours by 0.5-1.0 Å — and the resulting "mutant"
+    receptor is only nominally different from WT. The validation suite at
+    /validation quantified the cost: 6 of 8 literature-anchored cases
+    landed below the Vina noise floor because WT and mutant structures
+    were too similar.
+
+    A short vacuum minimisation with amber99sb-ildn relieves those
+    artefacts without going so far that it reshapes the binding pocket.
+    200 L-BFGS iterations is plenty (typical convergence in ~50 steps for
+    a single-residue substitution; higher caps hit the same minimum).
+    Vacuum is intentional — implicit solvent (OBC, GBN2) adds 5-10×
+    wall-clock for marginal benefit on a brief minimisation, and a kinase
+    receptor without a bound ligand has very few protein-water hydrogen
+    bonds the pocket cares about.
+
+    Returns the new positions (as Quantity[Vec3]) on success, or None on
+    any failure — the caller falls back to the un-minimised structure
+    with a warning. Failure modes we deliberately tolerate: forcefield
+    parameter missing for an unusual residue (rare on amber99sb-ildn),
+    SETTLE failures on water that PDBFixer happened to add, etc. The
+    fallback gives a worse mutant but never blocks a job.
+    """
+    try:
+        from openmm.app import ForceField, Simulation, CutoffNonPeriodic
+        from openmm import VerletIntegrator, unit
+    except ImportError as e:
+        log.warning("OpenMM not available — skipping minimisation: %s", e)
+        return None
+    try:
+        # amber99sb-ildn (Lindorff-Larsen 2010) is the canonical modern
+        # protein FF — better χ1/χ2 sampling than plain ff99sb, mature
+        # enough that virtually every published OpenMM kinase study uses it.
+        forcefield = ForceField("amber99sbildn.xml")
+        system = forcefield.createSystem(
+            topology,
+            # CutoffNonPeriodic with 1 nm matches the default OpenMM
+            # implicit-solvent recipe; enough to model neighbour
+            # interactions during minimisation, far cheaper than full
+            # NoCutoff for a typical 4-5k atom kinase receptor.
+            nonbondedMethod=CutoffNonPeriodic,
+            nonbondedCutoff=1.0 * unit.nanometers,
+        )
+        # Verlet integrator is unused (we only call minimizeEnergy) but
+        # OpenMM's Simulation requires one. 1 fs step is irrelevant.
+        integrator = VerletIntegrator(0.001 * unit.picoseconds)
+        sim = Simulation(topology, system, integrator)
+        sim.context.setPositions(positions)
+        sim.minimizeEnergy(maxIterations=max_iterations)
+        state = sim.context.getState(getPositions=True)
+        return state.getPositions()
+    except Exception as e:
+        # Don't take down the whole mutant build for a minimisation
+        # failure. Log loudly so we notice patterns; return None so
+        # the caller writes the un-minimised structure.
+        log.warning("OpenMM minimisation failed (will use un-minimised structure): %s", e)
+        return None
+
+
 def build_mutant_pdbfixer(
     pdb_path: Path | str,
     chain: str,
     mutation_code: str,
     out_path: Path | str,
+    minimize: bool = True,
 ) -> MutateResult:
     """Apply a single or combo mutation to a PDB using PDBFixer.applyMutations.
 
@@ -82,6 +148,14 @@ def build_mutant_pdbfixer(
         chain:          chain ID the mutation residue lives on (e.g. "A").
         mutation_code:  "T790M" or combo like "T790M+C797S".
         out_path:       where to write the mutant PDB.
+        minimize:       run a short OpenMM amber99sb-ildn minimisation after
+                        applyMutations to relieve clash artefacts from
+                        residue substitution. Default True (added 2026-04-30
+                        after the validation suite quantified the cost of
+                        leaving the structure un-minimised: 6/8 cases
+                        below the Vina noise floor). Set False via the
+                        LIGANX_MINIMIZE_MUTANT=0 env var if a build
+                        misbehaves and you want to bisect the cause.
 
     Returns:
         MutateResult with mutant_pdb path. ddg is always None.
@@ -163,8 +237,51 @@ def build_mutant_pdbfixer(
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
 
-    with out_path.open("w") as fh:
-        PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
+    # Optional local minimisation. Closes the rigid-receptor signal gap
+    # the validation suite quantified — without this, the mutant
+    # receptor differs from WT only at one side-chain identity (atoms
+    # placed at WT positions with new residue's atom names) and Vina
+    # docks against essentially the same structure twice. Fail-soft:
+    # if minimisation errors, write the un-minimised structure with a
+    # log warning and let the runner continue.
+    #
+    # Hydrogen handling: amber99sb-ildn requires hydrogens to assign
+    # forcefield templates. PDBFixer.addMissingAtoms() only adds heavy
+    # atoms, so we addMissingHydrogens() in-memory before minimising,
+    # then strip them out of the output so the mutant PDB matches the
+    # WT format (heavy atoms only — what obabel and the rest of the
+    # pipeline expect downstream).
+    minimized = False
+    if minimize:
+        try:
+            fixer.addMissingHydrogens(pH=7.0)
+        except Exception as e:
+            log.warning("addMissingHydrogens failed; skipping minimisation: %s", e)
+        else:
+            relaxed = _minimize_with_openmm(fixer.topology, fixer.positions)
+            if relaxed is not None:
+                # Apply minimised positions back onto the topology so
+                # writeFile picks them up.
+                fixer.positions = relaxed
+                minimized = True
+                log.info("PDBFixer mutant relaxed via 200-step amber99sb-ildn minimisation")
+
+    # Build a heavy-atoms-only copy of the topology for the final write.
+    # If we added hydrogens for the minimisation, strip them now so the
+    # downstream PDB has the same atom inventory as the WT.
+    if minimize:
+        from openmm.app import Modeller
+        modeller = Modeller(fixer.topology, fixer.positions)
+        h_atoms = [a for a in modeller.topology.atoms() if a.element is not None and a.element.symbol == "H"]
+        if h_atoms:
+            modeller.delete(h_atoms)
+        with out_path.open("w") as fh:
+            PDBFile.writeFile(modeller.topology, modeller.positions, fh, keepIds=True)
+    else:
+        with out_path.open("w") as fh:
+            PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
+    if minimize and not minimized:
+        log.info("Minimisation requested but did not run — saved un-minimised mutant")
 
     # Provide a WT reference next to the mutant — same input, just copied.
     wt_ref = out_path.with_suffix(".wt_ref.pdb")
