@@ -71,7 +71,7 @@ class Boltz2DockConfig:
     base_url: str
     use_msa: bool = False
     num_samples: int = 1
-    timeout_s: int = 180
+    timeout_s: int = 600
 
 
 @dataclass

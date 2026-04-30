@@ -117,7 +117,14 @@ class Settings(BaseSettings):
     # base as QuickVina/GNINA (boltz endpoints live on the same pod) but
     # we expose a separate setting in case we ever split.
     boltz2_enabled: bool = False
-    boltz2_timeout_s: int = 180
+    # 600s — generous cold-start window. The first prediction after a pod
+    # restart downloads ~5 GB of model weights from HuggingFace into
+    # /workspace/boltz2_cache; that pull alone can take 5–10 minutes.
+    # Subsequent predictions on the same warm pod run in ~20 s, so this
+    # ceiling almost never bites once the cache is populated. If we
+    # hit timeout on cell N>1, that's a real model-side problem worth
+    # debugging — not a tuning question.
+    boltz2_timeout_s: int = 600
     # Separate pod URL for Boltz-2. Required when boltz2_enabled=True
     # because Boltz-2 needs torch ≥ 2.6 + sm_89 (RTX 4090) which
     # the QuickVina/GNINA pod's Blackwell GPU can't run. Empty string
