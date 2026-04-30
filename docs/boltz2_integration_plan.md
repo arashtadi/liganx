@@ -86,15 +86,21 @@ Implementation:
   `pip install boltz`, download model weights (~5 GB — fits on existing
   /workspace volume).
 - Per-job: write a YAML manifest with WT or mutant sequence + ligand
-  SMILES, call `boltz predict <yaml> --output_format pdb`, parse the
+  SMILES + **`msa: empty` on each protein chain** (required to bypass
+  Boltz's MSA requirement without hitting the external ColabFold
+  server), call `boltz predict <yaml> --output_format pdb`, parse the
   JSON output, return `(affinity_pred_value, affinity_probability_binary,
   predicted_pdb)`.
-- Boltz's `--use_msa_server` is a Click boolean **flag** (not a
-  value-taking option), default False. Single-sequence mode is the
-  default and what we want — WT and mutant predictions don't depend
-  on MSA construction differences. To enable MSA later, append the
-  flag with no value; do NOT write `--use_msa_server False` (Click
-  rejects "False" as an unexpected positional argument).
+- Why `msa: empty`: Boltz refuses to run without an MSA *somewhere*.
+  Two options exist: (a) `--use_msa_server` flag fetches MSAs from
+  ColabFold (~30s extra per prediction, external dependency,
+  introduces non-determinism if the MSA server changes), or (b)
+  `msa: empty` in the YAML per chain explicitly says "no MSA, predict
+  from sequence alone". Option (b) is correct for our WT/mutant ΔΔG
+  use case — same MSA assumption (none) for both, no external
+  service in the dependency graph, deterministic results. Pose and
+  affinity accuracy is a bit lower without MSA, but direction is the
+  signal we read, and direction is preserved.
 - Pass a pocket hint via `pocket` field in the YAML (template chain ID
   + ligand contact residues from our catalog) so Boltz-2 anchors the
   ligand near the canonical site rather than searching the whole
