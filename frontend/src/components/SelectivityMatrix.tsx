@@ -66,6 +66,21 @@ export default function SelectivityMatrix({
   const selectable = !!selected && !!onToggleSelect;
   const selectedCount = selected?.size ?? 0;
 
+  // Detect the engine that produced these results so the column header can
+  // label the score units correctly. Vina/GNINA → kcal/mol; Boltz-2 →
+  // log10(IC50 μM). All cells in one job share the same engine because
+  // job.engine is a single field, so we read the first non-failure row's
+  // engine tag and trust that for the whole matrix. Defaults to undefined
+  // when there are no successful results yet (still streaming).
+  const detectedEngine = useMemo(() => {
+    for (const r of results) {
+      const ext = parseExtra(r.extra);
+      if (ext.engine) return ext.engine;
+    }
+    return undefined;
+  }, [results]);
+  const isBoltz2 = !!detectedEngine && detectedEngine.startsWith("boltz2");
+
   // scoreOf is the lookup the cell renderer + row aggregations use. We
   // explicitly skip rows whose `extra` is a failure marker — their best_score
   // is 0.0 as a placeholder, NOT a real docking, and treating it as a valid
@@ -143,7 +158,9 @@ export default function SelectivityMatrix({
             )}
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Vina score (kcal/mol) · lower = stronger · cells colored by Δ vs WT
+            {isBoltz2
+              ? <>Predicted log<sub>10</sub> IC<sub>50</sub> (μM) · lower = stronger · cells colored by Δ vs WT</>
+              : <>Vina score (kcal/mol) · lower = stronger · cells colored by Δ vs WT</>}
             {selectable && (
               <span className="ml-1 text-slate-400 dark:text-slate-500">
                 · check cells to share a curated subset
