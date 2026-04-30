@@ -78,6 +78,14 @@ const NEW_JOB_TOUR: TourStep[] = [
     side: "top",
   },
   {
+    selector: '[data-tour="step-run-options"]',
+    title: "Step 4 — run options",
+    body:
+      "Tune search depth (Fast / Balanced / Thorough), opt out of the wild-type baseline if you only want absolute mutant scores, and pick the docking engine. The default QuickVina2-GPU is fast and Vina-family. GNINA adds CNN-based pose rescoring — slower per cell but a genuinely different ranking signal worth trying for a second opinion.",
+    pose: "pointing-down",
+    side: "top",
+  },
+  {
     selector: '[data-tour="step-run"]',
     title: "Run it!",
     body:
