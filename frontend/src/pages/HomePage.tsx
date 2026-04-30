@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight, Beaker, Bolt, Eye, Grid, Library, Shield, Sparkles, Target,
 } from "../components/Icons";
+import { useAuth } from "../lib/auth";
 
 export default function HomePage() {
   return (
@@ -443,6 +444,7 @@ function CompCell({ value }: { value: boolean | "partial" | "coming" | string })
 /* ─── CTA strip ─────────────────────────────────────────────────────── */
 
 function CTAStrip() {
+  const { user } = useAuth();
   return (
     <section className="rounded-3xl overflow-hidden relative bg-gradient-to-br from-delta-600 to-accent-500 text-white p-10 sm:p-14 text-center">
       <div className="absolute inset-0 opacity-20" style={{
@@ -455,13 +457,25 @@ function CTAStrip() {
         <p className="mt-3 text-delta-100 max-w-xl mx-auto">
           One UI. Real Vina under the hood. Selectivity matrix in minutes, not days.
         </p>
-        <div className="mt-7 flex justify-center gap-3">
-          {/* CTA banner uses brand gradient in both themes — buttons stay
-              light-on-gradient. The "View on GitHub" button was removed
-              alongside the Liganx repo being kept private — the link
-              pointed at github.com root which felt placeholdery. */}
-          <Link to="/new" className="btn bg-white text-delta-700 hover:bg-delta-50 btn-lg shadow-sm">
-            Run your first job <ArrowRight size={16} />
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
+          {/* For anonymous visitors, the lead CTA is "Sign up free" since
+              clicking "Run your first job" would just bounce them to
+              /login anyway via RequireAuth. Authenticated users skip
+              the sign-up button — they're already in. */}
+          {!user && (
+            <Link to="/signup" className="btn bg-white text-delta-700 hover:bg-delta-50 btn-lg shadow-sm">
+              Sign up free <ArrowRight size={16} />
+            </Link>
+          )}
+          <Link
+            to="/new"
+            className={
+              user
+                ? "btn bg-white text-delta-700 hover:bg-delta-50 btn-lg shadow-sm"
+                : "btn btn-lg bg-delta-700/30 text-white border-2 border-white/40 hover:bg-delta-700/50 backdrop-blur-sm"
+            }
+          >
+            {user ? "Run your first job" : "Already a user? Run a job"} <ArrowRight size={16} />
           </Link>
         </div>
       </div>

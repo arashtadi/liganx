@@ -116,9 +116,22 @@ function Header() {
               onSignOut={signOut}
             />
           ) : (
-            <Link to="/login" className="text-sm font-medium text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white px-3 py-2">
-              Sign in
-            </Link>
+            <>
+              <Link to="/login" className="text-sm font-medium text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white px-3 py-2">
+                Sign in
+              </Link>
+              {/* Sign-up button next to Sign in for signed-out users.
+                  Outlined (not solid) so it doesn't compete with the
+                  primary "New job" CTA; sized down to match the link
+                  rhythm. New job stays as a soft trial path that
+                  redirects to /login?next=/new for unauth visitors. */}
+              <Link
+                to="/signup"
+                className="text-sm font-semibold text-delta-700 dark:text-delta-300 border border-delta-300 dark:border-delta-700 rounded-md px-3 py-1.5 hover:bg-delta-50 dark:hover:bg-delta-900/30 transition-colors"
+              >
+                Sign up
+              </Link>
+            </>
           )}
           <Link to="/new" className="btn-primary btn-sm ml-1">
             New job
