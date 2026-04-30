@@ -8,14 +8,26 @@ Both PDB_CACHE (WT cleaned PDBs) and RECEPTOR_CACHE (mutant FoldX builds) are
 imported from runner.py so the env-configurable cache root flows through to
 this router automatically. In production these point at the Fly volume so the
 3D viewer keeps working across redeploys.
+
+Self-heal for WT (added 2026-04-30): if the WT cleaned PDB is missing — which
+happened in bulk when a deploy wiped the receptor cache that used to live on
+ephemeral disk — we regenerate it on demand by fetching from RCSB and running
+the same fix_pdb() prep the runner uses. Adds ~15-30 s to the first request
+for an old job, then the cached file works normally for everyone after. We
+deliberately do NOT self-heal mutant variants — they require FoldX which is
+slow and stateful; the user can re-submit the job to rebuild them.
 """
 
+import logging
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from ..services.runner import PDB_CACHE, RECEPTOR_CACHE
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 
@@ -67,6 +79,36 @@ def get_structure(pdb_id: str, chain: str, variant: str) -> str:
         raise HTTPException(status_code=400, detail="invalid path")
 
     if not path.exists() or path.stat().st_size == 0:
-        raise HTTPException(status_code=404, detail=f"No cached structure for {pdb_id}/{chain}/{variant}")
+        # Self-heal for WT: regenerate the cleaned PDB on demand. Mutant
+        # variants need FoldX which is too slow to run inline (~30 s);
+        # users see a 404 and can re-submit the job to rebuild them.
+        if variant == "WT" and not pdb_id.startswith("USR_"):
+            try:
+                _regenerate_wt_clean(pdb_id, chain, path)
+            except Exception as e:
+                log.warning("Self-heal failed for %s/%s WT: %s", pdb_id, chain, e)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Receptor cache miss for {pdb_id}/{chain}/WT and on-demand regenerate failed: {e}",
+                )
+        else:
+            raise HTTPException(status_code=404, detail=f"No cached structure for {pdb_id}/{chain}/{variant}")
 
     return path.read_text()
+
+
+def _regenerate_wt_clean(pdb_id: str, chain: str, out_path: Path) -> None:
+    """Re-run the WT prep pipeline so an old job whose receptor cache got
+    wiped (e.g. by a deploy that landed before the cache was on a Fly
+    volume) becomes viewable again. Cheap-ish: ~5 s RCSB download + ~10–20 s
+    PDBFixer prep; the result is cached on disk afterwards so subsequent
+    requests are instant. Only safe for standard 4-char RCSB IDs — user
+    uploads have no remote source."""
+    from deltadock_pipeline.fetch import fetch_pdb
+    from deltadock_pipeline.prep import fix_pdb
+
+    log.info("Self-heal: regenerating WT cleaned PDB for %s/%s", pdb_id, chain)
+    raw = fetch_pdb(pdb_id, PDB_CACHE)
+    fix_pdb(raw, out_path, chain=chain)
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("fix_pdb returned but produced no file")
