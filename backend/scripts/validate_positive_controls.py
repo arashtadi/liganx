@@ -64,6 +64,13 @@ TOKEN = os.environ.get("LIGANX_BEARER_TOKEN", "").strip()
 # public /validation page on liganx.com to consume. Without this, the script
 # only emits the human-readable markdown report.
 JSON_OUT = os.environ.get("LIGANX_VALIDATE_JSON_OUT", "").strip()
+# Vina sampling depth. Default 16 for the validation suite (vs 8 for the
+# product default) because the suite's whole point is to resolve direction
+# vs noise — bumping exhaustiveness halves the standard deviation of
+# repeated Vina runs and is roughly 2× wall-clock per cell, which is fine
+# for an ~8-cell suite that runs on demand. Tweak via env var if you want
+# to bisect a noise-vs-method-limitation question on a specific case.
+EXHAUSTIVENESS = int(os.environ.get("LIGANX_VALIDATE_EXHAUSTIVENESS", "16"))
 
 # Vina/QuickVina2 noise floor at default exhaustiveness. Δs below this
 # magnitude are within scoring noise and shouldn't be claimed as a direction.
@@ -221,7 +228,7 @@ def _submit(case: Case) -> str:
         "uniprot_id": case.uniprot_id,
         "mutations": [case.mutation],
         "include_wt": True,
-        "exhaustiveness": 8,
+        "exhaustiveness": EXHAUSTIVENESS,
         "engine": "quickvina2_gpu",
         "compounds": [{"name": case.drug_name, "smiles": case.drug_smiles}],
         "title": f"PC-validation: {case.name}",
@@ -301,7 +308,7 @@ def _verdict(case: Case) -> tuple[str, str]:
         # ambiguous — flag as NOISE so it's neither false PASS nor false FAIL.
         if case.expected_direction == "retained":
             return "PASS", f"|Δ|={abs(d):.2f} within ±{NOISE_FLOOR_KCAL} kcal/mol noise floor (retained as expected)"
-        return "NOISE", f"|Δ|={abs(d):.2f} below ±{NOISE_FLOOR_KCAL} kcal/mol noise floor — direction not resolvable at exhaustiveness=8"
+        return "NOISE", f"|Δ|={abs(d):.2f} below ±{NOISE_FLOOR_KCAL} kcal/mol noise floor — direction not resolvable at exhaustiveness={EXHAUSTIVENESS}"
     sign_ok = (
         (case.expected_direction == "resistance" and d > 0)
         or (case.expected_direction == "selectivity" and d < 0)

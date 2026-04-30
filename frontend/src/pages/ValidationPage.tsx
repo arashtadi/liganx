@@ -166,10 +166,12 @@ export default function ValidationPage() {
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400 max-w-3xl leading-relaxed">
           Eight (target, mutation, drug) pairs whose mutation-driven binding
           shifts are published in the clinical and pharmacology literature. We
-          submit each to the live Liganx pipeline, capture Δ(mutant − WT), and
-          check whether the direction agrees with the published shift. The
-          point is direction, not magnitude — Vina scoring isn't free energy
-          and isn't calibrated to cellular IC50.
+          submit each to the live Liganx pipeline at exhaustiveness=16
+          (2× the product default — tighter sampling for a tighter noise
+          band), capture Δ(mutant − WT), and check whether the direction
+          agrees with the published shift. The point is direction, not
+          magnitude — Vina scoring isn't free energy and isn't calibrated to
+          cellular IC50.
         </p>
 
         <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
