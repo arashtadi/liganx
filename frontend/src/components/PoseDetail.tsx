@@ -94,6 +94,27 @@ export default function PoseDetail({ pick, onClose }: Props) {
                 ⚠ Local (RunPod failed)
               </span>
             )}
+            {/* GNINA engine pills. The runner emits engine=gnina_<mode>
+                for cells docked successfully through GNINA, where mode is
+                rescore (fast) / refine (slow) / none. The "after_pod_busy"
+                variant is a future-proofing slot in case we wire GNINA into
+                the burst-overflow chain. */}
+            {ext.engine?.startsWith("gnina_") && (
+              <span
+                className="badge bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:ring-violet-700/40"
+                title={`Docked with GNINA (${ext.engine.replace("gnina_", "")} mode) — Vina pose + CNN rescoring`}
+              >
+                🧠 GNINA
+              </span>
+            )}
+            {ext.engine === "runpod_after_pod_busy" && (
+              <span
+                className="badge bg-accent-50 text-accent-600 ring-1 ring-inset ring-accent-400/40 dark:bg-accent-500/15 dark:text-accent-400 dark:ring-accent-400/30"
+                title="Pod GPU was busy — overflowed to RunPod serverless"
+              >
+                ⚡ RunPod (overflow)
+              </span>
+            )}
           </div>
         </div>
         <button onClick={onClose} className="text-slate-400 hover:text-ink p-1 rounded-md hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-100 dark:hover:bg-slate-700">

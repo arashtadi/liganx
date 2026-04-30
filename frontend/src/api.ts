@@ -116,6 +116,11 @@ export interface JobCreatePayload {
   exhaustiveness?: number;
   /** Optional. Backend defaults to true. Set false to skip the WT row. */
   include_wt?: boolean;
+  /** Optional. Docking engine. Defaults to "quickvina2_gpu" (current Pod
+   *  GPU engine). "gnina" routes to GNINA — Vina derivative with CNN
+   *  pose rescoring. Backend silently falls back to quickvina2_gpu when
+   *  GNINA_ENABLED is off, so this is always safe to send. */
+  engine?: "quickvina2_gpu" | "gnina";
   /** Optional human-readable title shown in the History page. */
   title?: string | null;
   /** Optional tags for grouping in the History page. */

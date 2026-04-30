@@ -116,6 +116,13 @@ export default function NewJobPage() {
   // include WT" behaviour, so existing users see no change unless they opt in.
   const [exhaustiveness, setExhaustiveness] = useState<8 | 16 | 32>(8);
   const [includeWt, setIncludeWt] = useState(true);
+  // Docking engine: QuickVina2-GPU is the default (fast Vina-family on the
+  // Pod GPU). GNINA is opt-in — Vina derivative with a CNN-based pose
+  // rescoring head trained on PDBbind, ~2-3x slower per cell but with a
+  // genuinely different ranking signal. The backend silently falls back to
+  // QuickVina2 if GNINA_ENABLED is off on Fly, so picking GNINA is always
+  // safe even if the Pod side hasn't been turned on yet.
+  const [engine, setEngine] = useState<"quickvina2_gpu" | "gnina">("quickvina2_gpu");
 
   // First-target-pick guard. Auto-loading the catalog's default compounds +
   // mutations is great on the FIRST target pick (saves typing). After that,
@@ -420,6 +427,7 @@ export default function NewJobPage() {
           compounds: compoundPayload,
           exhaustiveness,
           include_wt: true,
+          engine,
         })),
         ...(customCounts
           ? [{
@@ -434,6 +442,7 @@ export default function NewJobPage() {
               compounds: compoundPayload,
               exhaustiveness,
               include_wt: true,
+              engine,
             }]
           : []),
       ];
@@ -459,6 +468,7 @@ export default function NewJobPage() {
       compounds: compoundPayload,
       exhaustiveness,
       include_wt: includeWt,
+      engine,
     });
   }
 
@@ -1298,6 +1308,60 @@ export default function NewJobPage() {
             {!includeWt && allMutations.length > 0 && (
               <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
                 WT skipped. The matrix won't show a Δ column — only absolute mutant scores.
+              </p>
+            )}
+          </div>
+
+          {/* Engine picker — second row, full width on lg. Two cards
+              side-by-side: QuickVina2-GPU (default, fast Vina) and GNINA
+              (Vina derivative with CNN rescoring head). Picking GNINA
+              flips the per-job dispatch on the backend; the runner falls
+              back to QuickVina silently if the Pod-side endpoint or the
+              GNINA_ENABLED flag is missing, so this is always a safe pick. */}
+          <div className="lg:col-span-2">
+            <div className="label mb-1.5">Scoring engine</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[
+                {
+                  value: "quickvina2_gpu" as const,
+                  label: "QuickVina2-GPU",
+                  sub: "Default · ~3 s/cell · Vina-family",
+                  body:
+                    "The classical AutoDock Vina scoring function, OpenCL-accelerated on the Pod GPU. Best for speed and the de-facto reproducibility baseline (~22,000 Vina citations).",
+                },
+                {
+                  value: "gnina" as const,
+                  label: "GNINA (CNN-rescored)",
+                  sub: "~10–30 s/cell · Vina + PDBbind CNN",
+                  body:
+                    "Vina fork from the Koes lab with a convolutional-neural-net pose-rescoring head trained on PDBbind. Genuinely different ranking signal — useful as a second opinion when Vina is borderline.",
+                },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setEngine(opt.value)}
+                  className={`text-left rounded-lg border p-3 transition-colors ${
+                    engine === opt.value
+                      ? "border-delta-500 bg-delta-50 dark:bg-delta-900/30 dark:border-delta-400"
+                      : "border-slate-200 bg-white hover:border-delta-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-semibold text-ink dark:text-slate-100 text-sm">{opt.label}</div>
+                    {engine === opt.value && (
+                      <span aria-hidden className="text-delta-600 dark:text-delta-400 text-xs">✓</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{opt.sub}</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-snug">{opt.body}</div>
+                </button>
+              ))}
+            </div>
+            {engine === "gnina" && (
+              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                Each cell will report both the Vina-style affinity and a 0–1 CNN confidence. Slower than
+                QuickVina2-GPU; budget ~10 minutes per matrix instead of ~2.
               </p>
             )}
           </div>
