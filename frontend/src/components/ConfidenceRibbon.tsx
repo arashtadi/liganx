@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Shield } from "./Icons";
 
 /**
@@ -85,26 +86,49 @@ export default function ConfidenceRibbon({
   confidence = "unknown", detail, size = "md", tooltip = true,
 }: Props) {
   const [hover, setHover] = useState(false);
+  // Anchor element + portal coords. We portal the tooltip to document.body
+  // so it escapes any `overflow:hidden` ancestor (the matrix container
+  // clips badges otherwise — the tooltip ends up under the matrix instead
+  // of floating above it). On hover we measure the badge's bounding rect
+  // and place the popover directly underneath via fixed positioning.
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const s = STYLES[confidence];
   const failed = parseFailed(detail);
   const padding = size === "sm" ? "px-2 py-0.5" : "px-2.5 py-1";
   const text = size === "sm" ? "text-[10px]" : "text-xs";
 
-  // When tooltip is off (matrix cells), fall back to the browser's native
-  // hover title so users can still see *which* checks failed by hovering —
-  // just without the styled popover that would clutter a dense table.
+  // When tooltip is off (rare now — only consumers that opt out), fall
+  // back to the browser's native hover title.
   const nativeTitle = !tooltip
     ? `${s.label} — ${HEADLINE[confidence]}${failed.length ? `\nFailed: ${failed.join(", ")}` : ""}`
     : undefined;
 
+  function showTip() {
+    if (!tooltip) return;
+    if (anchorRef.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      // Centre the popover horizontally on the badge, place it 8px
+      // below. The popover itself is 320px (w-80) wide; we'll let
+      // CSS translate(-50%) do the centring.
+      setPos({ x: rect.left + rect.width / 2, y: rect.bottom + 8 });
+    }
+    setHover(true);
+  }
+  function hideTip() {
+    setHover(false);
+    setPos(null);
+  }
+
   return (
     <span className="relative inline-block">
       <span
+        ref={anchorRef}
         className={`inline-flex items-center gap-1.5 rounded-full ring-1 ring-inset font-semibold ${tooltip ? "cursor-help" : ""} ${padding} ${text} ${s.bg} ${s.text} ${s.ring}`}
-        onMouseEnter={tooltip ? () => setHover(true) : undefined}
-        onMouseLeave={tooltip ? () => setHover(false) : undefined}
-        onFocus={tooltip ? () => setHover(true) : undefined}
-        onBlur={tooltip ? () => setHover(false) : undefined}
+        onMouseEnter={showTip}
+        onMouseLeave={hideTip}
+        onFocus={showTip}
+        onBlur={hideTip}
         tabIndex={tooltip ? 0 : -1}
         title={nativeTitle}
         aria-label={`Confidence ${s.label}: ${HEADLINE[confidence]}`}
@@ -113,10 +137,11 @@ export default function ConfidenceRibbon({
         <span>{s.label}</span>
       </span>
 
-      {tooltip && hover && (
+      {tooltip && hover && pos && createPortal(
         <div
           role="tooltip"
-          className="absolute z-50 left-1/2 -translate-x-1/2 top-full mt-2 w-80 rounded-lg bg-slate-900 dark:bg-slate-800 text-slate-100 text-xs p-3 shadow-xl ring-1 ring-slate-700 pointer-events-none"
+          className="fixed z-[1000] -translate-x-1/2 w-80 rounded-lg bg-slate-900 dark:bg-slate-800 text-slate-100 text-xs p-3 shadow-xl ring-1 ring-slate-700 pointer-events-none"
+          style={{ left: pos.x, top: pos.y }}
         >
           <div className="font-semibold text-[13px] mb-1.5">{HEADLINE[confidence]}</div>
           <div className="text-slate-300 leading-relaxed mb-2">
@@ -175,7 +200,8 @@ export default function ConfidenceRibbon({
               for this row. The score itself is still real.
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );
