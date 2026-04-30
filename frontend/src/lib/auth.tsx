@@ -7,6 +7,34 @@ import type { ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
 
+/** Acquisition-time profile metadata captured at sign-up. All optional;
+ *  Supabase only requires email + password. Stored in
+ *  `auth.users.raw_user_meta_data` for v1 — promoting to a typed table
+ *  is a follow-up. Keep field names snake_case to match how they'll
+ *  eventually surface as SQL columns. */
+export interface SignupProfile {
+  full_name?: string;
+  organization?: string;        // free-text company / lab / university
+  role?: string;                // dropdown enum, see SIGNUP_ROLES below
+  researchgate_url?: string;    // optional academic profile link
+  marketing_opt_in?: boolean;   // EU-default false; checked elsewhere
+}
+
+/** Canonical role choices offered on the sign-up form. Snake_case values
+ *  store cleanly; the UI renders human-readable labels. Order matters —
+ *  most-common first so the dropdown defaults land near the top. */
+export const SIGNUP_ROLES: { value: string; label: string }[] = [
+  { value: "grad_student",   label: "Graduate student" },
+  { value: "postdoc",        label: "Postdoc" },
+  { value: "pi",             label: "Principal Investigator" },
+  { value: "industry_sci",   label: "Industry scientist" },
+  { value: "comp_chem",      label: "Computational chemist / biologist" },
+  { value: "med_chem",       label: "Medicinal chemist" },
+  { value: "structural_bio", label: "Structural biologist" },
+  { value: "undergrad",      label: "Undergraduate" },
+  { value: "other",          label: "Other" },
+];
+
 interface AuthState {
   /** Full Supabase Session. Null when signed out. Includes the access_token
    *  the backend will validate against JWKS — read it via session.access_token
@@ -26,9 +54,21 @@ interface AuthState {
   // Auth actions — thin wrappers around the Supabase client. Components use
   // these so the session-update side effect (re-render via setSession) is
   // handled in one place.
+  /** Sign up with email/password + optional acquisition profile.
+   *
+   *  Profile fields go to Supabase's `auth.users.raw_user_meta_data`
+   *  (readable later via `session.user.user_metadata`). We use this in
+   *  v1 — no separate user_profile table — because it's the lightest
+   *  path to capturing acquisition signals (org, role, marketing
+   *  opt-in) without a DB migration. When we want SQL-queryable
+   *  analytics, a follow-up migration mirrors the JSON into a typed
+   *  table via a Postgres trigger. All profile fields are optional;
+   *  only email + password are required by Supabase.
+   */
   signUpWithPassword: (
     email: string,
     password: string,
+    profile?: SignupProfile,
   ) => Promise<{ error: string | null }>;
   signInWithPassword: (
     email: string,
@@ -75,7 +115,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       emailVerified,
-      async signUpWithPassword(email, password) {
+      async signUpWithPassword(email, password, profile) {
+        // Build the user_metadata payload Supabase will store on
+        // auth.users.raw_user_meta_data. Drop empty/undefined fields so
+        // we don't pollute the JSON with nulls. `marketing_opt_in` is
+        // explicit boolean — preserve it even when false.
+        const data: Record<string, unknown> = {};
+        if (profile?.full_name?.trim())        data.full_name        = profile.full_name.trim();
+        if (profile?.organization?.trim())     data.organization     = profile.organization.trim();
+        if (profile?.role)                     data.role             = profile.role;
+        if (profile?.researchgate_url?.trim()) data.researchgate_url = profile.researchgate_url.trim();
+        if (typeof profile?.marketing_opt_in === "boolean") {
+          data.marketing_opt_in = profile.marketing_opt_in;
+        }
+        // Stamp acquisition timestamp + source so we can later filter
+        // analytics by signup-cohort or referrer without storing it
+        // elsewhere. signup_source is "email" here; the OAuth path
+        // (signInWithGoogle) doesn't currently capture profile data.
+        data.signup_source = "email";
+        data.signup_at = new Date().toISOString();
+
         const { error } = await supabase.auth.signUp({
           email,
           password,
@@ -84,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // link in their inbox. Lands on a page that auto-detects the
             // session hash and redirects to /new.
             emailRedirectTo: `${window.location.origin}/verify-email`,
+            data,
           },
         });
         return { error: error?.message ?? null };

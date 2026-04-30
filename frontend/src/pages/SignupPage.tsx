@@ -4,7 +4,7 @@
 
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useAuth } from "../lib/auth";
+import { useAuth, SIGNUP_ROLES } from "../lib/auth";
 import { Spinner } from "../components/Icons";
 import GoogleSignInButton from "../components/GoogleSignInButton";
 
@@ -16,9 +16,19 @@ export default function SignupPage() {
   // bounced through Sign in and back land where they started.
   const loginHref = `/login${next !== "/new" ? `?next=${encodeURIComponent(next)}` : ""}`;
 
+  // Required + optional sign-up fields. We deliberately only require
+  // email + password + full_name (the bare minimum to greet the user
+  // and have a label for them in History/Insights). Org / role /
+  // ResearchGate / marketing-opt-in are encouraged but skippable so
+  // the form doesn't feel heavy and conversion stays high.
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [organization, setOrganization] = useState("");
+  const [role, setRole] = useState("");
+  const [researchgateUrl, setResearchgateUrl] = useState("");
+  const [marketingOptIn, setMarketingOptIn] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -34,8 +44,22 @@ export default function SignupPage() {
       setErr("Password must be at least 8 characters");
       return;
     }
+    // Soft-validate the ResearchGate URL when the user filled it in. We
+    // don't enforce a strict pattern (academic profile URLs vary by
+    // institution and ResearchGate has redirected legacy formats) — just
+    // make sure it's not garbage like a bare username.
+    if (researchgateUrl.trim() && !/^https?:\/\//i.test(researchgateUrl.trim())) {
+      setErr("ResearchGate must be a full URL starting with https://");
+      return;
+    }
     setBusy(true);
-    const { error } = await signUpWithPassword(email.trim(), password);
+    const { error } = await signUpWithPassword(email.trim(), password, {
+      full_name: fullName,
+      organization,
+      role,
+      researchgate_url: researchgateUrl,
+      marketing_opt_in: marketingOptIn,
+    });
     setBusy(false);
     if (error) {
       setErr(error);
@@ -96,6 +120,23 @@ export default function SignupPage() {
       </div>
 
       <form onSubmit={onSubmit} className="space-y-4">
+        {/* Required fields: full name, email, password.
+            full_name comes first because the post-sign-up greeting reads
+            "Welcome, {name}" — without it the UX falls back to email
+            local-part which feels impersonal. */}
+        <div>
+          <label className="label">Full name</label>
+          <input
+            type="text"
+            className="input"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            autoComplete="name"
+            required
+            disabled={busy}
+            placeholder="Jane Smith"
+          />
+        </div>
         <div>
           <label className="label">Email</label>
           <input
@@ -136,6 +177,75 @@ export default function SignupPage() {
             disabled={busy}
           />
         </div>
+
+        {/* Optional acquisition fields. Visually separated by a softer
+            section header so the user knows the form isn't expecting
+            anything mandatory below this line — keeps perceived effort
+            low. All of these get stored on Supabase user_metadata and
+            surface later on the Settings page for editing. */}
+        <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3 mt-3">
+            About you (optional, helps us tailor the platform)
+          </p>
+          <div className="space-y-4">
+            <div>
+              <label className="label">Company / Institution</label>
+              <input
+                type="text"
+                className="input"
+                value={organization}
+                onChange={(e) => setOrganization(e.target.value)}
+                autoComplete="organization"
+                disabled={busy}
+                placeholder="MIT, Genentech, Stanford…"
+              />
+            </div>
+            <div>
+              <label className="label">Role</label>
+              <select
+                className="input"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">— Select —</option>
+                {SIGNUP_ROLES.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">ResearchGate profile</label>
+              <input
+                type="url"
+                className="input"
+                value={researchgateUrl}
+                onChange={(e) => setResearchgateUrl(e.target.value)}
+                disabled={busy}
+                placeholder="https://www.researchgate.net/profile/…"
+              />
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Optional — paste your ResearchGate URL so we can credit your work back to you.
+              </p>
+            </div>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="mt-0.5 w-4 h-4 rounded border-slate-300 text-delta-600 focus:ring-delta-500 dark:border-slate-600 dark:bg-slate-800"
+                checked={marketingOptIn}
+                onChange={(e) => setMarketingOptIn(e.target.checked)}
+                disabled={busy}
+              />
+              <span className="text-sm text-slate-700 dark:text-slate-300 leading-snug">
+                Send me product updates and the occasional research newsletter.
+                <span className="block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  No spam. Unsubscribe anytime from the footer of any email.
+                </span>
+              </span>
+            </label>
+          </div>
+        </div>
+
         {err && (
           <div className="rounded-md bg-rose-50 border border-rose-200 px-3 py-2 text-sm text-rose-800 dark:bg-rose-900/20 dark:border-rose-800/40 dark:text-rose-200">
             {err}
