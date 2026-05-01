@@ -83,7 +83,7 @@ export default function ContactPage() {
       const msg =
         err instanceof ApiError
           ? err.message
-          : "Something went wrong sending your message. Please try again or email hello@liganx.com.";
+          : "Something went wrong sending your message. Please try again in a few minutes.";
       setErrorMsg(msg);
       setStatus("error");
     }
@@ -101,8 +101,7 @@ export default function ContactPage() {
           <h1 className="text-2xl font-bold text-ink dark:text-white mb-2">Message sent</h1>
           <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
             Thanks for reaching out. We typically reply within 24 hours
-            (usually faster). If your message is urgent, you can also
-            email <a className="text-delta-700 hover:underline dark:text-delta-300" href="mailto:hello@liganx.com">hello@liganx.com</a> directly.
+            (usually faster).
           </p>
           <div className="mt-6 flex items-center justify-center gap-3">
             <Link to="/" className="btn-secondary btn-sm">Back to home</Link>
@@ -255,10 +254,6 @@ export default function ContactPage() {
         </div>
       </form>
 
-      <footer className="mt-10 pt-6 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-        Prefer email? Reach us at{" "}
-        <a href="mailto:hello@liganx.com" className="text-delta-700 hover:underline dark:text-delta-300">hello@liganx.com</a>.
-      </footer>
     </article>
   );
 }

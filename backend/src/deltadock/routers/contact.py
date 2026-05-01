@@ -23,8 +23,8 @@ Anti-spam strategy:
 If the Telegram credentials aren't configured (TELEGRAM_BOT_TOKEN /
 TELEGRAM_CHAT_ID env missing), we don't 500 — we log loudly and 503 with
 a friendly message so the form still feels alive in dev. The frontend
-shows a soft fallback ("we'll be in touch by email at hello@liganx.com")
-in that case.
+surfaces the message body as an inline error so the page never feels
+broken even mid-rollout.
 """
 
 from __future__ import annotations
@@ -201,10 +201,7 @@ async def submit_contact(
         log.error("Contact form: Telegram not configured: %s", e)
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Contact form delivery isn't configured yet. "
-                "Please email hello@liganx.com directly."
-            ),
+            detail="Contact form delivery is temporarily unavailable. Please try again in a few minutes.",
         )
 
     log.info("Contact form delivered: from=%s ip=%s", submission.email, ip)
