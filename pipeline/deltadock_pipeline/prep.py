@@ -439,6 +439,47 @@ def prepare_receptor(pdb_path: Path | str, out_pdbqt: Path | str, *, chain: str 
 
     if not out_pdbqt.exists() or out_pdbqt.stat().st_size == 0:
         raise PrepError(f"obabel reported success but {out_pdbqt} was not written / empty")
+
+    # POST-WRITE INTEGRITY CHECK — refuse to return a PDBQT that QuickVina2
+    # will reject at parse time. Caught a real corruption on 2026-04-30:
+    # 2ITY_A_T790M.pdbqt had line 2918 missing the leading "ATOM" record-type
+    # token, which made qvina2.1 exit 1 with "Unknown or inappropriate tag"
+    # on every job that used the cached file (Gefitinib + Osimertinib jobs
+    # over multiple hours, all variants of exhaustiveness, all dispatch paths).
+    # Stamping .prep_version on a broken file caches the failure forever.
+    #
+    # Valid PDBQT line prefixes: ATOM/HETATM coords, the ROOT/ENDROOT/
+    # BRANCH/ENDBRANCH/TORSDOF tree tokens, REMARK/MODEL/ENDMDL/TER/END
+    # housekeeping, and blank lines. Anything else means obabel emitted
+    # garbage — the caller should treat the file as un-cacheable so the next
+    # request rebuilds from scratch.
+    _allowed_prefixes = (
+        "ATOM", "HETATM", "ROOT", "ENDROOT", "BRANCH", "ENDBRANCH",
+        "TORSDOF", "REMARK", "MODEL", "ENDMDL", "TER", "END",
+    )
+    bad_lines: list[tuple[int, str]] = []
+    with out_pdbqt.open() as fh:
+        for i, raw in enumerate(fh, start=1):
+            line = raw.rstrip("\n\r")
+            if not line.strip():
+                continue
+            if not any(line.startswith(p) for p in _allowed_prefixes):
+                bad_lines.append((i, line[:80]))
+                if len(bad_lines) >= 3:
+                    break
+    if bad_lines:
+        # Best-effort cleanup: leave no half-written file behind that the
+        # cache layer might pick up next call. The runner will re-attempt
+        # and obabel will likely produce a clean file the second time.
+        try:
+            out_pdbqt.unlink()
+        except OSError:
+            pass
+        head = "; ".join(f"line {n}: {ln!r}" for n, ln in bad_lines)
+        raise PrepError(
+            f"obabel produced PDBQT with malformed record(s) — refusing to "
+            f"cache. {head}"
+        )
     return out_pdbqt
 
 
