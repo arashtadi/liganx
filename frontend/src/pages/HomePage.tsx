@@ -81,9 +81,10 @@ function Hero() {
                 Browse mutation library
               </Link>
             </div>
-            <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+            <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
-              <span className="flex items-center gap-1.5"><Check /> Vina + GNINA. Two engines.</span>
+              <span className="flex items-center gap-1.5"><Check /> Vina + GNINA + Boltz-2 ML</span>
+              <span className="flex items-center gap-1.5"><Check /> Live SMILES validation</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>
           </div>
@@ -272,8 +273,26 @@ function FeatureGrid() {
     },
     {
       icon: <Sparkles />,
-      title: "Choose your scoring engine",
-      body: "Pick QuickVina2-GPU (fast Vina-family) or GNINA — the Vina derivative with a CNN-based pose-rescoring head trained on PDBbind. Two genuinely different ranking signals on the same job, side-by-side. Most free tools give you one.",
+      title: "Three scoring engines",
+      body: "QuickVina2-GPU (fast Vina-family), GNINA (Vina + CNN pose rescoring trained on PDBbind), and Boltz-2 (full ML co-folding from sequence + SMILES — no docking box needed). Three genuinely different methods, side-by-side on the same job. Most free tools give you one.",
+      isNew: true,
+    },
+    {
+      icon: <Library />,
+      title: "Your compound library",
+      body: "Every named compound auto-saves to your personal library. Pull any saved structure into a new job in one click, organize with color-coded tags (Favorite, Promising, Bad, Send to lab, custom), and edit any structure in Ketcher with save-changes-or-save-as-new. Filter and search across thousands.",
+      isNew: true,
+    },
+    {
+      icon: <Eye />,
+      title: "Live SMILES validation",
+      body: "Inline 2D thumbnail of every compound row updates as you type, powered by server-side RDKit. Catches broken SMILES, disconnected fragments, and 3D-embed failures BEFORE you click Run — with one-click Keep-largest and Fix-in-sketcher repairs. No more 30-second wait then a cryptic 'ligand prep failed'.",
+      isNew: true,
+    },
+    {
+      icon: <Bolt />,
+      title: "Re-run any job in one click",
+      body: "Every History row has a Re-run button that pre-fills the New-job form with the same target, mutations, compounds, engine, and exhaustiveness. Tweak any field — try a different engine, add a mutation, swap a compound — and resubmit without retyping.",
       isNew: true,
     },
     {
@@ -353,23 +372,23 @@ function WhatsNew() {
   const items = [
     {
       tag: "Just shipped",
-      title: "Built-in 2D molecule sketcher",
+      title: "Custom compound library",
       body:
-        "Draw or edit any compound visually with the EPAM Ketcher editor — no SMILES typing, no install. Self-hosted, same-origin, ~25 MB lazy-loaded.",
+        "Name a compound on a job and it auto-saves to your personal library. Re-use it in one click on any future run, color-code with the same tag system as History, edit in Ketcher and choose save-changes vs save-as-new.",
       tone: "delta" as const,
     },
     {
-      tag: "Shipped this week",
-      title: "GPU batch docking",
+      tag: "Just shipped",
+      title: "Live SMILES validation",
       body:
-        "Pod-side batched QuickVina2-GPU dispatch — N ligands per dispatch instead of N round-trips. Validation runs in parallel after the cells flip OK.",
+        "Inline 2D thumbnail on every compound row updates as you type. Catches broken SMILES, disconnected fragments, and 3D-embed failures BEFORE you click Run — one-click Keep-largest and Fix-in-sketcher buttons make repairs instant.",
       tone: "accent" as const,
     },
     {
-      tag: "Shipped this week",
-      title: "Pose strain + outside-pocket honesty",
+      tag: "Just shipped",
+      title: "Re-run any job in one click",
       body:
-        "RDKit MMFF strain catches Vina junk poses; mutations far from the docking box get a noise badge so you don't read biology into a 0.1 Δ.",
+        "Every History row gets a Re-run button that pre-fills the New-job form with the same target, mutations, compounds, engine, and search depth. Tweak any field and resubmit without retyping.",
       tone: "emerald" as const,
     },
   ];
@@ -448,6 +467,27 @@ function Comparison() {
               // GNINA's CNN inline (no separate add-on / module purchase),
               // but a flat "false" was overstating Maestro's gap.
               ["CNN-based pose rescoring",       false,     true,      "partial"],
+              // Boltz-2 row added 2026-04-30. AlphaFold-3-class ML co-folding
+              // model — predicts pose + binding-affinity end-to-end from
+              // sequence + SMILES. Free servers don't have it (research-grade
+              // model with non-trivial GPU requirements). Maestro is "partial"
+              // because Schrödinger has AlphaFold integrations but not the
+              // affinity-head workflow as a first-class scoring engine yet.
+              ["ML co-folding (Boltz-2 class)",  false,     true,      "partial"],
+              // Library row added 2026-04-30 alongside the per-user compound
+              // library ship. Free servers have no concept of a per-user
+              // saved compound library. Maestro has Project favorites but
+              // not the auto-save-on-name pattern with cross-job re-use.
+              ["Personal compound library + tags", false,   true,      "partial"],
+              // Re-run row — shipped 2026-04-30. Maestro has the rerun
+              // workflow via Project entries but not in one click from a
+              // history list with all parameters preserved.
+              ["One-click re-run from history",  false,     true,      true],
+              // Live SMILES validation — shipped 2026-04-30 with inline
+              // 2D preview + 3D embed pre-check at submit. Maestro has
+              // 2D depiction in its compound editor but doesn't pre-flight
+              // 3D embedding before sending to Glide.
+              ["Live SMILES preview + pre-flight", false,   true,      "partial"],
               // Row labels generalized so the Schrödinger ✓ doesn't
               // imply they use the same OSS tools we do (PoseBusters,
               // RDKit). Schrödinger has equivalent functionality via
@@ -483,7 +523,7 @@ function Comparison() {
           flagging the snapshot date and licensing variance keeps the
           page hard to challenge as competitor capabilities shift. */}
         <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 text-center">
-          Reflects publicly known features as of April 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
+          Reflects publicly known features as of May 2026. Free-server and Schrödinger capabilities vary by version, license tier, and module.
         </p>
 
         {/* Method-honesty footnote added 2026-04-30 after a medicinal-chemistry
