@@ -232,33 +232,30 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       const baseline = baselineSmilesRef.current;
       const unchanged = baseline.length > 0 && trimmed === baseline;
 
-      // Fail-fast SMILES validation BEFORE we close the modal.
-      // Ketcher's own getSmiles can produce strings that look fine to
-      // it but trip RDKit downstream (radical centres, weird hybrid
-      // states, atom-mapping quirks). Catching it here means the user
-      // sees "this won't dock" while they're still in the editor and
-      // can fix it — instead of seeing it as a failed compound row in
-      // step 3 of the new-job form after they've moved on.
+      // Fail-fast dockability check BEFORE we close the modal.
+      // Catches the full set of "this won't make it through Vina/GNINA
+      // ligand prep" cases at the editor instead of letting them
+      // propagate into the new-job form: malformed SMILES, unsupported
+      // atoms (arsenic, lead, etc.), salt forms with disconnected
+      // counter-ions, molecules too small or too large for Vina's
+      // flexibility model. Each rejection comes back with a friendly
+      // human-readable reason + actionable suggestion the user can
+      // act on immediately.
       //
-      // We use the existing /assist/properties endpoint (RDKit-only,
-      // no LLM, ~5ms server-side, free). It returns valid:false +
-      // error when the SMILES doesn't parse. Any unexpected failure
-      // here (network, 401, 5xx) we treat as "skip the check" rather
-      // than blocking — better to let the user proceed and have the
-      // downstream pipeline catch it than to falsely block on a
-      // transient API hiccup.
+      // Network/auth failures here fall through silently — better to
+      // let the user proceed (the runner has its own validation as a
+      // safety net + the new FAILED → Telegram + Re-run UX) than to
+      // false-block on a transient backend hiccup.
       try {
-        const props = await api.assistProperties(trimmed);
-        if (props && props.valid === false) {
+        const dock = await api.assistDockability(trimmed);
+        if (dock && dock.dockable === false) {
           setPending(false);
-          setError(
-            `This structure can't be docked: ${props.error || "RDKit couldn't parse it"}. ` +
-            `Adjust the structure in the editor, or click Close to start over.`,
-          );
+          const reason = dock.reason || "This structure can't be docked.";
+          const suggestion = dock.suggestion ? ` ${dock.suggestion}` : "";
+          setError(reason + suggestion);
           return;
         }
-        // valid:true OR network/transport issue → proceed. Downstream
-        // pipeline still has its own validation as a safety net.
+        // dockable:true OR network/transport issue → proceed.
       } catch {
         // Validation request failed (network, auth). Proceed silently
         // — better than blocking on a transient backend issue.

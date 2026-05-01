@@ -137,3 +137,148 @@ def validate_smiles(smiles: str) -> tuple[bool, Optional[str], Optional[str]]:
         return True, Chem.MolToSmiles(mol), None
     except Exception as e:
         return False, None, f"Canonicalisation failed: {e}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Dockability check
+# ──────────────────────────────────────────────────────────────────────
+#
+# Atoms AutoDock Vina + GNINA can actually parameterise. This is a
+# CONSERVATIVE list — there are some metals Vina nominally accepts but
+# in practice produce garbage scores or crash Meeko (TI, V, Cr, etc.).
+# We allow the standard organic set + halogens + a few biologically
+# common metals that show up in metalloproteins. Anything else gets a
+# friendly "this engine can't do that" rejection at Ketcher save time
+# instead of failing 60s later in the runner.
+_VINA_SUPPORTED_ELEMENTS: set[str] = {
+    "H", "B", "C", "N", "O", "F", "Si", "P", "S",
+    "Cl", "Br", "I",
+    "Mg", "Ca", "Mn", "Fe", "Co", "Cu", "Zn",
+}
+
+# Sensible bounds. Below 4 heavy atoms = not really a drug candidate
+# (water, ammonia, etc.). Above 80 heavy atoms = Vina's flexibility model
+# breaks down; macrocyclic peptides should go to Boltz-2.
+_MIN_HEAVY_ATOMS = 4
+_MAX_HEAVY_ATOMS = 80
+
+
+class DockabilityResult(TypedDict, total=False):
+    dockable: bool
+    reason: str            # human-readable failure reason; empty when dockable
+    suggestion: str        # actionable next-step the user can take
+    canonical_smiles: str  # canonical form when dockable=True
+
+
+def check_dockability(smiles: str) -> DockabilityResult:
+    """Pre-flight check: would this SMILES survive AutoDock Vina /
+    GNINA's ligand-prep step?
+
+    Layered cheap-to-expensive:
+      1. RDKit parse (instant) — catches malformed SMILES.
+      2. Atom allowlist (instant) — catches arsenic, lead, etc.
+      3. Salt / disconnected-fragment check (instant) — catches
+         '[Na+].CC(=O)C'-style salts where the active ingredient
+         isn't isolated.
+      4. Size bounds (instant) — too small isn't a drug, too large
+         breaks Vina's flexibility model.
+
+    Returns dockable=True with the canonical SMILES, or dockable=False
+    with a specific human-readable reason + actionable suggestion the
+    UI can show verbatim. Never raises.
+
+    Deliberately omits the Meeko prepare_ligand dry-run (would catch
+    Lorlatinib-style macrocycle prep failures) — Meeko's prep is heavy
+    (~500ms per call) and sometimes false-rejects valid molecules. The
+    runner has self-heal for those, and false-positives at the save
+    gate would be a worse user experience than letting them slip
+    through to the existing FAILED + Telegram-alert + Re-run UX.
+    """
+    smi = (smiles or "").strip()
+    if not smi:
+        return DockabilityResult(
+            dockable=False,
+            reason="No structure was provided.",
+            suggestion="Draw or paste a molecule on the canvas first.",
+        )
+
+    mol = Chem.MolFromSmiles(smi)
+    if mol is None:
+        return DockabilityResult(
+            dockable=False,
+            reason="RDKit couldn't parse this SMILES — the structure isn't a valid molecule.",
+            suggestion="Re-draw the structure in the editor, or check your SMILES for typos.",
+        )
+
+    # Atom allowlist — find the first unsupported element so the message
+    # tells the user what specifically tripped the check, not just "some
+    # atom is bad". Sorting by symbol gives stable output for tests.
+    seen_unsupported: list[str] = []
+    for atom in mol.GetAtoms():
+        sym = atom.GetSymbol()
+        if sym not in _VINA_SUPPORTED_ELEMENTS:
+            if sym not in seen_unsupported:
+                seen_unsupported.append(sym)
+    if seen_unsupported:
+        bad = sorted(seen_unsupported)
+        bad_str = ", ".join(bad) if len(bad) > 1 else bad[0]
+        return DockabilityResult(
+            dockable=False,
+            reason=(
+                f"This molecule contains {bad_str}, which AutoDock Vina and GNINA can't dock. "
+                f"These engines only support C, H, N, O, F, P, S, halogens, "
+                f"and a handful of biological metals (Mg, Ca, Mn, Fe, Co, Cu, Zn)."
+            ),
+            suggestion=(
+                "Try a different functional group, or contact us about Boltz-2 "
+                "(our ML co-folding engine) which supports a broader chemical space."
+            ),
+        )
+
+    # Salt / disconnected-fragment check. Multiple disconnected pieces
+    # are almost always a salt form (e.g. [Na+].CC(=O)C). Vina can
+    # only dock one molecule at a time — the user needs the active
+    # ingredient on its own.
+    fragments = Chem.GetMolFrags(mol, asMols=False)
+    if len(fragments) > 1:
+        return DockabilityResult(
+            dockable=False,
+            reason=(
+                f"This compound has {len(fragments)} disconnected pieces — "
+                f"it's probably a salt form (e.g. a sodium counter-ion plus the active drug)."
+            ),
+            suggestion=(
+                "Remove the counter-ion in the editor and use just the active ingredient. "
+                "Salts dissociate in solution anyway, so docking the free form is the right call."
+            ),
+        )
+
+    # Size bounds.
+    heavy = mol.GetNumHeavyAtoms()
+    if heavy < _MIN_HEAVY_ATOMS:
+        return DockabilityResult(
+            dockable=False,
+            reason=f"This molecule has only {heavy} heavy atom(s) — too small to be a meaningful ligand.",
+            suggestion="Most drug candidates have at least 10-15 heavy atoms. Build out a larger scaffold.",
+        )
+    if heavy > _MAX_HEAVY_ATOMS:
+        return DockabilityResult(
+            dockable=False,
+            reason=(
+                f"This molecule has {heavy} heavy atoms — too large for Vina-style docking. "
+                f"Vina's flexibility model breaks down past ~80 heavy atoms."
+            ),
+            suggestion=(
+                "For very large or macrocyclic compounds, contact us about Boltz-2 "
+                "(ML co-folding) which handles larger ligands."
+            ),
+        )
+
+    # All checks passed — molecule is shape-OK for the Vina/GNINA
+    # pipeline. Return the canonical SMILES so the caller can use it
+    # downstream without re-parsing.
+    try:
+        canonical = Chem.MolToSmiles(mol)
+    except Exception:
+        canonical = smi
+    return DockabilityResult(dockable=True, canonical_smiles=canonical)

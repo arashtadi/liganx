@@ -532,6 +532,18 @@ export const api = {
       pains_hits?: { name: string; description: string }[];
       error?: string;
     }>("/assist/properties", { method: "POST", body: JSON.stringify({ smiles }) }),
+  /** Pre-flight dockability check. Used at the Ketcher save gate so
+   *  unsupported atoms (As, Pb, etc.), salt forms, and oversized
+   *  molecules get blocked at the editor instead of failing later in
+   *  the runner. Returns dockable=true with canonical_smiles, or
+   *  dockable=false with a friendly reason + actionable suggestion. */
+  assistDockability: (smiles: string) =>
+    request<{
+      dockable: boolean;
+      reason?: string;
+      suggestion?: string;
+      canonical_smiles?: string;
+    }>("/assist/dockability", { method: "POST", body: JSON.stringify({ smiles }) }),
   /** Report an issue on a job. Owner-only. Sends the user's free-form
    *  comment + job context to our Telegram bot so we can triage from a
    *  push notification. Server returns 204; we resolve to void. */

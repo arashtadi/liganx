@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, current_user
 from ..services.ai_assistant import call_anthropic
-from ..services.properties import compute_properties
+from ..services.properties import check_dockability, compute_properties
 from ..services.rate_limit import RateLimit, rate_limit
 
 log = logging.getLogger(__name__)
@@ -72,6 +72,24 @@ def properties_endpoint(
     or {valid: False, error: ...} for an invalid one (HTTP 200 either
     way — invalid input is a normal user-flow case, not a server error)."""
     return dict(compute_properties(payload.smiles))
+
+
+@router.post("/dockability", dependencies=[Depends(_PROP_LIMIT)])
+def dockability_endpoint(
+    payload: PropertiesRequest,
+    user: Annotated[CurrentUser, Depends(current_user)],
+) -> dict:
+    """Pre-flight dockability check. Returns {dockable: true,
+    canonical_smiles: ...} when the molecule will survive Vina/GNINA
+    ligand prep, or {dockable: false, reason: ..., suggestion: ...}
+    with a human-readable explanation + actionable next step.
+
+    Used by the Ketcher save flow to fail-fast at the editor instead
+    of letting bad inputs (arsenic, salts, oversized macrocycles)
+    propagate into the job-submit step where they'd waste GPU time
+    and confuse the user. Same rate-limit bucket as /properties since
+    the cost profile is similar (RDKit-only, instant)."""
+    return dict(check_dockability(payload.smiles))
 
 
 @router.post("/compound", dependencies=[Depends(_AI_LIMIT)])
