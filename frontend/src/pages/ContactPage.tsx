@@ -21,11 +21,21 @@
  */
 
 import { type FormEvent, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ApiError, api } from "../api";
 import { Spinner, ArrowRight } from "../components/Icons";
 import { usePageMeta } from "../lib/usePageMeta";
 import Turnstile from "../components/Turnstile";
+
+// Pre-filled message templates keyed by the `reason` we get from
+// location.state. Keeps the form natural for direct visitors while
+// removing the "what do I write?" friction for users routed here from
+// a feature gate (e.g. clicking the Boltz-2 engine card).
+const PREFILL_MESSAGES: Record<string, string> = {
+  boltz2_request:
+    "Hi — I'd like to enable Boltz-2 (the ML co-folding engine) on my account. " +
+    "A bit about my use case:\n\n",
+};
 
 type Status = "idle" | "sending" | "sent" | "error";
 
@@ -47,9 +57,17 @@ export default function ContactPage() {
       "Get in touch with the Liganx team. Questions about mutation-aware molecular docking, feedback, bug reports, or partnership inquiries — we usually reply within 24 hours.",
   });
 
+  // location.state may carry a `reason` string from the calling page
+  // (e.g. NewJobPage's Boltz-2 engine card routes here with
+  // reason: "boltz2_request"). We use that to pre-fill the message and
+  // give the visit a clear "you came here to ask for X" framing.
+  const location = useLocation();
+  const reason = (location.state as { reason?: string } | null)?.reason ?? "";
+  const prefilled = reason && PREFILL_MESSAGES[reason] ? PREFILL_MESSAGES[reason] : "";
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(prefilled);
   // Honeypot — bound to React state so we can read it on submit, but
   // visually hidden in the DOM so humans don't see it. Default empty.
   const [website, setWebsite] = useState("");
@@ -144,6 +162,19 @@ export default function ContactPage() {
           partnership inquiries, or anything else — drop a note and we'll
           get back to you. Most messages get a reply within 24 hours.
         </p>
+        {/* Reason banner — shown when the visitor was routed here from a
+            specific feature gate (e.g. clicking the Boltz-2 engine card).
+            Confirms what they're asking about so the prefilled message
+            doesn't feel like it appeared from nowhere, and so they can
+            edit/delete it if they actually wanted to ask about something
+            else. */}
+        {reason === "boltz2_request" && (
+          <div className="mt-4 rounded-md border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200">
+            <strong>Requesting Boltz-2 access.</strong> The Boltz-2 ML engine runs on a
+            dedicated GPU pod that we wake on demand for paying users. Tell us a bit about
+            your use case and we'll get back to you within a day.
+          </div>
+        )}
       </header>
 
       <form onSubmit={handleSubmit} className="space-y-5" noValidate>

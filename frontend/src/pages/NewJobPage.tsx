@@ -1654,18 +1654,37 @@ export default function NewJobPage() {
                   sub: "~20 s/cell · MIT · Sequence-input",
                   body:
                     "MIT/Recursion's open-source AlphaFold-3-class biomolecular foundation model. Predicts pose + binding affinity end-to-end from sequence + SMILES. Different methodology from Vina/GNINA — useful as a cross-validation third opinion.",
-                  badge: "beta" as const,  // live as of 2026-04-30 on a dedicated RTX 4090 pod (see runpod/BOLTZ2_INSTALL.md)
+                  // Available only by request (paid). The Boltz-2 GPU pod (~$15/day to keep
+                  // resident) is stopped by default; we wake it on demand for paying users.
+                  // We keep the card visible so prospects can SEE the capability and the value
+                  // prop — clicking just routes them to /contact instead of selecting the
+                  // engine. Backend BOLTZ2_ENABLED=false also rejects the engine if anyone
+                  // tampers with the bundle to bypass this gate.
+                  badge: "request" as const,
                 },
-              ].map((opt) => (
+              ].map((opt) => {
+                const requestOnly = opt.badge === "request";
+                const isSelected = engine === opt.value;
+                const handleClick = () => {
+                  if (requestOnly) {
+                    navigate("/contact", { state: { reason: "boltz2_request" } });
+                    return;
+                  }
+                  setEngine(opt.value);
+                };
+                return (
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => setEngine(opt.value)}
+                  onClick={handleClick}
                   className={`text-left rounded-lg border p-3 transition-colors ${
-                    engine === opt.value
+                    isSelected
                       ? "border-delta-500 bg-delta-50 dark:bg-delta-900/30 dark:border-delta-400"
-                      : "border-slate-200 bg-white hover:border-delta-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400"
+                      : requestOnly
+                        ? "border-slate-200 bg-slate-50/60 hover:border-amber-300 hover:bg-amber-50/50 dark:border-slate-700 dark:bg-slate-800/60 dark:hover:border-amber-400/60 dark:hover:bg-amber-900/10"
+                        : "border-slate-200 bg-white hover:border-delta-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-delta-400"
                   }`}
+                  aria-label={requestOnly ? `${opt.label} — available on request, click to contact us` : opt.label}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -1680,15 +1699,31 @@ export default function NewJobPage() {
                           Beta
                         </span>
                       )}
+                      {opt.badge === "request" && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="3" y="11" width="18" height="11" rx="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </svg>
+                          By request
+                        </span>
+                      )}
                     </div>
-                    {engine === opt.value && (
+                    {isSelected && (
                       <span aria-hidden className="text-delta-600 dark:text-delta-400 text-xs shrink-0">✓</span>
                     )}
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{opt.sub}</div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-snug">{opt.body}</div>
+                  {requestOnly && (
+                    <div className="mt-2 text-[10.5px] text-amber-800 dark:text-amber-300 font-semibold inline-flex items-center gap-1">
+                      Contact us to enable
+                      <span aria-hidden>→</span>
+                    </div>
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
             {engine === "gnina" && (
               <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
