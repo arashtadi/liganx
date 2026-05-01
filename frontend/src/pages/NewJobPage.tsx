@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
+import { Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIssue, type ValidationDetail } from "../api";
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
@@ -178,24 +178,33 @@ export default function NewJobPage() {
     if (!seed) return;
     reseedRef.current = true;
 
-    const pdbUp = (seed.pdb_id ?? "").toUpperCase();
-    const match = catalog.find((t) => t.pdb_id.toUpperCase() === pdbUp);
-    if (match) {
-      // Catalog target — flip to single-target catalog mode.
-      setSelectedIds([match.id]);
-      setCustomMode(false);
-      if (seed.mutations && seed.mutations.length > 0) {
-        setCustomMutationsByTarget((prev) => ({ ...prev, [match.id]: seed.mutations!.join(", ") }));
-      }
-    } else {
-      // Custom PDB — flip to custom mode and set the PDB id + chain
-      // directly. The runner self-heals the receptor on first dock.
-      setSelectedIds([]);
-      setCustomMode(true);
-      setPdbId(pdbUp);
-      setChain((seed.chain || "A").toUpperCase());
-      if (seed.mutations && seed.mutations.length > 0) {
-        setCustomMutationsByTarget((prev) => ({ ...prev, [CUSTOM_KEY]: seed.mutations!.join(", ") }));
+    // Only touch target/mutation state when the seed actually carries a
+    // PDB. The "Use in new job" path from /compounds reseeds JUST the
+    // compound list — nothing about the target — and we used to flip
+    // Custom mode on with an empty pdbId, leaving the user staring at
+    // an unwanted "Other PDB" tile pre-selected. Bail early here so the
+    // target picker stays in its untouched default state.
+    const pdbUp = (seed.pdb_id ?? "").trim().toUpperCase();
+    if (pdbUp) {
+      const match = catalog.find((t) => t.pdb_id.toUpperCase() === pdbUp);
+      if (match) {
+        // Catalog target — flip to single-target catalog mode.
+        setSelectedIds([match.id]);
+        setCustomMode(false);
+        if (seed.mutations && seed.mutations.length > 0) {
+          setCustomMutationsByTarget((prev) => ({ ...prev, [match.id]: seed.mutations!.join(", ") }));
+        }
+      } else {
+        // PDB not in catalog (e.g. a user-uploaded structure) — flip to
+        // Custom mode and pre-fill the id + chain. Runner self-heals the
+        // receptor on first dock.
+        setSelectedIds([]);
+        setCustomMode(true);
+        setPdbId(pdbUp);
+        setChain((seed.chain || "A").toUpperCase());
+        if (seed.mutations && seed.mutations.length > 0) {
+          setCustomMutationsByTarget((prev) => ({ ...prev, [CUSTOM_KEY]: seed.mutations!.join(", ") }));
+        }
       }
     }
 
@@ -1473,75 +1482,30 @@ export default function NewJobPage() {
             appends. The X on hover removes the compound from the
             library entirely (with a quick confirm on the click). */}
         {savedCompounds.length > 0 && (
-          <div className="mb-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/30 px-3 py-2.5">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
-                Your library · {savedCompounds.length}
-              </span>
-              <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                Auto-saved when you give a compound a name
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {savedCompounds.map((sc) => {
-                const alreadyInJob = compounds.some(
-                  (c) => c.name.trim().toLowerCase() === sc.name.toLowerCase()
-                          || c.smiles.trim() === sc.smiles,
-                );
-                return (
-                  <span
-                    key={sc.id}
-                    className={
-                      "group inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full text-xs transition-colors " +
-                      (alreadyInJob
-                        ? "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
-                        : "bg-white text-slate-700 border border-slate-200 hover:border-delta-400 hover:text-delta-700 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700 dark:hover:border-delta-500 dark:hover:text-delta-300")
-                    }
-                    title={alreadyInJob ? `${sc.name} is already in this job` : `Click to add ${sc.name}`}
-                  >
-                    <button
-                      type="button"
-                      disabled={alreadyInJob}
-                      onClick={() => {
-                        // Add to current job — fill an empty row if one
-                        // exists, otherwise append. Mirror the same
-                        // pattern lookupMut uses for PubChem hits.
-                        setCompounds((cs) => {
-                          const next = [...cs];
-                          const emptyIdx = next.findIndex((c) => !c.smiles.trim() && !c.name.trim());
-                          if (emptyIdx >= 0) {
-                            next[emptyIdx] = { name: sc.name, smiles: sc.smiles };
-                          } else if (next.length < MAX_COMPOUNDS) {
-                            next.push({ name: sc.name, smiles: sc.smiles });
-                          } else {
-                            flashCapToast(`Free tier: max ${MAX_COMPOUNDS} compounds per job. Remove one to add another.`);
-                            return cs;
-                          }
-                          return next;
-                        });
-                      }}
-                      className="font-medium text-current disabled:cursor-not-allowed"
-                    >
-                      {alreadyInJob ? "✓ " : "+ "}{sc.name}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm(`Remove "${sc.name}" from your library? (This won't affect any past jobs.)`)) {
-                          deleteCompoundMut.mutate(sc.id);
-                        }
-                      }}
-                      className="opacity-0 group-hover:opacity-100 inline-flex items-center justify-center w-4 h-4 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition"
-                      aria-label={`Remove ${sc.name} from library`}
-                      title={`Remove ${sc.name} from your library`}
-                    >
-                      <Close size={10} />
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
+          <LibraryPicker
+            savedCompounds={savedCompounds}
+            jobCompounds={compounds}
+            onAdd={(sc) => {
+              setCompounds((cs) => {
+                const next = [...cs];
+                const emptyIdx = next.findIndex((c) => !c.smiles.trim() && !c.name.trim());
+                if (emptyIdx >= 0) {
+                  next[emptyIdx] = { name: sc.name, smiles: sc.smiles };
+                } else if (next.length < MAX_COMPOUNDS) {
+                  next.push({ name: sc.name, smiles: sc.smiles });
+                } else {
+                  flashCapToast(`Free tier: max ${MAX_COMPOUNDS} compounds per job. Remove one to add another.`);
+                  return cs;
+                }
+                return next;
+              });
+            }}
+            onDelete={(sc) => {
+              if (window.confirm(`Remove "${sc.name}" from your library? (This won't affect any past jobs.)`)) {
+                deleteCompoundMut.mutate(sc.id);
+              }
+            }}
+          />
         )}
 
         <div className="space-y-2">
@@ -1935,6 +1899,114 @@ export default function NewJobPage() {
       />
     )}
     </>
+  );
+}
+
+/** "Your library" picker shown above the manual compound rows in Step 3.
+ *
+ *  Designed to scale: with 5 entries it shows a flat pill row; with 1000
+ *  it adds a search input and caps the pill area to ~3 rows tall with
+ *  vertical scroll. The earlier version dumped every entry into an
+ *  unbounded flex-wrap which became unusable past ~50 saved compounds.
+ *  Tag filters from /compounds aren't repeated here — users who want to
+ *  filter by tag jump to the management page via the "Manage" link. */
+function LibraryPicker({
+  savedCompounds,
+  jobCompounds,
+  onAdd,
+  onDelete,
+}: {
+  savedCompounds: import("../api").UserCompound[];
+  jobCompounds: CompoundRow[];
+  onAdd: (sc: import("../api").UserCompound) => void;
+  onDelete: (sc: import("../api").UserCompound) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const showSearch = savedCompounds.length > 12;
+  const filtered = useMemo(() => {
+    if (!filter.trim()) return savedCompounds;
+    const q = filter.toLowerCase();
+    return savedCompounds.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.smiles.toLowerCase().includes(q)
+              || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)),
+    );
+  }, [savedCompounds, filter]);
+
+  return (
+    <div className="mb-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/30 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+          Your library · {savedCompounds.length}
+          {filter && ` · ${filtered.length} matching`}
+        </span>
+        <div className="flex items-center gap-3 text-[10px]">
+          <span className="text-slate-400 dark:text-slate-500">
+            Auto-saved when you give a compound a name
+          </span>
+          <Link
+            to="/compounds"
+            className="text-delta-600 hover:text-delta-700 dark:text-delta-400 dark:hover:text-delta-300 font-semibold"
+          >
+            Manage →
+          </Link>
+        </div>
+      </div>
+      {showSearch && (
+        <input
+          type="search"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter library by name, SMILES, or tag…"
+          className="input w-full text-xs h-8 mb-2"
+        />
+      )}
+      {/* Cap visible height — past ~3 rows of pills the area scrolls. With a
+          flat row of 1000 pills the page used to grow forever and the rest
+          of Step 3 fell off-screen. */}
+      <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1">
+        {filtered.map((sc) => {
+          const alreadyInJob = jobCompounds.some(
+            (c) => c.name.trim().toLowerCase() === sc.name.toLowerCase()
+                    || c.smiles.trim() === sc.smiles,
+          );
+          return (
+            <span
+              key={sc.id}
+              className={
+                "group inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full text-xs transition-colors " +
+                (alreadyInJob
+                  ? "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+                  : "bg-white text-slate-700 border border-slate-200 hover:border-delta-400 hover:text-delta-700 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700 dark:hover:border-delta-500 dark:hover:text-delta-300")
+              }
+              title={alreadyInJob ? `${sc.name} is already in this job` : `Click to add ${sc.name}`}
+            >
+              <button
+                type="button"
+                disabled={alreadyInJob}
+                onClick={() => onAdd(sc)}
+                className="font-medium text-current disabled:cursor-not-allowed"
+              >
+                {alreadyInJob ? "✓ " : "+ "}{sc.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(sc)}
+                className="opacity-0 group-hover:opacity-100 inline-flex items-center justify-center w-4 h-4 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition"
+                aria-label={`Remove ${sc.name} from library`}
+                title={`Remove ${sc.name} from your library`}
+              >
+                <Close size={10} />
+              </button>
+            </span>
+          );
+        })}
+        {filter && filtered.length === 0 && (
+          <span className="text-xs text-slate-500 dark:text-slate-400 italic px-1">
+            No matches in your library.
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 

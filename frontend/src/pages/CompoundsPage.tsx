@@ -11,7 +11,8 @@
  * The auto-save flow itself lives in NewJobPage — this page is the
  * read/manage surface plus the structural-edit + tag-filter surfaces.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type UserCompound } from "../api";
@@ -411,52 +412,30 @@ function CompoundTagStrip({
   onChange: (next: string[]) => void;
   pending: boolean;
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [custom, setCustom] = useState("");
-  // Optimistic local copy so chip clicks feel instant. The mutation
-  // re-fetches behind the scenes.
+  // anchorRect captured when the trigger is clicked. The picker renders
+  // via portal at document.body and positions itself with FIXED coords
+  // anchored to this rect — that way it can escape the rows card
+  // overflow-hidden wrapper without getting clipped.
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Optimistic local copy so chip clicks feel instant.
   const [local, setLocal] = useState(tags);
   useEffect(() => { setLocal(tags); }, [tags]);
-
-  // Click-outside to close the picker.
-  useEffect(() => {
-    if (!pickerOpen) return;
-    function onDoc(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setPickerOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [pickerOpen]);
 
   function commit(next: string[]) {
     setLocal(next);
     onChange(next);
   }
 
-  function togglePreset(value: string) {
-    const next = local.includes(value)
-      ? local.filter((t) => t !== value)
-      : [...local, value];
-    commit(next);
-  }
-
-  function addCustom() {
-    const t = custom.trim();
-    if (!t) return;
-    if (local.some((x) => x.toLowerCase() === t.toLowerCase())) {
-      setCustom("");
-      return;
+  function openPicker() {
+    if (triggerRef.current) {
+      setAnchorRect(triggerRef.current.getBoundingClientRect());
     }
-    commit([...local, t]);
-    setCustom("");
   }
 
   const sorted = sortTags(local);
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-1.5 relative" ref={wrapRef}>
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
       {sorted.map((value) => {
         const preset = TAG_BY_VALUE[value];
         const chip = preset?.chip ?? CUSTOM_TAG_CHIP;
@@ -475,8 +454,9 @@ function CompoundTagStrip({
         );
       })}
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setPickerOpen((v) => !v)}
+        onClick={openPicker}
         className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-inset ring-dashed ring-slate-300 hover:ring-slate-400 hover:text-slate-700 dark:text-slate-400 dark:ring-slate-700 dark:hover:ring-slate-500 dark:hover:text-slate-200"
         title="Add a tag to this compound"
       >
@@ -484,52 +464,157 @@ function CompoundTagStrip({
         <span>Tag</span>
       </button>
       {pending && <Spinner size={10} className="text-slate-400" />}
-      {pickerOpen && (
-        <div className="absolute left-0 top-full mt-1.5 z-30 w-64 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg p-2 space-y-1.5">
-          <div className="grid grid-cols-2 gap-1">
-            {TAG_PRESETS.map((p) => {
-              const active = local.includes(p.value);
-              return (
-                <button
-                  key={p.value}
-                  type="button"
-                  onClick={() => togglePreset(p.value)}
-                  className={
-                    `flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium text-left ring-1 ring-inset ${p.chip} ` +
-                    (active ? "" : "opacity-60 hover:opacity-100")
-                  }
-                >
-                  <span aria-hidden="true">{p.icon}</span>
-                  <span>{p.label}</span>
-                  {active && <span className="ml-auto text-[10px]">✓</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex items-center gap-1.5 pt-1.5 border-t border-slate-100 dark:border-slate-700">
-            <input
-              type="text"
-              value={custom}
-              onChange={(e) => setCustom(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); addCustom(); }
-              }}
-              placeholder="Custom tag…"
-              maxLength={40}
-              className="input flex-1 text-[11px] h-7 px-2"
-            />
-            <button
-              type="button"
-              onClick={addCustom}
-              disabled={!custom.trim()}
-              className="btn-primary btn-sm text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Add
-            </button>
-          </div>
-        </div>
+      {anchorRect && (
+        <CompoundTagPicker
+          anchorRect={anchorRect}
+          existing={local}
+          onClose={() => setAnchorRect(null)}
+          onChange={commit}
+        />
       )}
     </div>
+  );
+}
+
+/** Portal-rendered tag picker — uses fixed positioning anchored to the
+ *  trigger's bounding rect so it escapes the CompoundsPage rows card's
+ *  overflow-hidden wrapper. Also re-anchors on scroll/resize so it
+ *  tracks the trigger as the user moves the page. Click-outside / Escape
+ *  dismisses. Same UX shape as the History TagPicker, distilled to the
+ *  minimum we need here. */
+function CompoundTagPicker({
+  anchorRect, existing, onClose, onChange,
+}: {
+  anchorRect: DOMRect;
+  existing: string[];
+  onClose: () => void;
+  onChange: (next: string[]) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [custom, setCustom] = useState("");
+  const [rect, setRect] = useState<DOMRect>(anchorRect);
+
+  // Re-track the anchor as the page scrolls/resizes so the picker stays
+  // visually pinned to its trigger.
+  useEffect(() => {
+    function onMove() {
+      // Use the stored anchor element if we still have it via the
+      // initial rect. We can't query the trigger from here, so we
+      // recompute from getBoundingClientRect of an element that
+      // matches the anchor's coordinates. Cheaper: just close on
+      // scroll/resize — fewer footguns.
+      onClose();
+    }
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [onClose]);
+
+  // Keep the rect prop in sync — used by the position calc below.
+  useLayoutEffect(() => { setRect(anchorRect); }, [anchorRect]);
+
+  // Click-outside / Escape dismiss.
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  function togglePreset(value: string) {
+    const next = existing.includes(value)
+      ? existing.filter((t) => t !== value)
+      : [...existing, value];
+    onChange(next);
+  }
+
+  function addCustom() {
+    const t = custom.trim();
+    if (!t) return;
+    if (existing.some((x) => x.toLowerCase() === t.toLowerCase())) {
+      setCustom("");
+      return;
+    }
+    onChange([...existing, t]);
+    setCustom("");
+  }
+
+  // Position: directly below the trigger, left-aligned, clamped to the
+  // viewport so it never bleeds off-screen. Width 256 px matches the
+  // picker contents.
+  const pickerWidth = 256;
+  const margin = 8;
+  let left = rect.left;
+  if (left + pickerWidth > window.innerWidth - margin) {
+    left = Math.max(margin, window.innerWidth - pickerWidth - margin);
+  }
+  // If there's no room below, flip above.
+  const top = rect.bottom + 6 + 220 > window.innerHeight
+    ? Math.max(margin, rect.top - 6 - 220)
+    : rect.bottom + 6;
+
+  return createPortal(
+    <div
+      ref={wrapRef}
+      style={{ position: "fixed", left, top, width: pickerWidth, zIndex: 60 }}
+      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg p-2 space-y-1.5"
+    >
+      <div className="grid grid-cols-2 gap-1">
+        {TAG_PRESETS.map((p) => {
+          const active = existing.includes(p.value);
+          return (
+            <button
+              key={p.value}
+              type="button"
+              onClick={() => togglePreset(p.value)}
+              className={
+                `flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium text-left ring-1 ring-inset ${p.chip} ` +
+                (active ? "" : "opacity-60 hover:opacity-100")
+              }
+            >
+              <span aria-hidden="true">{p.icon}</span>
+              <span>{p.label}</span>
+              {active && <span className="ml-auto text-[10px]">✓</span>}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-1.5 pt-1.5 border-t border-slate-100 dark:border-slate-700">
+        <input
+          type="text"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); addCustom(); }
+          }}
+          placeholder="Custom tag…"
+          maxLength={40}
+          className="input flex-1 text-[11px] h-7 px-2"
+        />
+        <button
+          type="button"
+          onClick={addCustom}
+          disabled={!custom.trim()}
+          className="btn-primary btn-sm text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Add
+        </button>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
