@@ -263,10 +263,9 @@ def run_job_in_background(job_id: int) -> None:
             session.refresh(job)
             if job.status != JobStatus.CANCELLED:
                 job.status = JobStatus.COMPLETED
-                # Clear the pre-flight stage marker — the job is done, the
-                # frontend's progress banner shouldn't keep showing
-                # "validating_poses" or whatever the last stage was.
-                job.stage = None
+                # NOTE: job.stage = None removed — Job model no longer
+                # declares the stage column until migration 004 lands.
+                # set_stage() is a no-op so nothing to clear.
                 job.updated_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
