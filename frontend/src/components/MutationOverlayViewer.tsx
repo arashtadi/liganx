@@ -1314,25 +1314,35 @@ function ControlToolbar(p: ControlToolbarProps) {
         </div>
       )}
 
-      <div className="flex-1" />
-
-      {/* Toggles + actions */}
-      <div className="flex items-center gap-1">
-        {/* Contacts toggle — only shown when there are contacts to toggle.
-            Hides/shows the per-residue side-chain sticks ProLIF detected,
-            so users can declutter the binding-site view down to just the
-            ligand + backbone when there are too many contacts. */}
-        {p.hasContacts && (
-          <ToggleButton
-            active={p.showContacts}
+      {/* Contacts toggle — promoted to its own pill on the LEFT side
+          (after Backbone + Pose) so it's visible in narrow inline
+          viewers without competing for space with the H / spin / zoom
+          icon cluster on the right. Larger hit target than the icon
+          toggles so it reads as a labelled action, not a tiny icon. */}
+      {p.hasContacts && (
+        <div className="flex items-center gap-1 border-l border-slate-200 pl-2 ml-1 dark:border-slate-700">
+          <button
+            type="button"
             onClick={() => p.setShowContacts(!p.showContacts)}
             title={p.showContacts
               ? "Hide contact side chains (declutter the view)"
               : "Show contact side chains (residues touching the ligand)"}
+            className={
+              p.showContacts
+                ? "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-delta-600 text-white shadow-sm hover:bg-delta-700 transition-colors dark:bg-delta-500 dark:hover:bg-delta-400"
+                : "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-colors dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-600 dark:hover:bg-slate-700"
+            }
           >
-            <span className="text-[10px] font-semibold tracking-tight">Contacts</span>
-          </ToggleButton>
-        )}
+            <span aria-hidden className={p.showContacts ? "w-1.5 h-1.5 rounded-full bg-white" : "w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500"} />
+            Contacts {p.showContacts ? "on" : "off"}
+          </button>
+        </div>
+      )}
+
+      <div className="flex-1" />
+
+      {/* Toggles + actions */}
+      <div className="flex items-center gap-1">
         <ToggleButton active={p.showH} onClick={() => p.setShowH(!p.showH)} title={p.showH ? "Hide hydrogens" : "Show hydrogens"}>
           <span className="font-mono text-[10px]">H</span>
         </ToggleButton>
