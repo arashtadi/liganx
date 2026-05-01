@@ -159,11 +159,21 @@ export default function HeroBanner({
   // the canvas has no ligand. Better to keep the skeleton up until the
   // pose lands, so what the user sees inside the viewer always matches the
   // values shown in the matrix cell.
-  // For Boltz-2 cells the "wtReady" / "mutReady" gates are vestigial —
-  // those queries are disabled and the pose alone is what the viewer
-  // needs. Treat them as always-ready in that mode so we don't block
-  // the viewer waiting on data we'll never request.
-  const wtReady = isBoltz2Cell && !boltz2Aligned ? true : !!wtQuery.data;
+  // For Boltz-2 cells the crystal-structure queries (wtQuery/mutQuery) are
+  // disabled — the predicted complex pose IS the structure we render. So
+  // wtReady must check whatever query actually feeds wtPdb:
+  //   - boltz2 + aligned: wtPdb = wtPoseQuery.data       → check wtPoseQuery
+  //   - boltz2 + not aligned: wtPdb = poseQuery.data    → check poseQuery
+  //   - non-boltz2: wtPdb = wtQuery.data                 → check wtQuery
+  // The previous code fell through to !!wtQuery.data for boltz2-aligned
+  // cells which is forever undefined → "Preparing 3D pose…" stuck on screen
+  // even though the pose endpoint had returned a valid PDB. Caught
+  // 2026-04-30 on a Tepotinib×MET 2WGJ Y1230H job.
+  const wtReady = isBoltz2Cell
+    ? boltz2Aligned
+      ? (!!wtPoseQuery.data || wtPoseQuery.isError)
+      : (!!poseQuery.data || poseQuery.isError)
+    : !!wtQuery.data;
   const mutReady = isBoltz2Cell || variant === "WT" || !!mutQuery.data || mutQuery.isError;
   const poseReady = jobId == null || !!poseQuery.data || poseQuery.isError;
   const wtPoseReady = !boltz2Aligned || !!wtPoseQuery.data || wtPoseQuery.isError;
@@ -306,22 +316,41 @@ export default function HeroBanner({
             a 2-column grid so the banner doesn't get stupidly tall. Drug-
             likeness and validation flow below as full-width cards. */}
         <div className="grid grid-cols-2 gap-2">
-          {/* Vina score */}
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Vina score
-            </div>
-            <div className="font-mono text-xl font-semibold text-ink dark:text-slate-100 mt-0.5">
-              {score.toFixed(2)}
-              <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">kcal/mol</span>
-            </div>
-          </div>
+          {/* Primary score card — label + units must match the engine that
+              produced the score, since they are NOT in the same units:
+                - Vina-family / GNINA → kcal/mol (free energy, lower = stronger)
+                - Boltz-2             → log10(IC₅₀ μM) (more-negative = stronger)
+              Mislabeling Boltz-2 output as "Vina score / kcal/mol" caused
+              real confusion: the magnitude looks like a weak Vina score
+              (-0.76 kcal/mol = "barely binds") when it actually means
+              IC₅₀ ≈ 0.17 μM (a sub-µM affinity). */}
+          {(() => {
+            const isB2 = isBoltz2Cell;
+            const scoreLabel = isB2 ? "Boltz-2 affinity" : "Vina score";
+            const scoreUnit  = isB2 ? "log₁₀(IC₅₀ μM)" : "kcal/mol";
+            const scoreTitle = isB2
+              ? "Boltz-2 affinity head 1 — log10(IC50) in μM. More-negative = stronger predicted binder. NOT comparable to Vina kcal/mol."
+              : "AutoDock Vina score in kcal/mol. Lower = stronger predicted binding.";
+            return (
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5" title={scoreTitle}>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  {scoreLabel}
+                </div>
+                <div className="font-mono text-xl font-semibold text-ink dark:text-slate-100 mt-0.5">
+                  {score.toFixed(2)}
+                  <span className="text-xs text-slate-500 dark:text-slate-400 font-sans font-normal ml-1.5">{scoreUnit}</span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Vinardo refined — its own card now (was previously a subtitle
               under Vina score). Promoted because the drill-down section
               below the matrix used to duplicate it. Single source of truth
-              for the second-pass smina rescore. */}
-          {ext.vinardo != null && (
+              for the second-pass smina rescore. Skipped for Boltz-2 cells
+              because Vinardo is a Vina-family rescore — meaningless on a
+              Boltz-2 affinity head value. */}
+          {!isBoltz2Cell && ext.vinardo != null && (
             <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 Vinardo refined
@@ -450,7 +479,17 @@ export default function HeroBanner({
             Validation
           </div>
           <div className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">
-            {ext.confidence && ext.confidence !== "unknown" ? (
+            {isBoltz2Cell ? (
+              // Boltz-2 doesn't run PoseBusters (the model already encodes
+              // its own confidence via aff_prob). Show that signal instead
+              // of "Validation pending…", which incorrectly implies the
+              // pose is still being checked.
+              ext.affProb != null ? (
+                <>Boltz-2 confidence <span className="font-semibold">{(ext.affProb * 100).toFixed(0)}%</span></>
+              ) : (
+                <span className="text-slate-400 dark:text-slate-500">Boltz-2 prediction</span>
+              )
+            ) : ext.confidence && ext.confidence !== "unknown" ? (
               <>Confidence <span className="font-semibold">{ext.confidence}</span></>
             ) : (
               <span className="text-slate-400 dark:text-slate-500">Validation pending…</span>
@@ -459,6 +498,13 @@ export default function HeroBanner({
               <span className="ml-1 text-slate-500 dark:text-slate-400">
                 · {ext.contacts.length} contact{ext.contacts.length === 1 ? "" : "s"}
               </span>
+            )}
+            {isBoltz2Cell && ext.contacts && ext.contacts.length > 0 && (
+              <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-300/80 leading-snug">
+                Note: Boltz-2 contacts use the model's sequential numbering
+                (residue 1 = first residue of the extracted kinase domain),
+                not the PDB/UniProt numbering shown for the mutation label.
+              </div>
             )}
           </div>
         </div>
