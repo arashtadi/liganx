@@ -161,3 +161,10 @@ for legitimate use and tight enough to bound a runaway script."""
 UPLOADS_LIMIT = rate_limit("uploads", RateLimit(max_requests=10, window_seconds=3600))
 """10 PDB uploads per hour per IP. Smaller because each upload writes to
 the Fly volume; without this an abuser could fill the volume in minutes."""
+
+CONTACT_LIMIT = rate_limit("contact", RateLimit(max_requests=5, window_seconds=3600))
+"""5 contact-form submissions per hour per IP. Even a determined human will
+not legitimately need more than this — anything past it is almost certainly
+a bot grinding past our honeypot. Each submission causes a Telegram push
+notification on Arash's phone, so the cost of letting spam through is
+real (notification fatigue) not just bandwidth."""

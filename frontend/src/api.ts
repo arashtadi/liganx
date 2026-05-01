@@ -387,6 +387,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  /** Submit the public contact form. Backend forwards to a Telegram bot.
+   *  `website` is the honeypot field — leave empty; bots fill every
+   *  input they find. Returns 200 + accepted:true on both genuine
+   *  delivery AND honeypot-swallowed submissions so spam tooling can't
+   *  probe whether the trap caught it. Throws ApiError on validation
+   *  failures (422), rate limit (429), or Telegram delivery failures
+   *  (502/503) so the form can show an actionable message. */
+  submitContact: (payload: { name: string; email: string; message: string; website?: string }) =>
+    request<{ accepted: boolean }>("/contact", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, website: payload.website ?? "" }),
+    }),
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves

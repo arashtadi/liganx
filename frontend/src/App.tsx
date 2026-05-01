@@ -17,6 +17,7 @@ import ValidationPage from "./pages/ValidationPage";
 import CompleteProfilePage from "./pages/CompleteProfilePage";
 import CompoundsPage from "./pages/CompoundsPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
+import ContactPage from "./pages/ContactPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/validation" element={<ValidationPage />} />
             <Route path="/mutation-docking-guide" element={<MutationDockingGuidePage />} />
+            <Route path="/contact" element={<ContactPage />} />
             {/* Catch-all 404 — used to leak through as a blank page */}
             <Route path="*" element={<NotFound />} />
           </Routes>
@@ -350,6 +352,7 @@ function Footer() {
               the single highest-leverage thing we can do for its rank. */}
           <Link to="/mutation-docking-guide" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Guide</Link>
           <Link to="/validation" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Validation</Link>
+          <Link to="/contact" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Contact</Link>
           <Link to="/privacy" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Privacy</Link>
           <Link to="/terms" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Terms</Link>
           <span className="text-slate-400 dark:text-slate-500">v0.0.1 · Phase 1</span>

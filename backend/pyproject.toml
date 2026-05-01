@@ -11,6 +11,9 @@ dependencies = [
   "sqlmodel>=0.0.22",
   "pydantic>=2.9",
   "pydantic-settings>=2.5",
+  # EmailStr validation in Pydantic 2 lazy-imports email-validator.
+  # Required by routers/contact.py (ContactSubmission.email).
+  "email-validator>=2.2",
   "python-multipart>=0.0.12",
   "httpx>=0.27",
   "celery[redis]>=5.4",

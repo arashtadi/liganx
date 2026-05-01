@@ -14,6 +14,7 @@ Allow: /
 Allow: /library
 Allow: /validation
 Allow: /mutation-docking-guide
+Allow: /contact
 Allow: /privacy
 Allow: /terms
 Disallow: /history
