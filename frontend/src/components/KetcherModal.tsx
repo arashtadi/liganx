@@ -38,7 +38,21 @@ interface Props {
    *  opens, so users editing an existing compound don't lose their work. */
   initialSmiles?: string;
   onClose: () => void;
-  onAccept: (smiles: string) => void;
+  /**
+   * Called when the user clicks "Use this structure".
+   *
+   * `smiles` is what Ketcher emits AT the moment of accept (already
+   * canonicalised to Ketcher's preferred form).
+   *
+   * `unchanged` is true when the structure on canvas is the same
+   * MOLECULE as what we loaded into the editor — even if the SMILES
+   * STRING differs (Ketcher canonicalises on parse, so loading
+   * `OC(=O)/C=C/c1ccccc1` and getting back `O=C(O)/C=C/c1ccccc1` is a
+   * no-op). Consumers should treat unchanged=true the same as a Cancel
+   * for save-related decisions: don't overwrite, don't create a new
+   * library entry, don't trigger any rename prompt.
+   */
+  onAccept: (smiles: string, unchanged: boolean) => void;
   /** Optional pocket context — when the user is mid-job-creation, pass
    *  the selected target + mutations so AI suggestions can be
    *  pocket-aware ("for V600E, fill the gain-of-function hydrophobic
@@ -72,6 +86,19 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
   const [ketcherReady, setKetcherReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // hasChanges drives the "Use this structure" button visibility — see
+  // the polling effect below. When false, the user is shown only Cancel
+  // (because there's nothing to commit). When true, the accept button
+  // appears alongside Cancel.
+  const [hasChanges, setHasChanges] = useState(false);
+  // Ketcher's canonical re-emission of `initialSmiles` after setMolecule
+  // has parsed and re-serialised it. Captured ONCE per modal mount (right
+  // after the load) and compared against the live canvas state by the
+  // change-detection polling loop. Empty string means "no baseline" (no
+  // initialSmiles, or the post-load capture failed) — in that case any
+  // non-empty canvas counts as a change, which is the right default for
+  // create-from-scratch flows.
+  const baselineSmilesRef = useRef<string>("");
 
   // Listen for Ketcher's init event. This is the signal that the iframe's
   // window.ketcher API is ready to call.
@@ -87,7 +114,8 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Once Ketcher signals ready, push the initial SMILES in (if any).
+  // Once Ketcher signals ready, push the initial SMILES in (if any) and
+  // capture the post-load canonical form as the change-detection baseline.
   useEffect(() => {
     if (!ketcherReady || !initialSmiles) return;
     const api = getKetcherApi(iframeRef.current);
@@ -96,11 +124,25 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       return;
     }
     try {
-      // setMolecule returns a Promise; we await it inside an IIFE so we can
-      // surface a useful warning if the SMILES is rejected (e.g. malformed).
       (async () => {
         try {
           await api.setMolecule(initialSmiles);
+          // Read back the post-parse, post-canonicalise SMILES Ketcher
+          // would emit if the user changed nothing. This is what
+          // handleAccept compares against — string equality on this
+          // canonical form correctly identifies "no real edit" without
+          // needing an external RDKit roundtrip.
+          if (api.getSmiles) {
+            try {
+              const baseline: string = await api.getSmiles();
+              baselineSmilesRef.current = (baseline || "").trim();
+            } catch (err) {
+              // Not fatal — just means we'll fall back to "assume
+              // changed" in handleAccept, which is the conservative
+              // (over-save) default. Better than wrongly suppressing.
+              console.warn("Ketcher getSmiles baseline capture failed:", err);
+            }
+          }
         } catch (err) {
           console.warn("Ketcher setMolecule rejected initial SMILES:", err);
         }
@@ -109,6 +151,46 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       console.warn("Ketcher setMolecule threw:", err);
     }
   }, [ketcherReady, initialSmiles]);
+
+  // Change-detection poll. Every 700ms while Ketcher is ready, read the
+  // live canvas SMILES and compare against the captured baseline. When
+  // they differ, `hasChanges` flips to true and the "Use this structure"
+  // button appears. When they match (e.g. the user undoes back to the
+  // original), the button disappears again.
+  //
+  // Why polling instead of subscribing to a Ketcher change event: the
+  // iframe's window.ketcher object exposes editor.subscribe in some
+  // versions but it's inconsistent across builds and origins. Polling
+  // every 700ms is cheap (getSmiles on a small molecule is sub-ms) and
+  // robust — and gives us a single integration point that doesn't break
+  // when Ketcher upgrades its event API.
+  useEffect(() => {
+    if (!ketcherReady) return;
+    let cancelled = false;
+    const interval = window.setInterval(async () => {
+      const apiObj = getKetcherApi(iframeRef.current);
+      if (!apiObj?.getSmiles) return;
+      try {
+        const live: string = await apiObj.getSmiles();
+        if (cancelled) return;
+        const trimmed = (live || "").trim();
+        const baseline = baselineSmilesRef.current;
+        // Edit (with baseline): changed iff live differs from baseline.
+        // Create (no baseline): changed iff anything has been drawn.
+        const changed = baseline.length > 0
+          ? trimmed !== baseline
+          : trimmed.length > 0;
+        // Don't churn React state when the value didn't actually change;
+        // setState with the same value is cheap but the renders downstream
+        // (button label, etc.) still cost a bit on every tick.
+        setHasChanges((prev) => (prev === changed ? prev : changed));
+      } catch {
+        // Polling errors are non-fatal — a transient hiccup just means
+        // we keep showing the previous state for one tick.
+      }
+    }, 700);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [ketcherReady]);
 
   // Esc to close, like every other modal in the app
   useEffect(() => {
@@ -135,8 +217,17 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
         setError("The canvas is empty — draw a structure or paste a SMILES first.");
         return;
       }
+      const trimmed = smiles.trim();
+      // Compare the accept-time canonical SMILES against the baseline we
+      // captured right after setMolecule. Both come from Ketcher's own
+      // serialiser so equal strings = equivalent molecules. When the
+      // baseline is empty (no initialSmiles, or the baseline grab
+      // failed), default to "changed" so consumers don't suppress a
+      // genuine create-from-scratch save.
+      const baseline = baselineSmilesRef.current;
+      const unchanged = baseline.length > 0 && trimmed === baseline;
       setPending(false);
-      onAccept(smiles.trim());
+      onAccept(trimmed, unchanged);
     } catch (err) {
       setPending(false);
       setError(
@@ -216,14 +307,24 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
               </span>
             )}
           </div>
-          <button onClick={onClose} className="btn-secondary btn-sm">Cancel</button>
-          <button
-            onClick={handleAccept}
-            disabled={!ketcherReady || pending}
-            className="btn-primary btn-sm disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {pending ? "Reading…" : "Use this structure"}
+          {/* Cancel is always shown — it's the safe, no-side-effects exit
+              and equally valid whether or not the user has drawn anything.
+              "Use this structure" only appears once `hasChanges` flips
+              true, so a user who opens the editor to look at a compound
+              and closes without modifying never accidentally creates a
+              duplicate library entry. */}
+          <button onClick={onClose} className="btn-secondary btn-sm">
+            {hasChanges ? "Cancel" : "Close"}
           </button>
+          {hasChanges && (
+            <button
+              onClick={handleAccept}
+              disabled={!ketcherReady || pending}
+              className="btn-primary btn-sm disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {pending ? "Reading…" : "Use this structure"}
+            </button>
+          )}
         </footer>
       </div>
     </div>

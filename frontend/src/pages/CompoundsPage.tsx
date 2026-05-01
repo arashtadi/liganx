@@ -323,10 +323,18 @@ export default function CompoundsPage() {
         <KetcherModal
           initialSmiles={sketcherFor.smiles}
           onClose={() => setSketcherFor(null)}
-          onAccept={(newSmiles) => {
+          onAccept={(newSmiles, unchanged) => {
             const original = sketcherFor;
             setSketcherFor(null);
-            // No structural change → no-op (same as just closing).
+            // No structural change vs the loaded baseline → silent
+            // no-op (same as Cancel). Catches the "user opened the
+            // editor to look at it but didn't modify anything" case
+            // even when Ketcher canonicalises the SMILES on parse so
+            // a raw string compare would have wrongly seen "changed".
+            if (unchanged) return;
+            // Belt-and-braces raw string compare in case the modal's
+            // baseline wasn't captured (very early click / malformed
+            // initialSmiles).
             if (newSmiles === original.smiles) return;
             // Hand off to the chooser: save-changes (overwrite same name)
             // vs save-as-new (open RenamePrompt) vs cancel.
@@ -342,7 +350,7 @@ export default function CompoundsPage() {
       {creatingNew && (
         <KetcherModal
           onClose={() => setCreatingNew(false)}
-          onAccept={(newSmiles) => {
+          onAccept={(newSmiles, _unchanged) => {
             setCreatingNew(false);
             // KetcherModal already guards against empty canvas on accept,
             // but be defensive: only proceed with a non-empty SMILES.

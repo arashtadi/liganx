@@ -1847,25 +1847,32 @@ export default function NewJobPage() {
             : (customMutationsByTarget[CUSTOM_KEY] ?? "") || undefined
         }
         onClose={() => setSketcherRow(null)}
-        onAccept={(smiles) => {
+        onAccept={(smiles, unchanged) => {
+          const idx = sketcherRow;
+          // KetcherModal flagged "no real change vs the loaded baseline"
+          // — close cleanly without touching the form row OR triggering
+          // any rename prompt. Defense-in-depth: the modal also hides
+          // the Use button when unchanged, so this branch should be
+          // rare, but a stale React state could still let it through.
+          if (unchanged) {
+            setSketcherRow(null);
+            return;
+          }
           // Intercept: if the row had a NAME and the user CHANGED the
           // SMILES, the resulting molecule is no longer "the named
           // compound" — fire the rename prompt before committing so
           // the library doesn't silently swap one structure for another
           // under the same label.
-          const idx = sketcherRow;
           const row = compounds[idx];
           const originalName = (row?.name ?? "").trim();
-          const originalSmiles = (row?.smiles ?? "").trim();
-          const smilesChanged = smiles !== originalSmiles;
-          if (originalName && smilesChanged) {
+          if (originalName) {
             setRenamePrompt({ rowIdx: idx, newSmiles: smiles, originalName });
             setSketcherRow(null);
             return;
           }
-          // No name yet, or the SMILES didn't actually change — accept
-          // straight through. Auto-save will catch it once the user
-          // names the row (if they do).
+          // No name yet — accept straight through. Saving to the user's
+          // library now requires an explicit Save action elsewhere
+          // (the auto-save was removed in task #334).
           setCompound(idx, { smiles });
           setSketcherRow(null);
         }}
