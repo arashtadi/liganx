@@ -5,6 +5,7 @@ import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIs
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
 import KetcherModal from "../components/KetcherModal";
+import RenamePrompt from "../components/RenamePrompt";
 
 interface CompoundRow {
   name: string;
@@ -1934,131 +1935,6 @@ export default function NewJobPage() {
       />
     )}
     </>
-  );
-}
-
-/** Rename prompt — fires after Ketcher returns a CHANGED structure for an
- *  already-named compound. Pre-fills the input with "OldName_" so the user
- *  can append a suffix or rename entirely; blocks duplicates against the
- *  user's existing library. The user can cancel; we drop the SMILES change
- *  rather than silently overwriting an existing library entry.
- *
- *  This is rendered as a centered modal — not a global ProfileRedirect-
- *  style fullpage — because it interrupts a focused action (Ketcher save)
- *  and the user is still mentally inside the compound editor flow. */
-function RenamePrompt({
-  initialName,
-  existingNames,
-  currentRowName,
-  onCancel,
-  onSave,
-}: {
-  initialName: string;
-  existingNames: string[];
-  /** The name on the current compound row, BEFORE the rename. We allow the
-   *  user to keep this exact value (since changing the SMILES under the
-   *  same name is editing-in-place from their POV); but any OTHER existing
-   *  library name is blocked as a duplicate. */
-  currentRowName: string;
-  onCancel: () => void;
-  onSave: (newName: string) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // Auto-focus + select-all so the user can immediately start typing the
-  // suffix after the underscore. Selection covers the underscore too so a
-  // user who wants to type something completely new just starts typing.
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      if (inputRef.current) {
-        inputRef.current.focus();
-        inputRef.current.select();
-      }
-    }, 50);
-    return () => window.clearTimeout(id);
-  }, []);
-
-  const trimmed = name.trim();
-  // Build a lower-case lookup excluding the row's current name (so the
-  // user can KEEP the old name as a deliberate edit-in-place, but not
-  // collide with any OTHER library entry).
-  const reservedLower = new Set(
-    existingNames
-      .filter((n) => n.toLowerCase() !== currentRowName.toLowerCase())
-      .map((n) => n.toLowerCase()),
-  );
-  const isDuplicate = trimmed.length > 0 && reservedLower.has(trimmed.toLowerCase());
-  const isEmpty = trimmed.length === 0;
-  const canSave = !isEmpty && !isDuplicate && trimmed !== "_";
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (canSave) onSave(trimmed);
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
-      onClick={onCancel}
-    >
-      <div
-        className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="px-5 py-4 border-b border-slate-200 dark:border-slate-700">
-          <h2 className="text-base font-semibold text-ink dark:text-white">
-            Name your modified structure
-          </h2>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-            You changed the structure of <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{currentRowName}</span>,
-            so it isn&apos;t {currentRowName} anymore. Give the new molecule its own
-            name — it&apos;ll be saved to your library.
-          </p>
-        </header>
-        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
-          <div>
-            <label htmlFor="rename-name" className="label">New compound name</label>
-            <input
-              id="rename-name"
-              ref={inputRef}
-              type="text"
-              className="input font-mono"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={initialName}
-              maxLength={200}
-            />
-            {isDuplicate && (
-              <p className="mt-1.5 text-xs text-rose-700 dark:text-rose-400">
-                <span className="font-semibold">{trimmed}</span> already exists in your library — pick a different name.
-              </p>
-            )}
-            {isEmpty && (
-              <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                Type a name to continue.
-              </p>
-            )}
-          </div>
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="btn-ghost btn-sm"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!canSave}
-              className="btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Save &amp; use
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
   );
 }
 

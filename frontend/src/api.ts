@@ -282,11 +282,13 @@ export interface UserProfileUpdate {
 /** A saved compound in the user's library. Auto-saves from the New-job
  *  form when both name and SMILES are present. Backend upserts on
  *  (user_id, name) so editing a name's SMILES updates rather than
- *  duplicates. */
+ *  duplicates. Tags are managed separately via the /tags endpoint —
+ *  upserts never touch them. */
 export interface UserCompound {
   id: number;
   name: string;
   smiles: string;
+  tags: string[];
   created_at: string;
   updated_at: string;
 }
@@ -338,6 +340,15 @@ export const api = {
       throw new ApiError(r.status, `${r.status} ${r.statusText}`);
     }
   },
+  /** Replace the tag set on a saved compound. Backend overwrites the whole
+   *  list (same shape as the History job-tags endpoint), so callers send the
+   *  full desired tag array — not a diff. Server trims, dedupes, and length-
+   *  bounds each tag. */
+  saveMyCompoundTags: (id: number, tags: string[]) =>
+    request<UserCompound>(`/me/compounds/${id}/tags`, {
+      method: "PATCH",
+      body: JSON.stringify({ tags }),
+    }),
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves

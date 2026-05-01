@@ -37,6 +37,7 @@ class CompoundOut(BaseModel):
     id: int
     name: str
     smiles: str
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -48,6 +49,13 @@ class CompoundUpsert(BaseModel):
     in 100 MB of pasted SMILES."""
     name: str = Field(min_length=1, max_length=200)
     smiles: str = Field(min_length=1, max_length=2000)
+
+
+class CompoundTagsUpdate(BaseModel):
+    """PATCH-style payload for tag edits. Always replaces the whole tag
+    set — same shape as job tags. Bounded length so a runaway client
+    can't store an unreasonable list."""
+    tags: list[str] = Field(default_factory=list, max_length=20)
 
 
 @router.get("", response_model=list[CompoundOut])
@@ -62,7 +70,7 @@ def list_my_compounds(
     to the job they're building right now."""
     rows = session.execute(
         text(
-            "SELECT id, name, smiles, created_at, updated_at"
+            "SELECT id, name, smiles, tags, created_at, updated_at"
             " FROM public.user_compound"
             " WHERE user_id = :uid"
             " ORDER BY updated_at DESC, id DESC"
@@ -114,7 +122,8 @@ def upsert_my_compound(
 
     # ON CONFLICT does the upsert by (user_id, name). RETURNING gives us
     # back the canonical row so the frontend can display the new id and
-    # timestamps without a follow-up GET.
+    # timestamps without a follow-up GET. Tags are preserved on update —
+    # the upsert never touches them; tag edits go through PATCH /tags.
     row = session.execute(
         text(
             "INSERT INTO public.user_compound (user_id, name, smiles)"
@@ -122,13 +131,54 @@ def upsert_my_compound(
             " ON CONFLICT (user_id, name) DO UPDATE SET"
             "   smiles = EXCLUDED.smiles,"
             "   updated_at = NOW()"
-            " RETURNING id, name, smiles, created_at, updated_at"
+            " RETURNING id, name, smiles, tags, created_at, updated_at"
         ),
         {"uid": user.id, "name": name, "smiles": smiles},
     ).mappings().first()
     session.commit()
     if row is None:  # defensive — shouldn't happen with RETURNING
         raise HTTPException(status_code=500, detail="upsert returned no row")
+    return CompoundOut(**dict(row))
+
+
+@router.patch("/{compound_id}/tags", response_model=CompoundOut)
+def update_my_compound_tags(
+    compound_id: int,
+    payload: CompoundTagsUpdate,
+    user: Annotated[CurrentUser, Depends(current_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> CompoundOut:
+    """Replace the tag set on a compound. Mirrors how job tags work — the
+    frontend sends the full list; backend overwrites. We trim and dedupe
+    server-side so a re-played payload with whitespace variants doesn't
+    end up with ['Favorite', ' favorite ', 'FAVORITE'] all saved as
+    separate tags."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in payload.tags:
+        t = raw.strip()
+        if not t:
+            continue
+        if len(t) > 40:  # match the History tag length
+            t = t[:40]
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(t)
+
+    row = session.execute(
+        text(
+            "UPDATE public.user_compound"
+            " SET tags = :tags, updated_at = NOW()"
+            " WHERE id = :cid AND user_id = :uid"
+            " RETURNING id, name, smiles, tags, created_at, updated_at"
+        ),
+        {"cid": compound_id, "uid": user.id, "tags": cleaned},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Compound not found")
+    session.commit()
     return CompoundOut(**dict(row))
 
 
