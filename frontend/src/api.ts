@@ -294,6 +294,9 @@ export interface UserProfile {
   full_name?: string | null;
   organization?: string | null;
   role?: string | null;
+  /** Free-form description of the user's role when role === 'other'.
+   *  NULL when role is one of the canonical enum values. */
+  role_other?: string | null;
   researchgate_url?: string | null;
   marketing_opt_in: boolean;
   signup_source?: string | null;
@@ -306,6 +309,7 @@ export interface UserProfileUpdate {
   full_name?: string;
   organization?: string;
   role?: string;
+  role_other?: string;
   researchgate_url?: string;
   marketing_opt_in?: boolean;
 }
@@ -432,6 +436,10 @@ export const api = {
      *  form, but typed loosely here so future role additions don't
      *  require a coordinated frontend+backend type bump. */
     role?: string;
+    /** Free-text description of the user's role when role === "other".
+     *  Appears in the Telegram notification as "Other — <text>" so
+     *  triage isn't stuck staring at an unhelpful bare "Other". */
+    role_other?: string;
     /** University, company, lab, or institution. Required by the form. */
     affiliation?: string;
     /** Country/region — optional. Free-form to avoid a 250-entry select. */
@@ -444,6 +452,7 @@ export const api = {
       body: JSON.stringify({
         ...payload,
         role: payload.role ?? "",
+        role_other: payload.role_other ?? "",
         affiliation: payload.affiliation ?? "",
         country: payload.country ?? "",
         website: payload.website ?? "",

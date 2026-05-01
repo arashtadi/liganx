@@ -20,12 +20,27 @@
  *    broken even mid-rollout.
  */
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ApiError, api } from "../api";
 import { Spinner, ArrowRight } from "../components/Icons";
 import { usePageMeta } from "../lib/usePageMeta";
+import { useAuth } from "../lib/auth";
 import Turnstile from "../components/Turnstile";
+
+// Map the 9-value profile-side role taxonomy down to the 4-value contact
+// taxonomy. Used to pre-fill the contact form's role select for signed-in
+// users — no perfect 1:1, so we collapse the academic-side variants into
+// "academic" and student variants into "student" by default.
+function mapProfileRoleToContactRole(profileRole: string | null | undefined): string {
+  if (!profileRole) return "";
+  const r = profileRole.toLowerCase();
+  if (r === "grad_student" || r === "undergrad") return "student";
+  if (r === "postdoc" || r === "pi" || r === "comp_chem" || r === "med_chem" || r === "structural_bio") return "academic";
+  if (r === "industry_sci") return "industry";
+  if (r === "other") return "other";
+  return "";
+}
 
 // Pre-filled message templates keyed by the `reason` we get from
 // location.state. Keeps the form natural for direct visitors while
@@ -87,6 +102,10 @@ export default function ContactPage() {
   // who's actually asking. Required so we never get a faceless "please
   // enable X" message.
   const [role, setRole] = useState("");
+  // Free-text "what's your actual role" — only meaningful when role
+  // === "other". The Telegram body shows "Other — <text>" so we get
+  // useful triage info instead of a bare "Other".
+  const [roleOther, setRoleOther] = useState("");
   // Free-form affiliation — university name, company, lab, hospital,
   // etc. Required so a Boltz-2 request comes with enough context to
   // do a quick credibility check before flipping a $497/mo pod on.
@@ -108,6 +127,38 @@ export default function ContactPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Pre-fill from the signed-in user's profile so they don't have to
+  // re-type info we already have (name, email, role, organization).
+  // Only fills empty fields — if the user has already started typing
+  // we don't clobber their input. Country isn't on the profile, so it
+  // stays blank; Boltz-2-style power users tend to fill it themselves.
+  const { user } = useAuth();
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    api.getMyProfile()
+      .then((p) => {
+        if (cancelled) return;
+        setName((cur) => cur || p.full_name || "");
+        setEmail((cur) => cur || user.email || "");
+        setAffiliation((cur) => cur || p.organization || "");
+        const mappedRole = mapProfileRoleToContactRole(p.role);
+        setRole((cur) => cur || mappedRole);
+        // role_other on profile → role_other on contact, but only when
+        // the mapped contact role is "other" (otherwise the input is
+        // hidden anyway and roleOther won't be sent).
+        if (mappedRole === "other") {
+          setRoleOther((cur) => cur || p.role_other || "");
+        }
+      })
+      .catch(() => {
+        // Profile fetch failure is non-fatal — the form still works,
+        // user just types it manually. Common case: anon user, or a
+        // brand-new account before the profile row exists.
+      });
+    return () => { cancelled = true; };
+  }, [user]);
+
   // Char counter for the message field — we cap server-side at 5000 chars
   // and want the user to know before they hit submit. Soft-warn at 4500.
   const MIN_MESSAGE = 10;
@@ -126,6 +177,8 @@ export default function ContactPage() {
     name.trim().length > 0 &&
     email.trim().length > 0 &&
     role.trim().length > 0 &&
+    // Other-specify is required when the user picks Other.
+    (role !== "other" || roleOther.trim().length > 0) &&
     affiliation.trim().length > 0 &&
     message.trim().length >= MIN_MESSAGE &&
     !messageOver &&
@@ -141,6 +194,10 @@ export default function ContactPage() {
         name: name.trim(),
         email: email.trim(),
         role: role.trim(),
+        // Only send role_other when role is Other. Empty string for any
+        // other choice, so a stale value from a prior selection doesn't
+        // bleed into the Telegram body.
+        role_other: role === "other" ? roleOther.trim() : "",
         affiliation: affiliation.trim(),
         country: country.trim(),
         message: message.trim(),
@@ -300,6 +357,22 @@ export default function ContactPage() {
               </option>
             ))}
           </select>
+          {/* Conditional "please specify" — appears under the role
+              dropdown when the user picks Other. Required when shown
+              (canSubmit gates submit on it being non-empty). */}
+          {role === "other" && (
+            <input
+              id="contact-role-other"
+              type="text"
+              required
+              value={roleOther}
+              onChange={(e) => setRoleOther(e.target.value)}
+              maxLength={200}
+              className="mt-2 w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+              placeholder="Please describe — e.g. Drug discovery scientist"
+              aria-label="Please describe your role"
+            />
+          )}
         </div>
 
         <div>

@@ -54,6 +54,11 @@ class ProfileOut(BaseModel):
     full_name: Optional[str] = None
     organization: Optional[str] = None
     role: Optional[str] = None
+    # Free-form description of the user's role when role == 'other'.
+    # Captured from the welcome / settings forms when the user picks
+    # Other from the dropdown and types what their actual role is.
+    # NULL when role is one of the canonical enum values.
+    role_other: Optional[str] = None
     researchgate_url: Optional[str] = None
     marketing_opt_in: bool = False
     signup_source: Optional[str] = None
@@ -67,6 +72,11 @@ class ProfileUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)
     organization: Optional[str] = Field(default=None, max_length=200)
     role: Optional[str] = Field(default=None, max_length=40)
+    # Set when role == 'other' so we capture the actual role text.
+    # Cleared (empty string) when the user changes role away from
+    # 'other'. The frontend handles that transition; backend just
+    # stores whatever it's told.
+    role_other: Optional[str] = Field(default=None, max_length=200)
     researchgate_url: Optional[str] = Field(default=None, max_length=500)
     marketing_opt_in: Optional[bool] = None
 
@@ -103,8 +113,8 @@ def get_my_profile(
     fired with empty metadata."""
     row = session.execute(
         text(
-            "SELECT full_name, organization, role, researchgate_url,"
-            " marketing_opt_in, signup_source"
+            "SELECT full_name, organization, role, role_other,"
+            " researchgate_url, marketing_opt_in, signup_source"
             " FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},

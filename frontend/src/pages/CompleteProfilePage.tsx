@@ -40,6 +40,9 @@ export default function CompleteProfilePage() {
   const [fullName, setFullName] = useState("");
   const [organization, setOrganization] = useState("");
   const [role, setRole] = useState("");
+  // Free-text "what's your actual role" — only meaningful when role
+  // === "other". Cleared (and ignored on submit) for any other choice.
+  const [roleOther, setRoleOther] = useState("");
   const [researchgateUrl, setResearchgateUrl] = useState("");
   const [marketingOptIn, setMarketingOptIn] = useState(false);
 
@@ -61,6 +64,7 @@ export default function CompleteProfilePage() {
         );
         setOrganization(p.organization ?? "");
         setRole(p.role ?? "");
+        setRoleOther(p.role_other ?? "");
         setResearchgateUrl(p.researchgate_url ?? "");
         setMarketingOptIn(p.marketing_opt_in ?? false);
       })
@@ -89,6 +93,12 @@ export default function CompleteProfilePage() {
       setErr("Please select your role.");
       return;
     }
+    // When the user chose "Other", we need them to actually tell us
+    // what their role is — otherwise the choice is meaningless data.
+    if (role === "other" && !roleOther.trim()) {
+      setErr("Please describe your role briefly (e.g. 'Drug discovery scientist').");
+      return;
+    }
     if (researchgateUrl.trim() && !/^https?:\/\//i.test(researchgateUrl.trim())) {
       setErr("ResearchGate URL must start with https://");
       return;
@@ -99,6 +109,10 @@ export default function CompleteProfilePage() {
         full_name: fullName,
         organization,
         role,
+        // Only send role_other when the user picked Other; for any
+        // canonical role we send an empty string to clear any stale
+        // value from a previous Other selection.
+        role_other: role === "other" ? roleOther.trim() : "",
         researchgate_url: researchgateUrl,
         marketing_opt_in: marketingOptIn,
       });
@@ -182,6 +196,24 @@ export default function CompleteProfilePage() {
                 <option key={r.value} value={r.value}>{r.label}</option>
               ))}
             </select>
+            {/* Conditional "please specify" input — only appears when
+                the user picks Other. Required when shown. Cleared from
+                the submit payload (sent as "") when the user picks any
+                other role, so a stale Other-text doesn't linger. */}
+            {role === "other" && (
+              <input
+                id="welcome-role-other"
+                type="text"
+                className="input mt-2"
+                value={roleOther}
+                onChange={(e) => setRoleOther(e.target.value)}
+                disabled={submitting}
+                required
+                maxLength={200}
+                placeholder="e.g. Drug discovery scientist"
+                aria-label="Please describe your role"
+              />
+            )}
           </div>
 
           <div>

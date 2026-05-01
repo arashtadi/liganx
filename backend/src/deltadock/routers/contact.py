@@ -98,6 +98,10 @@ class ContactSubmission(BaseModel):
     # Constrained to a known set server-side so a tampered client can't
     # inject arbitrary text into the role field.
     role: str = Field(default="", max_length=32)
+    # When role == 'other', the frontend reveals a free-text input for
+    # the user's actual role. Stored unconstrained (max 200 char) and
+    # appended to the role line in the Telegram body for triage.
+    role_other: str = Field(default="", max_length=200)
     affiliation: str = Field(default="", max_length=MAX_AFFILIATION)
     country: str = Field(default="", max_length=MAX_COUNTRY)
     # Optional honeypot — bots fill every input they find; humans don't
@@ -186,6 +190,11 @@ def _format_telegram_message(sub: ContactSubmission, ip: str, ua: str | None) ->
     # (shouldn't happen given client + server validation, but cheaper
     # than crashing on KeyError). Empty role = older bundle, show "—".
     role_label = ROLE_LABELS.get(sub.role, sub.role) or "—"
+    # Append the user's "Other — please specify" text when present so the
+    # Telegram body shows e.g. "Other — Pharmaceutical formulation specialist"
+    # instead of the unhelpful bare "Other".
+    if sub.role == "other" and sub.role_other.strip():
+        role_label = f"Other — {sub.role_other.strip()}"
     role_e = _escape_html(role_label)
     affiliation_e = _escape_html(sub.affiliation) if sub.affiliation else "—"
     country_line = (
