@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIssue, type ValidationDetail } from "../api";
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
@@ -43,6 +43,25 @@ export default function NewJobPage() {
   const { data: catalog, isLoading: loadingCatalog } = useQuery({
     queryKey: ["catalog"],
     queryFn: api.catalog,
+  });
+  // User's saved compound library — populates the "Your library" pill row
+  // above the compound inputs so users can re-add anything they've named
+  // before in one click. Cached for 5 min; auto-save mutations invalidate
+  // the query so the row reflects fresh state immediately.
+  const queryClient = useQueryClient();
+  const { data: savedCompounds = [] } = useQuery({
+    queryKey: ["my-compounds"],
+    queryFn: api.getMyCompounds,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+  const saveCompoundMut = useMutation({
+    mutationFn: (payload: { name: string; smiles: string }) => api.saveMyCompound(payload),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
+  });
+  const deleteCompoundMut = useMutation({
+    mutationFn: (id: number) => api.deleteMyCompound(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
   });
   // Re-run-from-history payload — a History row pushes navigate("/new", {state: {reseed: ...}})
   // and we hydrate the form once the catalog has loaded. The reseed handler
@@ -385,6 +404,56 @@ export default function NewJobPage() {
     });
   }
   function removeCompound(i: number) { setCompounds((cs) => cs.filter((_, idx) => idx !== i)); }
+
+  // Auto-save effect: any compound row that has BOTH a name AND a SMILES
+  // gets POSTed to /me/compounds 800 ms after the last edit. Backend
+  // upserts on (user_id, name) so re-saving the same name with a new
+  // SMILES is an edit, not a duplicate. We dedupe by name within the
+  // current job to avoid hammering the endpoint when two rows share a
+  // name (the last-typed wins, which matches user intuition).
+  //
+  // We track which rows we've already attempted to save in this snapshot
+  // via a ref so a re-render with the same compounds array doesn't
+  // re-fire the save. The ref-key is name+smiles; any change to either
+  // counts as a fresh save trigger.
+  const lastSavedSigRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const rowsToSave = compounds
+      .map((c) => ({ name: c.name.trim(), smiles: c.smiles.trim() }))
+      .filter((c) => c.name && c.smiles);
+    if (rowsToSave.length === 0) return;
+    // Per-row save signature so re-saves only fire when something changed.
+    const dueSigs: { sig: string; name: string; smiles: string }[] = [];
+    const seenNames = new Set<string>();
+    for (const r of rowsToSave) {
+      const lowerName = r.name.toLowerCase();
+      if (seenNames.has(lowerName)) continue; // dedupe within snapshot
+      seenNames.add(lowerName);
+      const sig = `${lowerName}::${r.smiles}`;
+      if (lastSavedSigRef.current.has(sig)) continue;
+      dueSigs.push({ sig, name: r.name, smiles: r.smiles });
+    }
+    if (dueSigs.length === 0) return;
+    const handle = window.setTimeout(() => {
+      for (const d of dueSigs) {
+        // Optimistically mark as saved so the next render doesn't re-fire
+        // the same payload while the request is in-flight.
+        lastSavedSigRef.current.add(d.sig);
+        saveCompoundMut.mutate(
+          { name: d.name, smiles: d.smiles },
+          {
+            onError: () => {
+              // On failure, drop the sig so the next edit gets a fresh
+              // attempt — otherwise a transient 500 silently loses the
+              // user's compound forever.
+              lastSavedSigRef.current.delete(d.sig);
+            },
+          },
+        );
+      }
+    }, 800);
+    return () => window.clearTimeout(handle);
+  }, [compounds, saveCompoundMut]);
   function loadAllCompounds() {
     if (!target) return;
     setCompounds(target.compounds.map((c) => ({ name: c.name, smiles: c.smiles })));
@@ -1386,13 +1455,91 @@ export default function NewJobPage() {
           )}
         </div>
 
+        {/* ── Your library ────────────────────────────────────────────
+            Pills for every compound the user has saved (auto-saved on
+            name+SMILES). Click a pill to drop the compound into the
+            current job — fills an empty row first if any, otherwise
+            appends. The X on hover removes the compound from the
+            library entirely (with a quick confirm on the click). */}
+        {savedCompounds.length > 0 && (
+          <div className="mb-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/30 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+                Your library · {savedCompounds.length}
+              </span>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                Auto-saved when you give a compound a name
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {savedCompounds.map((sc) => {
+                const alreadyInJob = compounds.some(
+                  (c) => c.name.trim().toLowerCase() === sc.name.toLowerCase()
+                          || c.smiles.trim() === sc.smiles,
+                );
+                return (
+                  <span
+                    key={sc.id}
+                    className={
+                      "group inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full text-xs transition-colors " +
+                      (alreadyInJob
+                        ? "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+                        : "bg-white text-slate-700 border border-slate-200 hover:border-delta-400 hover:text-delta-700 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700 dark:hover:border-delta-500 dark:hover:text-delta-300")
+                    }
+                    title={alreadyInJob ? `${sc.name} is already in this job` : `Click to add ${sc.name}`}
+                  >
+                    <button
+                      type="button"
+                      disabled={alreadyInJob}
+                      onClick={() => {
+                        // Add to current job — fill an empty row if one
+                        // exists, otherwise append. Mirror the same
+                        // pattern lookupMut uses for PubChem hits.
+                        setCompounds((cs) => {
+                          const next = [...cs];
+                          const emptyIdx = next.findIndex((c) => !c.smiles.trim() && !c.name.trim());
+                          if (emptyIdx >= 0) {
+                            next[emptyIdx] = { name: sc.name, smiles: sc.smiles };
+                          } else if (next.length < MAX_COMPOUNDS) {
+                            next.push({ name: sc.name, smiles: sc.smiles });
+                          } else {
+                            flashCapToast(`Free tier: max ${MAX_COMPOUNDS} compounds per job. Remove one to add another.`);
+                            return cs;
+                          }
+                          return next;
+                        });
+                      }}
+                      className="font-medium text-current disabled:cursor-not-allowed"
+                    >
+                      {alreadyInJob ? "✓ " : "+ "}{sc.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Remove "${sc.name}" from your library? (This won't affect any past jobs.)`)) {
+                          deleteCompoundMut.mutate(sc.id);
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 inline-flex items-center justify-center w-4 h-4 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition"
+                      aria-label={`Remove ${sc.name} from library`}
+                      title={`Remove ${sc.name} from your library`}
+                    >
+                      <Close size={10} />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-2">
           {compounds.map((c, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-start">
               <div className="col-span-12 sm:col-span-3">
                 <input
                   className="input"
-                  placeholder="Name (optional)"
+                  placeholder="Name (saves to your library)"
                   value={c.name}
                   onChange={(e) => setCompound(i, { name: e.target.value })}
                 />

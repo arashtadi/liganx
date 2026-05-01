@@ -279,6 +279,18 @@ export interface UserProfileUpdate {
   marketing_opt_in?: boolean;
 }
 
+/** A saved compound in the user's library. Auto-saves from the New-job
+ *  form when both name and SMILES are present. Backend upserts on
+ *  (user_id, name) so editing a name's SMILES updates rather than
+ *  duplicates. */
+export interface UserCompound {
+  id: number;
+  name: string;
+  smiles: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
 
@@ -300,6 +312,26 @@ export const api = {
   dismissOnboarding: async (): Promise<void> => {
     const r = await fetch(`${BASE}/me/profile/dismiss-onboarding`, {
       method: "POST",
+      headers: { ...(await authHeader()) },
+    });
+    if (!r.ok && r.status !== 204) {
+      throw new ApiError(r.status, `${r.status} ${r.statusText}`);
+    }
+  },
+
+  // ── Saved compound library (per-user) ──────────────────────────────
+  // Auto-saves from the New-job form when both name and SMILES are
+  // filled. Backed by public.user_compound. Upsert is by name, so
+  // re-saving "Aspirin" with a new SMILES updates the existing row.
+  getMyCompounds: () => request<UserCompound[]>("/me/compounds"),
+  saveMyCompound: (payload: { name: string; smiles: string }) =>
+    request<UserCompound>("/me/compounds", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteMyCompound: async (id: number): Promise<void> => {
+    const r = await fetch(`${BASE}/me/compounds/${id}`, {
+      method: "DELETE",
       headers: { ...(await authHeader()) },
     });
     if (!r.ok && r.status !== 204) {
