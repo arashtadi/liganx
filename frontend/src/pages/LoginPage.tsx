@@ -81,8 +81,9 @@ export default function LoginPage() {
 
       <form onSubmit={onSubmit} className="space-y-4">
         <div>
-          <label className="label">Email</label>
+          <label htmlFor="login-email" className="label">Email</label>
           <input
+            id="login-email"
             type="email"
             className="input"
             value={email}
@@ -94,12 +95,13 @@ export default function LoginPage() {
         </div>
         <div>
           <div className="flex items-baseline justify-between">
-            <label className="label">Password</label>
+            <label htmlFor="login-password" className="label">Password</label>
             <Link to="/forgot-password" className="text-xs text-delta-600 hover:underline dark:text-delta-400">
               Forgot?
             </Link>
           </div>
           <input
+            id="login-password"
             type="password"
             className="input"
             value={password}

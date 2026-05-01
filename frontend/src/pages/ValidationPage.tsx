@@ -112,13 +112,12 @@ export default function ValidationPage() {
         </p>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Snapshot refreshed <strong>{ageLabel}</strong> ({ts.toISOString().slice(0, 16).replace("T", " ")} UTC)
-          {" "}· Source code on{" "}
+          {" "}· Verification scripts available on request — write to{" "}
           <a
-            href="https://github.com/arashtadi/liganx/tree/main/backend/scripts"
-            target="_blank" rel="noopener noreferrer"
+            href="mailto:hello@liganx.com?subject=Liganx%20validation%20source%20request"
             className="text-delta-700 dark:text-delta-300 hover:underline"
           >
-            GitHub
+            hello@liganx.com
           </a>
         </p>
       </header>
@@ -142,21 +141,10 @@ export default function ValidationPage() {
         </div>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Verification script:{" "}
-          <a
-            href="https://github.com/arashtadi/liganx/blob/main/backend/scripts/verify_catalog.py"
-            target="_blank" rel="noopener noreferrer"
-            className="text-delta-700 dark:text-delta-300 hover:underline"
-          >
+          <code className="font-mono text-[11px] text-slate-700 dark:text-slate-300">
             backend/scripts/verify_catalog.py
-          </a>
-          {" "}· runs in{" "}
-          <a
-            href="https://github.com/arashtadi/liganx/blob/main/.github/workflows/fly-deploy.yml"
-            target="_blank" rel="noopener noreferrer"
-            className="text-delta-700 dark:text-delta-300 hover:underline"
-          >
-            CI before every deploy
-          </a>
+          </code>
+          {" "}· runs in CI before every deploy
         </p>
       </section>
 
@@ -348,13 +336,9 @@ export default function ValidationPage() {
 
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Validation script:{" "}
-          <a
-            href="https://github.com/arashtadi/liganx/blob/main/backend/scripts/validate_positive_controls.py"
-            target="_blank" rel="noopener noreferrer"
-            className="text-delta-700 dark:text-delta-300 hover:underline"
-          >
+          <code className="font-mono text-[11px] text-slate-700 dark:text-slate-300">
             backend/scripts/validate_positive_controls.py
-          </a>
+          </code>
           {" "}· each row's case name links to the live Liganx job result on this
           deployment.
         </p>
