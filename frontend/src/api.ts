@@ -491,6 +491,38 @@ export const api = {
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
   cancelJob: (key: string | number) =>
     request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
+  /** AI assistant — natural-language compound edit. Calls Claude Haiku
+   *  with the user's instruction + optional pocket context (target PDB
+   *  + mutations). Returns the proposed new SMILES, a one-line
+   *  rationale, optional warnings (PAINS/Lipinski/etc), and
+   *  applied=true iff the new SMILES validated with RDKit and is safe
+   *  to push back into Ketcher. */
+  assistCompound: (payload: {
+    smiles: string;
+    instruction: string;
+    target_pdb?: string;
+    mutations?: string;
+  }) =>
+    request<{
+      new_smiles: string;
+      rationale: string;
+      warnings: string[];
+      applied: boolean;
+    }>("/assist/compound", { method: "POST", body: JSON.stringify(payload) }),
+  /** AI assistant — RDKit-only property panel. No LLM call, no cost,
+   *  ~5ms server-side. Returns either {valid: true, ...full panel} or
+   *  {valid: false, error}. */
+  assistProperties: (smiles: string) =>
+    request<{
+      valid: boolean;
+      canonical_smiles?: string;
+      mw?: number; logp?: number; tpsa?: number;
+      hba?: number; hbd?: number; rotatable_bonds?: number; heavy_atoms?: number;
+      qed?: number;
+      lipinski_pass?: boolean; veber_pass?: boolean;
+      pains_hits?: { name: string; description: string }[];
+      error?: string;
+    }>("/assist/properties", { method: "POST", body: JSON.stringify({ smiles }) }),
   /** Report an issue on a job. Owner-only. Sends the user's free-form
    *  comment + job context to our Telegram bot so we can triage from a
    *  push notification. Server returns 204; we resolve to void. */

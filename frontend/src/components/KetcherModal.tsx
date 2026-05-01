@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Close } from "./Icons";
+import { Close, Spinner } from "./Icons";
+import { api, ApiError } from "../api";
 
 /**
  * Ketcher 2D structure-editor modal — opens the self-hosted Ketcher
@@ -38,6 +39,13 @@ interface Props {
   initialSmiles?: string;
   onClose: () => void;
   onAccept: (smiles: string) => void;
+  /** Optional pocket context — when the user is mid-job-creation, pass
+   *  the selected target + mutations so AI suggestions can be
+   *  pocket-aware ("for V600E, fill the gain-of-function hydrophobic
+   *  pocket with…"). Omit on the standalone CompoundsPage path where
+   *  there's no target context. */
+  targetPdb?: string;
+  mutations?: string;
 }
 
 const KETCHER_SRC = "/ketcher/index.html";
@@ -56,7 +64,7 @@ function getKetcherApi(iframe: HTMLIFrameElement | null): any | null {
   }
 }
 
-export default function KetcherModal({ initialSmiles, onClose, onAccept }: Props) {
+export default function KetcherModal({ initialSmiles, onClose, onAccept, targetPdb, mutations }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
   // The bare `iframe.onLoad` event fires earlier — when the HTML is parsed,
@@ -144,8 +152,8 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept }: Props
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden ring-1 ring-slate-200 dark:ring-slate-700"
-        style={{ height: "min(85vh, 750px)" }}
+        className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-7xl flex flex-col overflow-hidden ring-1 ring-slate-200 dark:ring-slate-700"
+        style={{ height: "min(88vh, 800px)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -165,24 +173,34 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept }: Props
           </button>
         </header>
 
-        {/* Iframe */}
-        <div className="flex-1 relative bg-slate-50 dark:bg-slate-800/40">
-          {!ketcherReady && (
-            <div className="absolute inset-0 flex items-center justify-center text-slate-500 dark:text-slate-400 text-sm pointer-events-none z-10">
-              Loading Ketcher…
-            </div>
-          )}
-          <iframe
-            ref={iframeRef}
-            src={KETCHER_SRC}
-            title="Ketcher 2D structure editor"
-            className="w-full h-full border-0"
-            // sandbox is intentionally LIBERAL — Ketcher needs scripts +
-            // same-origin messaging + popups for its file dialogs.
-            // allow-same-origin is REQUIRED for the contentWindow.ketcher
-            // direct-API protocol to work; without it our parent window
-            // gets a cross-origin error trying to read the ketcher object.
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        {/* Body — split into Ketcher iframe (left, ~70%) + AI sidebar
+            (right, ~320px). The sidebar reads/writes SMILES via the
+            same getKetcherApi helper the Accept button uses. */}
+        <div className="flex-1 flex min-h-0">
+          <div className="flex-1 relative bg-slate-50 dark:bg-slate-800/40 min-w-0">
+            {!ketcherReady && (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-500 dark:text-slate-400 text-sm pointer-events-none z-10">
+                Loading Ketcher…
+              </div>
+            )}
+            <iframe
+              ref={iframeRef}
+              src={KETCHER_SRC}
+              title="Ketcher 2D structure editor"
+              className="w-full h-full border-0"
+              // sandbox is intentionally LIBERAL — Ketcher needs scripts +
+              // same-origin messaging + popups for its file dialogs.
+              // allow-same-origin is REQUIRED for the contentWindow.ketcher
+              // direct-API protocol to work; without it our parent window
+              // gets a cross-origin error trying to read the ketcher object.
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            />
+          </div>
+          <AiSidebar
+            ketcherReady={ketcherReady}
+            getApi={() => getKetcherApi(iframeRef.current)}
+            targetPdb={targetPdb}
+            mutations={mutations}
           />
         </div>
 
@@ -209,5 +227,372 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept }: Props
         </footer>
       </div>
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// AiSidebar — the right-hand pane inside KetcherModal.
+//
+// What it does:
+//  - "Predict properties" — RDKit-only, instant. MW / logP / TPSA / QED
+//    + Lipinski/Veber pass + PAINS hit count.
+//  - "Suggest 5 analogs" — sends the current SMILES to /assist/compound
+//    with a fixed instruction, returns 5 sensible variants.
+//  - Free-text input — natural language ("swap COOH for tetrazole",
+//    "add a methyl at the para position", "make this more soluble").
+//    Returns one new SMILES + rationale.
+//
+// All three actions read the LIVE SMILES from Ketcher (via getSmiles)
+// at click time, so the user can sketch freely and the AI always sees
+// what's currently on canvas.
+//
+// "Apply to canvas" pushes the new SMILES back into Ketcher via
+// setMolecule. The user can still tweak it manually before clicking
+// "Use this structure" to commit the result back to the form.
+//
+// Pocket awareness: when the parent passes targetPdb + mutations
+// (NewJobPage flow), the AI gets that context and tailors suggestions
+// to the specific pocket and resistance mutation. On standalone
+// CompoundsPage there's no target context and the AI is generic.
+// ──────────────────────────────────────────────────────────────────────
+
+interface AiSidebarProps {
+  ketcherReady: boolean;
+  getApi: () => any | null;
+  targetPdb?: string;
+  mutations?: string;
+}
+
+type ActionStatus = "idle" | "running" | "ok" | "error";
+
+interface AssistResult {
+  new_smiles: string;
+  rationale: string;
+  warnings: string[];
+  applied: boolean;
+}
+
+interface PropertiesResult {
+  valid?: boolean;
+  canonical_smiles?: string;
+  mw?: number;
+  logp?: number;
+  tpsa?: number;
+  hba?: number;
+  hbd?: number;
+  rotatable_bonds?: number;
+  heavy_atoms?: number;
+  qed?: number;
+  lipinski_pass?: boolean;
+  veber_pass?: boolean;
+  pains_hits?: { name: string; description: string }[];
+  error?: string;
+}
+
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProps) {
+  const [instruction, setInstruction] = useState("");
+  const [status, setStatus] = useState<ActionStatus>("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [result, setResult] = useState<AssistResult | null>(null);
+  const [properties, setProperties] = useState<PropertiesResult | null>(null);
+  // Track which kind of action ran last so the result panel labels itself
+  // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
+  const [lastAction, setLastAction] = useState<"none" | "edit" | "props" | "analogs">("none");
+
+  /** Read SMILES from Ketcher. Returns null + sets an error if the
+   *  canvas is empty or Ketcher hasn't finished loading. */
+  async function readSmiles(): Promise<string | null> {
+    const apiObj = getApi();
+    if (!apiObj?.getSmiles) {
+      setErrorMsg("Ketcher hasn't finished loading — wait a moment.");
+      return null;
+    }
+    try {
+      const smi: string = await apiObj.getSmiles();
+      if (!smi || smi.trim().length === 0) {
+        setErrorMsg("The canvas is empty — sketch something first.");
+        return null;
+      }
+      return smi.trim();
+    } catch (e) {
+      setErrorMsg(`Couldn't read SMILES from Ketcher: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  async function runEdit(text: string) {
+    if (!text.trim()) return;
+    const smi = await readSmiles();
+    if (!smi) return;
+    setStatus("running");
+    setErrorMsg(null);
+    setResult(null);
+    setLastAction("edit");
+    try {
+      const r = await api.assistCompound({
+        smiles: smi,
+        instruction: text.trim(),
+        target_pdb: targetPdb,
+        mutations: mutations,
+      });
+      setResult(r);
+      setStatus("ok");
+    } catch (e) {
+      setStatus("error");
+      setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
+    }
+  }
+
+  async function runAnalogs() {
+    const smi = await readSmiles();
+    if (!smi) return;
+    setStatus("running");
+    setErrorMsg(null);
+    setResult(null);
+    setLastAction("analogs");
+    try {
+      // Reuse /assist/compound with a fixed "suggest analogs" instruction
+      // so we don't need a separate endpoint. The AI returns ONE smiles
+      // + rationale per the contract, but we phrase the instruction so
+      // the rationale reads as a "5 analogs to consider" list.
+      const r = await api.assistCompound({
+        smiles: smi,
+        instruction:
+          "Suggest 5 promising medchem analogs of this compound. Return the most" +
+          " interesting one as new_smiles, and list the other 4 + brief rationale" +
+          " for each in the rationale field.",
+        target_pdb: targetPdb,
+        mutations: mutations,
+      });
+      setResult(r);
+      setStatus("ok");
+    } catch (e) {
+      setStatus("error");
+      setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
+    }
+  }
+
+  async function runProperties() {
+    const smi = await readSmiles();
+    if (!smi) return;
+    setStatus("running");
+    setErrorMsg(null);
+    setProperties(null);
+    setLastAction("props");
+    try {
+      const p = await api.assistProperties(smi);
+      setProperties(p);
+      setStatus("ok");
+    } catch (e) {
+      setStatus("error");
+      setErrorMsg(e instanceof ApiError ? e.message : "Property calculation failed");
+    }
+  }
+
+  async function applyResultToCanvas() {
+    if (!result?.new_smiles || !result.applied) return;
+    const apiObj = getApi();
+    if (!apiObj?.setMolecule) {
+      setErrorMsg("Ketcher hasn't finished loading.");
+      return;
+    }
+    try {
+      await apiObj.setMolecule(result.new_smiles);
+    } catch (e) {
+      setErrorMsg(`Ketcher rejected the SMILES: ${(e as Error).message}`);
+    }
+  }
+
+  return (
+    <aside className="w-[320px] shrink-0 border-l border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <div className="flex items-center gap-2 text-sm font-semibold text-ink dark:text-slate-100">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400" aria-hidden="true">
+            <path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M3 13l2-2M11 5l2-2" />
+          </svg>
+          AI assistant
+          <span className="ml-auto text-[10px] font-normal text-slate-400 dark:text-slate-500 uppercase tracking-wide">beta</span>
+        </div>
+        {targetPdb && (
+          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            Pocket-aware for <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
+            {mutations && <> · {mutations}</>}
+          </div>
+        )}
+      </div>
+
+      {/* Quick actions */}
+      <div className="p-3 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
+        <button
+          type="button"
+          disabled={!ketcherReady || status === "running"}
+          onClick={runProperties}
+          className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          ⚡ <span className="font-medium">Predict properties</span>
+          <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">MW · logP · TPSA · QED · PAINS</span>
+        </button>
+        <button
+          type="button"
+          disabled={!ketcherReady || status === "running"}
+          onClick={runAnalogs}
+          className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          🔬 <span className="font-medium">Suggest 5 analogs</span>
+          <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Medchem variants worth docking</span>
+        </button>
+      </div>
+
+      {/* Result panel — scrolls if long */}
+      <div className="flex-1 overflow-y-auto p-3 text-[12px]">
+        {status === "idle" && lastAction === "none" && (
+          <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
+            Sketch a structure on the left, then ask for an edit below or run a quick action above.
+          </div>
+        )}
+        {status === "running" && (
+          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+            <Spinner size={12} /> Thinking…
+          </div>
+        )}
+        {status === "error" && errorMsg && (
+          <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2.5 py-2 text-rose-800 dark:text-rose-200">
+            {errorMsg}
+          </div>
+        )}
+        {status === "ok" && lastAction === "props" && properties && (
+          <PropertiesPanel p={properties} />
+        )}
+        {status === "ok" && (lastAction === "edit" || lastAction === "analogs") && result && (
+          <ResultPanel result={result} onApply={applyResultToCanvas} />
+        )}
+      </div>
+
+      {/* Free-text input — sticks to bottom */}
+      <form
+        className="p-3 border-t border-slate-200 dark:border-slate-700"
+        onSubmit={(e) => { e.preventDefault(); runEdit(instruction); setInstruction(""); }}
+      >
+        <input
+          type="text"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          disabled={!ketcherReady || status === "running"}
+          placeholder="e.g. swap COOH for tetrazole"
+          className="w-full text-[12px] px-2.5 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+        />
+        <button
+          type="submit"
+          disabled={!ketcherReady || status === "running" || !instruction.trim()}
+          className="mt-2 w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
+        >
+          {status === "running" ? "Sending…" : "✨ Improve"}
+        </button>
+      </form>
+    </aside>
+  );
+}
+
+function PropertiesPanel({ p }: { p: PropertiesResult }) {
+  if (!p.valid) {
+    return (
+      <div className="rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 px-2.5 py-2 text-amber-800 dark:text-amber-200">
+        {p.error ?? "Couldn't compute properties."}
+      </div>
+    );
+  }
+  const passLip = p.lipinski_pass;
+  const passVeb = p.veber_pass;
+  const painsCount = (p.pains_hits ?? []).length;
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Properties</div>
+      <div className="grid grid-cols-2 gap-1.5">
+        <Stat label="MW" value={p.mw} unit="g/mol" />
+        <Stat label="logP" value={p.logp} />
+        <Stat label="TPSA" value={p.tpsa} unit="Å²" />
+        <Stat label="QED" value={p.qed} />
+        <Stat label="HBA / HBD" value={`${p.hba} / ${p.hbd}`} />
+        <Stat label="Rot. bonds" value={p.rotatable_bonds} />
+      </div>
+      <div className="flex flex-wrap gap-1.5 mt-1">
+        <Pill ok={passLip} okLabel="Lipinski ✓" badLabel="Lipinski ✗" />
+        <Pill ok={passVeb} okLabel="Veber ✓" badLabel="Veber ✗" />
+        <Pill
+          ok={painsCount === 0}
+          okLabel="PAINS clean"
+          badLabel={`${painsCount} PAINS hit${painsCount === 1 ? "" : "s"}`}
+        />
+      </div>
+      {painsCount > 0 && (
+        <details className="mt-1 text-[10px] text-slate-600 dark:text-slate-400">
+          <summary className="cursor-pointer hover:text-ink dark:hover:text-slate-200">PAINS details</summary>
+          <ul className="mt-1 ml-3 list-disc space-y-0.5">
+            {(p.pains_hits ?? []).map((h, i) => <li key={i}>{h.name}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ResultPanel({ result, onApply }: { result: AssistResult; onApply: () => void }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">AI suggestion</div>
+      {result.applied ? (
+        <div className="rounded-md bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 p-2.5">
+          <div className="font-mono text-[10px] text-delta-900 dark:text-delta-200 break-all">
+            {result.new_smiles}
+          </div>
+          <div className="text-[11px] text-slate-700 dark:text-slate-300 mt-1.5 leading-relaxed">
+            {result.rationale}
+          </div>
+          <button
+            type="button"
+            onClick={onApply}
+            className="mt-2 text-[11px] font-semibold px-2.5 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+          >
+            Apply to canvas →
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 p-2.5">
+          <div className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+            {result.rationale || "AI didn't propose a change."}
+          </div>
+        </div>
+      )}
+      {result.warnings.length > 0 && (
+        <ul className="text-[10px] text-amber-700 dark:text-amber-300 space-y-0.5 ml-3 list-disc">
+          {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, unit }: { label: string; value: number | string | undefined; unit?: string }) {
+  return (
+    <div className="rounded-md bg-slate-50 dark:bg-slate-800/40 px-2 py-1.5">
+      <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</div>
+      <div className="text-[12px] font-semibold text-ink dark:text-slate-100">
+        {value ?? "—"}{unit ? <span className="text-[10px] font-normal text-slate-500 dark:text-slate-400 ml-0.5">{unit}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function Pill({ ok, okLabel, badLabel }: { ok: boolean | undefined; okLabel: string; badLabel: string }) {
+  if (ok === undefined) return null;
+  return ok ? (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
+      {okLabel}
+    </span>
+  ) : (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/40">
+      {badLabel}
+    </span>
   );
 }

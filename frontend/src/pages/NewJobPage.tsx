@@ -1832,6 +1832,20 @@ export default function NewJobPage() {
     {sketcherRow !== null && (
       <KetcherModal
         initialSmiles={compounds[sketcherRow]?.smiles || undefined}
+        // Pocket context for the AI sidebar — pull whichever target is
+        // currently active (single-target mode) and its mutations, or
+        // the custom-PDB selection. The AI uses this to tailor
+        // suggestions to the specific pocket and mutation residue.
+        // Falls back gracefully (generic medchem advice) when empty.
+        targetPdb={target?.id || pdbId || undefined}
+        mutations={
+          target
+            ? [
+                ...(selectedMutationsByTarget[target.id] ?? []),
+                customMutationsByTarget[target.id] ?? "",
+              ].filter(Boolean).join(", ")
+            : (customMutationsByTarget[CUSTOM_KEY] ?? "") || undefined
+        }
         onClose={() => setSketcherRow(null)}
         onAccept={(smiles) => {
           // Intercept: if the row had a NAME and the user CHANGED the

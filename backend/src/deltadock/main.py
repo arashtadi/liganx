@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, catalog, contact, jobs, lookup, me, me_compounds, structures, suggest
+from .routers import admin, assist, catalog, contact, jobs, lookup, me, me_compounds, structures, suggest
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -107,6 +107,7 @@ app.include_router(me.router)
 app.include_router(me_compounds.router)
 app.include_router(contact.router)
 app.include_router(admin.router)
+app.include_router(assist.router)
 
 
 @app.get("/health", tags=["meta"])
