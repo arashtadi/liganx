@@ -283,6 +283,61 @@ def run_job_in_background(job_id: int) -> None:
             job.updated_at = datetime.utcnow()
             session.add(job)
             session.commit()
+            # Telegram alert with full triage context. Wrapped in its own
+            # try/except so a notification failure (Telegram down,
+            # credentials missing, network blip) never re-raises and
+            # masks the original error in Fly logs. Imported lazily so
+            # an unrelated import failure in the notifications module
+            # can't break the runner itself.
+            try:
+                import traceback as _tb
+                from .notifications import notify_job_failed
+                # Build a compact compound summary (names only, truncated)
+                # so the Telegram preview shows what was being docked at
+                # a glance. Pull via SQL — joining through DockingResult
+                # would miss compounds when the failure happened during
+                # receptor prep before any results were written.
+                from sqlalchemy import text as _sql_text
+                comp_rows = session.execute(
+                    _sql_text(
+                        "SELECT c.name FROM compound c"
+                        " JOIN dockingresult dr ON dr.compound_id = c.id"
+                        " WHERE dr.job_id = :jid"
+                        " UNION SELECT '(no results yet)' WHERE NOT EXISTS"
+                        "  (SELECT 1 FROM dockingresult WHERE job_id = :jid)"
+                    ),
+                    {"jid": job_id},
+                ).all()
+                comp_names = ", ".join(r[0] for r in comp_rows) if comp_rows else "—"
+                # User email lookup — auth.users is Supabase-managed but
+                # readable via SQL with our service role.
+                user_row = session.execute(
+                    _sql_text(
+                        "SELECT email FROM auth.users WHERE id = :uid"
+                    ),
+                    {"uid": str(job.user_id) if job.user_id else None},
+                ).first()
+                user_email = user_row[0] if user_row else None
+
+                tb_text = _tb.format_exc()
+                # Last ~12 lines is usually enough to identify the call
+                # site without flooding the message.
+                tb_tail = "\n".join(tb_text.splitlines()[-12:])
+
+                notify_job_failed(
+                    job_id=job.id,
+                    share_id=job.share_id,
+                    pdb_id=job.pdb_id,
+                    mutations=job.mutations or "",
+                    engine=job.engine or "",
+                    user_email=user_email,
+                    user_id=str(job.user_id) if job.user_id else None,
+                    compound_summary=comp_names,
+                    error_message=str(e),
+                    traceback_tail=tb_tail,
+                )
+            except Exception:
+                log.exception("Telegram failure-alert failed (non-fatal)")
 
 
 # ──────────────────────────────────────────────────────────────────────

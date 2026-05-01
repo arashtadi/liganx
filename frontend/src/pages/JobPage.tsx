@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound, type DockingResult, type Job, type PdbQuality } from "../api";
 import SelectivityMatrix from "../components/SelectivityMatrix";
@@ -333,12 +333,7 @@ export default function JobPage() {
           </button>
         </div>
       )}
-      {job.error_message && (
-        <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40 text-sm">
-          <div className="font-semibold mb-1">Job failed</div>
-          <div>{job.error_message}</div>
-        </div>
-      )}
+      {job.error_message && <JobErrorCard job={job} />}
 
       {/* Live progress banner — stays visible until the job finishes, while the
           matrix below renders cells incrementally as each docking commits.
@@ -440,6 +435,160 @@ function prettifyProtein(name: string): string {
       return part.charAt(0).toUpperCase() + part.slice(1);
     })
     .join("");
+}
+
+/**
+ * JobErrorCard — failed-job banner with one-click Re-run + Report buttons.
+ *
+ * Replaces the previous read-only error block. The Re-run path mirrors
+ * HistoryPage.onRerunClick (task #298): navigates to /new with a reseed
+ * payload in router state so NewJobPage pre-fills target/mutations/
+ * compounds/engine/exhaustiveness/include_wt and the user just clicks
+ * Submit. The Report path POSTs a free-form comment + job context to
+ * /jobs/{share_id}/report; the backend forwards to our Telegram bot so
+ * we get a push notification on every user-reported issue.
+ */
+function JobErrorCard({ job }: { job: Job }) {
+  const navigate = useNavigate();
+  const [reportOpen, setReportOpen] = useState(false);
+  const [comment, setComment] = useState("");
+  const [reportStatus, setReportStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [reportErr, setReportErr] = useState<string | null>(null);
+
+  function onRerunClick() {
+    // Same reseed shape as HistoryPage so NewJobPage's existing reseed
+    // handler picks it up unchanged. Fields that aren't on Job (e.g.
+    // exhaustiveness, include_wt) are read defensively; cast to a
+    // partial type to satisfy strict TS without a backend round-trip.
+    const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
+    navigate("/new", {
+      state: {
+        reseed: {
+          pdb_id: job.pdb_id,
+          chain: job.chain,
+          mutations: job.mutations,
+          compounds: job.compounds.map((c) => ({ name: c.name ?? "", smiles: c.smiles })),
+          engine: job.engine ?? "quickvina2_gpu",
+          exhaustiveness: j.exhaustiveness ?? 8,
+          include_wt: j.include_wt ?? true,
+        },
+      },
+    });
+  }
+
+  async function onReportSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = comment.trim();
+    if (trimmed.length < 1) {
+      setReportErr("Please add a short note before sending.");
+      return;
+    }
+    setReportStatus("sending");
+    setReportErr(null);
+    try {
+      await api.reportJob(job.share_id, trimmed);
+      setReportStatus("sent");
+      // Auto-collapse after a beat so the user sees the confirmation
+      // and the page returns to its normal layout.
+      window.setTimeout(() => {
+        setReportOpen(false);
+        setReportStatus("idle");
+        setComment("");
+      }, 1800);
+    } catch (err) {
+      setReportStatus("error");
+      setReportErr(err instanceof ApiError ? err.message : "Couldn't send. Please try again.");
+    }
+  }
+
+  return (
+    <div className="card border-loss-300 bg-loss-50 text-loss-700 dark:bg-loss-900/20 dark:text-loss-300 dark:border-loss-700/40 text-sm">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold mb-1">Job failed</div>
+          <div className="leading-relaxed break-words">{job.error_message}</div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onRerunClick}
+            className="inline-flex items-center gap-1.5 rounded-md bg-loss-700 hover:bg-loss-800 dark:bg-loss-600 dark:hover:bg-loss-500 text-white text-xs font-semibold px-3 py-1.5 transition-colors"
+            title="Open the new-job form pre-filled with this job's settings"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-7 3l-2 2" />
+              <path d="M3 4v6h6" />
+            </svg>
+            Re-run
+          </button>
+          <button
+            type="button"
+            onClick={() => setReportOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-loss-300 dark:border-loss-700/60 bg-white/60 dark:bg-loss-900/30 hover:bg-white dark:hover:bg-loss-900/50 text-loss-700 dark:text-loss-300 text-xs font-semibold px-3 py-1.5 transition-colors"
+            title="Tell us what went wrong — sends to our team"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+              <path d="M3 5h18v10H8l-5 5z" />
+            </svg>
+            {reportOpen ? "Cancel" : "Report issue"}
+          </button>
+        </div>
+      </div>
+
+      {/* Inline report form — collapses below the error message. We
+          deliberately don't use a modal here because (a) modals on the
+          JobPage are already used by the pose detail panel and we want
+          to avoid stacking, and (b) the inline pattern feels lighter
+          for a quick text comment. */}
+      {reportOpen && (
+        <form onSubmit={onReportSubmit} className="mt-4 pt-4 border-t border-loss-200 dark:border-loss-700/40">
+          {reportStatus === "sent" ? (
+            <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 text-sm">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+              Thanks — we got your report and will look at it.
+            </div>
+          ) : (
+            <>
+              <label htmlFor="report-comment" className="block text-xs font-semibold text-loss-800 dark:text-loss-200 mb-1.5">
+                What happened? (anything helps — what you were trying to do, what you saw, what surprised you)
+              </label>
+              <textarea
+                id="report-comment"
+                rows={3}
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                disabled={reportStatus === "sending"}
+                maxLength={2000}
+                className="w-full rounded-md border border-loss-300 dark:border-loss-700/60 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 placeholder-slate-400 focus:border-loss-500 focus:ring-1 focus:ring-loss-500 outline-none resize-y"
+                placeholder="The job stayed on 'Fetching protein structure' for 5 minutes…"
+              />
+              <div className="flex items-center justify-between mt-2">
+                <div className="text-[11px] text-loss-700/80 dark:text-loss-300/70">
+                  Sent privately to the Liganx team along with this job's details.
+                </div>
+                <button
+                  type="submit"
+                  disabled={reportStatus === "sending" || comment.trim().length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-loss-700 hover:bg-loss-800 disabled:bg-loss-300 dark:disabled:bg-loss-900/40 disabled:cursor-not-allowed text-white text-xs font-semibold px-3 py-1.5 transition-colors"
+                >
+                  {reportStatus === "sending" ? (
+                    <><Spinner size={12} /> Sending…</>
+                  ) : (
+                    "Send report"
+                  )}
+                </button>
+              </div>
+              {reportErr && (
+                <div className="mt-2 text-[11px] text-loss-800 dark:text-loss-200">{reportErr}</div>
+              )}
+            </>
+          )}
+        </form>
+      )}
+    </div>
+  );
 }
 
 function Header({

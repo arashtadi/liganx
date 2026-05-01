@@ -491,6 +491,24 @@ export const api = {
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
   cancelJob: (key: string | number) =>
     request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
+  /** Report an issue on a job. Owner-only. Sends the user's free-form
+   *  comment + job context to our Telegram bot so we can triage from a
+   *  push notification. Server returns 204; we resolve to void. */
+  reportJob: async (key: string | number, comment: string): Promise<void> => {
+    const r = await fetch(`${BASE}/jobs/${key}/report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeader()),
+      },
+      body: JSON.stringify({ comment }),
+    });
+    if (!r.ok) {
+      let detail: string | undefined;
+      try { detail = (await r.json())?.detail; } catch { /* not JSON */ }
+      throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`);
+    }
+  },
   /** Patch the user-editable fields on a job (currently title and tags).
    *  Both fields are optional — omitting one leaves it unchanged. Used by
    *  the History page tag picker to color-code jobs. Returns the updated

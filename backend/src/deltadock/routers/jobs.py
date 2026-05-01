@@ -1,14 +1,18 @@
 """Job submission and retrieval endpoints."""
 
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
+
+log = logging.getLogger(__name__)
 
 from ..auth import CurrentUser, current_user, current_user_or_none, profile_complete_user, verified_user
 from ..celery_app import dispatch_job
@@ -487,6 +491,74 @@ def cancel_job(
     session.commit()
     session.refresh(job)
     return _to_out(job)
+
+
+class JobReport(BaseModel):
+    """User-supplied comment when reporting a job issue. Owner-only."""
+    comment: str = Field(..., min_length=1, max_length=2000)
+
+
+@router.post("/{job_key}/report", status_code=204)
+def report_job(
+    job_key: str,
+    payload: JobReport,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    """User-side issue report on any job they own.
+
+    Triggers a Telegram alert with the user's comment plus job context
+    so we can triage. Most useful on FAILED jobs (where the user has a
+    specific complaint about why it broke), but allowed on any status —
+    sometimes the issue is "I expected X but got Y" on a COMPLETED run.
+
+    Returns 204 with no body. Errors:
+      - 404 for non-owners (so a stranger with a guessed share-link
+        can't probe job existence)
+      - 422 for empty/oversized comments (Pydantic enforces)
+
+    Rate limiting: deliberately none beyond ownership — if a user fires
+    50 reports about the same job, we want to see all 50 because we'll
+    likely respond to one and dedupe ourselves.
+    """
+    job = _resolve_job(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Best-effort user email lookup for the alert. auth.users is
+    # Supabase-managed but readable through our service-role connection.
+    user_email: str | None = None
+    try:
+        row = session.execute(
+            text("SELECT email FROM auth.users WHERE id = :uid"),
+            {"uid": str(job.user_id)},
+        ).first()
+        if row:
+            user_email = row[0]
+    except Exception:
+        # Email lookup is decoration; never let it block the report.
+        pass
+
+    try:
+        from ..services.notifications import notify_user_report
+        notify_user_report(
+            job_id=job.id,
+            share_id=job.share_id,
+            pdb_id=job.pdb_id,
+            mutations=job.mutations or "",
+            engine=job.engine or "",
+            job_status=str(job.status.value if hasattr(job.status, "value") else job.status),
+            user_email=user_email,
+            user_id=str(job.user_id) if job.user_id else None,
+            user_comment=payload.comment,
+            error_message=job.error_message,
+        )
+    except Exception:
+        # Notification failure shouldn't 500 the report — the user gets
+        # a 204 either way and we'll see the failure in Fly logs.
+        log.exception("notify_user_report failed for job %s", job.id)
 
 
 @router.patch("/{job_key}", response_model=JobOut)
