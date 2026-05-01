@@ -303,16 +303,40 @@ export default function PoseDetail({ pick, onClose }: Props) {
               <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-500 leading-snug italic">
                 Phase 0: geometric overlap with PDB-deposited HOH records, not WaterMap.
                 B-factors, conservation across structures, and de novo waters in mutant
-                pockets are not modelled in this Phase 0. See{" "}
-                <a
-                  href="https://github.com/arashtadi/liganx/blob/main/docs/water_displacement_plan.md"
-                  target="_blank" rel="noopener noreferrer"
-                  className="text-delta-700 dark:text-delta-300 hover:underline"
-                >
-                  water_displacement_plan.md
-                </a>
-                {" "}for Phase 1 (3D-RISM) and Phase 2 (GIST).
+                pockets are not modelled in this Phase 0.
               </p>
+              {/* Inline disclosure replaces the previous GitHub link to
+                  water_displacement_plan.md (which (a) was broken for users
+                  without repo access and (b) shouldn't expose internal docs).
+                  Same content, kept in-app, collapsed by default so it
+                  doesn't crowd the panel. */}
+              <details className="mt-1.5 group">
+                <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-delta-700 dark:text-delta-300 hover:underline list-none flex items-center gap-1">
+                  <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+                  What's planned beyond Phase 0
+                </summary>
+                <div className="mt-1.5 pl-3 border-l-2 border-delta-200 dark:border-delta-700/40 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed space-y-1.5">
+                  <p>
+                    <span className="font-semibold text-slate-700 dark:text-slate-300">Phase 1 — 3D-RISM:</span>{" "}
+                    statistical-mechanics solvent treatment that weights waters by
+                    their predicted free energy, not just their crystallographic
+                    presence. Adds B-factor handling and scores "this water is
+                    favourable to displace" vs "this water is locked in".
+                  </p>
+                  <p>
+                    <span className="font-semibold text-slate-700 dark:text-slate-300">Phase 2 — GIST:</span>{" "}
+                    grid inhomogeneous solvation theory. Per-voxel enthalpy/entropy
+                    map of the pocket — quantifies the thermodynamic cost of every
+                    displaced water and detects de novo waters that appear only in
+                    the mutant pocket.
+                  </p>
+                  <p className="text-slate-500 dark:text-slate-500">
+                    Both phases are on the roadmap. Phase 0 ships displacement
+                    counts so the WT-vs-mutant Δ is already a useful directional
+                    signal today.
+                  </p>
+                </div>
+              </details>
             </div>
           </div>
         )}
