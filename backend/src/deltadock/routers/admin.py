@@ -48,7 +48,10 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # Statuses that count against a user's lifetime quota. Mirrored from
 # routers/jobs.py create_job — keep the two in sync if you change one.
-QUOTA_COUNTED_STATUSES = ("pending", "running", "completed")
+# UPPERCASE because Postgres native enum jobstatus stores by name, not
+# by Python str value. Lowercase here causes "invalid input value for
+# enum jobstatus" — see routers/jobs.py for the corresponding fix.
+QUOTA_COUNTED_STATUSES = ("PENDING", "RUNNING", "COMPLETED")
 
 
 class AdminStats(BaseModel):
@@ -97,8 +100,8 @@ def get_admin_stats(
             (SELECT COUNT(*) FROM job) AS total_jobs,
             (SELECT COUNT(*) FROM job WHERE created_at >= NOW() - INTERVAL '24 hours') AS jobs_24h,
             (SELECT COUNT(*) FROM job WHERE created_at >= NOW() - INTERVAL '7 days') AS jobs_7d,
-            (SELECT COUNT(*) FROM job WHERE status IN ('pending', 'running')) AS jobs_running,
-            (SELECT COUNT(*) FROM job WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '7 days') AS jobs_failed_7d
+            (SELECT COUNT(*) FROM job WHERE status IN ('PENDING', 'RUNNING')) AS jobs_running,
+            (SELECT COUNT(*) FROM job WHERE status = 'FAILED' AND created_at >= NOW() - INTERVAL '7 days') AS jobs_failed_7d
         """
     )).mappings().first()
     return AdminStats(**row)
@@ -126,7 +129,7 @@ def list_users(
             COALESCE(p.job_quota, 10) AS job_quota,
             (SELECT COUNT(*) FROM job j
              WHERE j.user_id = u.id::text
-               AND j.status IN {QUOTA_COUNTED_STATUSES!r}
+               AND j.status IN ('PENDING','RUNNING','COMPLETED')
             ) AS jobs_used,
             (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id::text) AS jobs_total
         FROM auth.users u

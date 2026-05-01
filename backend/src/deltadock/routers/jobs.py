@@ -225,11 +225,16 @@ def create_job(
     # Failed/cancelled don't count — the user shouldn't be penalized for
     # a Pod failure or a fat-finger cancel. Quota of 0 = effectively
     # banned from new submissions but existing jobs continue.
+    # NB Postgres native enum jobstatus stores uppercase enum NAMES
+    # (PENDING, RUNNING, COMPLETED) rather than the Python str values
+    # (pending, running, completed). Lowercase comparisons hit
+    # "invalid input value for enum jobstatus" — discovered the hard way
+    # when /jobs went 500 the first time after this check shipped.
     quota_row = session.execute(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
             " (SELECT COUNT(*) FROM job j"
-            "  WHERE j.user_id = :uid AND j.status IN ('pending','running','completed')"
+            "  WHERE j.user_id = :uid AND j.status IN ('PENDING','RUNNING','COMPLETED')"
             " ) AS used"
             " FROM (SELECT 1) _"
             " LEFT JOIN public.user_profile p ON p.user_id = :uid"
