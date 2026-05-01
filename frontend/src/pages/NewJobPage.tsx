@@ -284,6 +284,31 @@ export default function NewJobPage() {
       return { ...prev, [targetId]: value };
     });
   }
+  // Drops a mutation from BOTH the chip-selection set AND the typed custom
+  // string. Used by the unified pill-row remove-X — the user shouldn't have
+  // to remember which of the two state shapes a given pill came from.
+  function removeAnyMutation(targetId: string, code: string) {
+    // Drop from chip selection if present (toggleMutation handles the
+    // includes() check itself, so this is a safe no-op when the code was
+    // typed-only).
+    setSelectedMutationsByTarget((prev) => {
+      const cur = prev[targetId] ?? [];
+      if (!cur.includes(code)) return prev;
+      return { ...prev, [targetId]: cur.filter((c) => c !== code) };
+    });
+    // Re-parse the custom string and rebuild without the removed code.
+    // We work off the canonical form (uppercased, ins/del normalized) so a
+    // pill labelled "T790M" cleanly removes a typed "t790m" or stray spaces.
+    setCustomMutationsByTarget((prev) => {
+      const raw = prev[targetId] ?? "";
+      const tokens = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+      const kept = tokens.filter((t) => {
+        const norm = t.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1");
+        return norm !== code;
+      });
+      return { ...prev, [targetId]: kept.join(", ") };
+    });
+  }
   function setCompound(i: number, patch: Partial<CompoundRow>) {
     setCompounds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
   }
@@ -769,7 +794,6 @@ export default function NewJobPage() {
             <div className="space-y-4">
             {targets.map((t, targetIdx) => {
               const tid = t.id;
-              const chipSelected = selectedMutationsByTarget[tid] ?? [];
               const customStr = customMutationsByTarget[tid] ?? "";
               const all = mutationsForTarget(tid);
               const raw = rawMutationsForTarget(tid);
@@ -831,84 +855,115 @@ export default function NewJobPage() {
                       </div>
                     </>
                   )}
-                  {t.mutations.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      {t.mutations.map((m) => {
-                        const active = chipSelected.includes(m.code);
-                        return (
+                  {/* ── Token-field pill row ────────────────────────────
+                      Every mutation looks the same regardless of source —
+                      no chip-strip vs typed-list split. WT is pinned at the
+                      start as a non-removable baseline pill so users always
+                      see what's actually getting docked. */}
+                  <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40 px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono font-semibold dark:bg-slate-700 dark:text-slate-200"
+                        title="Wild-type runs as the comparison baseline for every job"
+                      >
+                        WT
+                        <span className="text-[9px] font-sans font-normal text-slate-500 dark:text-slate-400 uppercase tracking-wider">baseline</span>
+                      </span>
+                      {all.map((code) => (
+                        <span
+                          key={code}
+                          className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-delta-600 text-white text-xs font-mono font-semibold dark:bg-delta-500"
+                        >
+                          {code}
                           <button
-                            key={m.code}
                             type="button"
-                            onClick={() => toggleMutation(tid, m.code)}
-                            className={active ? "chip-active" : "chip-clickable"}
-                            title={m.significance}
+                            onClick={() => removeAnyMutation(tid, code)}
+                            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/25 hover:bg-white/40 transition-colors"
+                            aria-label={`Remove ${code}`}
+                            title={`Remove ${code}`}
                           >
-                            {active && <Close size={11} />}
-                            <span className="font-mono">{m.code}</span>
-                            <span className="hidden sm:inline text-slate-500 font-normal">
-                              — {m.significance.split(",")[0]}
-                            </span>
+                            <Close size={10} />
                           </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div>
-                    <label className="label">Custom mutations (comma-separated)</label>
-                    <AutocompleteInput
-                      value={customStr}
-                      onChange={(v) => setCustomMutationsFor(tid, v)}
-                      mode="tokens"
-                      fetchSuggestions={async (q) => {
-                        // Pass UniProt accession so the backend can pull
-                        // disease-associated natural variants from EBI in
-                        // addition to our curated list and cBioPortal hotspots.
-                        const r = await api.suggestMutations(q, t.id.toUpperCase(), t.uniprot);
-                        return r.suggestions;
-                      }}
-                      getValue={(item) => item.code}
-                      renderItem={(item) => (
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
-                          <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                          <span className="text-[11px] text-slate-500 truncate flex-1">{item.note}</span>
-                          {item.source && item.source !== "curated" && (
-                            <span
-                              className={
-                                "shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold " +
-                                (item.source === "uniprot"
-                                  ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                                  : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300")
-                              }
-                              title={item.source === "uniprot" ? "From UniProt annotated variants" : "From cBioPortal cohorts"}
-                            >
-                              {item.source === "uniprot" ? "UniProt" : "cBioPortal"}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      emptyState={
-                        <span>
-                          No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
-                          if the residue exists in {t.pdb_id}/{t.chain || "A"}, the runner will build it.
                         </span>
-                      }
-                      placeholder="e.g. T790M, L858R — start typing for suggestions"
-                      inputClassName="input font-mono"
-                      openOnFocus
-                      minChars={0}
-                    />
+                      ))}
+                      {all.length === 0 && (
+                        <span className="text-xs text-slate-500 dark:text-slate-400 italic">
+                          No mutations yet — only wild-type will be docked
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                      <AutocompleteInput
+                        value={customStr}
+                        onChange={(v) => setCustomMutationsFor(tid, v)}
+                        mode="tokens"
+                        fetchSuggestions={async (q) => {
+                          // Pass UniProt accession so the backend can pull
+                          // disease-associated natural variants from EBI in
+                          // addition to our curated list and cBioPortal hotspots.
+                          const r = await api.suggestMutations(q, t.id.toUpperCase(), t.uniprot);
+                          return r.suggestions;
+                        }}
+                        getValue={(item) => item.code}
+                        renderItem={(item) => (
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
+                            <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
+                            <span className="text-[11px] text-slate-500 truncate flex-1">{item.note}</span>
+                            {item.source && item.source !== "curated" && (
+                              <span
+                                className={
+                                  "shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold " +
+                                  (item.source === "uniprot"
+                                    ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+                                    : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300")
+                                }
+                                title={item.source === "uniprot" ? "From UniProt annotated variants" : "From cBioPortal cohorts"}
+                              >
+                                {item.source === "uniprot" ? "UniProt" : "cBioPortal"}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        emptyState={
+                          <span>
+                            No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
+                            if the residue exists in {t.pdb_id}/{t.chain || "A"}, the runner will build it.
+                          </span>
+                        }
+                        placeholder="Start typing a code — e.g. T790M, L858R, T790M+C797S"
+                        inputClassName="input font-mono"
+                        openOnFocus
+                        minChars={0}
+                      />
+                    </div>
+                    {/* Curated suggestions for this target — only those NOT
+                        already selected, dashed outline so they read as
+                        "available to add" rather than "currently in the
+                        run". Click adds via the same chip selection state. */}
+                    {(() => {
+                      const remaining = t.mutations.filter((m) => !all.includes(m.code));
+                      if (remaining.length === 0) return null;
+                      return (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-1">
+                            Curated for {t.id.toUpperCase()}:
+                          </span>
+                          {remaining.slice(0, 8).map((m) => (
+                            <button
+                              key={m.code}
+                              type="button"
+                              onClick={() => toggleMutation(tid, m.code)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono text-slate-600 dark:text-slate-400 border border-dashed border-slate-300 dark:border-slate-600 hover:border-delta-400 hover:text-delta-700 dark:hover:text-delta-300 transition-colors"
+                              title={m.significance}
+                            >
+                              + {m.code}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  <SummaryRow>
-                    <span>
-                      {all.length === 0
-                        ? `Will dock WT only.`
-                        : `Will dock WT + ${all.length} mutant${all.length === 1 ? "" : "s"}: `}
-                    </span>
-                    {all.length > 0 && (
-                      <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
-                    )}
-                  </SummaryRow>
                   {truncated && (
                     <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 rounded-md px-3 py-2">
                       <span className="font-semibold">Free-tier limit reached.</span>{" "}
@@ -964,50 +1019,72 @@ export default function NewJobPage() {
                     No curated chip library for custom structures. Type mutation codes by hand —
                     the runner verifies each residue exists in your PDB at the given chain+number.
                   </p>
-                  <div>
-                    <label className="label">Custom mutations (comma-separated)</label>
-                    <AutocompleteInput
-                      value={customStr}
-                      onChange={(v) => setCustomMutationsFor(CUSTOM_KEY, v)}
-                      mode="tokens"
-                      // No gene/uniprot filter — the user picks from any
-                      // gene's suggestions since we don't know what their PDB
-                      // encodes. Curated list only (UniProt/cBioPortal need an
-                      // identifier we don't have for arbitrary uploads).
-                      fetchSuggestions={async (q) => {
-                        const r = await api.suggestMutations(q, null);
-                        return r.suggestions;
-                      }}
-                      getValue={(item) => item.code}
-                      renderItem={(item) => (
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
-                          <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                          <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
-                        </div>
-                      )}
-                      emptyState={
-                        <span>
-                          No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
-                          the runner verifies the residue exists in your PDB at the given chain+number.
+                  <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40 px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono font-semibold dark:bg-slate-700 dark:text-slate-200"
+                        title="Wild-type runs as the comparison baseline for every job"
+                      >
+                        WT
+                        <span className="text-[9px] font-sans font-normal text-slate-500 dark:text-slate-400 uppercase tracking-wider">baseline</span>
+                      </span>
+                      {all.map((code) => (
+                        <span
+                          key={code}
+                          className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-delta-600 text-white text-xs font-mono font-semibold dark:bg-delta-500"
+                        >
+                          {code}
+                          <button
+                            type="button"
+                            onClick={() => removeAnyMutation(CUSTOM_KEY, code)}
+                            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/25 hover:bg-white/40 transition-colors"
+                            aria-label={`Remove ${code}`}
+                            title={`Remove ${code}`}
+                          >
+                            <Close size={10} />
+                          </button>
                         </span>
-                      }
-                      placeholder="e.g. T315I, L858R, T790M+C797S"
-                      inputClassName="input font-mono"
-                      openOnFocus
-                      minChars={0}
-                    />
+                      ))}
+                      {all.length === 0 && (
+                        <span className="text-xs text-slate-500 dark:text-slate-400 italic">
+                          No mutations yet — only wild-type will be docked
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                      <AutocompleteInput
+                        value={customStr}
+                        onChange={(v) => setCustomMutationsFor(CUSTOM_KEY, v)}
+                        mode="tokens"
+                        // No gene/uniprot filter — the user picks from any
+                        // gene's suggestions since we don't know what their PDB
+                        // encodes. Curated list only (UniProt/cBioPortal need an
+                        // identifier we don't have for arbitrary uploads).
+                        fetchSuggestions={async (q) => {
+                          const r = await api.suggestMutations(q, null);
+                          return r.suggestions;
+                        }}
+                        getValue={(item) => item.code}
+                        renderItem={(item) => (
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
+                            <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
+                            <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+                          </div>
+                        )}
+                        emptyState={
+                          <span>
+                            No autocomplete match. <span className="font-semibold">Type the code anyway</span> —
+                            the runner verifies the residue exists in your PDB at the given chain+number.
+                          </span>
+                        }
+                        placeholder="Start typing a code — e.g. T315I, L858R, T790M+C797S"
+                        inputClassName="input font-mono"
+                        openOnFocus
+                        minChars={0}
+                      />
+                    </div>
                   </div>
-                  <SummaryRow>
-                    <span>
-                      {all.length === 0
-                        ? `Will dock WT only.`
-                        : `Will dock WT + ${all.length} mutant${all.length === 1 ? "" : "s"}: `}
-                    </span>
-                    {all.length > 0 && (
-                      <span className="font-mono text-ink dark:text-slate-100">{all.join(", ")}</span>
-                    )}
-                  </SummaryRow>
                   {truncated && (
                     <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 rounded-md px-3 py-2">
                       <span className="font-semibold">Free-tier limit reached.</span>{" "}
@@ -1428,21 +1505,80 @@ export default function NewJobPage() {
         />
       )}
 
+      {/* Footer B — two-row run summary with the Run button as the hero. */}
       <div className="sticky bottom-4 z-10">
         <div className="card flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg ring-1 ring-slate-200 dark:ring-slate-700">
-          <div className="text-sm">
-            <div className="font-semibold text-ink dark:text-slate-100">
-              {totalDockings} docking{totalDockings === 1 ? "" : "s"} queued
+          <div className="text-sm leading-snug">
+            {/* Row 1 — target identity + engine, calmly muted. */}
+            <div className="text-slate-600 dark:text-slate-300">
+              {(() => {
+                const engineLabel =
+                  engine === "boltz2" ? "Boltz-2 (ML)"
+                  : engine === "gnina" ? "GNINA (CNN)"
+                  : "QuickVina2-GPU";
+                let targetText: React.ReactNode;
+                if (customMode) {
+                  targetText = (
+                    <>
+                      <span className="text-slate-400 dark:text-slate-500">Target&nbsp;</span>
+                      <span className="font-mono font-semibold text-ink dark:text-slate-100">
+                        {pdbId.trim().toUpperCase() || "— pick a PDB —"}
+                      </span>
+                      {pdbId.trim() && <> · custom upload</>}
+                    </>
+                  );
+                } else if (isMultiTarget) {
+                  targetText = (
+                    <>
+                      <span className="text-slate-400 dark:text-slate-500">Targets&nbsp;</span>
+                      <span className="font-semibold text-ink dark:text-slate-100">
+                        {targets.length} kinases
+                      </span>
+                    </>
+                  );
+                } else if (targets.length === 1) {
+                  targetText = (
+                    <>
+                      <span className="text-slate-400 dark:text-slate-500">Target&nbsp;</span>
+                      <span className="font-mono font-semibold text-ink dark:text-slate-100">
+                        {targets[0].id.toUpperCase()}
+                      </span>
+                      <> · {targets[0].name}</>
+                    </>
+                  );
+                } else {
+                  targetText = (
+                    <span className="text-slate-400 dark:text-slate-500 italic">
+                      Pick a target above
+                    </span>
+                  );
+                }
+                return (
+                  <>
+                    {targetText}
+                    <span className="text-slate-300 dark:text-slate-600 mx-2">·</span>
+                    <span className="text-slate-400 dark:text-slate-500">Engine&nbsp;</span>
+                    <span className="font-semibold text-ink dark:text-slate-100">
+                      {engineLabel}
+                    </span>
+                  </>
+                );
+              })()}
             </div>
-            <div className="text-slate-500 text-xs mt-0.5 dark:text-slate-400">
-              {compoundCount} compound{compoundCount === 1 ? "" : "s"} × {variantCount} variant{variantCount === 1 ? "" : "s"} · est. ~{estSeconds}s
+            {/* Row 2 — math + ETA. The numbers are the load-bearing line, so
+                they get the stronger weight; ETA is the soft footnote. */}
+            <div className="mt-0.5">
+              <span className="font-semibold text-ink dark:text-slate-100">
+                {compoundCount} compound{compoundCount === 1 ? "" : "s"} × {variantCount} variant{variantCount === 1 ? "" : "s"} = {totalDockings} cell{totalDockings === 1 ? "" : "s"}
+              </span>
+              <span className="text-slate-400 dark:text-slate-500"> · est. ~{estSeconds}s</span>
             </div>
           </div>
           <div className="flex flex-col items-end gap-2 w-full sm:w-auto">
             <button
               type="submit"
               data-tour="step-run"
-              className="btn-primary btn-lg w-full sm:w-auto"
+              className="btn-primary btn-lg w-full sm:w-auto text-base px-7 py-3"
               disabled={submit.isPending || submitting || compoundCount === 0 || (!isMultiTarget && !customMode && targets.length === 0)}
             >
               {(submit.isPending || submitting) ? (
@@ -1662,14 +1798,6 @@ function Step({
       </header>
       {children}
     </section>
-  );
-}
-
-function SummaryRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600 bg-slate-50 rounded-md px-3 py-2 border border-slate-200 dark:text-slate-300 dark:bg-slate-800/60 dark:border-slate-700">
-      {children}
-    </div>
   );
 }
 
