@@ -309,6 +309,21 @@ export interface UserCompound {
   updated_at: string;
 }
 
+/** One row in the admin /users list. Mirrors backend AdminUserRow. */
+export interface AdminUserRow {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  organization: string | null;
+  role: string | null;
+  created_at: string;
+  last_sign_in_at: string | null;
+  job_quota: number;
+  jobs_used: number;
+  jobs_total: number;
+  is_admin: boolean;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
 
@@ -399,6 +414,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ...payload, website: payload.website ?? "" }),
     }),
+
+  /** Admin-only: top-level dashboard counters. Cheap; safe to poll.
+   *  Throws ApiError(403) if the caller isn't the admin email — the
+   *  frontend AdminPage uses that to render a "not authorized" card. */
+  adminStats: () =>
+    request<{
+      total_users: number;
+      total_jobs: number;
+      jobs_24h: number;
+      jobs_7d: number;
+      jobs_running: number;
+      jobs_failed_7d: number;
+    }>("/admin/stats"),
+  /** Admin-only: list every user with profile + job stats. */
+  adminListUsers: () =>
+    request<AdminUserRow[]>("/admin/users"),
+  /** Admin-only: change a user's lifetime job quota. */
+  adminSetQuota: (userId: string, jobQuota: number) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ job_quota: jobQuota }),
+    }),
+  /** Admin-only: hard-delete a user and everything they own. */
+  adminDeleteUser: async (userId: string): Promise<void> => {
+    const r = await fetch(`${BASE}/admin/users/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+      headers: { ...(await authHeader()) },
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      throw new ApiError(r.status, body || `DELETE failed (${r.status})`);
+    }
+  },
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves

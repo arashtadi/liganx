@@ -217,6 +217,40 @@ def create_job(
     # USR_ tokens since the lookup-router stores files with lowercase hex —
     # any extra .upper() breaks the runner's file lookup.
 
+    # ── Per-user lifetime job quota ─────────────────────────────────────
+    # Each user starts with a default quota of 10 (column DEFAULT in
+    # migration 007); admin can raise it per user via PATCH /admin/users/{id}.
+    # We count pending+running+completed jobs against the quota.
+    # Failed/cancelled don't count — the user shouldn't be penalized for
+    # a Pod failure or a fat-finger cancel. Quota of 0 = effectively
+    # banned from new submissions but existing jobs continue.
+    quota_row = session.execute(
+        text(
+            "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            " (SELECT COUNT(*) FROM job j"
+            "  WHERE j.user_id = :uid AND j.status IN ('pending','running','completed')"
+            " ) AS used"
+            " FROM (SELECT 1) _"
+            " LEFT JOIN public.user_profile p ON p.user_id = :uid"
+        ),
+        {"uid": user.id},
+    ).mappings().first()
+    quota = int(quota_row["quota"]) if quota_row else 10
+    used = int(quota_row["used"]) if quota_row else 0
+    if used >= quota:
+        # 402 Payment Required is the closest semantic match in HTTP for
+        # "you've used your free allocation". The frontend special-cases
+        # 402 to render a friendlier "you've used your N free dockings —
+        # contact us if you'd like more" rather than a generic error.
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"You've used all {quota} of your free dockings. "
+                "Get in touch via the Contact page if you'd like more."
+            ),
+            headers={"X-Quota-Used": str(used), "X-Quota-Limit": str(quota)},
+        )
+
     # Eager SMILES validation. Three checks per compound — each catches a
     # different failure mode that would otherwise cost the user GPU time:
     #   1. Parse: SMILES has to round-trip RDKit (the pipeline's resilient

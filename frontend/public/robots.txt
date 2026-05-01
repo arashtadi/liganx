@@ -21,6 +21,8 @@ Disallow: /history
 Disallow: /settings
 Disallow: /compounds
 Disallow: /welcome
+Disallow: /admin
+Disallow: /Admin
 Disallow: /new
 Disallow: /suite
 Disallow: /jobs/

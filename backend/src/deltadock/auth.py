@@ -218,3 +218,44 @@ def verified_user(user: Annotated[CurrentUser, Depends(current_user)]) -> Curren
                    "/account to resend it.",
         )
     return user
+
+
+# ── Admin gate ────────────────────────────────────────────────────────────
+#
+# Admin endpoints (/admin/*) are gated behind a single email allowlist
+# pulled from the ADMIN_EMAIL env var. We do NOT use a database "is_admin"
+# flag because:
+#   - There's only one admin in practice (Arash). Adding a column for a
+#     constant of 1 is overkill.
+#   - The env var is set via Fly secrets, so an attacker would need to
+#     compromise our Fly account to grant themselves admin — which is
+#     strictly stronger than any DB-flag scheme that could be flipped via
+#     a misconfigured INSERT.
+#   - Multi-admin support can be added later by switching to a comma-
+#     separated env var (ADMIN_EMAILS) without breaking single-admin
+#     deployments.
+#
+# The check is case-insensitive because Supabase normalizes email casing
+# inconsistently between OAuth and password flows.
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+
+
+def admin_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
+    """Auth + admin email gate. Apply to /admin/* endpoints. Returns 403
+    (not 401) for authenticated-but-not-admin users so we can distinguish
+    \"sign in needed\" from \"signed in but no permission\" in the UI."""
+    if not ADMIN_EMAIL:
+        # Misconfigured server (env var not set). Fail closed so we never
+        # accidentally expose admin endpoints in dev.
+        log.error("ADMIN_EMAIL env var not set — refusing all admin access")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin access is not configured on this server.",
+        )
+    if user.email.strip().lower() != ADMIN_EMAIL:
+        # Don't leak who the admin is; just say "not authorized".
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required.",
+        )
+    return user

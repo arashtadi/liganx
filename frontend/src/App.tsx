@@ -18,6 +18,13 @@ import CompleteProfilePage from "./pages/CompleteProfilePage";
 import CompoundsPage from "./pages/CompoundsPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
 import ContactPage from "./pages/ContactPage";
+import AdminPage from "./pages/AdminPage";
+
+// Admin email — must match the ADMIN_EMAIL env var on the backend
+// (Fly secret). Used only to show/hide the user-menu entry; the real
+// authority is the backend's admin_user dependency. If you rotate the
+// admin, update both this constant and the Fly secret in lockstep.
+const ADMIN_EMAIL = "arashtadi@gmail.com";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -49,6 +56,11 @@ export default function App() {
             <Route path="/validation" element={<ValidationPage />} />
             <Route path="/mutation-docking-guide" element={<MutationDockingGuidePage />} />
             <Route path="/contact" element={<ContactPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+            {/* Capital-A alias so /Admin (which is what user typed) works
+                too. Without this React Router would 404 because routes
+                are case-sensitive. */}
+            <Route path="/Admin" element={<Navigate to="/admin" replace />} />
             {/* Catch-all 404 — used to leak through as a blank page */}
             <Route path="*" element={<NotFound />} />
           </Routes>
@@ -214,6 +226,7 @@ function Header() {
             <UserMenu
               email={user.email || "account"}
               avatarUrl={(user.user_metadata?.avatar_url as string | undefined) || ""}
+              isAdmin={(user.email || "").toLowerCase() === ADMIN_EMAIL}
               onSignOut={signOut}
             />
           ) : (
@@ -243,7 +256,7 @@ function Header() {
   );
 }
 
-function UserMenu({ email, avatarUrl, onSignOut }: { email: string; avatarUrl: string; onSignOut: () => Promise<void> }) {
+function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; avatarUrl: string; isAdmin: boolean; onSignOut: () => Promise<void> }) {
   // Lightweight popover — no portal, just absolute-positioned card. Click-
   // outside dismisses via a document-level mousedown listener (same pattern
   // as AutocompleteInput). Avatar shows the user's uploaded picture
@@ -324,6 +337,16 @@ function UserMenu({ email, avatarUrl, onSignOut }: { email: string; avatarUrl: s
               there only avoids two parallel UI entry points that can
               drift apart. Users reach it via Settings → "Doc Flask
               tour" instead. */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => { setOpen(false); navigate("/admin"); }}
+              className="w-full text-left px-3 py-2 text-sm font-semibold text-delta-700 hover:bg-delta-50 dark:text-delta-300 dark:hover:bg-delta-900/30 border-t border-slate-100 dark:border-slate-700"
+              role="menuitem"
+            >
+              Admin
+            </button>
+          )}
           <button
             type="button"
             onClick={async () => { setOpen(false); await onSignOut(); navigate("/"); }}
