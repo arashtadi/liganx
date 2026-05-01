@@ -119,6 +119,13 @@ export default function MutationOverlayViewer(props: Props) {
   const [showH, setShowH] = useState(false);
   const [spinning, setSpinning] = useState(false);
   const [surfaceColor, setSurfaceColor] = useState<SurfaceColor>("plain");
+  // Contact-residue side-chain sticks. ProLIF gives us a list of residues
+  // the ligand touches — we render each as a coloured stick so the user
+  // can see WHAT the ligand is binding to. Defaults ON (most users want
+  // the context). Toggle OFF to declutter the view down to just the
+  // ligand + backbone — useful when there are 10+ contacts and the
+  // sticks crowd the pose.
+  const [showContacts, setShowContacts] = useState(true);
   const [blend, setBlend] = useState(
     props.initialBlend ?? (props.mutantPdb ? 0.5 : 0)
   );
@@ -146,6 +153,7 @@ export default function MutationOverlayViewer(props: Props) {
     backboneStyle, setBackboneStyle,
     poseStyle, setPoseStyle,
     showH, setShowH,
+    showContacts, setShowContacts,
     spinning, setSpinning,
     surfaceColor, setSurfaceColor,
     blend, setBlend,
@@ -295,6 +303,8 @@ function ViewerCanvas({
   setPoseStyle,
   showH,
   setShowH,
+  showContacts,
+  setShowContacts,
   spinning,
   setSpinning,
   surfaceColor,
@@ -313,6 +323,8 @@ function ViewerCanvas({
   setPoseStyle: (s: PoseStyle) => void;
   showH: boolean;
   setShowH: (b: boolean) => void;
+  showContacts: boolean;
+  setShowContacts: (b: boolean) => void;
   spinning: boolean;
   setSpinning: (b: boolean) => void;
   surfaceColor: SurfaceColor;
@@ -521,8 +533,11 @@ function ViewerCanvas({
       setSurfaceComputing(false);
     }
 
-    // Step 3: contact residues coloured by interaction type, on model 0
-    if (contacts && contacts.length) {
+    // Step 3: contact residues coloured by interaction type, on model 0.
+    // Gated by the showContacts toolbar toggle so users can declutter
+    // the view when ProLIF returns 10+ contacts and the side-chain
+    // sticks crowd the pose. Default ON.
+    if (showContacts && contacts && contacts.length) {
       const byResidue = new Map<number, string[]>();
       for (const c of contacts) {
         const n = parseResidueNumber(c.residue);
@@ -835,7 +850,7 @@ function ViewerCanvas({
       console.warn("style re-apply failed:", e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blend, backboneStyle, poseStyle, showH, surfaceColor]);
+  }, [blend, backboneStyle, poseStyle, showH, showContacts, surfaceColor]);
 
   // Spin animation — toggled independently of style state so we can start/stop
   // without re-applying everything.
@@ -1229,6 +1244,9 @@ function ViewerCanvas({
           setPoseStyle={setPoseStyle}
           showH={showH}
           setShowH={setShowH}
+          showContacts={showContacts}
+          setShowContacts={setShowContacts}
+          hasContacts={!!contacts && contacts.length > 0}
           spinning={spinning}
           setSpinning={setSpinning}
           surfaceColor={surfaceColor}
@@ -1253,6 +1271,13 @@ interface ControlToolbarProps {
   setPoseStyle: (s: PoseStyle) => void;
   showH: boolean;
   setShowH: (b: boolean) => void;
+  /** Per-contact-residue side-chain stick visibility. Toggleable so
+   *  users can declutter when ProLIF returns 10+ contacts. */
+  showContacts: boolean;
+  setShowContacts: (b: boolean) => void;
+  /** Hide the Contacts toggle entirely when there are no contacts to
+   *  toggle (e.g. cell still validating, or ProLIF returned empty). */
+  hasContacts: boolean;
   spinning: boolean;
   setSpinning: (b: boolean) => void;
   surfaceColor: SurfaceColor;
@@ -1293,6 +1318,21 @@ function ControlToolbar(p: ControlToolbarProps) {
 
       {/* Toggles + actions */}
       <div className="flex items-center gap-1">
+        {/* Contacts toggle — only shown when there are contacts to toggle.
+            Hides/shows the per-residue side-chain sticks ProLIF detected,
+            so users can declutter the binding-site view down to just the
+            ligand + backbone when there are too many contacts. */}
+        {p.hasContacts && (
+          <ToggleButton
+            active={p.showContacts}
+            onClick={() => p.setShowContacts(!p.showContacts)}
+            title={p.showContacts
+              ? "Hide contact side chains (declutter the view)"
+              : "Show contact side chains (residues touching the ligand)"}
+          >
+            <span className="text-[10px] font-semibold tracking-tight">Contacts</span>
+          </ToggleButton>
+        )}
         <ToggleButton active={p.showH} onClick={() => p.setShowH(!p.showH)} title={p.showH ? "Hide hydrogens" : "Show hydrogens"}>
           <span className="font-mono text-[10px]">H</span>
         </ToggleButton>
