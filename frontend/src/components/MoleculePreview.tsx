@@ -82,21 +82,30 @@ export default function MoleculePreview({
 
   if (!data.valid) {
     return (
-      <div className="space-y-1" style={{ maxWidth: width }}>
+      <div className="space-y-2" style={{ maxWidth: width }}>
+        {/* Invalid card — softer than the previous flat slab. Uses an
+            alert-triangle (more inviting than an X-circle, which reads
+            as "blocked") inside a rose tile with a light gradient + a
+            ring so it pops against the row's own rose glow.
+            Aria-live so screen readers announce the change without
+            shouting "ERROR" — "Invalid SMILES" is enough. */}
         <div
-          className="rounded-md border border-rose-300 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/20 flex flex-col items-center justify-center text-rose-700 dark:text-rose-300 px-2 py-1.5"
+          role="status"
+          aria-live="polite"
+          className="rounded-lg overflow-hidden border border-rose-300 dark:border-rose-700/50 bg-gradient-to-br from-rose-50 to-rose-100 dark:from-rose-900/30 dark:to-rose-900/10 flex flex-col items-center justify-center text-rose-700 dark:text-rose-200 px-2 py-2 ring-1 ring-rose-200/60 dark:ring-rose-800/40"
           style={{ width, height }}
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10" />
-            <path d="m15 9-6 6M9 9l6 6" />
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+            <path d="M12 9v4" />
+            <path d="M12 17h.01" />
           </svg>
-          <span className="text-[10px] font-semibold mt-0.5 text-center leading-tight">
+          <span className="text-[11px] font-semibold mt-1 text-center leading-tight">
             Invalid SMILES
           </span>
         </div>
         <div
-          className="text-[10px] text-rose-700 dark:text-rose-400 leading-snug"
+          className="text-[10.5px] text-rose-800 dark:text-rose-200 leading-snug"
           title={data.error ?? undefined}
         >
           {data.error ?? "RDKit could not parse this SMILES."}
@@ -105,9 +114,13 @@ export default function MoleculePreview({
           <button
             type="button"
             onClick={onOpenInSketcher}
-            className="text-[10px] font-semibold text-delta-700 hover:underline dark:text-delta-300"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-delta-600 hover:bg-delta-700 text-white transition-colors"
           >
-            Open in sketcher to fix →
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+            Fix in sketcher
           </button>
         )}
       </div>
@@ -210,4 +223,29 @@ function useDebouncedValue<T>(value: T, delay: number): T {
     };
   }, [value, delay]);
   return debounced;
+}
+
+/** Validity verdict for a SMILES, derived from the same /lookup/inspect-smiles
+ *  query the inline MoleculePreview uses. The cache key matches MoleculePreview's
+ *  default (140×88) so this hook hits the same cache entry — no extra requests.
+ *
+ *  Use this in the parent compound row to drive row-level styling (rose glow
+ *  for invalid, amber tint for fragments, brand-blue for valid). The actual
+ *  thumbnail rendering still lives in MoleculePreview. */
+export type SmilesValidity = "empty" | "loading" | "valid" | "invalid" | "fragments";
+
+export function useSmilesValidity(smiles: string): SmilesValidity {
+  const debounced = useDebouncedValue(smiles.trim(), 400);
+  const { data, isFetching } = useQuery({
+    queryKey: ["inspect-smiles", debounced, 140, 88],
+    queryFn: () => api.inspectSmiles({ smiles: debounced, width: 140, height: 88 }),
+    enabled: debounced.length > 0,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+  if (!debounced) return "empty";
+  if (!data) return isFetching ? "loading" : "loading";
+  if (!data.valid) return "invalid";
+  if (data.fragment_count > 1) return "fragments";
+  return "valid";
 }

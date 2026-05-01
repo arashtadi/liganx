@@ -5,7 +5,7 @@ import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIs
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
 import KetcherModal from "../components/KetcherModal";
-import MoleculePreview from "../components/MoleculePreview";
+import MoleculePreview, { useSmilesValidity, type SmilesValidity } from "../components/MoleculePreview";
 import RenamePrompt from "../components/RenamePrompt";
 
 interface CompoundRow {
@@ -1510,106 +1510,16 @@ export default function NewJobPage() {
         )}
 
         <div className="space-y-3">
-          {compounds.map((c, i) => {
-            // A row is "queued for docking" once it has a non-empty SMILES.
-            // Empty rows look muted (just a placeholder) so the user can
-            // see at a glance which rows will actually be docked.
-            // The brand-blue (delta) accent + soft tint mirror the
-            // selected target tile in Step 1 — same visual language for
-            // "this thing is part of the run".
-            const queued = c.smiles.trim().length > 0;
-            return (
-              <div
-                key={i}
-                className={
-                  "relative rounded-lg overflow-hidden transition-colors " +
-                  (queued
-                    ? "border-2 border-delta-300 bg-delta-50/40 dark:border-delta-700/50 dark:bg-delta-900/15"
-                    : "border-2 border-dashed border-slate-200 bg-slate-50/30 dark:border-slate-700 dark:bg-slate-800/20")
-                }
-              >
-                {/* Left-edge accent bar — the visual signal that mirrors
-                    the multi-target mutation cards in Step 2. Only shows
-                    when the row is queued. */}
-                {queued && (
-                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-delta-500 dark:bg-delta-400" />
-                )}
-                <div className="p-3 flex flex-wrap gap-2 items-start">
-                  {/* Tiny "will be docked" pill so the role of the row is
-                      named in words, not just shown via color. Helps
-                      colorblind users. */}
-                  <div className="basis-full flex items-center justify-between gap-2 mb-1">
-                    <span
-                      className={
-                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
-                        (queued
-                          ? "bg-delta-600 text-white dark:bg-delta-500"
-                          : "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400")
-                      }
-                    >
-                      {queued ? (
-                        <>
-                          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-white/90" />
-                          Compound {i + 1} · will be docked
-                        </>
-                      ) : (
-                        <>Compound {i + 1} · empty</>
-                      )}
-                    </span>
-                  </div>
-
-                  {/* Inline 2D molecule preview — debounced 400ms, calls
-                      /lookup/inspect-smiles. Catches broken SMILES at
-                      type time so users see "this isn't what I drew"
-                      before clicking Run docking. */}
-                  <div className="shrink-0">
-                    <MoleculePreview
-                      smiles={c.smiles}
-                      width={140}
-                      height={88}
-                      onUseLargestFragment={(largest) => setCompound(i, { smiles: largest })}
-                      onOpenInSketcher={() => setSketcherRow(i)}
-                    />
-                  </div>
-                  <div className="flex-1 min-w-[280px] grid grid-cols-12 gap-2">
-                    <div className="col-span-12 sm:col-span-4">
-                      <input
-                        className="input"
-                        placeholder="Name (saves to your library)"
-                        value={c.name}
-                        onChange={(e) => setCompound(i, { name: e.target.value })}
-                      />
-                    </div>
-                    <div className="col-span-9 sm:col-span-5">
-                      <input
-                        className="input-mono"
-                        placeholder="SMILES"
-                        value={c.smiles}
-                        onChange={(e) => setCompound(i, { smiles: e.target.value })}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSketcherRow(i)}
-                      className="col-span-2 h-9 px-2 text-xs font-semibold text-delta-700 hover:text-white hover:bg-delta-600 ring-1 ring-delta-200 hover:ring-delta-600 bg-delta-50 flex items-center justify-center gap-1.5 rounded-md transition-colors dark:text-delta-300 dark:bg-delta-900/30 dark:ring-delta-700/40 dark:hover:bg-delta-600 dark:hover:text-white"
-                      title={c.smiles ? "Open the structure in the 2D sketcher to edit it" : "Draw a molecule with the 2D sketcher"}
-                    >
-                      <SketchIcon size={14} />
-                      <span>{c.smiles ? "Edit" : "Sketch"}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeCompound(i)}
-                      className="col-span-1 h-9 text-slate-400 hover:text-loss-600 flex items-center justify-center rounded-md hover:bg-loss-50 dark:text-slate-500 dark:hover:text-loss-400 dark:hover:bg-loss-900/30 transition-colors"
-                      aria-label="Remove"
-                    >
-                      <Close size={16} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {compounds.map((c, i) => (
+            <CompoundRowEditor
+              key={i}
+              index={i}
+              compound={c}
+              onChange={(patch) => setCompound(i, patch)}
+              onOpenSketcher={() => setSketcherRow(i)}
+              onRemove={() => removeCompound(i)}
+            />
+          ))}
         </div>
         <div className="flex items-center gap-3 mt-3">
           <button
@@ -1966,6 +1876,149 @@ export default function NewJobPage() {
       />
     )}
     </>
+  );
+}
+
+/** A single compound row in Step 3 — name + SMILES + Sketch + Remove,
+ *  with a 2D thumbnail to the left. Wraps the row in a colored card whose
+ *  state mirrors the SMILES validity:
+ *
+ *    valid     → brand-blue "will be docked" tile (matches selected
+ *                target tile in Step 1).
+ *    fragments → amber tile + "multiple fragments" pill (the
+ *                MoleculePreview shows the Keep-largest button).
+ *    invalid   → rose tile with a soft glow + "invalid SMILES" pill;
+ *                the MoleculePreview shows a Fix-in-sketcher button.
+ *    empty     → dashed slate tile with an "empty" pill.
+ *
+ *  Lifted into its own component so each row can call useSmilesValidity
+ *  on its own SMILES without violating the rules of hooks. */
+function CompoundRowEditor({
+  index,
+  compound,
+  onChange,
+  onOpenSketcher,
+  onRemove,
+}: {
+  index: number;
+  compound: CompoundRow;
+  onChange: (patch: Partial<CompoundRow>) => void;
+  onOpenSketcher: () => void;
+  onRemove: () => void;
+}) {
+  const validity: SmilesValidity = useSmilesValidity(compound.smiles);
+  // Style buckets keyed off validity. We pick the visual treatment in
+  // one place rather than threading the state through three different
+  // className strings.
+  const tone = (() => {
+    switch (validity) {
+      case "valid":
+        return {
+          card: "border-2 border-delta-300 bg-delta-50/40 dark:border-delta-700/50 dark:bg-delta-900/15",
+          accent: "bg-delta-500 dark:bg-delta-400",
+          pill: "bg-delta-600 text-white dark:bg-delta-500",
+          dot: "bg-white/90",
+          label: `Compound ${index + 1} · will be docked`,
+        };
+      case "fragments":
+        return {
+          card: "border-2 border-amber-300 bg-amber-50/40 dark:border-amber-700/50 dark:bg-amber-900/15",
+          accent: "bg-amber-500 dark:bg-amber-400",
+          pill: "bg-amber-600 text-white dark:bg-amber-500",
+          dot: "bg-white/90",
+          label: `Compound ${index + 1} · multiple fragments`,
+        };
+      case "invalid":
+        return {
+          // Soft glow via box-shadow so it draws the eye without the
+          // jumpy feel of an animated pulse. ring + shadow stack reads
+          // as "this needs your attention" without screaming.
+          card: "border-2 border-rose-400 bg-rose-50/60 dark:border-rose-700/60 dark:bg-rose-900/20 ring-2 ring-rose-300/50 dark:ring-rose-700/40 shadow-[0_0_20px_rgba(244,63,94,0.18)] dark:shadow-[0_0_24px_rgba(244,63,94,0.22)]",
+          accent: "bg-rose-500 dark:bg-rose-400",
+          pill: "bg-rose-600 text-white dark:bg-rose-500",
+          dot: "bg-white/90",
+          label: `Compound ${index + 1} · invalid SMILES — fix to dock`,
+        };
+      case "loading":
+        return {
+          card: "border-2 border-slate-200 bg-slate-50/30 dark:border-slate-700 dark:bg-slate-800/20",
+          accent: "bg-slate-300 dark:bg-slate-600",
+          pill: "bg-slate-300 text-slate-700 dark:bg-slate-700 dark:text-slate-300",
+          dot: "bg-slate-500/70",
+          label: `Compound ${index + 1} · checking…`,
+        };
+      case "empty":
+      default:
+        return {
+          card: "border-2 border-dashed border-slate-200 bg-slate-50/30 dark:border-slate-700 dark:bg-slate-800/20",
+          accent: "",
+          pill: "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400",
+          dot: "",
+          label: `Compound ${index + 1} · empty`,
+        };
+    }
+  })();
+
+  const showAccent = validity !== "empty";
+  return (
+    <div className={"relative rounded-lg overflow-hidden transition-colors " + tone.card}>
+      {showAccent && (
+        <div className={"absolute left-0 top-0 bottom-0 w-1 " + tone.accent} />
+      )}
+      <div className="p-3 flex flex-wrap gap-2 items-start">
+        <div className="basis-full flex items-center justify-between gap-2 mb-1">
+          <span className={"inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " + tone.pill}>
+            {tone.dot && <span aria-hidden="true" className={"w-1.5 h-1.5 rounded-full " + tone.dot} />}
+            {tone.label}
+          </span>
+        </div>
+
+        <div className="shrink-0">
+          <MoleculePreview
+            smiles={compound.smiles}
+            width={140}
+            height={88}
+            onUseLargestFragment={(largest) => onChange({ smiles: largest })}
+            onOpenInSketcher={onOpenSketcher}
+          />
+        </div>
+        <div className="flex-1 min-w-[280px] grid grid-cols-12 gap-2">
+          <div className="col-span-12 sm:col-span-4">
+            <input
+              className="input"
+              placeholder="Name (saves to your library)"
+              value={compound.name}
+              onChange={(e) => onChange({ name: e.target.value })}
+            />
+          </div>
+          <div className="col-span-9 sm:col-span-5">
+            <input
+              className="input-mono"
+              placeholder="SMILES"
+              value={compound.smiles}
+              onChange={(e) => onChange({ smiles: e.target.value })}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onOpenSketcher}
+            className="col-span-2 h-9 px-2 text-xs font-semibold text-delta-700 hover:text-white hover:bg-delta-600 ring-1 ring-delta-200 hover:ring-delta-600 bg-delta-50 flex items-center justify-center gap-1.5 rounded-md transition-colors dark:text-delta-300 dark:bg-delta-900/30 dark:ring-delta-700/40 dark:hover:bg-delta-600 dark:hover:text-white"
+            title={compound.smiles ? "Open the structure in the 2D sketcher to edit it" : "Draw a molecule with the 2D sketcher"}
+          >
+            <SketchIcon size={14} />
+            <span>{compound.smiles ? "Edit" : "Sketch"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="col-span-1 h-9 text-slate-400 hover:text-loss-600 flex items-center justify-center rounded-md hover:bg-loss-50 dark:text-slate-500 dark:hover:text-loss-400 dark:hover:bg-loss-900/30 transition-colors"
+            aria-label="Remove"
+          >
+            <Close size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
