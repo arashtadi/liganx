@@ -26,6 +26,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight } from "../components/Icons";
+import { usePageMeta } from "../lib/usePageMeta";
 
 type Verdict = "PASS" | "FAIL" | "NOISE" | "SKIP";
 
@@ -56,6 +57,16 @@ type ValidationData = {
 };
 
 export default function ValidationPage() {
+  // SEO: this is the highest-trust marketing surface — sceptics googling
+  // "is liganx accurate" or "molecular docking benchmark" should land
+  // here. Description name-checks our highest-impact wins (BRAF V600E,
+  // Imatinib resistance) so the snippet pre-qualifies the click.
+  usePageMeta({
+    title: "Scientific validation — 8 literature-anchored docking benchmarks · Liganx",
+    description:
+      "Eight published kinase-mutation cases (Imatinib·ABL T315I, Vemurafenib·BRAF V600E, Gefitinib·EGFR T790M, more) re-run live through Liganx with verdicts. Verify our docking accuracy.",
+  });
+
   const [data, setData] = useState<ValidationData | null>(null);
   const [error, setError] = useState<string | null>(null);
 

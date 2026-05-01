@@ -7,6 +7,7 @@ import AutocompleteInput from "../components/AutocompleteInput";
 import KetcherModal from "../components/KetcherModal";
 import MoleculePreview, { useSmilesValidity, type SmilesValidity } from "../components/MoleculePreview";
 import RenamePrompt from "../components/RenamePrompt";
+import { usePageMeta } from "../lib/usePageMeta";
 
 interface CompoundRow {
   name: string;
@@ -39,6 +40,12 @@ function SketchIcon({ size = 16 }: { size?: number }) {
 }
 
 export default function NewJobPage() {
+  // App page (noindex via robots.txt) but the tab title still benefits
+  // from being descriptive when users have multiple Liganx tabs open.
+  usePageMeta({
+    title: "New docking job · Liganx",
+    description: "Set up a new mutation-aware molecular docking run on Liganx.",
+  });
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();

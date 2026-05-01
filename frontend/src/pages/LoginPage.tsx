@@ -18,8 +18,15 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { Spinner } from "../components/Icons";
 import GoogleSignInButton from "../components/GoogleSignInButton";
+import { usePageMeta } from "../lib/usePageMeta";
 
 export default function LoginPage() {
+  // Auth pages are noindex via robots.txt, but a clear tab title still
+  // helps when a user has multiple Liganx tabs open.
+  usePageMeta({
+    title: "Sign in · Liganx",
+    description: "Sign in to Liganx — free mutation-aware molecular docking with Vina, GNINA, and Boltz-2.",
+  });
   const { signInWithPassword, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [search] = useSearchParams();

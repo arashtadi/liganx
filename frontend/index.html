@@ -8,24 +8,126 @@
          don't render SVG favicons reliably. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Liganx — mutation-aware structural biology. Compare wild-type vs. mutant binding for any protein, any compound." />
-    <title>Liganx — Mutation-aware structural biology</title>
+    <!-- SEO: keyword-rich description hits both the "free molecular docking"
+         and "mutation-aware" intent buckets, plus name-checks the engines
+         (Vina/GNINA/Boltz-2) so queries like "Boltz-2 web interface" or
+         "GNINA online" can match. Stays under 160 chars for SERP display. -->
+    <meta name="description" content="Free online molecular docking with AutoDock Vina, GNINA, and Boltz-2 ML. Mutation-aware: compare wild-type vs. mutant kinase binding in one run. No install." />
+    <meta name="keywords" content="molecular docking, free molecular docking online, mutation-aware docking, AutoDock Vina online, GNINA online, Boltz-2 web interface, EGFR T790M docking, kinase mutation docking, drug resistance mutations, structure-based drug design, virtual screening, protein-ligand docking, SMILES docking, PDB docking" />
+    <!-- Canonical link prevents duplicate-content penalties when liganx.com
+         is reachable via subpath / trailing-slash variants. -->
+    <link rel="canonical" href="https://liganx.com/" />
+    <title>Liganx — Free molecular docking online · Vina + GNINA + Boltz-2 · Mutation-aware</title>
 
     <!-- Social card metadata. The og-image.png in public/ is 1200x630 (LinkedIn /
          Slack / Twitter spec) so a shared liganx.com link unfurls with the
          brand mark + tagline instead of a blank preview. og: namespace covers
          Facebook / LinkedIn / Slack; the four twitter:* tags cover Twitter/X. -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Liganx" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:url" content="https://liganx.com/" />
-    <meta property="og:title" content="Liganx — Mutation-aware molecular docking" />
-    <meta property="og:description" content="Pick a clinically relevant mutation. Pick your compounds. We dock against wild-type and mutant in parallel and show exactly which compounds gain selectivity." />
+    <meta property="og:title" content="Liganx — Free mutation-aware molecular docking · Vina + GNINA + Boltz-2" />
+    <meta property="og:description" content="Pick a clinically relevant mutation. Pick your compounds. We dock against wild-type and mutant in parallel with three engines and show exactly which compounds gain selectivity." />
     <meta property="og:image" content="https://liganx.com/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Liganx — wild-type vs mutant docking matrix with Vina, GNINA, and Boltz-2 scores side by side." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Liganx — Mutation-aware molecular docking" />
-    <meta name="twitter:description" content="WT vs mutant in one matrix. Vina + GNINA. Free for academic use." />
+    <meta name="twitter:title" content="Liganx — Free mutation-aware molecular docking" />
+    <meta name="twitter:description" content="WT vs mutant in one matrix. Vina + GNINA + Boltz-2 ML. Free for academic use. No install." />
     <meta name="twitter:image" content="https://liganx.com/og-image.png" />
+    <meta name="twitter:image:alt" content="Liganx wild-type vs mutant docking matrix preview" />
+
+    <!-- Robots hint: allow indexing & link-following for the marketing pages.
+         Per-route blocks live in robots.txt; this is the global default. -->
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1" />
+    <meta name="author" content="Liganx" />
+    <meta name="theme-color" content="#0f766e" />
+
+    <!-- Structured data: SoftwareApplication schema lets Google render a
+         richer SERP card (price, rating-eligible, screenshot, feature list).
+         featureList items map directly to head-query keywords from our
+         keyword research; audience targets the "researcher" persona that
+         Google Scholar / Knowledge Graph cross-link to. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Liganx",
+      "alternateName": "Liganx Docking",
+      "url": "https://liganx.com/",
+      "description": "Free online molecular docking platform. Run AutoDock Vina, GNINA, and Boltz-2 ML co-folding against wild-type and mutant proteins side by side. Curated catalog of clinically relevant kinase mutations (EGFR T790M, BCR-ABL T315I, BRAF V600E, KRAS G12C, and more) with one-click virtual screening, live SMILES validation, and a personal compound library. No install, runs in the browser.",
+      "applicationCategory": "ScienceApplication",
+      "applicationSubCategory": "Molecular Docking",
+      "operatingSystem": "Any (web browser)",
+      "browserRequirements": "Requires JavaScript. Tested on Chrome, Safari, Firefox, Edge.",
+      "softwareVersion": "2026.05",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "availability": "https://schema.org/InStock",
+        "category": "Free for academic use"
+      },
+      "creator": {
+        "@type": "Organization",
+        "name": "Liganx",
+        "url": "https://liganx.com/"
+      },
+      "featureList": [
+        "Mutation-aware docking — wild-type vs. mutant in a single run",
+        "AutoDock Vina (QuickVina2-GPU) physics-based scoring",
+        "GNINA convolutional neural network rescoring",
+        "Boltz-2 ML co-folding with affinity prediction",
+        "Curated catalog of 13 oncology kinase targets and 40 clinically actionable mutations",
+        "Live SMILES validation with inline 2D structure preview",
+        "EPAM Ketcher 2D sketcher for drawing custom compounds",
+        "Personal compound library with tags and instant re-run",
+        "PoseBusters geometric validation and ProLIF interaction fingerprints",
+        "Job sharing via permalink — no account required to view results"
+      ],
+      "audience": {
+        "@type": "Audience",
+        "audienceType": "Computational chemists, structural biologists, medicinal chemistry researchers, oncology drug-discovery scientists, students"
+      },
+      "potentialAction": {
+        "@type": "UseAction",
+        "target": "https://liganx.com/new",
+        "name": "Start a docking job"
+      },
+      "screenshot": "https://liganx.com/og-image.png",
+      "isAccessibleForFree": true
+    }
+    </script>
+
+    <!-- Organization schema: helps Google build a Knowledge Panel and tie
+         brand mentions back to liganx.com. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Liganx",
+      "url": "https://liganx.com/",
+      "logo": "https://liganx.com/apple-touch-icon.png",
+      "sameAs": []
+    }
+    </script>
+
+    <!-- WebSite schema: enables the SERP sitelinks search box. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Liganx",
+      "url": "https://liganx.com/",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://liganx.com/library?q={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
     <!-- Inline theme bootstrap: runs before React mounts so the .dark class
          is set on <html> before first paint. Prevents flash-of-wrong-theme
          when user has dark mode saved.

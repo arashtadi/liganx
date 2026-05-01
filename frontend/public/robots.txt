@@ -1,0 +1,30 @@
+# robots.txt for liganx.com
+#
+# Allows crawlers on the marketing surface (homepage, library, validation,
+# privacy, terms) and explicitly disallows the user-specific app surfaces
+# (history, settings, jobs, compounds, welcome) and auth flows. Those
+# pages either require auth or are user-generated content that has no
+# SEO value (they're behind RequireAuth in App.tsx).
+#
+# Pointer to the sitemap at the bottom — Google Search Console picks this
+# up automatically when fetching robots.txt.
+
+User-agent: *
+Allow: /
+Allow: /library
+Allow: /validation
+Allow: /privacy
+Allow: /terms
+Disallow: /history
+Disallow: /settings
+Disallow: /compounds
+Disallow: /welcome
+Disallow: /new
+Disallow: /suite
+Disallow: /jobs/
+Disallow: /login
+Disallow: /signup
+Disallow: /verify-email
+Disallow: /forgot-password
+
+Sitemap: https://liganx.com/sitemap.xml

@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { usePageMeta } from "../lib/usePageMeta";
 
 /**
  * Terms of Service — sets expectations for what Liganx is, what it isn't,
@@ -8,6 +9,10 @@ import { Link } from "react-router-dom";
  * than they should without this disclaimer.
  */
 export default function TermsPage() {
+  usePageMeta({
+    title: "Terms of Service · Liganx",
+    description: "Terms of service for Liganx — research-preview free molecular docking. What we offer, what we don't promise, and how docking scores should be interpreted.",
+  });
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-10 prose prose-slate dark:prose-invert">
       <h1 className="text-3xl font-bold text-ink dark:text-white mb-1">Terms of Service</h1>

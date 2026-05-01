@@ -20,6 +20,7 @@ import { Beaker, Close, Spinner, ArrowRight } from "../components/Icons";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import { TAG_PRESETS, TAG_BY_VALUE, CUSTOM_TAG_CHIP, sortTags } from "../lib/jobTags";
+import { usePageMeta } from "../lib/usePageMeta";
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -28,6 +29,10 @@ function fmtDate(iso: string): string {
 }
 
 export default function CompoundsPage() {
+  usePageMeta({
+    title: "My compounds · Liganx",
+    description: "Your saved Liganx compound library — search, tag, edit in Ketcher, and re-dock with one click.",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");

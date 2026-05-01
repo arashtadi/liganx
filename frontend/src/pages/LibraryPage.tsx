@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CatalogTarget } from "../api";
 import { ArrowRight, Spinner, Target } from "../components/Icons";
+import { usePageMeta } from "../lib/usePageMeta";
 
 // Featured-validation row data shape — a small subset of what the public
 // /validation page renders, just enough to surface the eight literature-
@@ -24,6 +25,15 @@ type ValidationData = {
 };
 
 export default function LibraryPage() {
+  // Per-page SEO metadata: target the "kinase mutation library" / "EGFR
+  // T790M docking" / "BCR-ABL T315I docking" intent buckets. Description
+  // names a few mutation flagships so the snippet matches more queries.
+  usePageMeta({
+    title: "Mutation library — EGFR, BCR-ABL, BRAF, KRAS · Liganx",
+    description:
+      "Curated library of clinically actionable kinase mutations (EGFR T790M, BCR-ABL T315I, BRAF V600E, KRAS G12C, ALK G1202R) with one-click molecular docking. Free for academic use.",
+  });
+
   const { data, isLoading } = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
 
   // Pull the validation snapshot so we can offer a "see the proof" featured

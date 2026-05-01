@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sitemap for liganx.com — lists only the marketing / SEO-valuable
+  pages. The app pages (/new, /history, /settings, /compounds) are
+  Disallowed in robots.txt because they're behind auth and have no
+  SEO value. Job result pages (/jobs/{share_id}) are user-generated
+  content with random share IDs; we deliberately skip them.
+
+  Priority is a soft hint to crawlers about relative importance within
+  the site. Homepage gets 1.0; the science-credibility page (/validation)
+  and the curated mutation/target catalog (/library) get high priority
+  because they're the highest-intent landing surfaces for search traffic.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://liganx.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/library</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/validation</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/privacy</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/terms</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+</urlset>

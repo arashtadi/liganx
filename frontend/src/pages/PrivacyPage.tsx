@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { usePageMeta } from "../lib/usePageMeta";
 
 /**
  * Privacy Policy — describes what data Liganx collects, how it's stored, and
@@ -8,6 +9,12 @@ import { Link } from "react-router-dom";
  * structures and SMILES.
  */
 export default function PrivacyPage() {
+  // SEO: legal pages don't need to rank well, but we DO want them indexed
+  // (per robots.txt) so Google's trust signals see we have one.
+  usePageMeta({
+    title: "Privacy Policy · Liganx",
+    description: "How Liganx handles your account, structures, SMILES, and docking job data. Plain-English research-preview privacy policy.",
+  });
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-10 prose prose-slate dark:prose-invert">
       <h1 className="text-3xl font-bold text-ink dark:text-white mb-1">Privacy Policy</h1>

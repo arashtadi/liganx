@@ -7,8 +7,13 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useAuth, SIGNUP_ROLES } from "../lib/auth";
 import { Spinner } from "../components/Icons";
 import GoogleSignInButton from "../components/GoogleSignInButton";
+import { usePageMeta } from "../lib/usePageMeta";
 
 export default function SignupPage() {
+  usePageMeta({
+    title: "Create account · Liganx",
+    description: "Create a free Liganx account — mutation-aware molecular docking with AutoDock Vina, GNINA, and Boltz-2 ML. No install.",
+  });
   const { signUpWithPassword, signInWithGoogle } = useAuth();
   const [search] = useSearchParams();
   const next = search.get("next") || "/new";

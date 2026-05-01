@@ -26,6 +26,7 @@ import {
   sortTags,
   type JobTag,
 } from "../lib/jobTags";
+import { usePageMeta } from "../lib/usePageMeta";
 
 function statusPill(s: Job["status"]) {
   const base = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset";
@@ -63,6 +64,10 @@ function defaultTitle(j: Job): string {
 const PAGE_SIZE = 25;
 
 export default function HistoryPage() {
+  usePageMeta({
+    title: "Job history · Liganx",
+    description: "Your past Liganx docking runs — searchable, taggable, and one-click re-runnable.",
+  });
   // Cursor-style pagination via useInfiniteQuery. The backend already
   // supports ?offset=N&limit=M; we bump offset by PAGE_SIZE on each "Load
   // more". A page that returns fewer than PAGE_SIZE rows signals end-of-

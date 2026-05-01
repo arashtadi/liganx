@@ -8,6 +8,7 @@ import HeroBanner from "../components/HeroBanner";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
+import { usePageMeta } from "../lib/usePageMeta";
 
 export type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
 
@@ -108,6 +109,25 @@ export default function JobPage() {
     () => catalog?.find((t) => t.pdb_id === job?.pdb_id),
     [catalog, job?.pdb_id],
   );
+
+  // Reactive tab title — once the job loads, surface the target/PDB and
+  // mutation count in the browser tab so a user with a few open jobs can
+  // tell them apart at a glance. Falls back to a generic title pre-load.
+  // (Job pages are noindex via robots.txt — these random share IDs have
+  // no SEO value — but per-tab titles still help users.)
+  const titleParts = job
+    ? [
+        target?.name ?? job.pdb_id,
+        job.mutations.length ? job.mutations.join("/") : "WT",
+        `${job.compounds.length} cmpd${job.compounds.length === 1 ? "" : "s"}`,
+      ].filter(Boolean)
+    : null;
+  usePageMeta({
+    title: titleParts ? `${titleParts.join(" · ")} · Liganx` : "Docking job · Liganx",
+    description: job
+      ? `Docking results for ${target?.name ?? job.pdb_id} (${job.mutations.length ? job.mutations.join(", ") : "wild-type"}) on Liganx — wild-type vs. mutant scores, 3D pose, ProLIF interactions.`
+      : "Liganx docking results — wild-type vs. mutant scores, 3D pose viewer, and ProLIF interaction analysis.",
+  });
 
   // When the URL pins a curated subset, project the job down so the matrix
   // shows ONLY the chosen cells. Filter rules:
