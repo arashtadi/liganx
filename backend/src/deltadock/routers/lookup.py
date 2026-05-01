@@ -157,11 +157,19 @@ async def upload_pdb_file(file: UploadFile = File(...)) -> dict:
         chains = ["A"]  # Default to A so the UI doesn't show an empty dropdown
 
     pdb_id = "USR_" + _secrets.token_hex(4)  # 8 hex chars
-    pdb_root = _Path.home() / ".deltadock" / "pdb"
-    pdb_root.mkdir(parents=True, exist_ok=True)
-    out_path = pdb_root / f"{pdb_id}.pdb"
+    # Write to the SAME directory the docking pipeline reads from
+    # (services.runner.PDB_CACHE → /var/lib/liganx/poses/cache/pdb on
+    # Fly, persistent volume mount). Earlier this wrote to
+    # ~/.deltadock/pdb which gets wiped on every machine restart, so
+    # uploads worked until the next deploy and then failed at the
+    # docking step with "User-uploaded PDB not found at ...".
+    # Imported lazily to avoid a circular import at module load.
+    from ..services.runner import PDB_CACHE
+    PDB_CACHE.mkdir(parents=True, exist_ok=True)
+    out_path = PDB_CACHE / f"{pdb_id}.pdb"
     out_path.write_text(text)
-    log.info("Stored uploaded PDB %s (%d bytes, chains=%s)", pdb_id, len(raw), ",".join(chains))
+    log.info("Stored uploaded PDB %s at %s (%d bytes, chains=%s)",
+             pdb_id, out_path, len(raw), ",".join(chains))
 
     return {
         "pdb_id": pdb_id,
