@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from sqlalchemy import text
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
