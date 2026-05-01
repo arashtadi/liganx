@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIssue, type ValidationDetail } from "../api";
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
@@ -38,11 +38,19 @@ function SketchIcon({ size = 16 }: { size?: number }) {
 
 export default function NewJobPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { data: catalog, isLoading: loadingCatalog } = useQuery({
     queryKey: ["catalog"],
     queryFn: api.catalog,
   });
+  // Re-run-from-history payload — a History row pushes navigate("/new", {state: {reseed: ...}})
+  // and we hydrate the form once the catalog has loaded. The reseed handler
+  // runs at most once per mount; after firing we replace the route to clear
+  // the state so a refresh doesn't re-trigger the seed (and the user's
+  // subsequent edits aren't undone). Type-narrowed defensively because router
+  // state is `unknown`.
+  const reseedRef = useRef(false);
 
   // Pre-select the target from ?target=xxx if present (e.g. coming from Library
   // or a marketing link). Otherwise start with NO target selected — we used to
@@ -123,6 +131,61 @@ export default function NewJobPage() {
   // QuickVina2 if GNINA_ENABLED is off on Fly, so picking GNINA is always
   // safe even if the Pod side hasn't been turned on yet.
   const [engine, setEngine] = useState<"quickvina2_gpu" | "gnina" | "boltz2">("quickvina2_gpu");
+
+  // Reseed-from-history effect — runs once after the catalog has resolved so
+  // we can match the job's PDB to a catalog target id (pdb_id is what's on
+  // the job; selectedIds wants catalog ids). Falls through to Custom mode
+  // when the PDB isn't in the catalog (e.g. a user-uploaded structure).
+  useEffect(() => {
+    if (reseedRef.current) return;
+    if (!catalog) return; // wait for catalog to load before deciding catalog vs custom
+    const state = location.state as { reseed?: {
+      pdb_id?: string; chain?: string; mutations?: string[];
+      compounds?: { name?: string; smiles: string }[];
+      engine?: string; exhaustiveness?: number; include_wt?: boolean;
+    } } | null;
+    const seed = state?.reseed;
+    if (!seed) return;
+    reseedRef.current = true;
+
+    const pdbUp = (seed.pdb_id ?? "").toUpperCase();
+    const match = catalog.find((t) => t.pdb_id.toUpperCase() === pdbUp);
+    if (match) {
+      // Catalog target — flip to single-target catalog mode.
+      setSelectedIds([match.id]);
+      setCustomMode(false);
+      if (seed.mutations && seed.mutations.length > 0) {
+        setCustomMutationsByTarget((prev) => ({ ...prev, [match.id]: seed.mutations!.join(", ") }));
+      }
+    } else {
+      // Custom PDB — flip to custom mode and set the PDB id + chain
+      // directly. The runner self-heals the receptor on first dock.
+      setSelectedIds([]);
+      setCustomMode(true);
+      setPdbId(pdbUp);
+      setChain((seed.chain || "A").toUpperCase());
+      if (seed.mutations && seed.mutations.length > 0) {
+        setCustomMutationsByTarget((prev) => ({ ...prev, [CUSTOM_KEY]: seed.mutations!.join(", ") }));
+      }
+    }
+
+    if (seed.compounds && seed.compounds.length > 0) {
+      setCompounds(seed.compounds.map((c) => ({ name: c.name ?? "", smiles: c.smiles })));
+    }
+    if (seed.engine === "quickvina2_gpu" || seed.engine === "gnina" || seed.engine === "boltz2") {
+      setEngine(seed.engine);
+    }
+    if (seed.exhaustiveness === 8 || seed.exhaustiveness === 16 || seed.exhaustiveness === 32) {
+      setExhaustiveness(seed.exhaustiveness);
+    }
+    if (typeof seed.include_wt === "boolean") {
+      setIncludeWt(seed.include_wt);
+    }
+
+    // Clear the state so a manual refresh doesn't re-seed the form
+    // (which would clobber any tweaks the user just made).
+    navigate(location.pathname, { replace: true, state: null });
+  }, [catalog, location.state, location.pathname, navigate]);
 
   // First-target-pick guard. Auto-loading the catalog's default compounds +
   // mutations is great on the FIRST target pick (saves typing). After that,

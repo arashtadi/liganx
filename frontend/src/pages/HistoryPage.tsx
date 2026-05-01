@@ -14,7 +14,7 @@
 
 import { useMemo, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { Close, Spinner } from "../components/Icons";
@@ -313,9 +313,32 @@ function FilterBar({
  * and tag-picker controls so clicking them never navigates into the job. */
 function HistoryRow({ job }: { job: Job }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Re-run: navigate to /new with a reseed payload in router state.
+  // NewJobPage detects state.reseed on mount and pre-fills the form so
+  // the user can tweak any field (engine, exhaustiveness, an extra
+  // mutation) and resubmit without re-typing the originals.
+  function onRerunClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    navigate("/new", {
+      state: {
+        reseed: {
+          pdb_id: job.pdb_id,
+          chain: job.chain,
+          mutations: job.mutations,
+          compounds: job.compounds.map((c) => ({ name: c.name ?? "", smiles: c.smiles })),
+          engine: job.engine ?? "quickvina2_gpu",
+          exhaustiveness: (job as { exhaustiveness?: number }).exhaustiveness ?? 8,
+          include_wt: (job as { include_wt?: boolean }).include_wt ?? true,
+        },
+      },
+    });
+  }
 
   async function onDeleteClick(e: React.MouseEvent) {
     e.preventDefault();
@@ -393,10 +416,23 @@ function HistoryRow({ job }: { job: Job }) {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 whitespace-nowrap">
+          <div className="flex items-center gap-2 whitespace-nowrap">
             <span className="text-xs text-slate-400 dark:text-slate-500">
               {fmtDate(job.created_at)}
             </span>
+            <button
+              type="button"
+              onClick={onRerunClick}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-delta-700 hover:bg-delta-50 dark:text-delta-300 dark:hover:bg-delta-900/30 transition-colors"
+              title="Open this job in the new-job form with the same compounds and mutations"
+              aria-label="Re-run this job"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-7 3l-2 2" />
+                <path d="M3 4v6h6" />
+              </svg>
+              Re-run
+            </button>
             <button
               type="button"
               onClick={onDeleteClick}
