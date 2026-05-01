@@ -39,6 +39,21 @@ const PREFILL_MESSAGES: Record<string, string> = {
 
 type Status = "idle" | "sending" | "sent" | "error";
 
+// Role choices keep the question crisp without forcing the user into a
+// fake bucket. "Other" lets us catch people who don't see themselves in
+// the academic/industry binary (govt labs, indie researchers, hobbyists,
+// students who are also working part-time, etc.) without us guessing
+// what bucket they belong in. Order roughly matches expected volume —
+// students and academics are the bulk of early demand for an
+// open-science-leaning docking tool.
+const ROLE_OPTIONS = [
+  { value: "", label: "Select…" },
+  { value: "student", label: "Student" },
+  { value: "academic", label: "Academic researcher (postdoc, PI, staff scientist)" },
+  { value: "industry", label: "Industry / professional" },
+  { value: "other", label: "Other" },
+] as const;
+
 // Cloudflare Turnstile site key — public, safe to ship in the bundle.
 // Stored in Vercel as VITE_TURNSTILE_SITE_KEY. The matching SECRET
 // key lives only on the backend (TURNSTILE_SECRET_KEY Fly secret).
@@ -67,6 +82,20 @@ export default function ContactPage() {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  // Who is this person? Helps Arash triage Boltz-2 access requests
+  // (academic vs industry pricing) and weight feature priorities by
+  // who's actually asking. Required so we never get a faceless "please
+  // enable X" message.
+  const [role, setRole] = useState("");
+  // Free-form affiliation — university name, company, lab, hospital,
+  // etc. Required so a Boltz-2 request comes with enough context to
+  // do a quick credibility check before flipping a $497/mo pod on.
+  const [affiliation, setAffiliation] = useState("");
+  // Country/region — optional; helps with timezone-aware replies and
+  // gives a coarse sense of where demand is coming from. Free-form
+  // (not a 250-entry dropdown) because most users will type their
+  // own country faster than they'd scroll a select.
+  const [country, setCountry] = useState("");
   const [message, setMessage] = useState(prefilled);
   // Honeypot — bound to React state so we can read it on submit, but
   // visually hidden in the DOM so humans don't see it. Default empty.
@@ -96,6 +125,8 @@ export default function ContactPage() {
     status !== "sending" &&
     name.trim().length > 0 &&
     email.trim().length > 0 &&
+    role.trim().length > 0 &&
+    affiliation.trim().length > 0 &&
     message.trim().length >= MIN_MESSAGE &&
     !messageOver &&
     captchaSatisfied;
@@ -109,6 +140,9 @@ export default function ContactPage() {
       await api.submitContact({
         name: name.trim(),
         email: email.trim(),
+        role: role.trim(),
+        affiliation: affiliation.trim(),
+        country: country.trim(),
         message: message.trim(),
         website,
         turnstile_token: turnstileToken,
@@ -240,6 +274,69 @@ export default function ContactPage() {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
             placeholder="jane@university.edu"
+          />
+        </div>
+
+        {/* Who-are-you block — role + affiliation are required so any
+            Boltz-2 access request (or any partnership inquiry) lands in
+            Telegram with enough context to triage on the spot, instead
+            of triggering a back-and-forth email thread. Country is
+            optional because it's nice-to-have rather than essential. */}
+        <div>
+          <label htmlFor="contact-role" className="block text-sm font-semibold text-ink dark:text-slate-200 mb-1.5">
+            I am a
+          </label>
+          <select
+            id="contact-role"
+            name="role"
+            required
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+          >
+            {ROLE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value} disabled={opt.value === ""}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="contact-affiliation" className="block text-sm font-semibold text-ink dark:text-slate-200 mb-1.5">
+            School, company, or institution
+          </label>
+          <input
+            id="contact-affiliation"
+            name="affiliation"
+            type="text"
+            required
+            autoComplete="organization"
+            value={affiliation}
+            onChange={(e) => setAffiliation(e.target.value)}
+            maxLength={200}
+            className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+            placeholder="e.g. Stanford University, Genentech, Mayo Clinic"
+          />
+          <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+            Helps us understand your context and reply with the most relevant info.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="contact-country" className="block text-sm font-semibold text-ink dark:text-slate-200 mb-1.5">
+            Country / region <span className="font-normal text-slate-400 dark:text-slate-500">(optional)</span>
+          </label>
+          <input
+            id="contact-country"
+            name="country"
+            type="text"
+            autoComplete="country-name"
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+            maxLength={100}
+            className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink dark:text-slate-100 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+            placeholder="e.g. United States, Germany, India"
           />
         </div>
 

@@ -56,6 +56,22 @@ TELEGRAM_API_BASE = "https://api.telegram.org"
 MAX_NAME = 100
 MAX_MESSAGE = 5000
 MIN_MESSAGE = 10
+MAX_AFFILIATION = 200
+MAX_COUNTRY = 100
+
+# Allowed role buckets — the frontend constrains this with a <select>,
+# but we revalidate server-side so a tampered client can't shove
+# arbitrary text into the Telegram body. "" is allowed for the
+# pre-rollout case where an older bundle hasn't been redeployed yet
+# and is still POSTing without the new field; we surface "—" in the
+# message instead of failing the whole submission.
+ALLOWED_ROLES = {"", "student", "academic", "industry", "other"}
+ROLE_LABELS = {
+    "student": "Student",
+    "academic": "Academic researcher",
+    "industry": "Industry / professional",
+    "other": "Other",
+}
 
 
 class ContactSubmission(BaseModel):
@@ -74,6 +90,16 @@ class ContactSubmission(BaseModel):
     name: str = Field(..., min_length=1, max_length=MAX_NAME)
     email: EmailStr
     message: str = Field(..., min_length=MIN_MESSAGE, max_length=MAX_MESSAGE)
+    # Who-are-you fields — populated by the new ContactPage form so each
+    # Telegram notification arrives with the context needed to triage on
+    # the spot (esp. Boltz-2 access requests). Defaults are empty
+    # strings so an older frontend bundle (pre-roll-out) can still POST
+    # successfully — we just show "—" placeholders in the Telegram body.
+    # Constrained to a known set server-side so a tampered client can't
+    # inject arbitrary text into the role field.
+    role: str = Field(default="", max_length=32)
+    affiliation: str = Field(default="", max_length=MAX_AFFILIATION)
+    country: str = Field(default="", max_length=MAX_COUNTRY)
     # Optional honeypot — bots fill every input they find; humans don't
     # see this one. Default empty string so legitimate clients don't
     # need to know it exists.
@@ -144,17 +170,36 @@ def _format_telegram_message(sub: ContactSubmission, ip: str, ua: str | None) ->
     the FROM line sits at the top of the notification preview on a
     locked phone — `Name <email>` is the most useful 'who is this'
     summary, and emojis at the start of each line give a glanceable
-    icon column even before the labels register."""
+    icon column even before the labels register.
+
+    Role / affiliation / country are surfaced as a compact metadata
+    line below the email so the triage decision (accept Boltz-2
+    request? respond fast vs. queue?) can happen from the
+    notification preview without opening the chat."""
     name_e = _escape_html(sub.name)
     email_e = _escape_html(str(sub.email))
     message_e = _escape_html(sub.message)
     ua_e = _escape_html(ua or "—")
     device = _ua_emoji(ua)
+
+    # Role label — fall back to the raw value if it's an unknown bucket
+    # (shouldn't happen given client + server validation, but cheaper
+    # than crashing on KeyError). Empty role = older bundle, show "—".
+    role_label = ROLE_LABELS.get(sub.role, sub.role) or "—"
+    role_e = _escape_html(role_label)
+    affiliation_e = _escape_html(sub.affiliation) if sub.affiliation else "—"
+    country_line = (
+        f"🌍 <b>Country:</b> {_escape_html(sub.country)}\n" if sub.country else ""
+    )
+
     return (
         f"🎉 <b>New message from liganx.com!</b> 📬\n"
         f"\n"
         f"👤 <b>From:</b> {name_e}\n"
         f"✉️ <b>Email:</b> <code>{email_e}</code>\n"
+        f"🎓 <b>Role:</b> {role_e}\n"
+        f"🏛 <b>Affiliation:</b> {affiliation_e}\n"
+        f"{country_line}"
         f"\n"
         f"💬 <b>Message:</b>\n"
         f"{message_e}\n"
@@ -285,6 +330,18 @@ async def submit_contact(
     request: Request,
 ) -> ContactResponse:
     ip = _client_ip(request)
+
+    # Reject role values outside the known set so a tampered client
+    # can't inject arbitrary text into the Telegram body. Empty is
+    # allowed (older bundle compatibility); anything else must match
+    # the frontend select. Generic 422-equivalent so we don't leak
+    # which field tripped the check.
+    if submission.role not in ALLOWED_ROLES:
+        log.info("Contact: rejected unknown role=%r ip=%s", submission.role, ip)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid form submission. Please refresh the page and try again.",
+        )
 
     # Honeypot: a non-empty `website` is almost certainly a bot. We log
     # so we know our defences are working, but reply with a normal

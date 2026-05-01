@@ -409,11 +409,28 @@ export const api = {
    *  probe whether the trap caught it. Throws ApiError on validation
    *  failures (422), rate limit (429), or Telegram delivery failures
    *  (502/503) so the form can show an actionable message. */
-  submitContact: (payload: { name: string; email: string; message: string; website?: string; turnstile_token?: string }) =>
+  submitContact: (payload: {
+    name: string;
+    email: string;
+    message: string;
+    /** "student" | "academic" | "industry" | "other" — required by the
+     *  form, but typed loosely here so future role additions don't
+     *  require a coordinated frontend+backend type bump. */
+    role?: string;
+    /** University, company, lab, or institution. Required by the form. */
+    affiliation?: string;
+    /** Country/region — optional. Free-form to avoid a 250-entry select. */
+    country?: string;
+    website?: string;
+    turnstile_token?: string;
+  }) =>
     request<{ accepted: boolean }>("/contact", {
       method: "POST",
       body: JSON.stringify({
         ...payload,
+        role: payload.role ?? "",
+        affiliation: payload.affiliation ?? "",
+        country: payload.country ?? "",
         website: payload.website ?? "",
         turnstile_token: payload.turnstile_token ?? "",
       }),
