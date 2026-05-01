@@ -184,6 +184,11 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
         // setState with the same value is cheap but the renders downstream
         // (button label, etc.) still cost a bit on every tick.
         setHasChanges((prev) => (prev === changed ? prev : changed));
+        // Clear any stale validation-error banner the moment the user
+        // starts editing — keeps the modal feeling responsive instead
+        // of leaving a stale "this can't be docked" message hanging
+        // there after they've already fixed the issue.
+        setError((prev) => (prev ? null : prev));
       } catch {
         // Polling errors are non-fatal — a transient hiccup just means
         // we keep showing the previous state for one tick.
@@ -226,6 +231,39 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       // genuine create-from-scratch save.
       const baseline = baselineSmilesRef.current;
       const unchanged = baseline.length > 0 && trimmed === baseline;
+
+      // Fail-fast SMILES validation BEFORE we close the modal.
+      // Ketcher's own getSmiles can produce strings that look fine to
+      // it but trip RDKit downstream (radical centres, weird hybrid
+      // states, atom-mapping quirks). Catching it here means the user
+      // sees "this won't dock" while they're still in the editor and
+      // can fix it — instead of seeing it as a failed compound row in
+      // step 3 of the new-job form after they've moved on.
+      //
+      // We use the existing /assist/properties endpoint (RDKit-only,
+      // no LLM, ~5ms server-side, free). It returns valid:false +
+      // error when the SMILES doesn't parse. Any unexpected failure
+      // here (network, 401, 5xx) we treat as "skip the check" rather
+      // than blocking — better to let the user proceed and have the
+      // downstream pipeline catch it than to falsely block on a
+      // transient API hiccup.
+      try {
+        const props = await api.assistProperties(trimmed);
+        if (props && props.valid === false) {
+          setPending(false);
+          setError(
+            `This structure can't be docked: ${props.error || "RDKit couldn't parse it"}. ` +
+            `Adjust the structure in the editor, or click Close to start over.`,
+          );
+          return;
+        }
+        // valid:true OR network/transport issue → proceed. Downstream
+        // pipeline still has its own validation as a safety net.
+      } catch {
+        // Validation request failed (network, auth). Proceed silently
+        // — better than blocking on a transient backend issue.
+      }
+
       setPending(false);
       onAccept(trimmed, unchanged);
     } catch (err) {
@@ -295,17 +333,30 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
           />
         </div>
 
+        {/* Validation error banner — sits ABOVE the footer when present.
+            Pulled out of the footer's tiny status text because save-time
+            errors ("this structure can't be docked") need to grab the
+            user's attention, not whisper from the corner. */}
+        {error && (
+          <div className="px-5 py-2.5 border-t border-rose-200 dark:border-rose-800/40 bg-rose-50 dark:bg-rose-900/20 text-[13px] text-rose-800 dark:text-rose-200 shrink-0">
+            <div className="flex items-start gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="mt-0.5 shrink-0" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <span className="leading-relaxed">{error}</span>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <footer className="flex items-center justify-between gap-3 px-5 py-3 border-t border-slate-200 dark:border-slate-700 shrink-0 bg-white dark:bg-slate-900">
           <div className="text-xs text-slate-600 dark:text-slate-400 flex-1 min-w-0">
-            {error ? (
-              <span className="text-amber-700 dark:text-amber-400">{error}</span>
-            ) : (
-              <span>
-                Powered by <a href="https://lifescience.opensource.epam.com/ketcher/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink dark:hover:text-slate-100">EPAM Ketcher</a>{" "}
-                — open-source 2D structure editor
-              </span>
-            )}
+            <span>
+              Powered by <a href="https://lifescience.opensource.epam.com/ketcher/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink dark:hover:text-slate-100">EPAM Ketcher</a>{" "}
+              — open-source 2D structure editor
+            </span>
           </div>
           {/* Cancel is always shown — it's the safe, no-side-effects exit
               and equally valid whether or not the user has drawn anything.
@@ -322,7 +373,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
               disabled={!ketcherReady || pending}
               className="btn-primary btn-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {pending ? "Reading…" : "Use this structure"}
+              {pending ? "Checking structure…" : "Use this structure"}
             </button>
           )}
         </footer>
