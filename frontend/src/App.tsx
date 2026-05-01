@@ -15,6 +15,7 @@ import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import ValidationPage from "./pages/ValidationPage";
 import CompleteProfilePage from "./pages/CompleteProfilePage";
+import CompoundsPage from "./pages/CompoundsPage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/welcome" element={<RequireAuth><CompleteProfilePage /></RequireAuth>} />
+            <Route path="/compounds" element={<RequireAuth><CompoundsPage /></RequireAuth>} />
             <Route path="/jobs/:id" element={<JobPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/suite" element={<SuitePage />} />
@@ -305,6 +307,14 @@ function UserMenu({ email, avatarUrl, onSignOut }: { email: string; avatarUrl: s
             role="menuitem"
           >
             My history
+          </button>
+          <button
+            type="button"
+            onClick={() => { setOpen(false); navigate("/compounds"); }}
+            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            role="menuitem"
+          >
+            My compounds
           </button>
           {/* The Doc Flask tour toggle moved to /settings — keeping it
               there only avoids two parallel UI entry points that can

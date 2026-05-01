@@ -90,6 +90,16 @@ export default function NewJobPage() {
   // Ketcher iframe (~25 MB of static assets), so we only pay the cost
   // when the user actually wants to draw.
   const [sketcherRow, setSketcherRow] = useState<number | null>(null);
+  // Rename prompt — fires when the user accepts a sketch that CHANGED an
+  // already-named compound. The point: "Aspirin" with a new SMILES is no
+  // longer Aspirin, so the library shouldn't be silently overwritten.
+  // Pre-fills the input with "<OriginalName>_" so the user can append a
+  // suffix or rename entirely. Duplicates are blocked client-side.
+  const [renamePrompt, setRenamePrompt] = useState<{
+    rowIdx: number;
+    newSmiles: string;
+    originalName: string;
+  } | null>(null);
 
   // Free-tier limit toast: a brief auto-dismissing message that pops
   // when the user tries to add a target/mutation/compound past the cap.
@@ -1883,12 +1893,172 @@ export default function NewJobPage() {
         initialSmiles={compounds[sketcherRow]?.smiles || undefined}
         onClose={() => setSketcherRow(null)}
         onAccept={(smiles) => {
-          setCompound(sketcherRow, { smiles });
+          // Intercept: if the row had a NAME and the user CHANGED the
+          // SMILES, the resulting molecule is no longer "the named
+          // compound" — fire the rename prompt before committing so
+          // the library doesn't silently swap one structure for another
+          // under the same label.
+          const idx = sketcherRow;
+          const row = compounds[idx];
+          const originalName = (row?.name ?? "").trim();
+          const originalSmiles = (row?.smiles ?? "").trim();
+          const smilesChanged = smiles !== originalSmiles;
+          if (originalName && smilesChanged) {
+            setRenamePrompt({ rowIdx: idx, newSmiles: smiles, originalName });
+            setSketcherRow(null);
+            return;
+          }
+          // No name yet, or the SMILES didn't actually change — accept
+          // straight through. Auto-save will catch it once the user
+          // names the row (if they do).
+          setCompound(idx, { smiles });
           setSketcherRow(null);
         }}
       />
     )}
+    {renamePrompt && (
+      <RenamePrompt
+        initialName={renamePrompt.originalName + "_"}
+        existingNames={savedCompounds.map((c) => c.name)}
+        currentRowName={renamePrompt.originalName}
+        onCancel={() => {
+          // Bailing keeps the row as it was — the SMILES change is dropped.
+          // We deliberately do NOT auto-commit on cancel because the user
+          // explicitly chose to back out.
+          setRenamePrompt(null);
+        }}
+        onSave={(newName) => {
+          setCompound(renamePrompt.rowIdx, { smiles: renamePrompt.newSmiles, name: newName });
+          setRenamePrompt(null);
+        }}
+      />
+    )}
     </>
+  );
+}
+
+/** Rename prompt — fires after Ketcher returns a CHANGED structure for an
+ *  already-named compound. Pre-fills the input with "OldName_" so the user
+ *  can append a suffix or rename entirely; blocks duplicates against the
+ *  user's existing library. The user can cancel; we drop the SMILES change
+ *  rather than silently overwriting an existing library entry.
+ *
+ *  This is rendered as a centered modal — not a global ProfileRedirect-
+ *  style fullpage — because it interrupts a focused action (Ketcher save)
+ *  and the user is still mentally inside the compound editor flow. */
+function RenamePrompt({
+  initialName,
+  existingNames,
+  currentRowName,
+  onCancel,
+  onSave,
+}: {
+  initialName: string;
+  existingNames: string[];
+  /** The name on the current compound row, BEFORE the rename. We allow the
+   *  user to keep this exact value (since changing the SMILES under the
+   *  same name is editing-in-place from their POV); but any OTHER existing
+   *  library name is blocked as a duplicate. */
+  currentRowName: string;
+  onCancel: () => void;
+  onSave: (newName: string) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-focus + select-all so the user can immediately start typing the
+  // suffix after the underscore. Selection covers the underscore too so a
+  // user who wants to type something completely new just starts typing.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, 50);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  const trimmed = name.trim();
+  // Build a lower-case lookup excluding the row's current name (so the
+  // user can KEEP the old name as a deliberate edit-in-place, but not
+  // collide with any OTHER library entry).
+  const reservedLower = new Set(
+    existingNames
+      .filter((n) => n.toLowerCase() !== currentRowName.toLowerCase())
+      .map((n) => n.toLowerCase()),
+  );
+  const isDuplicate = trimmed.length > 0 && reservedLower.has(trimmed.toLowerCase());
+  const isEmpty = trimmed.length === 0;
+  const canSave = !isEmpty && !isDuplicate && trimmed !== "_";
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (canSave) onSave(trimmed);
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+          <h2 className="text-base font-semibold text-ink dark:text-white">
+            Name your modified structure
+          </h2>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            You changed the structure of <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{currentRowName}</span>,
+            so it isn&apos;t {currentRowName} anymore. Give the new molecule its own
+            name — it&apos;ll be saved to your library.
+          </p>
+        </header>
+        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
+          <div>
+            <label htmlFor="rename-name" className="label">New compound name</label>
+            <input
+              id="rename-name"
+              ref={inputRef}
+              type="text"
+              className="input font-mono"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={initialName}
+              maxLength={200}
+            />
+            {isDuplicate && (
+              <p className="mt-1.5 text-xs text-rose-700 dark:text-rose-400">
+                <span className="font-semibold">{trimmed}</span> already exists in your library — pick a different name.
+              </p>
+            )}
+            {isEmpty && (
+              <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                Type a name to continue.
+              </p>
+            )}
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="btn-ghost btn-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canSave}
+              className="btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Save &amp; use
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
