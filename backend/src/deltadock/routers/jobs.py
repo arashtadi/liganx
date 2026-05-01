@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from ..auth import CurrentUser, current_user, current_user_or_none, verified_user
+from ..auth import CurrentUser, current_user, current_user_or_none, profile_complete_user, verified_user
 from ..celery_app import dispatch_job
 from ..config import get_settings
 from ..db import get_session
@@ -210,7 +210,12 @@ def _pdb_quality_for(pdb_id: str, chain: str) -> dict | None:
 def create_job(
     payload: JobCreate,
     background: BackgroundTasks,
-    user: CurrentUser = Depends(verified_user),
+    # profile_complete_user wraps verified_user (which wraps current_user) so
+    # this single dep enforces auth + email-verified + profile-complete in
+    # one shot. The frontend's ProfileRedirect blocks the same condition,
+    # this is the server-side defense-in-depth so a tampered client can't
+    # bypass — see auth.profile_complete_user docstring for context.
+    user: CurrentUser = Depends(profile_complete_user),
     session: Session = Depends(get_session),
 ) -> JobOut:
     # Schema validator already normalized the pdb_id (uppercase for RCSB IDs,

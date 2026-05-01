@@ -238,6 +238,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // body wasn't JSON
     }
+    // Defense-in-depth: if the backend rejects with 403 + the
+    // profile-incomplete prefix, hard-redirect to /welcome. This catches
+    // the corner case where the frontend ProfileRedirect didn't fire
+    // (e.g. user opened a deep link directly) but the user still tried
+    // a write operation. Using window.location.href forces a fresh load
+    // so ProfileRedirect re-mounts cleanly with the right user.
+    if (
+      r.status === 403 &&
+      typeof detail === "string" &&
+      detail.startsWith("Please complete your profile") &&
+      typeof window !== "undefined" &&
+      window.location.pathname !== "/welcome"
+    ) {
+      window.location.href = "/welcome";
+    }
     throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`, detailObj);
   }
   return r.json();

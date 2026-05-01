@@ -55,18 +55,24 @@ export default function NewJobPage() {
   });
   // User's saved compound library — populates the "Your library" pill row
   // above the compound inputs so users can re-add anything they've named
-  // before in one click. Cached for 5 min; auto-save mutations invalidate
-  // the query so the row reflects fresh state immediately.
+  // before in one click. Cached for 5 min; explicit saves (via the Ketcher
+  // rename popup or the CompoundsPage Save button) invalidate this query
+  // so the row reflects fresh state immediately.
+  //
+  // NB: there is intentionally NO auto-save here. Earlier versions POSTed
+  // every compound row with both name+smiles to /me/compounds 800 ms after
+  // any edit, but that surprised users by saving compounds they had
+  // selected from the catalog/PubChem-lookup but never explicitly saved.
+  // Saves to the user's library now happen ONLY through explicit user
+  // action (Save button in Ketcher's rename popup, or the CompoundsPage
+  // Edit/Create flow). The "Your library" row above just READS from the
+  // server-side library — it doesn't write to it.
   const queryClient = useQueryClient();
   const { data: savedCompounds = [] } = useQuery({
     queryKey: ["my-compounds"],
     queryFn: api.getMyCompounds,
     staleTime: 5 * 60 * 1000,
     retry: 1,
-  });
-  const saveCompoundMut = useMutation({
-    mutationFn: (payload: { name: string; smiles: string }) => api.saveMyCompound(payload),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
   });
   const deleteCompoundMut = useMutation({
     mutationFn: (id: number) => api.deleteMyCompound(id),
@@ -433,55 +439,6 @@ export default function NewJobPage() {
   }
   function removeCompound(i: number) { setCompounds((cs) => cs.filter((_, idx) => idx !== i)); }
 
-  // Auto-save effect: any compound row that has BOTH a name AND a SMILES
-  // gets POSTed to /me/compounds 800 ms after the last edit. Backend
-  // upserts on (user_id, name) so re-saving the same name with a new
-  // SMILES is an edit, not a duplicate. We dedupe by name within the
-  // current job to avoid hammering the endpoint when two rows share a
-  // name (the last-typed wins, which matches user intuition).
-  //
-  // We track which rows we've already attempted to save in this snapshot
-  // via a ref so a re-render with the same compounds array doesn't
-  // re-fire the save. The ref-key is name+smiles; any change to either
-  // counts as a fresh save trigger.
-  const lastSavedSigRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const rowsToSave = compounds
-      .map((c) => ({ name: c.name.trim(), smiles: c.smiles.trim() }))
-      .filter((c) => c.name && c.smiles);
-    if (rowsToSave.length === 0) return;
-    // Per-row save signature so re-saves only fire when something changed.
-    const dueSigs: { sig: string; name: string; smiles: string }[] = [];
-    const seenNames = new Set<string>();
-    for (const r of rowsToSave) {
-      const lowerName = r.name.toLowerCase();
-      if (seenNames.has(lowerName)) continue; // dedupe within snapshot
-      seenNames.add(lowerName);
-      const sig = `${lowerName}::${r.smiles}`;
-      if (lastSavedSigRef.current.has(sig)) continue;
-      dueSigs.push({ sig, name: r.name, smiles: r.smiles });
-    }
-    if (dueSigs.length === 0) return;
-    const handle = window.setTimeout(() => {
-      for (const d of dueSigs) {
-        // Optimistically mark as saved so the next render doesn't re-fire
-        // the same payload while the request is in-flight.
-        lastSavedSigRef.current.add(d.sig);
-        saveCompoundMut.mutate(
-          { name: d.name, smiles: d.smiles },
-          {
-            onError: () => {
-              // On failure, drop the sig so the next edit gets a fresh
-              // attempt — otherwise a transient 500 silently loses the
-              // user's compound forever.
-              lastSavedSigRef.current.delete(d.sig);
-            },
-          },
-        );
-      }
-    }, 800);
-    return () => window.clearTimeout(handle);
-  }, [compounds, saveCompoundMut]);
   function loadAllCompounds() {
     if (!target) return;
     setCompounds(target.compounds.map((c) => ({ name: c.name, smiles: c.smiles })));

@@ -1,17 +1,26 @@
 /**
- * CompleteProfilePage — replaces the old ProfileCompletionModal popup with
- * a real route at /welcome. New users are redirected here ONCE on first
- * sign-in by the <ProfileRedirect/> mounted in App.tsx; after that the
- * `liganx.profileCompletion.dismissed` localStorage flag suppresses any
- * further redirects, regardless of whether they completed the form.
+ * CompleteProfilePage — full-page profile-completion form at /welcome.
+ *
+ * **Hard-block design.** First-time users (any sign-up path: email or
+ * Google OAuth) MUST complete this form before they can use the rest of
+ * the app. There is intentionally NO Skip button. ProfileRedirect in
+ * App.tsx redirects every non-/welcome route to /welcome until the
+ * profile has both `organization` and `role` populated. The backend also
+ * gates write endpoints (POST /jobs, POST /me/compounds) on profile
+ * completeness as defense-in-depth, so a tampered client can't bypass.
+ *
+ * Why hard-block? An earlier version had a Skip button + a one-shot
+ * localStorage dismiss flag. In beta testing a user was never redirected
+ * here at all (race between OAuth completion and /me/profile call), and
+ * the silent skip path made the form effectively optional, which defeats
+ * the point of capturing the data. Hard-blocking forces the form on
+ * every device until it's filled — once, then never again.
  *
  * Flow:
  *   1. User signs up (email or Google OAuth).
- *   2. ProfileRedirect spots the incomplete profile, navigates here once,
- *      and immediately stamps the dismissed flag so the redirect never
- *      fires again.
- *   3. User fills the form and clicks Done → POST /me/profile → navigate
- *      to /. (They can also click "Skip for now" to go straight home.)
+ *   2. ProfileRedirect spots `!organization || !role` and routes to
+ *      /welcome with replace:true.
+ *   3. User fills required fields → POST /me/profile → navigate to /.
  *   4. Profile is editable later from /settings.
  */
 
@@ -64,6 +73,22 @@ export default function CompleteProfilePage() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setErr(null);
+    // Required-field validation. Mirrors the server-side check in
+    // ProfileRedirect: profile is "complete" iff organization AND role
+    // are both non-empty. Full name is also required because most flows
+    // surface it back to the user (history page, share IDs, etc.).
+    if (!fullName.trim()) {
+      setErr("Please enter your full name.");
+      return;
+    }
+    if (!organization.trim()) {
+      setErr("Please enter your company or institution.");
+      return;
+    }
+    if (!role) {
+      setErr("Please select your role.");
+      return;
+    }
     if (researchgateUrl.trim() && !/^https?:\/\//i.test(researchgateUrl.trim())) {
       setErr("ResearchGate URL must start with https://");
       return;
@@ -86,12 +111,6 @@ export default function CompleteProfilePage() {
     }
   }
 
-  function onSkip() {
-    // The dismissed flag was already set by ProfileRedirect when this page
-    // loaded, so skipping just navigates away — no further bookkeeping.
-    navigate("/", { replace: true });
-  }
-
   return (
     <div className="min-h-[60vh] flex items-start justify-center py-10">
       <div className="w-full max-w-xl">
@@ -104,30 +123,36 @@ export default function CompleteProfilePage() {
             Welcome to Liganx
           </h1>
           <p className="mt-2 text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
-            These details help us tailor Liganx to your work and credit your
-            contributions back to you. Optional — you can edit any of this
-            later from Settings.
+            One quick step before we get started. These details help us
+            tailor Liganx to your work and credit your contributions back
+            to you. You can edit any of this later from Settings.
           </p>
         </header>
 
         <form onSubmit={onSubmit} className="card space-y-4">
-          {!fullName && (
-            <div>
-              <label htmlFor="welcome-name" className="label">Full name</label>
-              <input
-                id="welcome-name"
-                type="text"
-                className="input"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                disabled={submitting}
-                placeholder="Jane Smith"
-              />
-            </div>
-          )}
+          {/* Full name — always shown (was previously hidden if pre-filled
+              from OAuth metadata, which created a confusing "form already
+              filled out" feel for users). Required. */}
+          <div>
+            <label htmlFor="welcome-name" className="label">
+              Full name <span className="text-rose-600 dark:text-rose-400">*</span>
+            </label>
+            <input
+              id="welcome-name"
+              type="text"
+              className="input"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              disabled={submitting}
+              required
+              placeholder="Jane Smith"
+            />
+          </div>
 
           <div>
-            <label htmlFor="welcome-org" className="label">Company / Institution</label>
+            <label htmlFor="welcome-org" className="label">
+              Company / Institution <span className="text-rose-600 dark:text-rose-400">*</span>
+            </label>
             <input
               id="welcome-org"
               type="text"
@@ -135,18 +160,22 @@ export default function CompleteProfilePage() {
               value={organization}
               onChange={(e) => setOrganization(e.target.value)}
               disabled={submitting}
+              required
               placeholder="MIT, Genentech, Stanford…"
             />
           </div>
 
           <div>
-            <label htmlFor="welcome-role" className="label">Role</label>
+            <label htmlFor="welcome-role" className="label">
+              Role <span className="text-rose-600 dark:text-rose-400">*</span>
+            </label>
             <select
               id="welcome-role"
               className="input"
               value={role}
               onChange={(e) => setRole(e.target.value)}
               disabled={submitting}
+              required
             >
               <option value="">— Select —</option>
               {SIGNUP_ROLES.map((r) => (
@@ -187,18 +216,13 @@ export default function CompleteProfilePage() {
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-2">
-            <button
-              type="button"
-              onClick={onSkip}
-              className="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-              disabled={submitting}
-            >
-              Skip for now
-            </button>
+          {/* No Skip button — profile is hard-required. The redirect in
+              App.tsx will bounce the user right back here from any other
+              route until the form is filled out. */}
+          <div className="flex items-center justify-end pt-2">
             <button type="submit" className="btn-primary" disabled={submitting}>
               {submitting ? <Spinner size={14} className="mr-2" /> : null}
-              Done
+              Continue to Liganx
             </button>
           </div>
         </form>

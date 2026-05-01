@@ -220,6 +220,50 @@ def verified_user(user: Annotated[CurrentUser, Depends(current_user)]) -> Curren
     return user
 
 
+def profile_complete_user(user: Annotated[CurrentUser, Depends(verified_user)]) -> CurrentUser:
+    """Auth + email-verified + profile-complete gate.
+
+    Apply to write endpoints (POST /jobs, POST /me/compounds, etc.) that
+    should require the user to have filled out the welcome form. The
+    frontend ProfileRedirect routes new users to /welcome and bounces
+    them back if they try to navigate elsewhere — this is the
+    server-side defense-in-depth so a tampered client can't bypass.
+
+    "Complete" means: organization AND role are both non-empty in
+    public.user_profile. We use a fresh session here (rather than asking
+    the caller to inject one) so applying the dependency requires no
+    changes to the calling endpoint signature beyond swapping the dep.
+
+    Returns 403 with a frontend-friendly message; the frontend's API
+    helper turns 403s with this exact detail prefix into a redirect to
+    /welcome (see api.ts).
+    """
+    # Local imports to avoid a circular: db.py imports from this module
+    # transitively via the routers.
+    from sqlmodel import Session
+    from sqlalchemy import text
+    from .db import engine
+
+    with Session(engine) as session:
+        row = session.execute(
+            text(
+                "SELECT organization, role FROM public.user_profile"
+                " WHERE user_id = :uid"
+            ),
+            {"uid": user.id},
+        ).mappings().first()
+
+    org = (row or {}).get("organization") or ""
+    role = (row or {}).get("role") or ""
+    if not org.strip() or not role.strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please complete your profile before submitting jobs. "
+                   "Visit /welcome to fill out your organization and role.",
+        )
+    return user
+
+
 # ── Admin gate ────────────────────────────────────────────────────────────
 #
 # Admin endpoints (/admin/*) are gated behind a single email allowlist

@@ -113,58 +113,99 @@ function Main({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * ProfileRedirect — fires once per browser. On the first auth-resolved
- * render where /me/profile is incomplete (no organization OR no role),
- * navigates to /welcome and immediately stamps the dismissed flag so the
- * redirect never fires again on this device — even if the user skips the
- * form. Subsequent profile edits live in /settings.
+ * ProfileRedirect — hard-blocks every route until the signed-in user
+ * has both `organization` and `role` set on their profile.
  *
- * Why a separate component (and not just useEffect inside App): keeps
- * the navigate() call out of App's render so a stray re-mount doesn't
- * re-trigger the check, and makes the gate easy to disable/test in
- * isolation later.
+ * **Hard-block design.** First-time users (any sign-up path: email or
+ * Google OAuth) MUST complete the profile form before they can use the
+ * app. There is intentionally no Skip and no localStorage dismiss flag.
+ * This is enforced server-side too — POST /jobs and POST /me/compounds
+ * return 403 when the profile is incomplete — so a tampered client can't
+ * bypass.
+ *
+ * Why? Earlier version had a Skip button + a one-shot dismiss flag. In
+ * beta a user signed in via Google and was never redirected here at all
+ * (silent /me/profile failure during the OAuth-callback race window —
+ * Supabase JWT not propagated yet) and made it through job submission
+ * with an empty profile. Hard-blocking + retry + cache makes that
+ * impossible.
+ *
+ * Behavior:
+ *  - On every navigation, if profile isn't yet known-complete for the
+ *    current user.id, fetch /me/profile.
+ *  - If the call fails transiently (auth-callback race), retry with
+ *    backoff up to 3 attempts. After all attempts fail we still
+ *    redirect — /welcome's own fetch will recover, worst case the user
+ *    re-types their name.
+ *  - Once a user.id is verified complete, cache that for the page's
+ *    lifetime so we don't /me/profile-spam on every nav.
  *
  * Skipped on:
- *   • The /welcome page itself (we're already there)
- *   • Auth pages /login, /signup, /verify-email, /forgot-password (no
- *     point bouncing the user mid-auth flow)
- *   • Anyone whose profile is complete (server-side data wins)
- *   • Anyone with the local dismiss flag (covers the "redirected once
- *     already, refreshed without finishing" case)
+ *  - /welcome itself (we're already there)
+ *  - Auth pages /login, /signup, /verify-email, /forgot-password (no
+ *    point bouncing the user mid-auth flow)
+ *  - Public pages /privacy, /terms, /contact (a signed-in user may
+ *    still legitimately want to read their privacy policy, etc.)
  */
-const PROFILE_DISMISS_KEY = "liganx.profileCompletion.dismissed";
-const REDIRECT_SKIP_PATHS = ["/welcome", "/login", "/signup", "/verify-email", "/forgot-password"];
+const REDIRECT_SKIP_PATHS = [
+  "/welcome",
+  "/login",
+  "/signup",
+  "/verify-email",
+  "/forgot-password",
+  "/privacy",
+  "/terms",
+  "/contact",
+];
+// Once we've confirmed a user's profile is complete, cache the user.id
+// for the page's lifetime so we don't /me/profile-spam on every nav.
+// Keyed by user.id so a different user signing in on the same browser
+// doesn't inherit the previous user's completeness state.
+const profileCompleteCache = new Set<string>();
+
+async function fetchProfileWithRetry(maxAttempts = 3): Promise<{ organization?: string | null; role?: string | null } | null> {
+  // Linear backoff: 0ms, 400ms, 1200ms total of ~1.6s. Covers the
+  // OAuth-callback race window (Supabase JWT not yet in request headers
+  // immediately after Google redirect). Past 1.6s any further failure
+  // is real, and we'd rather over-redirect than leave the user hanging.
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, attempt * 400 + 400));
+    try {
+      return await api.getMyProfile();
+    } catch {
+      // Swallow and retry. After all attempts fail we return null and
+      // the caller still navigates to /welcome — see ProfileRedirect.
+    }
+  }
+  return null;
+}
 
 function ProfileRedirect() {
   const { user, loading: authLoading } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const fired = useRef(false);
 
   useEffect(() => {
-    if (fired.current) return;
     if (authLoading || !user) return;
     if (REDIRECT_SKIP_PATHS.includes(location.pathname)) return;
-    if (localStorage.getItem(PROFILE_DISMISS_KEY)) return;
+    if (profileCompleteCache.has(user.id)) return;
 
     let cancelled = false;
-    api.getMyProfile()
-      .then((p) => {
-        if (cancelled || fired.current) return;
-        const incomplete = !p.organization || !p.role;
-        if (incomplete) {
-          // Stamp the flag BEFORE navigating so a quick back-button
-          // press, manual reload, or any subsequent navigation can't
-          // re-trigger the redirect. The user gets exactly one nudge.
-          localStorage.setItem(PROFILE_DISMISS_KEY, "1");
-          fired.current = true;
-          navigate("/welcome", { replace: true });
-        }
-      })
-      .catch(() => {
-        // Silent fail — don't bounce the user around if the profile
-        // API is down. They can complete the form via /settings later.
-      });
+    fetchProfileWithRetry().then((p) => {
+      if (cancelled) return;
+      // Defensive: if every attempt errored (e.g. backend is down),
+      // redirect to /welcome anyway. /welcome's own fetch will retry;
+      // worst case the user re-types their name. That's much better
+      // than them silently slipping through with an unfilled profile,
+      // which is the bug we're fixing.
+      const orgFilled = !!(p?.organization && String(p.organization).trim());
+      const roleFilled = !!(p?.role && String(p.role).trim());
+      if (orgFilled && roleFilled) {
+        profileCompleteCache.add(user.id);
+        return;
+      }
+      navigate("/welcome", { replace: true });
+    });
     return () => { cancelled = true; };
   }, [authLoading, user, location.pathname, navigate]);
 
