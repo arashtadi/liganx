@@ -420,6 +420,73 @@ interface AiSidebarProps {
   mutations?: string;
 }
 
+// Curated medchem hints for well-known oncogenic mutations. When the
+// sidebar opens with one of these in the user's mutation context, we
+// surface the hint as a small chip BELOW the pocket-aware indicator
+// so the user gets a domain-grounded starting point instead of staring
+// at a blank canvas. These are short by design — anything longer
+// belongs in the AI's response, not the chrome.
+//
+// The map is keyed by mutation code in canonical "L858R" / "T790M"
+// form. Multi-mutation strings (e.g. "T790M+C797S") get split on +
+// and the FIRST recognised hint wins. Order in the map doesn't matter.
+//
+// Sources: review articles + the FDA labels for the named drugs.
+// References for each are in the comment line so a reviewer can audit.
+const MUTATION_HINTS: Record<string, string> = {
+  // EGFR L858R: gain-of-function in the activation loop. The L→R swap
+  // creates a positively-charged sidechain; H-bond donors that reach
+  // it tend to score better. (Gefitinib/Erlotinib lit.)
+  L858R: "Activating L→R adds a positive charge near the activation loop. H-bond donors reaching that region often score better.",
+  // EGFR T790M / ALK L1196M: gatekeeper mutations. Replace polar Thr
+  // with bulky hydrophobic Met → less room for compounds reaching
+  // the back pocket. Smaller substituents on the hinge-binding
+  // scaffold often retain activity (Osimertinib design principle).
+  T790M: "Gatekeeper Thr→Met fills space near the ATP cleft. Smaller substituents at the back-pocket position usually retain activity.",
+  L1196M: "Gatekeeper Leu→Met fills the back pocket. Smaller substituents on the hinge-binding scaffold tend to retain activity.",
+  // BCR-ABL T315I: gatekeeper. Thr→Ile loses an H-bond donor AND
+  // adds steric clash. Compounds that survive (Ponatinib) extend into
+  // a different sub-pocket via a triple bond linker.
+  T315I: "Gatekeeper Thr→Ile loses an H-bond donor and adds steric bulk. Linkers that bypass the gatekeeper region often survive.",
+  // BTK C481S: covalent-inhibitor escape mutation. Cys→Ser removes
+  // the thiol that warhead-bearing inhibitors (Ibrutinib) rely on.
+  // Reversible (non-covalent) compounds work; the warhead is dead.
+  C481S: "Cys→Ser removes the thiol covalent inhibitors target. Reversible (non-covalent) binders are the workaround — drop any warhead.",
+  // BRAF V600E: most common BRAF activating mutation. Creates a
+  // hydrophobic gain-of-function pocket. Vemurafenib-class compounds
+  // are designed around this — para/meta methyl/F substituents on
+  // their phenyl ring fill the new hydrophobic space.
+  V600E: "Adds a hydrophobic gain near residue 600. Methyl, ethyl, or fluoro at meta/para of an aryl group often fills the new pocket.",
+  // KRAS G12C: covalent target (Sotorasib). The Cys is the unique
+  // site for warhead attachment. Swap-out warheads for reversible
+  // chemistry usually loses everything.
+  G12C: "Cys12 is the warhead anchor. Acrylamide/propenamide tethers near the switch-II pocket are the design point.",
+  // KIT D816V: similar to BRAF V600E — activates by hydrophobic gain.
+  D816V: "Activating Asp→Val adds a hydrophobic patch near the activation loop. Lipophilic substituents in that direction often help.",
+  // MET D1228V/Y1230H/F1200I: kinase domain resistance set. Mostly
+  // gatekeeper-region or activation-loop-region steric clashes.
+  D1228V: "Activation-loop substitution adds bulk. Smaller, less rigid scaffolds often retain activity.",
+  Y1230H: "Loop-flanking aromatic loss. Compounds that don't rely on stacking with Y1230 tend to survive.",
+  // PIK3CA H1047R: hotspot. Allosteric pocket changes shape, charge.
+  H1047R: "Activating swap near the C-terminus reshapes the allosteric pocket. Larger, basic-leaning substituents have re-engaged this site.",
+};
+
+/** Resolve a mutations string ("V600E" or "T790M+C797S" or "T315I, F317L")
+ *  to the FIRST matching curated hint. Returns null when nothing matches.
+ *  Splits on common separators so users typing in any reasonable format
+ *  get a hit if one applies. */
+function resolveMutationHint(mutations?: string): string | null {
+  if (!mutations) return null;
+  const codes = mutations
+    .split(/[,+\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const c of codes) {
+    if (MUTATION_HINTS[c]) return MUTATION_HINTS[c];
+  }
+  return null;
+}
+
 type ActionStatus = "idle" | "running" | "ok" | "error";
 
 interface AssistResult {
@@ -452,9 +519,59 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [result, setResult] = useState<AssistResult | null>(null);
   const [properties, setProperties] = useState<PropertiesResult | null>(null);
+  // Live property strip — auto-updates as the user draws so they see
+  // MW / logP / QED / Lipinski feedback without clicking anything.
+  // Separate from `properties` (which is the click-driven detailed
+  // panel) so the user can keep a Predict-properties result expanded
+  // while the strip continues to refresh as they edit.
+  const [liveProps, setLiveProps] = useState<PropertiesResult | null>(null);
   // Track which kind of action ran last so the result panel labels itself
   // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
   const [lastAction, setLastAction] = useState<"none" | "edit" | "props" | "analogs">("none");
+
+  // Live property strip: every 2.5s, read the current SMILES from
+  // Ketcher and ask the backend for its property panel. Cheap
+  // (RDKit-only, no LLM, ~5ms server-side) but rate-limited
+  // (300/hr/IP — at one call every 2.5s that's 1440/hr if the modal
+  // is left open all day, well above the cap, so we also debounce
+  // against unchanged SMILES).
+  const lastQueriedSmilesRef = useRef<string>("");
+  useEffect(() => {
+    if (!ketcherReady) return;
+    let cancelled = false;
+    const tick = async () => {
+      const apiObj = getApi();
+      if (!apiObj?.getSmiles) return;
+      try {
+        const smi: string = await apiObj.getSmiles();
+        if (cancelled) return;
+        const trimmed = (smi || "").trim();
+        // Empty canvas → clear the strip.
+        if (!trimmed) {
+          if (liveProps !== null) setLiveProps(null);
+          lastQueriedSmilesRef.current = "";
+          return;
+        }
+        // Skip if we already fetched for this exact SMILES — keeps the
+        // 300/hr cap healthy when the user is just staring at a stable
+        // structure with the modal open.
+        if (trimmed === lastQueriedSmilesRef.current) return;
+        lastQueriedSmilesRef.current = trimmed;
+        const p = await api.assistProperties(trimmed);
+        if (!cancelled) setLiveProps(p);
+      } catch {
+        // Live strip is best-effort. A transient failure just means the
+        // strip lags by one tick.
+      }
+    };
+    // Fire one immediately on mount, then on a 2.5s interval.
+    tick();
+    const interval = window.setInterval(tick, 2500);
+    return () => { cancelled = true; window.clearInterval(interval); };
+    // liveProps deliberately not in deps — including it would cause
+    // the interval to be re-created on every fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ketcherReady, getApi]);
 
   /** Read SMILES from Ketcher. Returns null + sets an error if the
    *  canvas is empty or Ketcher hasn't finished loading. */
@@ -560,6 +677,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
     }
   }
 
+  // Curated mutation hint — surfaced as a chip when the user's
+  // selected mutation matches one of the well-known oncogenic
+  // variants in MUTATION_HINTS. Domain-grounded starting point so
+  // the user has direction even before clicking anything.
+  const mutationHint = resolveMutationHint(mutations);
+
   return (
     <aside className="w-[320px] shrink-0 border-l border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden">
       {/* Header */}
@@ -577,7 +700,45 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
             {mutations && <> · {mutations}</>}
           </div>
         )}
+        {mutationHint && (
+          <div className="mt-2 px-2 py-1.5 rounded-md bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 text-[10px] text-delta-900 dark:text-delta-100 leading-relaxed">
+            <span className="font-semibold">Hint:</span> {mutationHint}
+          </div>
+        )}
       </div>
+
+      {/* Live property strip — auto-updates as the user draws so they
+          see MW / logP / QED / Lipinski feedback at a glance without
+          clicking Predict properties. Hidden when canvas is empty or
+          SMILES doesn't parse cleanly (live fetch sets liveProps to
+          null in those cases). */}
+      {liveProps && liveProps.valid && (
+        <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30">
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-slate-600 dark:text-slate-300">
+            <LivePropPair label="MW" value={liveProps.mw} />
+            <LivePropPair label="logP" value={liveProps.logp} />
+            <LivePropPair label="QED" value={liveProps.qed} />
+            <LivePropPair label="TPSA" value={liveProps.tpsa} />
+            {liveProps.lipinski_pass !== undefined && (
+              <span
+                className={
+                  liveProps.lipinski_pass
+                    ? "text-emerald-700 dark:text-emerald-300"
+                    : "text-rose-700 dark:text-rose-300"
+                }
+                title="Lipinski rule of 5"
+              >
+                {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
+              </span>
+            )}
+            {(liveProps.pains_hits?.length ?? 0) > 0 && (
+              <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
+                PAINS {liveProps.pains_hits!.length}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Quick actions */}
       <div className="p-3 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
@@ -750,6 +911,19 @@ function Pill({ ok, okLabel, badLabel }: { ok: boolean | undefined; okLabel: str
   ) : (
     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/40">
       {badLabel}
+    </span>
+  );
+}
+
+/** Inline label/value pair for the live property strip. Compact format
+ *  ("MW 180", "logP 1.3") so multiple stats fit horizontally without
+ *  needing the larger Stat card layout. */
+function LivePropPair({ label, value }: { label: string; value: number | undefined }) {
+  if (value === undefined) return null;
+  return (
+    <span>
+      <span className="text-slate-400 dark:text-slate-500">{label}</span>{" "}
+      <span className="font-medium text-slate-700 dark:text-slate-200">{value}</span>
     </span>
   );
 }
