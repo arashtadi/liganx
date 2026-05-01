@@ -25,8 +25,16 @@ import { Link } from "react-router-dom";
 import { ApiError, api } from "../api";
 import { Spinner, ArrowRight } from "../components/Icons";
 import { usePageMeta } from "../lib/usePageMeta";
+import Turnstile from "../components/Turnstile";
 
 type Status = "idle" | "sending" | "sent" | "error";
+
+// Cloudflare Turnstile site key — public, safe to ship in the bundle.
+// Stored in Vercel as VITE_TURNSTILE_SITE_KEY. The matching SECRET
+// key lives only on the backend (TURNSTILE_SECRET_KEY Fly secret).
+// When unset (local dev / pre-rollout), the Turnstile component
+// renders a small dev note and the form proceeds without a token.
+const TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ?? "";
 
 export default function ContactPage() {
   // SEO meta. Indexed via robots.txt (Allow: /contact). The title is
@@ -45,6 +53,11 @@ export default function ContactPage() {
   // Honeypot — bound to React state so we can read it on submit, but
   // visually hidden in the DOM so humans don't see it. Default empty.
   const [website, setWebsite] = useState("");
+  // Turnstile token. Empty until the widget passes the challenge.
+  // The form's submit button stays disabled until we have one (when
+  // Turnstile is configured) so the user gets a clear "wait for the
+  // CAPTCHA" affordance instead of a server-side rejection.
+  const [turnstileToken, setTurnstileToken] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -55,12 +68,19 @@ export default function ContactPage() {
   const messageOver = message.length > MAX_MESSAGE;
   const messageTooShort = message.trim().length > 0 && message.trim().length < MIN_MESSAGE;
 
+  // CAPTCHA-required when the site key is configured. Without a key
+  // (local dev / pre-rollout), we skip the gate so devs can still
+  // exercise the form. Backend has its own enforcement so a tampered
+  // bundle can't bypass.
+  const captchaSatisfied = !TURNSTILE_SITE_KEY || turnstileToken.length > 0;
+
   const canSubmit =
     status !== "sending" &&
     name.trim().length > 0 &&
     email.trim().length > 0 &&
     message.trim().length >= MIN_MESSAGE &&
-    !messageOver;
+    !messageOver &&
+    captchaSatisfied;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -73,6 +93,7 @@ export default function ContactPage() {
         email: email.trim(),
         message: message.trim(),
         website,
+        turnstile_token: turnstileToken,
       });
       setStatus("sent");
     } catch (err) {
@@ -226,6 +247,19 @@ export default function ContactPage() {
             </p>
           )}
         </div>
+
+        {/* Cloudflare Turnstile widget — invisible/lightweight challenge
+            that gates the submit button. Most users never see anything
+            beyond a brief spinner; only suspicious sessions get an
+            interactive prompt. The token from a successful challenge
+            flows into form state via setTurnstileToken and is sent to
+            the backend, which re-verifies with Cloudflare server-side. */}
+        <Turnstile
+          siteKey={TURNSTILE_SITE_KEY}
+          onVerify={setTurnstileToken}
+          onExpire={() => setTurnstileToken("")}
+          onError={() => setTurnstileToken("")}
+        />
 
         {errorMsg && (
           <div role="alert" className="rounded-md border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-sm text-rose-800 dark:text-rose-200">

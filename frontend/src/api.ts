@@ -409,10 +409,14 @@ export const api = {
    *  probe whether the trap caught it. Throws ApiError on validation
    *  failures (422), rate limit (429), or Telegram delivery failures
    *  (502/503) so the form can show an actionable message. */
-  submitContact: (payload: { name: string; email: string; message: string; website?: string }) =>
+  submitContact: (payload: { name: string; email: string; message: string; website?: string; turnstile_token?: string }) =>
     request<{ accepted: boolean }>("/contact", {
       method: "POST",
-      body: JSON.stringify({ ...payload, website: payload.website ?? "" }),
+      body: JSON.stringify({
+        ...payload,
+        website: payload.website ?? "",
+        turnstile_token: payload.turnstile_token ?? "",
+      }),
     }),
 
   /** Admin-only: top-level dashboard counters. Cheap; safe to poll.

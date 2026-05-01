@@ -64,6 +64,11 @@ class ContactSubmission(BaseModel):
     `website` is the honeypot — a real human leaves it blank because
     the field is hidden from the rendered DOM. If it shows up filled,
     we silently accept and discard.
+
+    `turnstile_token` is the Cloudflare Turnstile widget's challenge
+    response. Required when TURNSTILE_SECRET_KEY is set in env (prod);
+    optional when not set (local dev where the user hasn't bothered
+    setting up Turnstile keys).
     """
 
     name: str = Field(..., min_length=1, max_length=MAX_NAME)
@@ -73,6 +78,11 @@ class ContactSubmission(BaseModel):
     # see this one. Default empty string so legitimate clients don't
     # need to know it exists.
     website: str = Field(default="", max_length=500)
+    # Cloudflare Turnstile token — verified server-side by POSTing to
+    # https://challenges.cloudflare.com/turnstile/v0/siteverify with
+    # the secret key. ~2KB tokens are typical; we cap at 4KB to be
+    # forgiving of future format changes from Cloudflare.
+    turnstile_token: str = Field(default="", max_length=4096)
 
 
 class ContactResponse(BaseModel):
@@ -106,25 +116,121 @@ def _escape_html(s: str) -> str:
     )
 
 
+def _ua_emoji(ua: str | None) -> str:
+    """Pick a one-emoji glyph for the user's browser/OS so the metadata
+    line scans at a glance on a locked phone screen. Best-effort — UA
+    strings are notoriously unreliable, but the worst case is the
+    fallback laptop emoji which is honest about the uncertainty."""
+    if not ua:
+        return "💻"
+    u = ua.lower()
+    if "iphone" in u or "ipad" in u or "ios" in u:
+        return "📱"
+    if "android" in u:
+        return "📱"
+    if "mac os" in u or "macintosh" in u:
+        return "🍎"
+    if "windows" in u:
+        return "🪟"
+    if "linux" in u:
+        return "🐧"
+    if "bot" in u or "crawler" in u or "spider" in u:
+        return "🤖"
+    return "💻"
+
+
 def _format_telegram_message(sub: ContactSubmission, ip: str, ua: str | None) -> str:
     """Build the HTML-formatted Telegram message body. Layout chosen so
     the FROM line sits at the top of the notification preview on a
     locked phone — `Name <email>` is the most useful 'who is this'
-    summary."""
+    summary, and emojis at the start of each line give a glanceable
+    icon column even before the labels register."""
     name_e = _escape_html(sub.name)
     email_e = _escape_html(str(sub.email))
     message_e = _escape_html(sub.message)
     ua_e = _escape_html(ua or "—")
+    device = _ua_emoji(ua)
     return (
-        f"<b>📨 New contact form message</b>\n"
+        f"🎉 <b>New message from liganx.com!</b> 📬\n"
         f"\n"
-        f"<b>From:</b> {name_e} &lt;{email_e}&gt;\n"
-        f"<b>IP:</b> <code>{ip}</code>\n"
-        f"<b>UA:</b> <code>{ua_e}</code>\n"
+        f"👤 <b>From:</b> {name_e}\n"
+        f"✉️ <b>Email:</b> <code>{email_e}</code>\n"
         f"\n"
-        f"<b>Message:</b>\n"
-        f"{message_e}"
+        f"💬 <b>Message:</b>\n"
+        f"{message_e}\n"
+        f"\n"
+        f"<i>📍 {ip}  ·  {device} {ua_e}</i>"
     )
+
+
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+async def _verify_turnstile(token: str, client_ip: str) -> tuple[bool, str | None]:
+    """Verify a Turnstile challenge token with Cloudflare.
+
+    Returns (passed, error_message_for_logging).
+
+    If TURNSTILE_SECRET_KEY isn't set in env we skip the check entirely
+    and treat all submissions as passing — this lets local dev work
+    without Cloudflare credentials, and lets us ship the integration
+    BEFORE the real keys are loaded into Fly secrets without breaking
+    the contact form mid-rollout.
+
+    Cloudflare's siteverify is itself an HTTP call; we give it 5s. On
+    timeout / network failure we fail OPEN (treat as passing) and log
+    loudly. The reason: the upstream Telegram delivery still happens,
+    so the spam still reaches Arash's phone — but he gets it instead
+    of legitimate users being silently blocked because Cloudflare had
+    a 30-second blip. Trade-off favors availability over perfect spam
+    filtering, given honeypot + rate-limit are still active layers.
+    """
+    secret = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
+    if not secret:
+        # No Turnstile configured — passthrough. Logged at startup
+        # via the same "credentials missing" path so the operator
+        # knows the form is unprotected by CAPTCHA.
+        return True, None
+
+    if not token:
+        # Server-enforced: when Turnstile IS configured, the token
+        # field must be present. Empty token = treat as bot.
+        return False, "missing turnstile token"
+
+    payload = {
+        "secret": secret,
+        "response": token,
+        # remoteip is recommended by Cloudflare so they can correlate
+        # the challenge with the client. Optional — the verify call
+        # works without it but is slightly less accurate.
+        "remoteip": client_ip,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(TURNSTILE_VERIFY_URL, data=payload)
+        if r.status_code != 200:
+            log.warning("Turnstile siteverify HTTP %d: %s", r.status_code, r.text[:200])
+            return True, f"siteverify HTTP {r.status_code} (failing open)"
+        body = r.json()
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        log.warning("Turnstile siteverify network error (failing open): %s", e)
+        return True, f"siteverify network error: {e!r} (failing open)"
+    except Exception as e:
+        log.exception("Turnstile siteverify unexpected error (failing open): %s", e)
+        return True, f"siteverify unexpected error (failing open)"
+
+    if body.get("success") is True:
+        return True, None
+    # Cloudflare returns error-codes as a list; common ones include
+    # "invalid-input-response" (token tampered or expired),
+    # "timeout-or-duplicate" (already-redeemed token), and
+    # "missing-input-secret" (server misconfig). We log the codes
+    # so a real spam wave is debuggable but only return a generic
+    # message to the user — same response for all failure modes so
+    # spammers can't probe for rule edges.
+    err_codes = body.get("error-codes") or []
+    log.info("Turnstile rejected: codes=%s ip=%s", err_codes, client_ip)
+    return False, f"rejected: {err_codes}"
 
 
 async def _send_to_telegram(text: str) -> None:
@@ -178,18 +284,35 @@ async def submit_contact(
     submission: ContactSubmission,
     request: Request,
 ) -> ContactResponse:
+    ip = _client_ip(request)
+
     # Honeypot: a non-empty `website` is almost certainly a bot. We log
     # so we know our defences are working, but reply with a normal
     # success so the bot doesn't adapt.
     if submission.website.strip():
         log.info(
             "Contact honeypot triggered: ip=%s website=%r",
-            _client_ip(request),
+            ip,
             submission.website[:80],
         )
         return ContactResponse(accepted=True)
 
-    ip = _client_ip(request)
+    # Cloudflare Turnstile CAPTCHA verification. When the server is
+    # configured with a TURNSTILE_SECRET_KEY this is enforced; without
+    # it (local dev) we passthrough so testing still works. We hit
+    # this BEFORE the Telegram POST so a failed CAPTCHA never costs
+    # us a notification on Arash's phone.
+    passed, why = await _verify_turnstile(submission.turnstile_token, ip)
+    if not passed:
+        log.info("Contact CAPTCHA failed: ip=%s why=%s", ip, why)
+        # 400 (not 403) so the frontend reads it as a fixable
+        # validation error rather than an authorization issue.
+        # Generic message — don't tell spammers which check failed.
+        raise HTTPException(
+            status_code=400,
+            detail="Couldn't verify you're human. Please refresh and try again.",
+        )
+
     ua = request.headers.get("user-agent")
     text = _format_telegram_message(submission, ip=ip, ua=ua)
 
