@@ -36,7 +36,16 @@ primary_region = "iad"
   timeout = "5s"
   path = "/health"
 
-# Single process group, default uvicorn command from Dockerfile CMD.
+# Single process group; the entrypoint script (deploy/start.sh in the
+# repo) runs BOTH a celery worker and uvicorn on the same machine so
+# they share the pose-cache volume natively (Fly volumes are local
+# block storage and can't be mounted across process groups).
+#
+# Deploy survival still works because the durable queue lives on the
+# separate liganx-redis app — its machine isn't restarted by liganx-api
+# deploys. With Celery task_acks_late=True, any task killed mid-flight
+# by SIGTERM gets re-delivered to the next worker startup. The task is
+# safe in Redis until it explicitly acks on completion.
 [processes]
   app = ""
 

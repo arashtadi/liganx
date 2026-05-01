@@ -110,4 +110,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://127.0.0.1:8000/health || exit 1
 
-CMD ["uvicorn", "deltadock.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Combined entrypoint: starts a Celery worker (when USE_CELERY_DISPATCH=true)
+# alongside uvicorn so both share the pose-cache volume on the same machine.
+# When the flag is off the script just starts uvicorn — same behavior as the
+# old plain CMD, with no worker overhead.
+COPY deploy/start.sh /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh
+
+CMD ["/usr/local/bin/start.sh"]
