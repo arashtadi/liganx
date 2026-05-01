@@ -217,29 +217,79 @@ def create_job(
     # USR_ tokens since the lookup-router stores files with lowercase hex —
     # any extra .upper() breaks the runner's file lookup.
 
-    # Eager SMILES validation. Catches typos and garbage at submit time so the
-    # user gets immediate field-level feedback instead of a 30-second wait
-    # followed by a cryptic "ligand_prep_failed" cell. We use the pipeline's
-    # resilient parser (the same one the runner uses) so anything that would
-    # actually dock gets accepted, and anything truly broken gets rejected.
+    # Eager SMILES validation. Three checks per compound — each catches a
+    # different failure mode that would otherwise cost the user GPU time:
+    #   1. Parse: SMILES has to round-trip RDKit (the pipeline's resilient
+    #      parser is the same one the runner uses).
+    #   2. Connectivity: disconnected fragments (e.g. salt forms like
+    #      "CC(=O)O.[Na+]") can't be docked as one molecule. Caller should
+    #      Keep-largest before submit; we reject here as a safety net.
+    #   3. 3D embeddable: RDKit can parse it but EmbedMolecule must succeed
+    #      or the docking pipeline fails at ligand_prep. Catches things like
+    #      pathologically large rings or unusual valences that parse fine.
+    # Each invalid entry includes the offending SMILES so the frontend can
+    # offer "Open in sketcher" to fix it without retyping.
     invalid: list[dict] = []
     try:
         from deltadock_pipeline.prep import _parse_smiles_resilient
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
         for i, c in enumerate(payload.compounds):
             smi = (c.smiles or "").strip()
+            row_base = {"index": i, "name": c.name, "smiles": smi}
             if not smi:
-                invalid.append({"index": i, "name": c.name, "reason": "empty SMILES"})
+                invalid.append({**row_base, "reason": "empty SMILES", "kind": "empty"})
                 continue
             if len(smi) > 1000:
-                invalid.append({"index": i, "name": c.name, "reason": f"SMILES too long ({len(smi)} chars; max 1000)"})
+                invalid.append({**row_base, "reason": f"SMILES too long ({len(smi)} chars; max 1000)", "kind": "too_long"})
                 continue
             try:
                 mol = _parse_smiles_resilient(smi)
             except Exception as e:
-                invalid.append({"index": i, "name": c.name, "reason": f"parse error: {type(e).__name__}"})
+                invalid.append({**row_base, "reason": f"parse error: {type(e).__name__}", "kind": "parse"})
                 continue
             if mol is None:
-                invalid.append({"index": i, "name": c.name, "reason": "RDKit could not parse SMILES (not a valid molecule)"})
+                invalid.append({**row_base, "reason": "RDKit could not parse this SMILES", "kind": "parse"})
+                continue
+            # Disconnected-fragment check — "CC.CC.CC" parses fine but isn't
+            # a single dockable molecule. The frontend's MoleculePreview
+            # offers a Keep-largest button; if the user submitted anyway,
+            # surface the largest fragment in the error so they can apply.
+            try:
+                frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+                if len(frags) > 1:
+                    largest = max(frags, key=lambda m: m.GetNumHeavyAtoms())
+                    largest_smi = Chem.MolToSmiles(largest, canonical=True)
+                    invalid.append({
+                        **row_base,
+                        "reason": f"{len(frags)} disconnected fragments — Liganx docks single molecules. Keep the largest fragment ({largest.GetNumHeavyAtoms()} atoms) and re-submit.",
+                        "kind": "fragments",
+                        "fragment_count": len(frags),
+                        "largest_fragment": largest_smi,
+                    })
+                    continue
+            except Exception:
+                pass
+            # 3D embedding sanity check. Tight maxAttempts because this is
+            # synchronous on the submit path — users are waiting. ~50-200ms
+            # per compound for typical drug-like molecules.
+            try:
+                mol_h = Chem.AddHs(mol)
+                rc = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+                if rc < 0:
+                    invalid.append({
+                        **row_base,
+                        "reason": "RDKit can't generate a 3D conformer for this molecule — the docking pipeline would fail at ligand prep. Common causes: very large rings, unusual valences.",
+                        "kind": "embed",
+                    })
+                    continue
+            except Exception as e:
+                invalid.append({
+                    **row_base,
+                    "reason": f"3D embed failed: {type(e).__name__}",
+                    "kind": "embed",
+                })
+                continue
     except ImportError:
         # If the pipeline isn't importable in this environment (dev without
         # bio deps), skip eager validation so we don't fail-closed in dev.

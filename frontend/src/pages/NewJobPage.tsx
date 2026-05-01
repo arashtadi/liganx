@@ -5,6 +5,7 @@ import { api, ApiError, type AlternativePdb, type CatalogTarget, type MutationIs
 import { ArrowRight, Beaker, Bolt, Close, Plus, Sparkles, Spinner, Target } from "../components/Icons";
 import AutocompleteInput from "../components/AutocompleteInput";
 import KetcherModal from "../components/KetcherModal";
+import MoleculePreview from "../components/MoleculePreview";
 import RenamePrompt from "../components/RenamePrompt";
 
 interface CompoundRow {
@@ -1508,49 +1509,57 @@ export default function NewJobPage() {
           />
         )}
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {compounds.map((c, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 items-start">
-              <div className="col-span-12 sm:col-span-3">
-                <input
-                  className="input"
-                  placeholder="Name (saves to your library)"
-                  value={c.name}
-                  onChange={(e) => setCompound(i, { name: e.target.value })}
+            <div key={i} className="flex flex-wrap gap-2 items-start">
+              {/* Inline 2D molecule preview — debounced 400ms, calls
+                  /lookup/inspect-smiles. Catches broken SMILES at type
+                  time so users see "this isn't what I drew" before
+                  clicking Run docking. Hidden when the row is empty. */}
+              <div className="shrink-0">
+                <MoleculePreview
+                  smiles={c.smiles}
+                  width={140}
+                  height={88}
+                  onUseLargestFragment={(largest) => setCompound(i, { smiles: largest })}
+                  onOpenInSketcher={() => setSketcherRow(i)}
                 />
               </div>
-              <div className="col-span-9 sm:col-span-6">
-                <input
-                  className="input-mono"
-                  placeholder="SMILES"
-                  value={c.smiles}
-                  onChange={(e) => setCompound(i, { smiles: e.target.value })}
-                />
+              <div className="flex-1 min-w-[280px] grid grid-cols-12 gap-2">
+                <div className="col-span-12 sm:col-span-4">
+                  <input
+                    className="input"
+                    placeholder="Name (saves to your library)"
+                    value={c.name}
+                    onChange={(e) => setCompound(i, { name: e.target.value })}
+                  />
+                </div>
+                <div className="col-span-9 sm:col-span-5">
+                  <input
+                    className="input-mono"
+                    placeholder="SMILES"
+                    value={c.smiles}
+                    onChange={(e) => setCompound(i, { smiles: e.target.value })}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSketcherRow(i)}
+                  className="col-span-2 h-9 px-2 text-xs font-semibold text-delta-700 hover:text-white hover:bg-delta-600 ring-1 ring-delta-200 hover:ring-delta-600 bg-delta-50 flex items-center justify-center gap-1.5 rounded-md transition-colors dark:text-delta-300 dark:bg-delta-900/30 dark:ring-delta-700/40 dark:hover:bg-delta-600 dark:hover:text-white"
+                  title={c.smiles ? "Open the structure in the 2D sketcher to edit it" : "Draw a molecule with the 2D sketcher"}
+                >
+                  <SketchIcon size={14} />
+                  <span>{c.smiles ? "Edit" : "Sketch"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeCompound(i)}
+                  className="col-span-1 h-9 text-slate-400 hover:text-loss-600 flex items-center justify-center rounded-md hover:bg-loss-50 dark:text-slate-500 dark:hover:text-loss-400 dark:hover:bg-loss-900/30 transition-colors"
+                  aria-label="Remove"
+                >
+                  <Close size={16} />
+                </button>
               </div>
-              {/* Sketch button — opens the self-hosted Ketcher modal.
-                  Pre-loads the row's existing SMILES (if any) so users can
-                  edit a compound rather than start from a blank canvas.
-                  Pill button with explicit "Sketch" / "Edit" text label
-                  next to the pencil — earlier icon-only version was
-                  illegible at 16px. Layout: name(3) + SMILES(6) +
-                  sketch(2) + remove(1) = 12. */}
-              <button
-                type="button"
-                onClick={() => setSketcherRow(i)}
-                className="col-span-2 h-9 px-2 text-xs font-semibold text-delta-700 hover:text-white hover:bg-delta-600 ring-1 ring-delta-200 hover:ring-delta-600 bg-delta-50 flex items-center justify-center gap-1.5 rounded-md transition-colors dark:text-delta-300 dark:bg-delta-900/30 dark:ring-delta-700/40 dark:hover:bg-delta-600 dark:hover:text-white"
-                title={c.smiles ? "Open the structure in the 2D sketcher to edit it" : "Draw a molecule with the 2D sketcher"}
-              >
-                <SketchIcon size={14} />
-                <span>{c.smiles ? "Edit" : "Sketch"}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => removeCompound(i)}
-                className="col-span-1 h-9 text-slate-400 hover:text-loss-600 flex items-center justify-center rounded-md hover:bg-loss-50 dark:text-slate-500 dark:hover:text-loss-400 dark:hover:bg-loss-900/30 transition-colors"
-                aria-label="Remove"
-              >
-                <Close size={16} />
-              </button>
             </div>
           ))}
         </div>
@@ -1752,6 +1761,16 @@ export default function NewJobPage() {
             // Reset the upstream submit error so the panel collapses on the
             // next render — the user has effectively acknowledged the
             // suggestion by clicking it.
+            submit.reset();
+          }}
+          onFixCompound={(idx, newSmiles) => {
+            // Replace the offending row's SMILES with the largest-fragment
+            // form so the user can re-submit immediately.
+            setCompound(idx, { smiles: newSmiles });
+            submit.reset();
+          }}
+          onOpenSketcherFor={(idx) => {
+            setSketcherRow(idx);
             submit.reset();
           }}
         />
@@ -2030,13 +2049,86 @@ function LibraryPicker({
 function SubmitErrorPanel({
   err,
   onPickAlternative,
+  onFixCompound,
+  onOpenSketcherFor,
 }: {
   err: unknown;
   onPickAlternative: (alt: AlternativePdb) => void;
+  /** Called when the user clicks "Keep largest fragment" on a fragments-
+   *  type compound failure. Caller swaps the row's SMILES to the
+   *  largest-fragment SMILES and resets the submit error. */
+  onFixCompound?: (compoundIndex: number, newSmiles: string) => void;
+  /** Called when the user clicks "Open in sketcher" on a parse-type
+   *  failure. Caller opens Ketcher pre-loaded with the offending SMILES. */
+  onOpenSketcherFor?: (compoundIndex: number) => void;
 }) {
   const apiErr = err instanceof ApiError ? err : null;
   const detail = apiErr?.detail as ValidationDetail | undefined;
   const issues = detail?.mutation_issues || [];
+  const compoundIssues = detail?.invalid_compounds || [];
+
+  // Per-compound SMILES failures get the rich layout: name + reason + the
+  // offending SMILES + per-row action buttons. Keep-largest for fragments,
+  // Open-in-sketcher for parse/embed failures.
+  if (compoundIssues.length > 0) {
+    return (
+      <div className="card border-rose-300 bg-rose-50 text-rose-900 dark:bg-rose-900/15 dark:text-rose-100 dark:border-rose-700/40">
+        <h3 className="text-sm font-semibold mb-1">
+          {detail?.message || `${compoundIssues.length} compound${compoundIssues.length === 1 ? "" : "s"} couldn't be validated`}
+        </h3>
+        <p className="text-xs text-rose-800 dark:text-rose-200/80 mb-3">
+          We checked each compound before submitting. Below is what we found and how to fix it. Edits to the form clear this panel.
+        </p>
+        <ul className="space-y-2">
+          {compoundIssues.map((c) => (
+            <li
+              key={c.index}
+              className="rounded-md bg-white/80 dark:bg-slate-900/40 border border-rose-200 dark:border-rose-700/30 p-3"
+            >
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="text-xs font-semibold rounded bg-rose-100 text-rose-900 dark:bg-rose-800/40 dark:text-rose-100 px-1.5 py-0.5">
+                  Row {c.index + 1}
+                </span>
+                {c.name && (
+                  <span className="text-sm font-semibold text-ink dark:text-slate-100">
+                    {c.name}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-700 dark:text-slate-300 mt-1.5">
+                {c.reason}
+              </p>
+              {c.smiles && (
+                <div className="mt-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400 break-all bg-slate-50 dark:bg-slate-800/60 rounded px-2 py-1">
+                  {c.smiles}
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {c.kind === "fragments" && c.largest_fragment && onFixCompound && (
+                  <button
+                    type="button"
+                    onClick={() => onFixCompound(c.index, c.largest_fragment!)}
+                    className="btn-primary btn-sm text-xs"
+                  >
+                    Keep largest fragment
+                  </button>
+                )}
+                {(c.kind === "parse" || c.kind === "embed") && onOpenSketcherFor && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSketcherFor(c.index)}
+                    className="btn-secondary btn-sm text-xs"
+                  >
+                    Open in sketcher
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
 
   if (issues.length > 0) {
     return (

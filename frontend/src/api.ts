@@ -175,7 +175,23 @@ export interface AlternativePdb {
 /** Structured validation failure body returned by the backend on 422. */
 export interface ValidationDetail {
   message?: string;
-  invalid_compounds?: { index: number; name: string | null; reason: string }[];
+  invalid_compounds?: {
+    index: number;
+    name: string | null;
+    reason: string;
+    /** New fields surfaced by the upgraded eager validator. */
+    smiles?: string;
+    /** Why this row failed — one of:
+     *  - "empty"      — no SMILES typed
+     *  - "too_long"   — over 1000 chars
+     *  - "parse"      — RDKit refused to parse it
+     *  - "fragments"  — disconnected pieces (largest_fragment provided)
+     *  - "embed"      — parsed fine but no 3D conformer (would fail at
+     *                   ligand prep — caught here instead). */
+    kind?: "empty" | "too_long" | "parse" | "fragments" | "embed";
+    fragment_count?: number;
+    largest_fragment?: string;
+  }[];
   mutation_issues?: MutationIssue[];
 }
 
@@ -348,6 +364,28 @@ export const api = {
     request<UserCompound>(`/me/compounds/${id}/tags`, {
       method: "PATCH",
       body: JSON.stringify({ tags }),
+    }),
+
+  /** Inline SMILES inspection — parse + 2D depiction + fragment detection,
+   *  plus optional 3D-embed sanity check. Backs the MoleculePreview that
+   *  sits on every compound row in Step 3 of the New-job form. Frontend
+   *  debounces calls at ~400ms with embed_check=false; submit-time uses
+   *  embed_check=true to catch the runtime ligand-prep failure mode at
+   *  the form level instead of after a wasted GPU run. */
+  inspectSmiles: (payload: { smiles: string; embed_check?: boolean; width?: number; height?: number }) =>
+    request<{
+      valid: boolean;
+      error: string | null;
+      canonical_smiles: string | null;
+      svg: string | null;
+      fragment_count: number;
+      largest_fragment: { smiles: string; atom_count: number } | null;
+      embed_ok: boolean | null;
+      embed_error: string | null;
+      atom_count: number;
+    }>("/lookup/inspect-smiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),

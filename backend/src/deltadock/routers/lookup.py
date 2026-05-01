@@ -10,10 +10,12 @@ If multiple matches exist, PubChem returns them all; we just take the first
 """
 
 import logging
+from functools import lru_cache
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
 from ..services.rate_limit import UPLOADS_LIMIT
 
@@ -306,3 +308,186 @@ async def suggest_compound(q: str, limit: int = 8) -> dict:
     except Exception as e:
         log.warning("Autocomplete failed for %s: %s", name, e)
         return {"query": name, "suggestions": []}
+
+
+# ── SMILES inspection (parse + 2D depiction + structural sanity) ───────
+#
+# Used by the New-job form's MoleculePreview to give immediate visual
+# feedback on whether the SMILES the user typed is what they meant.
+# Catches three classes of bug BEFORE the user wastes GPU time:
+#   1. Parse failures (invalid valence, malformed brackets, etc.).
+#   2. Disconnected fragments (e.g. salt forms like "CC(=O)O.[Na+]").
+#   3. 3D-embeddable failures (parses fine, but RDKit can't get a 3D
+#      conformer — the docking pipeline would fail at ligand-prep step).
+#
+# We expose the SVG depiction the same endpoint produces because the
+# frontend wants to show the user "this is what your SMILES looks like"
+# inline. Single endpoint, single round-trip.
+
+
+class SmilesInspectIn(BaseModel):
+    smiles: str
+    # When true, also try EmbedMolecule. Slower (~200-500ms vs ~10ms parse-only)
+    # so the frontend opts in only at submit time, not on every keystroke.
+    embed_check: bool = False
+    # SVG canvas size in pixels. Bumping this is cheap on the server but
+    # large SVGs cost frontend rendering time, so cap at something sane.
+    width: int = 220
+    height: int = 130
+
+
+class SmilesFragmentInfo(BaseModel):
+    smiles: str
+    atom_count: int
+
+
+class SmilesInspectOut(BaseModel):
+    valid: bool
+    """True iff RDKit parsed AND sanitized successfully. Frontend uses this
+    as the 'green checkmark' signal."""
+    error: str | None = None
+    """Human-friendly reason when valid=False (RDKit's actual error trimmed
+    to one line)."""
+    canonical_smiles: str | None = None
+    """RDKit-canonicalized SMILES — frontend can offer this as a 'use the
+    canonical form' fix when the user typed something parseable but messy."""
+    svg: str | None = None
+    """2D depiction. Empty SVG is preserved when parse failed so the
+    frontend can show a placeholder."""
+    fragment_count: int = 0
+    """Number of dot-separated fragments. >1 means the user pasted a salt
+    form or similar; the frontend offers a Keep-largest button."""
+    largest_fragment: SmilesFragmentInfo | None = None
+    """When fragment_count>1, the largest fragment's SMILES + atom count.
+    The frontend's Keep-largest button writes this back to the row."""
+    embed_ok: bool | None = None
+    """Only present when embed_check=true. False means RDKit couldn't
+    get a 3D conformer — the docking pipeline would fail downstream, so
+    we surface it at submit time instead."""
+    embed_error: str | None = None
+    atom_count: int = 0
+    """Heavy-atom count of the parsed molecule. Used by the Keep-largest
+    suggestion to compare fragments."""
+
+
+def _trim_error(msg: str, limit: int = 200) -> str:
+    """RDKit dumps multi-line errors with full stack-traces; users only
+    want the headline. Keep first non-empty line, length-bound."""
+    if not msg:
+        return ""
+    first = next((ln for ln in msg.splitlines() if ln.strip()), msg)
+    return (first[: limit - 1] + "…") if len(first) > limit else first
+
+
+@lru_cache(maxsize=512)
+def _inspect_cached(smiles: str, embed: bool, w: int, h: int) -> dict:
+    """LRU-cached inspect — same SMILES on the same call type returns the
+    same answer, so debounced keystrokes don't reparse on every call."""
+    out: dict = {
+        "valid": False, "error": None, "canonical_smiles": None,
+        "svg": None, "fragment_count": 0, "largest_fragment": None,
+        "embed_ok": None, "embed_error": None, "atom_count": 0,
+    }
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, Draw
+        from rdkit.Chem.Draw import rdMolDraw2D
+    except ImportError:
+        out["error"] = "RDKit not available in this deployment"
+        return out
+
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=True)
+    except Exception as e:
+        out["error"] = _trim_error(str(e))
+        return out
+    if mol is None:
+        out["error"] = "RDKit could not parse this SMILES"
+        return out
+
+    out["valid"] = True
+    out["atom_count"] = mol.GetNumHeavyAtoms()
+    try:
+        out["canonical_smiles"] = Chem.MolToSmiles(mol, canonical=True)
+    except Exception:
+        pass
+
+    # Fragment detection — frags is a list of disconnected molecules.
+    try:
+        frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+        out["fragment_count"] = len(frags)
+        if len(frags) > 1:
+            largest = max(frags, key=lambda m: m.GetNumHeavyAtoms())
+            try:
+                largest_smi = Chem.MolToSmiles(largest, canonical=True)
+                out["largest_fragment"] = {
+                    "smiles": largest_smi,
+                    "atom_count": largest.GetNumHeavyAtoms(),
+                }
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2D depiction — small SVG inline. We keep stroke widths tight so
+    # the molecule is legible at thumbnail size. PNG would be smaller
+    # but SVG scales for retina + dark-mode-aware text styling later.
+    try:
+        drawer = rdMolDraw2D.MolDraw2DSVG(w, h)
+        opts = drawer.drawOptions()
+        opts.bondLineWidth = 1.4
+        opts.padding = 0.05
+        # Transparent background so the host card colors show through.
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+        # Strip xml prolog so the SVG can be inlined directly.
+        if svg.startswith("<?xml"):
+            svg = svg.split("?>", 1)[-1].lstrip()
+        out["svg"] = svg
+    except Exception as e:
+        log.debug("SVG render failed for %s: %s", smiles[:40], e)
+
+    if embed:
+        # Cheap 3D embed sanity check. Same call the runner makes; if
+        # this fails, the docking pipeline will too. Tight maxAttempts
+        # because we're doing this synchronously at submit time and
+        # users are waiting.
+        try:
+            mol_h = Chem.AddHs(mol)
+            r = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+            out["embed_ok"] = (r >= 0)
+            if r < 0:
+                out["embed_error"] = (
+                    "RDKit couldn't embed this molecule in 3D — the docking "
+                    "pipeline would fail at ligand prep. Most common causes: "
+                    "very large rings, unusual valences, or disconnected fragments."
+                )
+        except Exception as e:
+            out["embed_ok"] = False
+            out["embed_error"] = _trim_error(str(e))
+
+    # Suppress unused-import warning for lazy-loaded path; keeps Draw
+    # in scope for future depiction tweaks (e.g. atom labels).
+    _ = Draw
+    return out
+
+
+@router.post("/inspect-smiles", response_model=SmilesInspectOut)
+def inspect_smiles(payload: SmilesInspectIn) -> SmilesInspectOut:
+    """Parse, depict, and (optionally) 3D-embed-check a SMILES.
+
+    Backs the New-job form's inline MoleculePreview. Single round-trip
+    returns the parse verdict, a 2D SVG depiction, fragment metadata,
+    and an optional 3D embedding sanity check. The frontend debounces
+    typing-mode calls (embed_check=false) at ~400ms and switches to
+    embed_check=true at submit time."""
+    smi = (payload.smiles or "").strip()
+    if not smi:
+        return SmilesInspectOut(valid=False, error="empty SMILES")
+    if len(smi) > 1000:
+        return SmilesInspectOut(valid=False, error=f"SMILES too long ({len(smi)} chars; max 1000)")
+    width = max(80, min(400, int(payload.width)))
+    height = max(60, min(300, int(payload.height)))
+    data = _inspect_cached(smi, bool(payload.embed_check), width, height)
+    return SmilesInspectOut(**data)
