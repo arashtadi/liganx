@@ -33,15 +33,25 @@ export default function CompoundsPage() {
   const [activeTagFilters, setActiveTagFilters] = useState<Set<string>>(new Set());
   const [copyFlash, setCopyFlash] = useState<number | null>(null);
 
-  // Edit-flow state — three modal layers can stack on this page:
-  //   sketcherFor  → Ketcher modal open for this compound
-  //   savePrompt   → after Ketcher returns a CHANGED smiles, ask
-  //                  "Save changes" vs "Save as new" vs Cancel
-  //   renamePrompt → if the user picked "Save as new", collect a
-  //                  unique name (validated against existing library)
+  // Edit-flow state — modal layers that can stack on this page:
+  //   sketcherFor    → Ketcher modal open for editing this compound
+  //   creatingNew    → Ketcher modal open with an empty canvas (Create button)
+  //   savePrompt     → after Ketcher returns a CHANGED smiles in edit
+  //                    mode, ask "Save changes" vs "Save as new" vs Cancel
+  //   renamePrompt   → collect a unique name; used by both "Save as new"
+  //                    edit branch and the Create-from-scratch branch
   const [sketcherFor, setSketcherFor] = useState<UserCompound | null>(null);
+  const [creatingNew, setCreatingNew] = useState(false);
   const [savePrompt, setSavePrompt] = useState<{ original: UserCompound; newSmiles: string } | null>(null);
-  const [renamePrompt, setRenamePrompt] = useState<{ originalName: string; newSmiles: string } | null>(null);
+  const [renamePrompt, setRenamePrompt] = useState<{
+    originalName: string;
+    newSmiles: string;
+    /** "edit-as-new" = user edited an existing compound and chose Save as new
+     *  → the original stays untouched, prompt copy reassures them.
+     *  "create"      = drawn from scratch via the Create button → no
+     *  pre-existing entry to mention. */
+    mode: "edit-as-new" | "create";
+  } | null>(null);
 
   const { data: compounds = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["my-compounds"],
@@ -115,19 +125,31 @@ export default function CompoundsPage() {
 
   return (
     <div className="space-y-5">
-      <header>
-        <Link to="/history" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
-          ← Back to history
-        </Link>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100">
-          My compounds
-        </h1>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400 max-w-2xl">
-          Custom structures auto-saved from your docking jobs. Any compound
-          you give a name in the New-job form lands here. Edit a structure
-          in the sketcher, tag for organization, or jump it into a new run
-          in one click.
-        </p>
+      <header className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <Link to="/history" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
+            ← Back to history
+          </Link>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100">
+            My compounds
+          </h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400 max-w-2xl">
+            Custom structures auto-saved from your docking jobs. Draw a new
+            one from scratch, edit a structure in the sketcher, tag for
+            organization, or jump any compound into a new run in one click.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCreatingNew(true)}
+          className="btn-primary btn-sm whitespace-nowrap inline-flex items-center gap-1.5"
+          title="Open the 2D sketcher with an empty canvas to draw a new compound"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Create compound
+        </button>
       </header>
 
       {compounds.length > 0 && (
@@ -290,7 +312,7 @@ export default function CompoundsPage() {
         </div>
       )}
 
-      {/* ── Edit flow modals ────────────────────────────────────────── */}
+      {/* ── Edit / Create flow modals ──────────────────────────────── */}
       {sketcherFor && (
         <KetcherModal
           initialSmiles={sketcherFor.smiles}
@@ -307,6 +329,26 @@ export default function CompoundsPage() {
         />
       )}
 
+      {/* Create-from-scratch path — Ketcher opens with an empty canvas;
+          on accept we route straight to the rename prompt because there's
+          no existing compound to overwrite, so the SaveModeChooser would
+          be a meaningless intermediate step. */}
+      {creatingNew && (
+        <KetcherModal
+          onClose={() => setCreatingNew(false)}
+          onAccept={(newSmiles) => {
+            setCreatingNew(false);
+            // KetcherModal already guards against empty canvas on accept,
+            // but be defensive: only proceed with a non-empty SMILES.
+            if (!newSmiles.trim()) return;
+            // Pre-fill the rename input with a friendly placeholder so the
+            // user has something to type INTO rather than staring at a
+            // blank field — they can wipe and rename instantly.
+            setRenamePrompt({ originalName: "Compound", newSmiles, mode: "create" });
+          }}
+        />
+      )}
+
       {savePrompt && (
         <SaveModeChooser
           originalName={savePrompt.original.name}
@@ -315,7 +357,7 @@ export default function CompoundsPage() {
             setSavePrompt(null);
           }}
           onSaveAsNew={() => {
-            setRenamePrompt({ originalName: savePrompt.original.name, newSmiles: savePrompt.newSmiles });
+            setRenamePrompt({ originalName: savePrompt.original.name, newSmiles: savePrompt.newSmiles, mode: "edit-as-new" });
             setSavePrompt(null);
           }}
           onCancel={() => setSavePrompt(null)}
@@ -324,20 +366,25 @@ export default function CompoundsPage() {
 
       {renamePrompt && (
         <RenamePrompt
-          initialName={renamePrompt.originalName + "_"}
+          // For edit-as-new we suggest "OldName_" so the user can append a
+          // suffix; for create-from-scratch we just put "Compound" as a
+          // visible placeholder they're meant to wipe.
+          initialName={renamePrompt.mode === "create" ? "" : renamePrompt.originalName + "_"}
           existingNames={compounds.map((c) => c.name)}
           // No "current row" to preserve — this is genuinely a new entry,
           // so even the original name should be blocked as a duplicate.
           // We pass an empty currentRowName so the existence check excludes
           // nothing.
           currentRowName=""
-          title="Save as a new compound"
+          title={renamePrompt.mode === "create" ? "Name your new compound" : "Save as a new compound"}
           subtitle={
-            <>
-              Pick a name for the new structure. <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{renamePrompt.originalName}</span> stays in your library unchanged.
-            </>
+            renamePrompt.mode === "create" ? (
+              <>Pick a name for the structure you just drew. It&apos;ll be saved to your library so you can re-use it in future jobs.</>
+            ) : (
+              <>Pick a name for the new structure. <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{renamePrompt.originalName}</span> stays in your library unchanged.</>
+            )
           }
-          submitLabel="Save new compound"
+          submitLabel={renamePrompt.mode === "create" ? "Create compound" : "Save new compound"}
           onCancel={() => setRenamePrompt(null)}
           onSave={(newName) => {
             saveMut.mutate({ name: newName, smiles: renamePrompt.newSmiles });
