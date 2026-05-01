@@ -774,21 +774,6 @@ function labelForStageSlug(slug: string | null | undefined): string | null {
   return null;
 }
 
-/** Match a runner stage slug to the closest pre-flight stage key so the
- *  stepper can highlight the right pill when backend-driven stages are
- *  available. Returns null when the slug doesn't fit the pre-flight set. */
-function preflightKeyForStageSlug(slug: string | null | undefined): string | null {
-  if (!slug) return null;
-  if (slug === "fetching_pdb") return "fetch";
-  if (slug === "cleaning_pdb") return "clean";
-  if (slug === "preparing_receptor") return "receptor";
-  if (slug === "preparing_compounds") return "ligand";
-  if (slug === "extracting_sequence") return "seq";
-  if (slug.startsWith("building_mutant_")) return "mutants";
-  if (slug.startsWith("predicting_")) return "predict";
-  return null;
-}
-
 function preflightStages(job: Job): Stage[] {
   const isBoltz2 = (job.engine ?? "").startsWith("boltz2");
   const hasMutations = job.mutations.length > 0;
@@ -847,31 +832,18 @@ function StreamingBanner({ job }: { job: Job }) {
   const validatingOnly = allCellsDone && job.status === "running";
   const dockingActive = done > 0 && !allCellsDone;
   const backendLabel = labelForStageSlug(job.stage);
-  const backendPreflightKey = preflightKeyForStageSlug(job.stage);
-  let activeKey: string;
   let stageLabel: string;
   if (backendLabel) {
-    // Backend has spoken — trust it. The active step in the stepper
-    // is whichever pre-flight key the slug maps to (or "docking" /
-    // "validate" / "predict" for non-pre-flight stages, which the
-    // stepper hides anyway).
+    // Backend has spoken — trust it.
     stageLabel = backendLabel;
-    activeKey = backendPreflightKey
-      ?? (job.stage?.startsWith("docking_") ? "docking"
-        : job.stage?.startsWith("predicting_") ? "predict"
-        : job.stage === "validating_poses" ? "validate"
-        : "");
   } else if (validatingOnly) {
-    activeKey = "validate";
     stageLabel = "Validating poses (PoseBusters / ProLIF)";
   } else if (dockingActive) {
-    activeKey = "docking";
     stageLabel = `Docking · ${done} of ${total} done`;
   } else {
     // Pre-flight: pick first stage whose budget hasn't been exceeded.
     const idx = stages.findIndex((s) => elapsedS < s.budgetS);
     const stage = idx >= 0 ? stages[idx] : stages[stages.length - 1];
-    activeKey = stage.key;
     stageLabel = stage.label;
   }
 
@@ -912,45 +884,15 @@ function StreamingBanner({ job }: { job: Job }) {
         <span className="text-sm font-semibold text-delta-600 dark:text-delta-300 tabular-nums">{pctLabel}%</span>
       </div>
 
-      {/* Stepper: the pre-flight stages as a horizontal row of small pills.
-          Active stage gets a brand background + spinner; completed stages
-          (those before the active one) show a subtle check; future stages
-          are muted. Hidden once docking starts because at that point the
-          progress bar tells the story better than a stepper would. */}
-      {!dockingActive && !validatingOnly && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[10px]">
-          {stages.map((s, i) => {
-            const activeIdx = stages.findIndex((x) => x.key === activeKey);
-            const state =
-              activeIdx === -1
-                ? "future"
-                : i < activeIdx
-                  ? "done"
-                  : i === activeIdx
-                    ? "active"
-                    : "future";
-            return (
-              <div
-                key={s.key}
-                className={
-                  state === "active"
-                    ? "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 font-semibold dark:bg-delta-900/30 dark:text-delta-300 dark:ring-delta-700/40"
-                    : state === "done"
-                      ? "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800/40"
-                      : "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700"
-                }
-                aria-current={state === "active" ? "step" : undefined}
-              >
-                {state === "active" && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-delta-500 dark:bg-delta-400 animate-pulse" />
-                )}
-                {state === "done" && <span aria-hidden>✓</span>}
-                <span>{s.label}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Stage chip stepper REMOVED 2026-04-30 — the chips were stuck on
+          "Fetching protein structure" because the backend job.stage column
+          isn't populated in production (migration 004 not applied), and the
+          timing-driven fallback was misleading enough that users read the
+          stuck chip as "the job is broken". Headline label + percentage +
+          progress bar are enough; the matrix below shows real per-cell
+          progress as soon as docking starts. Re-introduce stepper only if
+          we ever reliably receive backend stage updates AND know they're
+          accurate. */}
 
       <div className="h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
         <div
