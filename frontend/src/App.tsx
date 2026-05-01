@@ -14,11 +14,12 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import ValidationPage from "./pages/ValidationPage";
+import CompleteProfilePage from "./pages/CompleteProfilePage";
 import { LogoMark, Spinner } from "./components/Icons";
 import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { api } from "./api";
 import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
-import ProfileCompletionModal from "./components/ProfileCompletionModal";
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/new" element={<RequireAuth><NewJobPage /></RequireAuth>} />
             <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
+            <Route path="/welcome" element={<RequireAuth><CompleteProfilePage /></RequireAuth>} />
             <Route path="/jobs/:id" element={<JobPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/suite" element={<SuitePage />} />
@@ -51,10 +53,11 @@ export default function App() {
             tour-eligible pages. Mounted once at app root so the tour
             survives client-side route transitions. */}
         <DocFlaskTour />
-        {/* Auto-shows when a signed-in user has incomplete profile
-            (missing organization or role) and hasn't dismissed it.
-            Designed for OAuth users who skip the SignupPage form. */}
-        <ProfileCompletionModal />
+        {/* On first sign-in (and only first sign-in), redirects to the
+            full-page /welcome onboarding form. Replaces the previous
+            popup-modal pattern — users prefer a real page where they
+            can take their time over a modal that feels like a blocker. */}
+        <ProfileRedirect />
       </div>
     </AuthProvider>
   );
@@ -89,6 +92,65 @@ function Main({ children }: { children: React.ReactNode }) {
       {children}
     </main>
   );
+}
+
+/**
+ * ProfileRedirect — fires once per browser. On the first auth-resolved
+ * render where /me/profile is incomplete (no organization OR no role),
+ * navigates to /welcome and immediately stamps the dismissed flag so the
+ * redirect never fires again on this device — even if the user skips the
+ * form. Subsequent profile edits live in /settings.
+ *
+ * Why a separate component (and not just useEffect inside App): keeps
+ * the navigate() call out of App's render so a stray re-mount doesn't
+ * re-trigger the check, and makes the gate easy to disable/test in
+ * isolation later.
+ *
+ * Skipped on:
+ *   • The /welcome page itself (we're already there)
+ *   • Auth pages /login, /signup, /verify-email, /forgot-password (no
+ *     point bouncing the user mid-auth flow)
+ *   • Anyone whose profile is complete (server-side data wins)
+ *   • Anyone with the local dismiss flag (covers the "redirected once
+ *     already, refreshed without finishing" case)
+ */
+const PROFILE_DISMISS_KEY = "liganx.profileCompletion.dismissed";
+const REDIRECT_SKIP_PATHS = ["/welcome", "/login", "/signup", "/verify-email", "/forgot-password"];
+
+function ProfileRedirect() {
+  const { user, loading: authLoading } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const fired = useRef(false);
+
+  useEffect(() => {
+    if (fired.current) return;
+    if (authLoading || !user) return;
+    if (REDIRECT_SKIP_PATHS.includes(location.pathname)) return;
+    if (localStorage.getItem(PROFILE_DISMISS_KEY)) return;
+
+    let cancelled = false;
+    api.getMyProfile()
+      .then((p) => {
+        if (cancelled || fired.current) return;
+        const incomplete = !p.organization || !p.role;
+        if (incomplete) {
+          // Stamp the flag BEFORE navigating so a quick back-button
+          // press, manual reload, or any subsequent navigation can't
+          // re-trigger the redirect. The user gets exactly one nudge.
+          localStorage.setItem(PROFILE_DISMISS_KEY, "1");
+          fired.current = true;
+          navigate("/welcome", { replace: true });
+        }
+      })
+      .catch(() => {
+        // Silent fail — don't bounce the user around if the profile
+        // API is down. They can complete the form via /settings later.
+      });
+    return () => { cancelled = true; };
+  }, [authLoading, user, location.pathname, navigate]);
+
+  return null;
 }
 
 /** Gates a route on auth. While the initial getSession() resolves, render a
