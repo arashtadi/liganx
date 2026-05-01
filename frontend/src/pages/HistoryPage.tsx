@@ -15,9 +15,10 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { Close, Spinner } from "../components/Icons";
+import { EnginePill } from "./JobPage";
 import {
   TAG_PRESETS,
   TAG_BY_VALUE,
@@ -336,6 +337,28 @@ function HistoryRow({ job }: { job: Job }) {
     }
   }
 
+  // Look up protein name for non-uploaded targets so the row reads
+  // "2ITY/A — EGFR" instead of just the bare PDB code. The endpoint is
+  // backend-cached (24h) and React Query dedupes calls across rows that
+  // share a pdb_id, so a 25-row page with 4 unique PDBs makes 4 fetches.
+  const isUpload = job.pdb_id.startsWith("USR_");
+  const { data: pdbInfo } = useQuery({
+    queryKey: ["pdb-info", job.pdb_id],
+    queryFn: () => api.pdbInfo(job.pdb_id),
+    enabled: !isUpload,
+    staleTime: 24 * 3600 * 1000,
+    retry: 1,
+  });
+  const proteinShort = (() => {
+    // Squeeze "Epidermal growth factor receptor" → "EGFR"-style by extracting
+    // the parenthetical short name when present, otherwise truncate.
+    const raw = pdbInfo?.protein;
+    if (!raw) return null;
+    const paren = raw.match(/\(([A-Z0-9-]{2,8})\)/);
+    if (paren) return paren[1];
+    return raw.length > 28 ? raw.slice(0, 26).trimEnd() + "…" : raw;
+  })();
+
   return (
     <li className="relative">
       <Link
@@ -349,10 +372,18 @@ function HistoryRow({ job }: { job: Job }) {
                 {job.title || defaultTitle(job)}
               </span>
               {statusPill(job.status)}
+              <EnginePill engine={job.engine} />
             </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate">
-              {job.pdb_id}/{job.chain}
-              {job.mutations.length > 0 && ` · ${job.mutations.join(", ")}`}
+            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+              <span className="font-mono">{job.pdb_id}/{job.chain}</span>
+              {proteinShort && (
+                <span className="ml-1 font-semibold text-slate-700 dark:text-slate-300" title={pdbInfo?.protein}>
+                  · {proteinShort}
+                </span>
+              )}
+              {job.mutations.length > 0 && (
+                <span className="font-mono"> · {job.mutations.join(", ")}</span>
+              )}
               {` · ${job.compounds.length} compound${job.compounds.length === 1 ? "" : "s"}`}
             </div>
             <TagStrip job={job} />

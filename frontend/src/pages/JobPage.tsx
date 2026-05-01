@@ -464,6 +464,7 @@ function Header({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Stat icon={<Target />} label="Compounds" value={job.compounds.length} />
           <Stat icon={<Beaker />} label="Variants" value={job.mutations.length + 1} hint={["WT", ...job.mutations].join(", ")} />
+          <EnginePill engine={job.engine} />
           <Stat icon={null} label="Job #" value={job.id} />
           <PdbQualityBadge quality={job.pdb_quality} />
         </div>
@@ -606,6 +607,37 @@ function Stat({ icon, label, value, hint }: { icon: React.ReactNode; label: stri
       title={hint}
     >
       {icon} <span className="text-slate-500 dark:text-slate-400">{label}:</span> <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+/** Engine pill — surfaces which scoring backend produced this job's results.
+ *  Three engines today: QuickVina2-GPU (Vina-family physics, default), GNINA
+ *  (Vina + CNN pose rescoring), Boltz-2 (full ML co-folding + affinity head).
+ *  Tone is engine-specific so users can spot at a glance which method ran —
+ *  the scores are not directly comparable across engines (kcal/mol vs
+ *  log10(IC50)) so making the engine visible is correctness, not decoration. */
+export function EnginePill({ engine }: { engine?: string | null }) {
+  const e = engine ?? "quickvina2_gpu";
+  let label: string;
+  let cls: string;
+  if (e === "boltz2" || e.startsWith("boltz2")) {
+    label = "Boltz-2 (ML)";
+    cls = "bg-emerald-100 text-emerald-800 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40";
+  } else if (e === "gnina") {
+    label = "GNINA (CNN)";
+    cls = "bg-violet-100 text-violet-800 ring-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:ring-violet-700/40";
+  } else {
+    label = "QuickVina2-GPU";
+    cls = "bg-sky-100 text-sky-800 ring-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:ring-sky-700/40";
+  }
+  return (
+    <span
+      className={`badge ring-1 ring-inset ${cls}`}
+      title={`Docking engine: ${label}. Scores from different engines are not directly comparable.`}
+    >
+      <span className="text-current/70 mr-1">Engine:</span>
+      <span className="font-semibold">{label}</span>
     </span>
   );
 }
