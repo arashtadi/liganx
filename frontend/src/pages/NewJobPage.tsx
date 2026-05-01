@@ -332,6 +332,28 @@ export default function NewJobPage() {
   const [lookupQ, setLookupQ] = useState("");
   const [lookupErr, setLookupErr] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  // Custom dropdown state — replaces the previous browser-native <datalist>
+  // (which rendered as a black/dark unstyled OS popup that didn't match the
+  // site chrome). dropdownOpen gates visibility, activeIdx tracks the
+  // currently-highlighted row for keyboard navigation (Down/Up + Enter).
+  const [lookupDropdownOpen, setLookupDropdownOpen] = useState(false);
+  const [lookupActiveIdx, setLookupActiveIdx] = useState(0);
+  const lookupWrapRef = useRef<HTMLDivElement>(null);
+  // Reset the highlighted row whenever the suggestion list changes so we
+  // don't end up with activeIdx pointing past the new array's length.
+  useEffect(() => { setLookupActiveIdx(0); }, [suggestions]);
+  // Click-outside dismissal — same pattern as UserMenu in App.tsx so the
+  // dropdown closes when the user clicks anywhere off the search field.
+  useEffect(() => {
+    if (!lookupDropdownOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (lookupWrapRef.current && !lookupWrapRef.current.contains(e.target as Node)) {
+        setLookupDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [lookupDropdownOpen]);
 
   // Debounced autocomplete — fire 250ms after the user stops typing
   useEffect(() => {
@@ -1172,76 +1194,120 @@ export default function NewJobPage() {
           )}
         </div>
 
-        {/* PubChem name → SMILES quick lookup with autocomplete */}
+        {/* PubChem name → SMILES quick lookup with custom autocomplete dropdown.
+            Earlier this used <datalist> for cheap browser-native suggestions,
+            but the OS popup (especially in dark mode on macOS) rendered as a
+            black box that looked off-brand. This is a custom dropdown that
+            matches the site's white-card chrome. */}
         <div className="mb-3 rounded-lg bg-slate-50 border border-slate-200 p-3 dark:bg-slate-800/60 dark:border-slate-700">
-          <div className="flex items-center gap-2">
-            <Sparkles size={14} className="text-delta-600 shrink-0 dark:text-delta-400" />
-            <input
-              className="input flex-1"
-              placeholder='Look up by name (e.g. "imatinib", "aspirin", "GDC-0941")'
-              value={lookupQ}
-              onChange={(e) => {
-                const v = e.target.value;
-                setLookupQ(v);
-                setLookupErr(null);
-                // When the user picks a suggestion from the native datalist,
-                // the browser fires onChange with the full suggestion value
-                // in a single event (no per-character typing). If `v` matches
-                // a known suggestion exactly (case-insensitive), treat that as
-                // "user picked it" and fire the lookup immediately — saves the
-                // extra click on the "Look up" button. The same exact-match
-                // condition will fire if the user TYPES a full name letter-by-
-                // letter once the final character matches; that's the desired
-                // UX too (auto-add as soon as the typed name resolves).
-                if (v.trim() && suggestions.some((s) => s.toLowerCase() === v.trim().toLowerCase())) {
-                  runLookup(v.trim());
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && lookupQ.trim()) {
-                  e.preventDefault();
-                  // If we have suggestions and the typed text isn't an exact match,
-                  // pick the top suggestion — saves a click for typos.
-                  const exact = suggestions.find((s) => s.toLowerCase() === lookupQ.trim().toLowerCase());
-                  runLookup(exact || (suggestions[0] ?? lookupQ.trim()));
-                }
-              }}
-              list="pubchem-suggestions"
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              onClick={() => runLookup(lookupQ)}
-              disabled={!lookupQ.trim() || lookupMut.isPending}
-              className="btn-secondary btn-sm shrink-0"
-            >
-              {lookupMut.isPending ? <Spinner size={12} /> : "Look up"}
-            </button>
-          </div>
-
-          {/* Native datalist gives free autocomplete in the browser */}
-          {suggestions.length > 0 && (
-            <datalist id="pubchem-suggestions">
-              {suggestions.map((s) => <option key={s} value={s} />)}
-            </datalist>
-          )}
-
-          {/* Suggestion chips when the query doesn't match exactly — useful on misses or typos */}
-          {!lookupMut.isPending && lookupErr && suggestions.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-slate-600 dark:text-slate-400">Did you mean:</span>
-              {suggestions.slice(0, 5).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => { setLookupQ(s); runLookup(s); }}
-                  className="chip-clickable text-xs"
-                >
-                  {s}
-                </button>
-              ))}
+          <div ref={lookupWrapRef} className="relative">
+            <div className="relative">
+              {/* Magnifying-glass icon inside the input — visual hint that
+                  this is a search field, not a free-form text box. */}
+              <svg
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 pointer-events-none"
+                width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                className="input pl-9 pr-24"
+                placeholder='Search by name — "imatinib", "aspirin", "GDC-0941"…'
+                value={lookupQ}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setLookupQ(v);
+                  setLookupErr(null);
+                  setLookupDropdownOpen(true);
+                }}
+                onFocus={() => setLookupDropdownOpen(true)}
+                onKeyDown={(e) => {
+                  // Keyboard navigation through the suggestion list. We only
+                  // intercept these keys when the dropdown is open AND has
+                  // suggestions — so a user with no suggestions can still
+                  // type and Enter to fire a free-form lookup.
+                  if (lookupDropdownOpen && suggestions.length > 0) {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setLookupActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setLookupActiveIdx((i) => Math.max(i - 1, 0));
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      setLookupDropdownOpen(false);
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && lookupQ.trim()) {
+                    e.preventDefault();
+                    setLookupDropdownOpen(false);
+                    // If the user has been arrow-keying through suggestions,
+                    // honour that pick. Otherwise fall back to the exact-match
+                    // / first-suggestion / raw-query cascade for typo tolerance.
+                    if (lookupDropdownOpen && suggestions.length > 0 && lookupActiveIdx < suggestions.length) {
+                      runLookup(suggestions[lookupActiveIdx]);
+                      return;
+                    }
+                    const exact = suggestions.find((s) => s.toLowerCase() === lookupQ.trim().toLowerCase());
+                    runLookup(exact || (suggestions[0] ?? lookupQ.trim()));
+                  }
+                }}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() => { setLookupDropdownOpen(false); runLookup(lookupQ); }}
+                disabled={!lookupQ.trim() || lookupMut.isPending}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center h-8 px-3 rounded-md bg-delta-600 hover:bg-delta-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {lookupMut.isPending ? <Spinner size={12} /> : "Look up"}
+              </button>
             </div>
-          )}
+
+            {/* Custom dropdown — only mounts when there's something to show.
+                Padded items, hover/active highlight, subtle source tag. */}
+            {lookupDropdownOpen && suggestions.length > 0 && (
+              <div
+                className="absolute left-0 right-0 top-full mt-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg overflow-hidden z-20"
+                role="listbox"
+              >
+                {suggestions.slice(0, 8).map((s, idx) => {
+                  const active = idx === lookupActiveIdx;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      onMouseEnter={() => setLookupActiveIdx(idx)}
+                      onClick={() => { setLookupDropdownOpen(false); runLookup(s); }}
+                      className={
+                        "w-full text-left flex items-center gap-3 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700 last:border-b-0 transition-colors " +
+                        (active
+                          ? "bg-delta-50 dark:bg-delta-900/30"
+                          : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
+                      }
+                    >
+                      {/* Tiny molecule glyph — same visual language as the
+                          rest of the site (Beaker on Stat pills etc.). */}
+                      <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
+                        <Beaker size={14} />
+                      </div>
+                      <span className="font-medium text-sm text-ink dark:text-slate-100 flex-1 truncate">{s}</span>
+                      <span className="text-[9px] uppercase tracking-wider font-semibold text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-900/30 px-1.5 py-0.5 rounded shrink-0">
+                        PubChem
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {lookupErr && (
             <p className="mt-2 text-xs text-rose-700 dark:text-rose-400">
@@ -1249,8 +1315,9 @@ export default function NewJobPage() {
             </p>
           )}
           {lookupMut.data && !lookupErr && (
-            <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-400">
-              ✓ Added {lookupMut.data.name} (CID {lookupMut.data.cid})
+            <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+              <Sparkles size={12} className="shrink-0" />
+              Added {lookupMut.data.name} (CID {lookupMut.data.cid})
               {lookupMut.data.molecular_formula && ` · ${lookupMut.data.molecular_formula}`}
             </p>
           )}
