@@ -127,11 +127,15 @@ def list_users(
             p.organization,
             p.role,
             COALESCE(p.job_quota, 10) AS job_quota,
+            -- job.user_id is UUID; u.id is also UUID. Don't cast either
+            -- side or Postgres complains "operator does not exist:
+            -- uuid = text". The earlier quota check works with a bound
+            -- :uid parameter because parameter binding auto-coerces.
             (SELECT COUNT(*) FROM job j
-             WHERE j.user_id = u.id::text
+             WHERE j.user_id = u.id
                AND j.status IN ('PENDING','RUNNING','COMPLETED')
             ) AS jobs_used,
-            (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id::text) AS jobs_total
+            (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id) AS jobs_total
         FROM auth.users u
         LEFT JOIN public.user_profile p ON p.user_id = u.id
         ORDER BY u.created_at DESC
