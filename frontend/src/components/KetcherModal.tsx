@@ -331,18 +331,26 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
         </div>
 
         {/* Validation error banner — sits ABOVE the footer when present.
-            Pulled out of the footer's tiny status text because save-time
-            errors ("this structure can't be docked") need to grab the
-            user's attention, not whisper from the corner. */}
+            A "stop" indicator: prominent rose-colored block with a clear
+            heading ("Can't dock this compound") so the user immediately
+            understands the structure was rejected, not just hinted at.
+            The reason + suggestion from the dockability check come
+            verbatim from the backend so the message stays specific
+            (e.g. "contains As" vs the generic "couldn't process"). */}
         {error && (
-          <div className="px-5 py-2.5 border-t border-rose-200 dark:border-rose-800/40 bg-rose-50 dark:bg-rose-900/20 text-[13px] text-rose-800 dark:text-rose-200 shrink-0">
-            <div className="flex items-start gap-2">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="mt-0.5 shrink-0" aria-hidden="true">
+          <div className="px-5 py-3 border-t border-rose-300 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/25 text-rose-900 dark:text-rose-100 shrink-0">
+            <div className="flex items-start gap-3">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="mt-0.5 shrink-0" aria-hidden="true">
                 <circle cx="12" cy="12" r="10" />
                 <line x1="12" y1="8" x2="12" y2="12" />
                 <line x1="12" y1="16" x2="12.01" y2="16" />
               </svg>
-              <span className="leading-relaxed">{error}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-sm mb-0.5">Can't dock this compound</div>
+                <div className="text-[13px] leading-relaxed text-rose-800 dark:text-rose-200">
+                  {error}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -370,7 +378,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
               disabled={!ketcherReady || pending}
               className="btn-primary btn-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {pending ? "Checking structure…" : "Use this structure"}
+              {pending ? "Checking structure…" : "Check & use this structure"}
             </button>
           )}
         </footer>
