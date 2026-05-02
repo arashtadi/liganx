@@ -704,8 +704,31 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
       setQuickDockStatus("error");
       return;
     }
-    const smi = await readSmiles();
-    if (!smi) return;
+    // readSmiles() sets `errorMsg` on empty canvas, but that state is
+    // tied to the AI-chat result panel — Quick dock has its own
+    // panel + error state, so we need to surface "draw something
+    // first" via setQuickDockError or the user sees nothing happen
+    // (caught in QA).
+    const apiObj = getApi();
+    if (!apiObj?.getSmiles) {
+      setQuickDockError("Ketcher hasn't finished loading — wait a moment.");
+      setQuickDockStatus("error");
+      return;
+    }
+    let smi: string;
+    try {
+      const raw: string = await apiObj.getSmiles();
+      smi = (raw || "").trim();
+    } catch (e) {
+      setQuickDockError(`Couldn't read SMILES: ${(e as Error).message}`);
+      setQuickDockStatus("error");
+      return;
+    }
+    if (!smi) {
+      setQuickDockError("Draw a structure on the left first, then click Quick dock.");
+      setQuickDockStatus("error");
+      return;
+    }
     setQuickDockStatus("running");
     setQuickDockError(null);
     setDockResult(null);

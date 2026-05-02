@@ -23,26 +23,31 @@ log = logging.getLogger("deltadock")
 
 
 def _reap_orphan_jobs() -> None:
-    """Mark any RUNNING jobs whose updated_at is older than 5 minutes as
-    FAILED with a clear "interrupted by deploy" message.
+    """Mark any RUNNING or PENDING jobs whose updated_at is older than
+    5 minutes as FAILED with a clear "interrupted by deploy" message.
 
     Why we need this: jobs are dispatched as FastAPI BackgroundTasks
-    that run inside the same process as the request handler. When Fly
-    rolling-deploys a new release, the SIGTERM kills the worker mid-job
-    and the BackgroundTask dies with no chance to update DB state. The
-    job sits orphaned at RUNNING forever, the user stares at a spinner.
+    or Celery tasks. Two failure modes that leave orphans:
+      - RUNNING orphan: the worker died mid-job (deploy SIGTERM, OOM,
+        Pod hiccup). Pre-Celery this was the common case.
+      - PENDING orphan: the dispatch never fired at all (BackgroundTask
+        wasn't scheduled, Celery enqueue failed silently, or the job
+        was created during a half-deployed state). Found one of these
+        in QA — job had been PENDING for 1.5 days from before Celery
+        deploy.
 
-    The "5 minutes since last touch" heuristic works because the runner
-    bumps updated_at at every stage transition (fetching → preparing →
-    docking → validating → completed). A real running job touches the
-    row roughly every 30-60s; anything that hasn't moved in 5 min is
-    almost certainly dead. False positives (a genuinely slow stage like
-    a cold-start Boltz-2) get re-tried by the user, which is acceptable
-    given how rarely deploys land mid-stage.
+    Both are caught here. The "5 minutes since last touch" heuristic
+    works because the runner bumps updated_at at every stage transition
+    (fetching → preparing → docking → validating → completed). A real
+    running job touches the row every 30-60s; anything stale > 5 min
+    is almost certainly dead. False positives (a genuinely slow stage
+    like a cold-start Boltz-2) get re-tried by the user, which is
+    acceptable given how rarely deploys land mid-stage.
 
-    This is a stop-gap until task #168 (Celery + Redis) lands and jobs
-    survive worker restarts properly. Idempotent — safe to run on every
-    startup; if no orphans exist the UPDATE is a no-op.
+    With Celery + Redis (#168) shipped, this is now a belt-and-braces
+    safety net rather than the primary deploy-survival mechanism, but
+    still catches the rarer "Celery worker had a bad day" case.
+    Idempotent — safe to run on every startup.
     """
     try:
         from sqlmodel import Session
@@ -57,17 +62,21 @@ def _reap_orphan_jobs() -> None:
                     "         'Interrupted by a backend restart — the docking worker"
                     " was killed before this job could finish. Please re-submit.'),"
                     "     updated_at = now()"
-                    " WHERE status = 'RUNNING'"
+                    " WHERE status IN ('RUNNING', 'PENDING')"
                     "   AND updated_at < now() - INTERVAL '5 minutes'"
-                    " RETURNING id"
+                    " RETURNING id, status"
                 ),
             )
-            ids = [row[0] for row in result]
+            rows = [(r[0], r[1]) for r in result]
             session.commit()
-            if ids:
-                log.warning("Reaped %d orphan RUNNING jobs at startup: %s", len(ids), ids)
+            if rows:
+                log.warning(
+                    "Reaped %d orphan jobs at startup: %s",
+                    len(rows),
+                    rows,
+                )
             else:
-                log.info("No orphan RUNNING jobs to reap at startup")
+                log.info("No orphan jobs to reap at startup")
     except Exception as e:
         # Never let a reaper failure block startup. We'd rather come up
         # with a few stuck jobs than refuse to serve traffic.
