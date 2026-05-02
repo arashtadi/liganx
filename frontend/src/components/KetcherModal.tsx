@@ -1557,8 +1557,17 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           e.preventDefault();
           // Default submit = use the cheap Improve path. Users who want
           // dock-grounding click the dedicated combo button (rendered
-          // separately when applicable).
-          runEdit(instruction);
+          // separately when applicable). When the chat is empty, fall
+          // back to a sensible open-ended prompt so the user can click
+          // Improve straight in without having to invent an instruction.
+          // The system prompt's "vague instructions" rule kicks in and
+          // tells the AI exactly how to handle this case.
+          const text = instruction.trim() || (
+            dockFreshForLive
+              ? "Based on the docking results above, suggest the highest-impact structural edit to improve binding."
+              : "Suggest the most meaningful medchem improvement to this compound."
+          );
+          runEdit(text);
           setInstruction("");
         }}
       >
@@ -1615,14 +1624,19 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         />
         <button
           type="submit"
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || !instruction.trim()}
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+          title={
+            instruction.trim()
+              ? "Send your instruction to the AI."
+              : "Click without typing to get an open-ended improvement suggestion. Type for a specific edit."
+          }
           className="w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
         >
           {status === "running" && quickDockStatus !== "running"
             ? "Sending…"
             : dockFreshForLive
-              ? "✨ Improve (docking-aware)"
-              : "✨ Improve"}
+              ? instruction.trim() ? "✨ Improve (docking-aware)" : "✨ Suggest improvement"
+              : instruction.trim() ? "✨ Improve" : "✨ Suggest improvement"}
         </button>
         {/* Dock + Improve combo — shown ONLY when target is picked AND
             dock data is stale or missing AND the Quick dock feature
@@ -1635,19 +1649,29 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           <button
             type="button"
             onClick={() => {
-              if (!instruction.trim()) return;
-              runDockAndImprove(instruction);
+              // Same empty-input fallback as the standard Improve button:
+              // an empty chat means "give me your best general improvement
+              // grounded in the dock results we're about to compute".
+              const text = instruction.trim() ||
+                "Based on the docking results, suggest the highest-impact structural edit to improve binding.";
+              runDockAndImprove(text);
               setInstruction("");
             }}
-            disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || !instruction.trim()}
+            disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
             className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Run Quick dock first, then ask the AI with the dock results in context. ~13 seconds total."
+            title={
+              instruction.trim()
+                ? "Run Quick dock first, then ask the AI with the dock results in context. ~13 seconds total."
+                : "Run Quick dock first, then ask the AI for an open-ended improvement using the dock results. ~13 seconds total."
+            }
           >
             {quickDockStatus === "running"
               ? "🎯 Docking…"
               : status === "running"
                 ? "✨ AI thinking…"
-                : "🎯 Dock + Improve (grounded)"}
+                : instruction.trim()
+                  ? "🎯 Dock + Improve (grounded)"
+                  : "🎯 Dock + suggest improvement"}
           </button>
         )}
       </form>
