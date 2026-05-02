@@ -1128,6 +1128,18 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </div>
       )}
 
+      {/* ── Scrollable middle region ────────────────────────────────────
+          Everything between the sticky header (AI title + property strip
+          + 3D toggle) and the sticky footer (chat input form) lives in
+          ONE scroll container. Earlier each panel had its own scroll
+          (result panel + history both used overflow-y-auto), which fell
+          apart when the optional 3D preview was enabled — the 3D panel
+          ate ~230px of fixed space, the result/history scrollers shrank
+          to nothing, and the user could neither read nor scroll. Single
+          scroll region = predictable layout regardless of which optional
+          panels are visible. */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+
       {/* 3D preview panel — only mounted when the toggle is on, so the
           3Dmol.js bundle stays unrequested for users who never expand it.
           Suspense fallback covers the lazy-import gap (~100ms typical).
@@ -1331,8 +1343,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </div>
       )}
 
-      {/* Result panel — scrolls if long */}
-      <div className="flex-1 overflow-y-auto p-3 text-[12px]">
+      {/* Result panel — flows naturally inside the parent scroll region.
+          (Earlier had its own flex-1 overflow-y-auto, but now the whole
+          middle column scrolls as one and individual panels just stack.) */}
+      <div className="p-3 text-[12px]">
         {status === "idle" && lastAction === "none" && (
           <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
             Sketch a structure on the left, then ask for an edit below or run a quick action above.
@@ -1364,8 +1378,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           for unsaved compounds (NewJobPage path, create-from-scratch
           before naming). */}
       {aiHistory.length > 0 && (
-        <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 max-h-[200px] overflow-y-auto">
-          <div className="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 sticky top-0 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-sm">
+        <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40">
+          {/* History header — was sticky inside its own scroll container;
+              now the whole sidebar scrolls as one, so a position:sticky
+              here would stick to the parent scroll region instead, which
+              is what we want when the user has scrolled deep into a long
+              history list. */}
+          <div className="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 sticky top-0 z-10 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-sm">
             <span>History · {aiHistory.length}/{MAX_AI_HISTORY}</span>
             {historySaveError && (
               <span
@@ -1398,6 +1417,8 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           </ul>
         </div>
       )}
+
+      </div>{/* end scrollable middle region */}
 
       {/* Free-text input — sticks to bottom */}
       <form
