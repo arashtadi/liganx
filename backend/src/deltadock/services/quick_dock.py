@@ -119,6 +119,17 @@ def quick_dock(
             error=f"No pocket box on file for {target_pdb}. Run a normal job once to cache it.",
         )
 
+    # Resolve the actual RCSB PDB id + chain from the catalog. The caller
+    # passes a CATALOG ID like 'kras' (matching catalog.py's Target.id),
+    # not an RCSB PDB ID like '4OBE'. Earlier code used `target_pdb`
+    # directly for fetch_pdb() and cache filenames, which made RCSB
+    # return HTTP 404 ('kras' isn't a PDB ID) AND made the cache key
+    # incompatible with the production runner's '{pdb_id}_{chain}'
+    # convention — every Quick dock would either 404 or miss the
+    # warm cache. Using target.pdb_id + target.chain fixes both.
+    pdb_id = target.pdb_id
+    chain = target.chain or chain  # respect the catalog's chain when set
+
     box = PocketBox(
         center_x=target.pocket.center[0],
         center_y=target.pocket.center[1],
@@ -142,15 +153,18 @@ def quick_dock(
 
     # Receptor — WT path always; mutant-aware paths share the cache.
     # If mutation is set, the runner's per-mutant cache key applies.
+    # All cache keys use the resolved RCSB pdb_id (not the catalog id),
+    # so a previously-run normal job's cleaned receptor + PDBQT are
+    # reused here for free.
     variant_key = (mutation or "WT").strip() or "WT"
-    receptor_pdbqt = receptor_cache / f"{target_pdb}_{chain}_{variant_key}.pdbqt"
-    receptor_pdb = pdb_cache / f"{target_pdb}_{chain}.clean.pdb"
+    receptor_pdbqt = receptor_cache / f"{pdb_id}_{chain}_{variant_key}.pdbqt"
+    receptor_pdb = pdb_cache / f"{pdb_id}_{chain}.clean.pdb"
 
     try:
         if not receptor_pdb.exists():
-            raw_pdb = pdb_cache / f"{target_pdb}.pdb"
+            raw_pdb = pdb_cache / f"{pdb_id}.pdb"
             if not raw_pdb.exists():
-                fetch_pdb(target_pdb, raw_pdb)
+                fetch_pdb(pdb_id, raw_pdb)
             fix_pdb(raw_pdb, receptor_pdb, chain=chain)
         if not receptor_pdbqt.exists():
             # WT prep — for mutant variants we'd need to call the
@@ -165,7 +179,7 @@ def quick_dock(
                     " uses WT receptor only — falling back",
                     variant_key,
                 )
-                receptor_pdbqt = receptor_cache / f"{target_pdb}_{chain}_WT.pdbqt"
+                receptor_pdbqt = receptor_cache / f"{pdb_id}_{chain}_WT.pdbqt"
                 if not receptor_pdbqt.exists():
                     prepare_receptor(receptor_pdb, receptor_pdbqt, chain=chain)
             else:
