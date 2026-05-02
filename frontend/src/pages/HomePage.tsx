@@ -319,12 +319,12 @@ function FeatureGrid() {
     {
       icon: <Target />,
       title: "Outside-pocket detection",
-      body: "If your mutation is far from the docking box, we tell you up-front instead of letting you read meaning into a noise-level Δ.",
+      body: "If your mutated residue is farther from the docking-box centre than the box half-edge can sample (typically 11–15 Å, set per target), we tell you up-front and badge the cell instead of letting you read meaning into a noise-level Δ.",
     },
     {
       icon: <Library />,
       title: "Curated mutation library",
-      body: "40 clinically actionable mutations across 13 kinase / GTPase / kinase-like targets (EGFR, KRAS, BRAF, IDH1, ABL, HER2, ALK, ROS1, MET, FLT3, BTK, PI3Kα, KIT) — each with a verified pocket box and first-line standard-of-care references.",
+      body: "40 clinically actionable mutations across 13 kinase / GTPase / kinase-like targets (EGFR, KRAS, BRAF, IDH1, ABL, HER2, ALK, ROS1, MET, FLT3, BTK, PI3Kα, KIT) — each pocket box is verified to within 5 Å of the chain-A co-crystal ligand centroid by an automated CI gate, with first-line standard-of-care references.",
     },
     {
       icon: <Sparkles />,

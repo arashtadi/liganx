@@ -464,10 +464,15 @@ const MUTATION_HINTS: Record<string, string> = {
   G12C: "Cys12 is the warhead anchor. Acrylamide/propenamide tethers near the switch-II pocket are the design point.",
   // KIT D816V: similar to BRAF V600E — activates by hydrophobic gain.
   D816V: "Activating Asp→Val adds a hydrophobic patch near the activation loop. Lipophilic substituents in that direction often help.",
-  // MET D1228V/Y1230H/F1200I: kinase domain resistance set. Mostly
-  // gatekeeper-region or activation-loop-region steric clashes.
-  D1228V: "Activation-loop substitution adds bulk. Smaller, less rigid scaffolds often retain activity.",
-  Y1230H: "Loop-flanking aromatic loss. Compounds that don't rely on stacking with Y1230 tend to survive.",
+  // MET D1228V/Y1230H/F1200I: kinase domain resistance set. These
+  // typically appear together (D1228 + Y1230 cluster) in clinical
+  // resistance to type-I MET inhibitors. PhD audit (2026-05-01)
+  // corrected earlier wording that mischaracterised Y1230H as a
+  // pure aromatic-stacking loss — the dominant effect is a Tyr→His
+  // charge change (His often protonated at physiological pH inside
+  // the pocket) plus loss of the OH H-bond, not stacking per se.
+  D1228V: "Activation-loop Asp→Val removes a polar/charged contact and adds hydrophobic bulk. Often appears clustered with Y1230 mutations — design with the cluster in mind. Smaller, less rigid scaffolds tend to retain activity.",
+  Y1230H: "Tyr→His swap loses the Tyr hydroxyl H-bond and introduces a (often protonated) imidazole that can clash or repel basic ligand groups in the pocket. Avoid relying on the Y1230 OH; consider neutral, smaller substituents in that region.",
   // PIK3CA H1047R: hotspot. Allosteric pocket changes shape, charge.
   H1047R: "Activating swap near the C-terminus reshapes the allosteric pocket. Larger, basic-leaning substituents have re-engaged this site.",
 };

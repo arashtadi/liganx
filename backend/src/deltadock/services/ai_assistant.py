@@ -59,7 +59,8 @@ Behavior rules:
 - Keep edits minimal: change only what the user asked for, plus the \
 unavoidable consequences of that change. Do not redesign the molecule.
 - One short sentence of rationale: WHY this edit is reasonable, and ONE \
-property delta (e.g. "logP +0.4, QED unchanged") if relevant.
+property delta (e.g. "logP +0.4 (rough estimate, Crippen wlogP), QED unchanged") if relevant. \
+Always qualify property deltas as estimates — these are computed predictions, not measurements.
 - If the user gave a target context (PDB + mutation), prefer edits that \
 are plausible for that pocket and mutation. Cite the residue or pocket \
 feature briefly in the rationale.
@@ -132,6 +133,11 @@ Behavior rules:
 residues. Do not redesign the molecule.
 - Each rationale should name the SPECIFIC missed residue the variant \
 targets and the chemical move (e.g. "adds a hydroxyl to reach Tyr541").
+- CRITICAL — DO NOT INVENT RESIDUE NAMES. Only refer to residues that \
+appear verbatim in the `hits` or `misses` lists provided in the user \
+message. If a variant doesn't target a specific residue from those \
+lists, describe the chemical move generically ("adds a fluorine for \
+metabolic stability") without inventing a residue label.
 - Prefer cheap, well-known medchem moves: bioisostere swap, ring \
 extension, hydroxyl/methyl/F addition at a specific position.
 

@@ -143,18 +143,35 @@ def validate_smiles(smiles: str) -> tuple[bool, Optional[str], Optional[str]]:
 # Dockability check
 # ──────────────────────────────────────────────────────────────────────
 #
-# Atoms AutoDock Vina + GNINA can actually parameterise. This is a
-# CONSERVATIVE list — there are some metals Vina nominally accepts but
-# in practice produce garbage scores or crash Meeko (TI, V, Cr, etc.).
-# We allow the standard organic set + halogens + a few biologically
-# common metals that show up in metalloproteins. Anything else gets a
-# friendly "this engine can't do that" rejection at Ketcher save time
-# instead of failing 60s later in the runner.
+# Atoms AutoDock Vina + GNINA can actually parameterise.
+#
+# PhD audit (2026-05-01) corrected an earlier overclaim: Boron (B) and
+# Silicon (Si) were in this set, but Vina/GNINA don't have proper atom
+# types for either — they either silently fall back to a generic carbon
+# type (giving meaningless scores) or trip Meeko's parameterisation.
+# Removed from the allowlist; users sketching boron/silicon fragments
+# now get an honest "engine can't do that" message instead of a misleading
+# pass at the gate.
+#
+# The "experimental metals" set (Mg, Ca, Mn, Fe, Co, Cu) are technically
+# supported by Vina's scoring function but only give meaningful scores
+# in true metalloprotein pockets with metal-aware scoring tweaks. We
+# allow them through the gate (so users *can* dock metalloprotein
+# substrates) but the message flags them as experimental so users
+# know not to over-trust the affinity number. Zn is the one well-
+# validated case (zinc proteases, carbonic anhydrase) and is treated
+# as standard.
 _VINA_SUPPORTED_ELEMENTS: set[str] = {
-    "H", "B", "C", "N", "O", "F", "Si", "P", "S",
+    "H", "C", "N", "O", "F", "P", "S",
     "Cl", "Br", "I",
     "Mg", "Ca", "Mn", "Fe", "Co", "Cu", "Zn",
 }
+
+# Subset of the allowlist that gets an "experimental — affinity may be
+# unreliable" badge in property responses. Zn is excluded because Vina's
+# zinc handling has been validated against zinc-binding inhibitor
+# benchmarks; the others have not.
+_EXPERIMENTAL_METALS: set[str] = {"Mg", "Ca", "Mn", "Fe", "Co", "Cu"}
 
 # Sensible bounds. Below 4 heavy atoms = not really a drug candidate
 # (water, ammonia, etc.). Above 80 heavy atoms = Vina's flexibility model
@@ -168,6 +185,7 @@ class DockabilityResult(TypedDict, total=False):
     reason: str            # human-readable failure reason; empty when dockable
     suggestion: str        # actionable next-step the user can take
     canonical_smiles: str  # canonical form when dockable=True
+    warnings: list[str]    # non-blocking caveats (e.g. experimental metals)
 
 
 def check_dockability(smiles: str) -> DockabilityResult:
@@ -222,12 +240,25 @@ def check_dockability(smiles: str) -> DockabilityResult:
     if seen_unsupported:
         bad = sorted(seen_unsupported)
         bad_str = ", ".join(bad) if len(bad) > 1 else bad[0]
+        # Special-case Boron and Silicon, since users sketching these
+        # often expect them to "just work" (they're common in protecting
+        # groups and silicon-isosteres). Tell them why explicitly.
+        boron_silicon_note = ""
+        bs_present = [s for s in bad if s in ("B", "Si")]
+        if bs_present:
+            bs_str = " and ".join(bs_present)
+            boron_silicon_note = (
+                f" {bs_str} in particular: AutoDock Vina and GNINA don't have "
+                f"proper atom-type parameters for {bs_str}, so any score we'd "
+                f"return would be misleading."
+            )
         return DockabilityResult(
             dockable=False,
             reason=(
-                f"This molecule contains {bad_str}, which AutoDock Vina and GNINA can't dock. "
-                f"These engines only support C, H, N, O, F, P, S, halogens, "
-                f"and a handful of biological metals (Mg, Ca, Mn, Fe, Co, Cu, Zn)."
+                f"This molecule contains {bad_str}, which AutoDock Vina and GNINA "
+                f"can't reliably dock. These engines support C, H, N, O, F, P, S, "
+                f"halogens (Cl, Br, I), and a handful of biological metals "
+                f"(Zn validated; Mg, Ca, Mn, Fe, Co, Cu experimental).{boron_silicon_note}"
             ),
             suggestion=(
                 "Try a different functional group, or contact us about Boltz-2 "
@@ -281,4 +312,25 @@ def check_dockability(smiles: str) -> DockabilityResult:
         canonical = Chem.MolToSmiles(mol)
     except Exception:
         canonical = smi
+
+    # Non-blocking warnings: experimental metals are dockable in the
+    # software sense but the affinity numbers should not be over-trusted.
+    # PhD audit (2026-05-01): Zn is the well-validated case; the others
+    # in _EXPERIMENTAL_METALS need a domain-aware reviewer to interpret.
+    warnings: list[str] = []
+    present_metals = sorted({a.GetSymbol() for a in mol.GetAtoms()
+                             if a.GetSymbol() in _EXPERIMENTAL_METALS})
+    if present_metals:
+        metals_str = ", ".join(present_metals)
+        warnings.append(
+            f"Contains {metals_str} — Vina/GNINA can run on this molecule, "
+            f"but their scoring functions are not specifically tuned for "
+            f"non-zinc metals. Treat the affinity score as experimental."
+        )
+    if warnings:
+        return DockabilityResult(
+            dockable=True,
+            canonical_smiles=canonical,
+            warnings=warnings,
+        )
     return DockabilityResult(dockable=True, canonical_smiles=canonical)
