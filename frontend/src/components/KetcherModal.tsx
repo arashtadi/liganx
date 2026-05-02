@@ -687,7 +687,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   }
 
   /** Push a history entry's SMILES back to the canvas. Same setMolecule
-   *  path as the main result panel's Apply button. */
+   *  path as the main result panel's Apply button.
+   *  (The dockFreshForLive helper + runDockAndImprove combo function
+   *  are declared further down, after the dockResult/liveSmiles state
+   *  hooks they depend on — TypeScript's temporal-dead-zone check
+   *  prevents using a `const` before its declaration.) */
   async function applyHistoryEntry(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) {
@@ -799,11 +803,27 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     setResult(null);
     setLastAction("edit");
     try {
+      // Docking-aware mode: pass the current dock result through to the
+      // AI ONLY when its smiles matches what's on the canvas right now.
+      // After the user clicks Apply on an AI suggestion, the canvas
+      // changes but `dockResult` still holds the OLD compound's data.
+      // Sending stale dock info to a new compound would actively mislead
+      // the AI into reasoning about residue contacts that no longer
+      // apply. The smiles-equality check is the staleness guard.
+      const dockFresh = dockResult && dockResult.smiles === smi;
       const r = await api.assistCompound({
         smiles: smi,
         instruction: text.trim(),
         target_pdb: targetPdb,
         mutations: mutations,
+        // Only spread dock context when fresh. The backend treats all
+        // three optional fields as a unit — score-with-no-hits would
+        // be ambiguous, so we either send everything or nothing.
+        ...(dockFresh ? {
+          score: dockResult!.score,
+          hits: dockResult!.hits,
+          misses: dockResult!.misses,
+        } : {}),
       });
       setResult(r);
       setStatus("ok");
@@ -893,6 +913,112 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   const [optimizedVariants, setOptimizedVariants] = useState<
     Array<{ new_smiles: string; rationale: string; score?: number; status: "queued" | "docking" | "done" | "error"; error?: string }>
   >([]);
+
+  /** Is the current dockResult applicable to the live canvas SMILES?
+   *  Used by runEdit to decide whether to forward dock context to the
+   *  AI, and by the mode pill to label the AI's current information
+   *  level. After the user edits the structure (or applies an AI
+   *  suggestion), the cached dockResult belongs to the OLD molecule;
+   *  liveSmiles will differ and this returns false. Declared here
+   *  (after dockResult + liveSmiles state) rather than next to the
+   *  AI helpers because const declarations can't precede the state
+   *  they read. */
+  const dockFreshForLive = !!(
+    dockResult && liveSmiles && dockResult.smiles === liveSmiles
+  );
+
+  /** Dock + Improve combo — used when the user has a target picked but
+   *  no fresh dock exists. Runs Quick dock first, then immediately
+   *  fires the AI with full docking context. Single click, ~13s total
+   *  (10s dock + 3s AI).
+   *
+   *  Why not just `await runQuickDock(); runEdit(text)`: setState is
+   *  async and dockResult won't update on the same tick. We need the
+   *  fresh score/hits/misses inline so the AI call can use them
+   *  without a state-update round-trip — hence the dock call is
+   *  inlined here instead of delegated. */
+  async function runDockAndImprove(text: string) {
+    if (!text.trim()) return;
+    if (!targetPdb) {
+      // Should never reach here — UI gates the combo on targetPdb — but
+      // defensive in case of stale render.
+      return runEdit(text);
+    }
+    const apiObj = getApi();
+    if (!apiObj?.getSmiles) {
+      setQuickDockError("Ketcher hasn't finished loading — wait a moment.");
+      setQuickDockStatus("error");
+      return;
+    }
+    let smi: string;
+    try {
+      const raw: string = await apiObj.getSmiles();
+      smi = (raw || "").trim();
+    } catch (e) {
+      setQuickDockError(`Couldn't read SMILES: ${(e as Error).message}`);
+      setQuickDockStatus("error");
+      return;
+    }
+    if (!smi) {
+      setQuickDockError("Draw a structure on the left first.");
+      setQuickDockStatus("error");
+      return;
+    }
+    setQuickDockStatus("running");
+    setQuickDockError(null);
+    try {
+      const dockR = await api.assistQuickDock({
+        smiles: smi,
+        target_pdb: targetPdb,
+        mutation: mutations,
+      });
+      if (!dockR.ok) {
+        setQuickDockStatus("error");
+        setQuickDockError(dockR.error || "Quick dock failed.");
+        return;
+      }
+      // Update state so the panel + mode pill reflect the new dock,
+      // then fire the AI with the same data inline.
+      const fresh = {
+        smiles: smi,
+        score: dockR.score ?? 0,
+        hits: dockR.hits ?? [],
+        misses: dockR.misses ?? [],
+      };
+      setDockResult(fresh);
+      setQuickDockStatus("done");
+      // Step 2: AI call with the fresh dock context.
+      setStatus("running");
+      setErrorMsg(null);
+      setResult(null);
+      setLastAction("edit");
+      try {
+        const r = await api.assistCompound({
+          smiles: smi,
+          instruction: text.trim(),
+          target_pdb: targetPdb,
+          mutations: mutations,
+          score: fresh.score,
+          hits: fresh.hits,
+          misses: fresh.misses,
+        });
+        setResult(r);
+        setStatus("ok");
+        addToHistory(text.trim(), r);
+      } catch (e) {
+        setStatus("error");
+        setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) {
+        setQuickDockGated(true);
+        setQuickDockStatus("idle");
+        return;
+      }
+      setQuickDockStatus("error");
+      setQuickDockError(e instanceof ApiError ? e.message : "Quick dock failed");
+    }
+  }
 
   /** Quick dock the current canvas SMILES. Requires a target+mutation
    *  context (not available on standalone CompoundsPage). */
@@ -1420,26 +1546,110 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
 
       </div>{/* end scrollable middle region */}
 
-      {/* Free-text input — sticks to bottom */}
+      {/* Free-text input — sticks to bottom. Above the input itself sits
+          an "AI context" pill that tells the user what the AI knows when
+          they hit Improve, plus (when applicable) a "Dock + Improve"
+          combo button so users with a target picked but no fresh dock
+          can ground the AI in one click. */}
       <form
-        className="p-3 border-t border-slate-200 dark:border-slate-700"
-        onSubmit={(e) => { e.preventDefault(); runEdit(instruction); setInstruction(""); }}
+        className="p-3 border-t border-slate-200 dark:border-slate-700 space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          // Default submit = use the cheap Improve path. Users who want
+          // dock-grounding click the dedicated combo button (rendered
+          // separately when applicable).
+          runEdit(instruction);
+          setInstruction("");
+        }}
       >
+        {/* AI context pill — three states:
+            - 🟢 Docking-aware (green) when fresh dock data exists for the
+              CURRENT canvas SMILES. AI gets score+hits+misses.
+            - 🟡 Structure + target (amber) when target is picked but
+              the dock data is stale or never run. AI gets target name
+              and mutation hints only.
+            - ⚪ Structure only (slate) when no target context at all
+              (Library editor flow). AI gets just the SMILES.
+            The icon + label match what's actually being sent so the
+            user is never surprised by a "blind" AI suggestion. */}
+        <div
+          className={
+            "flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-md border " +
+            (dockFreshForLive
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-200"
+              : targetPdb
+                ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-200"
+                : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300")
+          }
+          title={
+            dockFreshForLive
+              ? `AI has full docking context for this exact compound: score ${dockResult!.score.toFixed(2)} kcal/mol, ${dockResult!.hits.length} contacted residues, ${dockResult!.misses.length} missed.`
+              : targetPdb
+                ? `AI has the target name (${targetPdb}${mutations ? ` · ${mutations}` : ""}) but no docking results for this compound. Click 'Dock + Improve' below for grounded suggestions.`
+                : "AI is reasoning from the structure alone. No target context available in this flow."
+          }
+        >
+          <span aria-hidden="true">
+            {dockFreshForLive ? "🟢" : targetPdb ? "🟡" : "⚪"}
+          </span>
+          <span className="font-medium">AI context:</span>
+          {dockFreshForLive ? (
+            <span className="truncate">
+              Docking-aware · {dockResult!.score.toFixed(2)} kcal/mol ·{" "}
+              {dockResult!.hits.length} hits, {dockResult!.misses.length} misses
+            </span>
+          ) : targetPdb ? (
+            <span className="truncate">Structure + target hints</span>
+          ) : (
+            <span className="truncate">Structure only</span>
+          )}
+        </div>
+
         <input
           type="text"
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          disabled={!ketcherReady || status === "running"}
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
           placeholder="e.g. swap COOH for tetrazole"
-          className="w-full text-[12px] px-2.5 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none"
+          className="w-full text-[12px] px-2.5 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
         />
         <button
           type="submit"
-          disabled={!ketcherReady || status === "running" || !instruction.trim()}
-          className="mt-2 w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || !instruction.trim()}
+          className="w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
         >
-          {status === "running" ? "Sending…" : "✨ Improve"}
+          {status === "running" && quickDockStatus !== "running"
+            ? "Sending…"
+            : dockFreshForLive
+              ? "✨ Improve (docking-aware)"
+              : "✨ Improve"}
         </button>
+        {/* Dock + Improve combo — shown ONLY when target is picked AND
+            dock data is stale or missing AND the Quick dock feature
+            isn't gated for this user. Single click does both: ~10s
+            for the dock, ~3s for the AI. Hidden when quickDockGated
+            because the user can't run a dock at all (would be a dead
+            button). Hidden when dockFreshForLive because the standard
+            Improve button already includes docking context. */}
+        {targetPdb && !dockFreshForLive && !quickDockGated && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!instruction.trim()) return;
+              runDockAndImprove(instruction);
+              setInstruction("");
+            }}
+            disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || !instruction.trim()}
+            className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Run Quick dock first, then ask the AI with the dock results in context. ~13 seconds total."
+          >
+            {quickDockStatus === "running"
+              ? "🎯 Docking…"
+              : status === "running"
+                ? "✨ AI thinking…"
+                : "🎯 Dock + Improve (grounded)"}
+          </button>
+        )}
       </form>
     </aside>
   );

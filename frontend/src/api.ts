@@ -564,6 +564,16 @@ export const api = {
     instruction: string;
     target_pdb?: string;
     mutations?: string;
+    /** Optional docking context — pass these only when a recent Quick
+     *  dock result is available AND its smiles matches the current
+     *  canvas SMILES. Stale dock data (post-edit) must NOT be sent —
+     *  it would mislead the AI into reasoning about contacts that no
+     *  longer apply. The backend uses this to flip the system prompt
+     *  into docking-aware mode (residues must come from these lists,
+     *  bias edits toward misses). */
+    score?: number;
+    hits?: string[];
+    misses?: string[];
   }) =>
     request<{
       new_smiles: string;

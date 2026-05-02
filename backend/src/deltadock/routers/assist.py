@@ -63,11 +63,24 @@ class AssistRequest(BaseModel):
 
     `target_pdb` and `mutations` are optional context to make the AI
     pocket-aware. Both are loose strings since users may type
-    free-form ('BRAF V600E') or paste exact codes ('5VAM' + 'V600E')."""
+    free-form ('BRAF V600E') or paste exact codes ('5VAM' + 'V600E').
+
+    `score`, `hits`, `misses` are optional DOCKING context — when present,
+    the AI gets the most recent Quick-dock result for THIS exact compound
+    and can ground its suggestions in real contact data instead of
+    guessing from structure alone. The frontend only sends these when
+    dockResult.smiles == current canvas SMILES (i.e. the dock data is
+    fresh; sending stale data after the user edited would actively
+    mislead the AI). All three are optional so the no-target / no-dock
+    paths still work — the prompt just falls back to structure-only mode."""
     smiles: str = Field(..., min_length=1, max_length=2000)
     instruction: str = Field(..., min_length=1, max_length=500)
     target_pdb: Optional[str] = Field(default=None, max_length=20)
     mutations: Optional[str] = Field(default=None, max_length=200)
+    # Docking context (optional — only sent when fresh dock data exists).
+    score: Optional[float] = Field(default=None, description="Vina score in kcal/mol; lower = stronger binding")
+    hits: Optional[list[str]] = Field(default=None, max_length=50, description="Residue labels the compound contacts")
+    misses: Optional[list[str]] = Field(default=None, max_length=50, description="Pocket residues the compound does NOT contact")
 
 
 @router.post("/properties", dependencies=[Depends(_PROP_LIMIT)])
@@ -125,6 +138,9 @@ async def compound_endpoint(
             instruction=payload.instruction.strip(),
             target_pdb=payload.target_pdb.strip() if payload.target_pdb else None,
             mutations=payload.mutations.strip() if payload.mutations else None,
+            score=payload.score,
+            hits=payload.hits,
+            misses=payload.misses,
         )
     except RuntimeError as e:
         msg = str(e)

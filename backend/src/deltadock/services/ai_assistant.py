@@ -210,10 +210,21 @@ def _build_user_prompt(
     instruction: str,
     target_pdb: Optional[str],
     mutations: Optional[str],
+    score: Optional[float] = None,
+    hits: Optional[list[str]] = None,
+    misses: Optional[list[str]] = None,
 ) -> str:
     """Assemble the user message. Pocket context is appended only when
     actually present so a generic edit ("make this more soluble") isn't
-    polluted with irrelevant target details."""
+    polluted with irrelevant target details.
+
+    When `score`/`hits`/`misses` are provided, a DOCKING CONTEXT block
+    is appended — same data the Optimize endpoint uses. The presence of
+    this block flips the system prompt's behaviour into docking-aware
+    mode: residue names must come from these lists, suggestions should
+    bias toward the misses without breaking the hits, and the rationale
+    should reference the specific residue the edit targets when one is
+    being targeted."""
     parts = [
         f"Current SMILES: {smiles}",
         f"Instruction: {instruction}",
@@ -223,6 +234,18 @@ def _build_user_prompt(
         if mutations:
             ctx += f", mutations: {mutations}"
         parts.append(ctx)
+    # Docking context — only append when score is present (hits/misses
+    # alone without a score would be ambiguous; we want all three or none).
+    if score is not None:
+        dock_lines = [
+            "",
+            "DOCKING CONTEXT (use this to ground your edit):",
+            f"- Current docking score: {score:.2f} kcal/mol (lower = stronger binding)",
+            f"- Hits (residues the compound CONTACTS — preserve these): {', '.join(hits) if hits else '(none reported)'}",
+            f"- Misses (pocket residues NOT contacted — bias edits toward reaching at least one): {', '.join(misses) if misses else '(none reported)'}",
+            "When proposing the edit, name the specific MISSED residue you're targeting (e.g. 'extends a methyl to reach Tyr541'). Only refer to residues that appear in the hits or misses lists above — do NOT invent residue names. If your edit doesn't target a specific residue, describe the move generically without inventing a label.",
+        ]
+        parts.extend(dock_lines)
     return "\n".join(parts)
 
 
@@ -484,13 +507,23 @@ async def call_anthropic(
     instruction: str,
     target_pdb: Optional[str] = None,
     mutations: Optional[str] = None,
+    score: Optional[float] = None,
+    hits: Optional[list[str]] = None,
+    misses: Optional[list[str]] = None,
 ) -> AssistResponse:
     """Single-turn Anthropic call. Returns AssistResponse with new_smiles
     + rationale on success, or raises RuntimeError on auth/network/quota
-    failures (caller maps those to 503/502 HTTPException)."""
+    failures (caller maps those to 503/502 HTTPException).
+
+    Optional `score`/`hits`/`misses` arguments enable DOCKING-AWARE mode:
+    the system prompt receives a contact-data block and biases its edits
+    toward residues the compound is missing. The router only forwards
+    these when the dock data is fresh (its smiles matches the current
+    canvas SMILES); stale dock data isn't passed through."""
     user_prompt = _build_user_prompt(
         smiles=smiles, instruction=instruction,
         target_pdb=target_pdb, mutations=mutations,
+        score=score, hits=hits, misses=misses,
     )
 
     headers, payload, timeout = _build_request(
