@@ -40,8 +40,14 @@ ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 # adds a roundtrip and the code-execution tool can take a few extra
 # seconds to spin up.
 ANTHROPIC_TIMEOUT_S = 20.0
-ANTHROPIC_TIMEOUT_WITH_SKILL_S = 40.0
+ANTHROPIC_TIMEOUT_WITH_SKILL_S = 60.0
+# Without the skill: 1024 is plenty for a single JSON answer.
+# With the skill: the model reads SKILL.md (~3500 tokens) plus typically
+# one reference (~1500 tokens) via the code_execution tool, then produces
+# the final JSON. Each tool roundtrip adds intermediate text blocks. 4096
+# leaves headroom; observed 2500-3500 typical.
 ANTHROPIC_MAX_TOKENS = 1024
+ANTHROPIC_MAX_TOKENS_WITH_SKILL = 4096
 
 # Workspace-level Skill ID for the medchem-phd skill (uploaded at
 # https://platform.claude.com/workspaces/default/skills). When set,
@@ -157,6 +163,9 @@ def _build_request(*, system_prompt: str, user_prompt: str) -> tuple[dict, dict,
     timeout = ANTHROPIC_TIMEOUT_S
 
     if MEDCHEM_PHD_SKILL_ID:
+        # Skill-loading roundtrips need a bigger token budget — see the
+        # ANTHROPIC_MAX_TOKENS_WITH_SKILL comment for sizing rationale.
+        payload["max_tokens"] = ANTHROPIC_MAX_TOKENS_WITH_SKILL
         # Attach the workspace skill so Claude has the full medchem-phd
         # reference library available on demand. The code-execution tool
         # is required by Anthropic's skills runtime to load reference
@@ -187,10 +196,41 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json(raw: str) -> Optional[dict]:
-    """Pull the first JSON object out of a model response. Returns None
-    if no JSON-shaped block is present or it doesn't parse."""
+    """Pull the JSON object out of a model response. Returns None if no
+    JSON-shaped block is present or it doesn't parse.
+
+    When the model uses tools (skills via code_execution), the response
+    contains intermediate "thinking" text plus a final JSON answer. The
+    intermediate text often includes braces from code snippets the model
+    showed while reasoning. We try the LAST balanced-brace block first
+    (the model's final answer), and only fall back to the greedy regex
+    if that fails — this matches the Anthropic streaming convention
+    where the model's final answer is always at the end."""
     if not raw:
         return None
+
+    # Try last-occurrence parse first: scan from the right for the last
+    # `}`, then find its matching `{` by walking left.
+    last_close = raw.rfind("}")
+    if last_close != -1:
+        depth = 0
+        for i in range(last_close, -1, -1):
+            ch = raw[i]
+            if ch == "}":
+                depth += 1
+            elif ch == "{":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[i : last_close + 1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        break  # try the greedy fallback
+                    break
+
+    # Greedy fallback for malformed nested braces (rare).
     m = _JSON_BLOCK_RE.search(raw)
     if not m:
         return None
