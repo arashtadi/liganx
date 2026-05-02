@@ -129,8 +129,12 @@ def quick_dock(
     )
 
     # Cache directories — same volume as the production runner so we
-    # share receptor preps across paths.
-    cache_root = Path(settings.liganx_cache_root or "/var/lib/liganx/poses/cache")
+    # share receptor preps across paths. The attribute name is
+    # `cache_root` (env var LIGANX_CACHE_ROOT, aliased in config.py);
+    # an earlier draft of this file used `liganx_cache_root` which
+    # doesn't exist on the Settings class — silently broke every
+    # Quick dock call with AttributeError → 500.
+    cache_root = Path(settings.cache_root or "/var/lib/liganx/poses/cache")
     pdb_cache = cache_root / "pdb"
     receptor_cache = cache_root / "receptors"
     pdb_cache.mkdir(parents=True, exist_ok=True)
