@@ -49,6 +49,13 @@ jobs:
         # non-zero on any regression. Exit 2 indicates a transient network
         # problem (RCSB timeout) and the workflow re-runs cleanly on retry.
         run: python backend/scripts/verify_catalog.py
+      - name: Run verify_prep_symmetry.py
+        # Structural check that runner.py + mutate.py preserve the v5
+        # invariant: WT and mutant receptors honor the SAME per-target
+        # minimize_mutant flag. Without this, the asymmetry that the
+        # 2026-05-01 PhD audit caught (mutant minimised, WT not) silently
+        # comes back and biases every Δ. Stdlib-only, no network.
+        run: python backend/scripts/verify_prep_symmetry.py
 
   deploy:
     name: Deploy backend to Fly

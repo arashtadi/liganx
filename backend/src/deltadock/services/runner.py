@@ -1010,7 +1010,23 @@ def _run_real(session: Session, job: Job) -> None:
     # survive a local-energy-minimum search — the validation suite went
     # -2.90 → -0.70 → +2.20 across three samples. Bumping to v4 forces
     # BRAF mutant rebuilds with minimisation skipped on next request.
-    PREP_VERSION = "v4-per-target-min"
+    #
+    # v5 (2026-05-01): EXPERIMENT — symmetric WT minimisation. Reverted
+    # the same day after the validation suite regressed from 5/8 PASS
+    # to 2/8 PASS + 1 FAIL. See docs/v5_postmortem.md for the full
+    # reasoning. The short version: WT comes from a crystal structure
+    # (already a low-energy minimum), so minimising it just collapses
+    # the discriminating geometry; MUT comes from a synthetic side-chain
+    # swap, so it DOES need minimisation to relieve clashes. The two
+    # receptors start from physically different states, so they
+    # correctly need different prep — asymmetry is right, not a bug.
+    #
+    # v6 (2026-05-01): cache invalidation after the v5 revert. Every
+    # cached WT.pdbqt got re-stamped v5-symmetric-min during the
+    # botched run and now contains a minimised (= wrong) WT receptor.
+    # Bumping to v6 forces a fresh rebuild on next first-hit per target,
+    # back to the correct WT-not-minimised state.
+    PREP_VERSION = "v6-revert-to-asymmetric"
 
     def _is_stale(path: Path) -> bool:
         """A cache file is stale if its sibling .prep_version marker is missing
