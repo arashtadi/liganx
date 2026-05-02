@@ -322,6 +322,12 @@ export default function CompoundsPage() {
       {sketcherFor && (
         <KetcherModal
           initialSmiles={sketcherFor.smiles}
+          // Thread the compound's id + prior AI conversation so the AI
+          // sidebar can persist new turns back to the row instead of
+          // dropping them when the modal closes. Hydration is one-shot
+          // on mount inside AiSidebar.
+          compoundId={sketcherFor.id}
+          initialAIHistory={sketcherFor.ai_history}
           onClose={() => setSketcherFor(null)}
           onAccept={(newSmiles, unchanged) => {
             const original = sketcherFor;

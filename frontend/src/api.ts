@@ -314,6 +314,30 @@ export interface UserProfileUpdate {
   marketing_opt_in?: boolean;
 }
 
+/** One entry in a saved compound's AI suggestion history. The Ketcher
+ *  modal's AI sidebar appends to this on every successful response so
+ *  re-opening the compound days later restores the conversation.
+ *  Capped at 10 entries server-side; starred entries protected from
+ *  auto-prune. Mirrors backend AIHistoryEntry. */
+export interface AIHistoryEntry {
+  /** ULID/UUID generated client-side. Stable across edits so React keys
+   *  don't shift when the array re-orders. */
+  id: string;
+  /** ISO 8601 timestamp of when the response was received. */
+  ts: string;
+  /** The user's prompt — what they asked the AI to do. */
+  instruction: string;
+  /** The SMILES the AI suggested. */
+  smiles: string;
+  /** One-sentence rationale from the AI. */
+  rationale: string;
+  /** Any caveats the AI surfaced (chirality, drug-likeness, etc.). */
+  warnings: string[];
+  /** User-applied flag. "star" protects from auto-prune; "reject" is a
+   *  visual marker but doesn't change retention. */
+  flag?: "star" | "reject" | null;
+}
+
 /** A saved compound in the user's library. Auto-saves from the New-job
  *  form when both name and SMILES are present. Backend upserts on
  *  (user_id, name) so editing a name's SMILES updates rather than
@@ -324,6 +348,9 @@ export interface UserCompound {
   name: string;
   smiles: string;
   tags: string[];
+  /** AI sidebar conversation history. Empty array for compounds saved
+   *  before the feature shipped (server default: '[]'::jsonb). */
+  ai_history?: AIHistoryEntry[];
   created_at: string;
   updated_at: string;
 }
@@ -398,6 +425,15 @@ export const api = {
     request<UserCompound>(`/me/compounds/${id}/tags`, {
       method: "PATCH",
       body: JSON.stringify({ tags }),
+    }),
+  /** Replace the AI suggestion history on a saved compound. Same
+   *  replace-the-whole-list shape as tags — frontend manages the array
+   *  (append on response, delete per entry, flag toggle) and PUTs the
+   *  canonical version. Server caps at 10 entries (starred protected). */
+  saveMyCompoundAIHistory: (id: number, ai_history: AIHistoryEntry[]) =>
+    request<UserCompound>(`/me/compounds/${id}/ai-history`, {
+      method: "PATCH",
+      body: JSON.stringify({ ai_history }),
     }),
 
   /** Inline SMILES inspection — parse + 2D depiction + fragment detection,

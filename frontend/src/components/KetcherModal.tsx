@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
-import { api, ApiError } from "../api";
+import { api, ApiError, type AIHistoryEntry } from "../api";
 
 /**
  * Ketcher 2D structure-editor modal — opens the self-hosted Ketcher
@@ -61,6 +61,16 @@ interface Props {
    *  there's no target context. */
   targetPdb?: string;
   mutations?: string;
+  /** When the user opened the modal to edit an EXISTING saved compound,
+   *  pass its DB id here. The AI sidebar uses it to PUT history updates
+   *  back to /me/compounds/{id}/ai-history so the conversation persists
+   *  across sessions. Leave undefined for create-from-scratch and the
+   *  NewJobPage flow — history stays in-memory only. */
+  compoundId?: number;
+  /** When opening for an existing saved compound, hydrate the AI sidebar
+   *  with this compound's prior AI history so re-opening days later
+   *  restores the conversation. Empty / undefined = start fresh. */
+  initialAIHistory?: AIHistoryEntry[];
 }
 
 const KETCHER_SRC = "/ketcher/index.html";
@@ -79,7 +89,7 @@ function getKetcherApi(iframe: HTMLIFrameElement | null): any | null {
   }
 }
 
-export default function KetcherModal({ initialSmiles, onClose, onAccept, targetPdb, mutations }: Props) {
+export default function KetcherModal({ initialSmiles, onClose, onAccept, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
   // The bare `iframe.onLoad` event fires earlier — when the HTML is parsed,
@@ -328,6 +338,8 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
             getApi={() => getKetcherApi(iframeRef.current)}
             targetPdb={targetPdb}
             mutations={mutations}
+            compoundId={compoundId}
+            initialAIHistory={initialAIHistory}
           />
         </div>
 
@@ -419,6 +431,54 @@ interface AiSidebarProps {
   getApi: () => any | null;
   targetPdb?: string;
   mutations?: string;
+  /** When the parent opened the modal to edit an existing saved compound,
+   *  this is the compound's DB id. The sidebar uses it to PUT history
+   *  changes back to the server. Undefined for in-memory-only flows. */
+  compoundId?: number;
+  /** Hydrate the history list with this compound's prior AI conversation
+   *  on mount. Mutations after mount are tracked by local state. */
+  initialAIHistory?: AIHistoryEntry[];
+}
+
+// Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
+// frontend prunes pre-emptively (drop oldest unstarred when adding the
+// 11th) so the user sees a stable scrolling list rather than a full one
+// that suddenly truncates after a save. Server is the source of truth —
+// it'll re-prune anything we send over the cap.
+const MAX_AI_HISTORY = 10;
+
+// Debounce window for persisting the history array. Long enough that a
+// burst of toggles (star + reject + delete) coalesce into one PATCH but
+// short enough that closing the modal immediately after a flag change
+// still saves before the user navigates away.
+const AI_HISTORY_PERSIST_DELAY_MS = 1200;
+
+/** Generate a stable-ish id for a new history entry. crypto.randomUUID
+ *  exists in every browser we support; the timestamp fallback keeps the
+ *  app from crashing in vintage WebViews where it doesn't. */
+function newEntryId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch { /* fall through */ }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Apply the same star-protection prune the server uses. Keep all
+ *  starred entries plus the most-recent unstarred entries up to the
+ *  cap. Order in the input is assumed newest-first; output preserves
+ *  that ordering with starred floating to the top. */
+function pruneHistory(entries: AIHistoryEntry[]): AIHistoryEntry[] {
+  if (entries.length <= MAX_AI_HISTORY) return entries;
+  const starred = entries.filter((e) => e.flag === "star");
+  const unstarred = entries.filter((e) => e.flag !== "star");
+  if (starred.length >= MAX_AI_HISTORY) {
+    // More starred than the cap — keep all of them (chemists' bookmarks
+    // shouldn't disappear silently). Server will do the same.
+    return starred;
+  }
+  return [...starred, ...unstarred.slice(0, MAX_AI_HISTORY - starred.length)];
 }
 
 // Curated medchem hints for well-known oncogenic mutations. When the
@@ -526,12 +586,116 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory }: AiSidebarProps) {
   const [instruction, setInstruction] = useState("");
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [result, setResult] = useState<AssistResult | null>(null);
   const [properties, setProperties] = useState<PropertiesResult | null>(null);
+
+  // ── AI conversation history ─────────────────────────────────────────
+  // Chronological log of AI responses for this compound. Newest-first
+  // by convention: append to the front in addToHistory(). Persisted
+  // server-side when compoundId is set; in-memory-only otherwise (e.g.
+  // create-from-scratch in CompoundsPage, or the NewJobPage flow where
+  // there isn't a saved row yet).
+  const [aiHistory, setAiHistory] = useState<AIHistoryEntry[]>(() =>
+    initialAIHistory && initialAIHistory.length > 0 ? initialAIHistory : [],
+  );
+  // Banner shown when the most recent persistence call failed. Doesn't
+  // block the UI — the user can keep flagging/deleting; we just retry
+  // on the next change.
+  const [historySaveError, setHistorySaveError] = useState<string | null>(null);
+  // Skip the very first persistence run so opening the modal for a saved
+  // compound doesn't trigger a no-op PATCH that bumps updated_at.
+  const skipNextPersistRef = useRef<boolean>(true);
+
+  // Persist aiHistory to the backend whenever it changes — debounced so
+  // a burst of toggles (star + delete + reject) coalesces into one PATCH.
+  // Only runs when compoundId is set; in-memory-only flows skip entirely.
+  useEffect(() => {
+    if (!compoundId) return;
+    if (skipNextPersistRef.current) {
+      // First run after mount or compoundId change: just record the
+      // initial array and skip the network round-trip. Without this,
+      // every modal open would write the same data back unchanged.
+      skipNextPersistRef.current = false;
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      api.saveMyCompoundAIHistory(compoundId, aiHistory)
+        .then(() => setHistorySaveError(null))
+        .catch((e) => {
+          // Persistence is best-effort. Log + show a small banner so the
+          // user knows their flag/delete didn't make it to the server,
+          // but don't tear down the UI state — they can keep working
+          // and the next change will retry.
+          const msg = e instanceof ApiError ? e.message : "couldn't save AI history";
+          setHistorySaveError(msg);
+        });
+    }, AI_HISTORY_PERSIST_DELAY_MS);
+    return () => window.clearTimeout(handle);
+    // aiHistory is the only dependency that should re-trigger persistence;
+    // compoundId only changes on remount which is handled by the skip flag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiHistory]);
+
+  /** Prepend a new history entry. Used by runEdit and runAnalogs after
+   *  a successful AI response. No-op when the result is empty (no SMILES
+   *  to record). pruneHistory keeps the list at MAX_AI_HISTORY entries
+   *  with star-protection. */
+  function addToHistory(instructionText: string, r: AssistResult) {
+    if (!r?.new_smiles) return;  // nothing useful to log
+    const entry: AIHistoryEntry = {
+      id: newEntryId(),
+      ts: new Date().toISOString(),
+      instruction: instructionText,
+      smiles: r.new_smiles,
+      rationale: r.rationale || "",
+      warnings: r.warnings || [],
+      flag: null,
+    };
+    setAiHistory((prev) => pruneHistory([entry, ...prev]));
+  }
+
+  /** Remove a history entry by id. Triggers a debounced PATCH if
+   *  compoundId is set. */
+  function deleteHistoryEntry(id: string) {
+    setAiHistory((prev) => prev.filter((e) => e.id !== id));
+  }
+
+  /** Toggle the star flag on an entry. Starred entries are protected
+   *  from auto-prune both client- and server-side. Re-toggling a starred
+   *  entry clears the flag. */
+  function toggleHistoryStar(id: string) {
+    setAiHistory((prev) => prev.map((e) =>
+      e.id === id ? { ...e, flag: e.flag === "star" ? null : "star" } : e,
+    ));
+  }
+
+  /** Toggle the reject flag — visual marker only, doesn't change retention.
+   *  Useful for chemists to mark a suggestion as "tried, didn't pan out". */
+  function toggleHistoryReject(id: string) {
+    setAiHistory((prev) => prev.map((e) =>
+      e.id === id ? { ...e, flag: e.flag === "reject" ? null : "reject" } : e,
+    ));
+  }
+
+  /** Push a history entry's SMILES back to the canvas. Same setMolecule
+   *  path as the main result panel's Apply button. */
+  async function applyHistoryEntry(smiles: string) {
+    const apiObj = getApi();
+    if (!apiObj?.setMolecule) {
+      setErrorMsg("Ketcher hasn't finished loading.");
+      return;
+    }
+    try {
+      await apiObj.setMolecule(smiles);
+    } catch (e) {
+      setErrorMsg(`Ketcher rejected the SMILES: ${(e as Error).message}`);
+    }
+  }
+
   // Live property strip — auto-updates as the user draws so they see
   // MW / logP / QED / Lipinski feedback without clicking anything.
   // Separate from `properties` (which is the click-driven detailed
@@ -624,6 +788,8 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
       });
       setResult(r);
       setStatus("ok");
+      // Log to history so re-opening the compound restores this turn.
+      addToHistory(text.trim(), r);
     } catch (e) {
       setStatus("error");
       setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
@@ -653,6 +819,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
       });
       setResult(r);
       setStatus("ok");
+      addToHistory("Suggest 5 medchem analogs", r);
     } catch (e) {
       setStatus("error");
       setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
@@ -1128,6 +1295,49 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
         )}
       </div>
 
+      {/* Conversation history — scrollable list of prior AI suggestions
+          for THIS compound. Sits between the live result panel and the
+          input form so the user can scroll back through what they've
+          already tried without losing the current suggestion above.
+          Persisted server-side when compoundId is set; in-memory-only
+          for unsaved compounds (NewJobPage path, create-from-scratch
+          before naming). */}
+      {aiHistory.length > 0 && (
+        <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 max-h-[200px] overflow-y-auto">
+          <div className="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 sticky top-0 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-sm">
+            <span>History · {aiHistory.length}/{MAX_AI_HISTORY}</span>
+            {historySaveError && (
+              <span
+                className="text-[9px] normal-case tracking-normal text-amber-700 dark:text-amber-300"
+                title={historySaveError}
+              >
+                save retrying…
+              </span>
+            )}
+            {!historySaveError && !compoundId && (
+              <span
+                className="text-[9px] normal-case tracking-normal text-slate-400"
+                title="History will be lost when you close this modal — save the compound to persist it."
+              >
+                unsaved
+              </span>
+            )}
+          </div>
+          <ul className="px-2 pb-2 space-y-1.5">
+            {aiHistory.map((entry) => (
+              <HistoryRow
+                key={entry.id}
+                entry={entry}
+                onApply={() => applyHistoryEntry(entry.smiles)}
+                onToggleStar={() => toggleHistoryStar(entry.id)}
+                onToggleReject={() => toggleHistoryReject(entry.id)}
+                onDelete={() => deleteHistoryEntry(entry.id)}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Free-text input — sticks to bottom */}
       <form
         className="p-3 border-t border-slate-200 dark:border-slate-700"
@@ -1266,5 +1476,156 @@ function LivePropPair({ label, value }: { label: string; value: number | undefin
       <span className="text-slate-400 dark:text-slate-500">{label}</span>{" "}
       <span className="font-medium text-slate-700 dark:text-slate-200">{value}</span>
     </span>
+  );
+}
+
+/** One row in the AI history list. Compact card: instruction + suggested
+ *  SMILES + rationale, with Apply / Star / Reject / Delete actions on
+ *  the right. The expanded rationale is gated behind a click-to-expand
+ *  to keep the list dense — chemists scanning history want to see SMILES
+ *  + ts at a glance, then drill in. Reject styling is muted (greyscale
+ *  + line-through on the SMILES) so failed turns are visually demoted
+ *  but still clickable to reapply if the chemist changes their mind. */
+function HistoryRow({
+  entry,
+  onApply,
+  onToggleStar,
+  onToggleReject,
+  onDelete,
+}: {
+  entry: AIHistoryEntry;
+  onApply: () => void;
+  onToggleStar: () => void;
+  onToggleReject: () => void;
+  onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isStarred = entry.flag === "star";
+  const isRejected = entry.flag === "reject";
+  // Format ts as "Apr 30 · 14:22" — short, scannable, keeps within the
+  // tight 320px sidebar width. Falls back to the raw ISO string if the
+  // browser's Date parser doesn't like the input (defensive — should
+  // never trigger since we mint the ISO ourselves).
+  let prettyTs = entry.ts;
+  try {
+    const d = new Date(entry.ts);
+    if (!isNaN(d.getTime())) {
+      prettyTs = d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+        + " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    }
+  } catch { /* keep raw ts */ }
+
+  return (
+    <li
+      className={
+        "rounded-md border px-2 py-1.5 transition-colors " +
+        (isStarred
+          ? "border-amber-300 dark:border-amber-700/50 bg-amber-50/50 dark:bg-amber-900/15"
+          : isRejected
+            ? "border-slate-200 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/30 opacity-70"
+            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/40")
+      }
+    >
+      {/* Top row — instruction + actions. Truncate the instruction so a
+          long prompt doesn't push actions off-screen; full text shows on
+          expand. */}
+      <div className="flex items-start gap-1.5">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex-1 min-w-0 text-left group"
+          title={expanded ? "Collapse" : "Show details"}
+        >
+          <div className="text-[11px] text-ink dark:text-slate-100 leading-snug truncate group-hover:text-delta-700 dark:group-hover:text-delta-300">
+            {entry.instruction}
+          </div>
+          <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">{prettyTs}</div>
+        </button>
+        {/* Action cluster — small icon-only buttons to keep the row narrow.
+            Star → amber when active, Reject → muted slate, Delete → rose
+            on hover. All three are 18px tap targets, big enough on touch
+            but still compact. */}
+        <button
+          type="button"
+          onClick={onToggleStar}
+          title={isStarred ? "Unstar" : "Star (protected from auto-prune)"}
+          className={
+            "p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors " +
+            (isStarred ? "text-amber-500" : "text-slate-300 dark:text-slate-600 hover:text-amber-500")
+          }
+        >
+          {/* Star — filled when starred, outline otherwise */}
+          <svg width="12" height="12" viewBox="0 0 20 20" fill={isStarred ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+            <polygon points="10,2 12.5,7.5 18,8.3 14,12.3 15,18 10,15.3 5,18 6,12.3 2,8.3 7.5,7.5" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={onToggleReject}
+          title={isRejected ? "Clear reject mark" : "Mark as rejected (visual only)"}
+          className={
+            "p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors " +
+            (isRejected ? "text-slate-600 dark:text-slate-300" : "text-slate-300 dark:text-slate-600 hover:text-slate-500")
+          }
+        >
+          {/* Slash circle for reject */}
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <circle cx="10" cy="10" r="7.5" />
+            <line x1="5" y1="5" x2="15" y2="15" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Delete this entry"
+          className="p-1 rounded text-slate-300 dark:text-slate-600 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <line x1="5" y1="5" x2="15" y2="15" />
+            <line x1="15" y1="5" x2="5" y2="15" />
+          </svg>
+        </button>
+      </div>
+
+      {/* SMILES line — always visible, font-mono and break-all so a long
+          SMILES wraps gracefully inside the sidebar width. Click to apply. */}
+      <button
+        type="button"
+        onClick={onApply}
+        title="Apply this SMILES to the canvas"
+        className={
+          "block w-full text-left mt-1 font-mono text-[9px] break-all leading-tight hover:underline " +
+          (isRejected
+            ? "text-slate-400 dark:text-slate-500 line-through"
+            : "text-delta-700 dark:text-delta-300")
+        }
+      >
+        {entry.smiles}
+      </button>
+
+      {/* Expanded body — rationale + warnings + a more prominent Apply
+          button. Hidden by default to keep the list dense. */}
+      {expanded && (
+        <div className="mt-1.5 pt-1.5 border-t border-slate-200 dark:border-slate-700/50 space-y-1.5">
+          {entry.rationale && (
+            <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+              {entry.rationale}
+            </div>
+          )}
+          {entry.warnings && entry.warnings.length > 0 && (
+            <ul className="text-[9px] text-amber-700 dark:text-amber-300 space-y-0.5 ml-3 list-disc">
+              {entry.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={onApply}
+            className="text-[10px] font-semibold text-delta-700 dark:text-delta-300 hover:underline"
+          >
+            Apply to canvas →
+          </button>
+        </div>
+      )}
+    </li>
   );
 }
