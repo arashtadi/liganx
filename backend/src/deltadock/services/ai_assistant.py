@@ -172,7 +172,9 @@ def _build_request(*, system_prompt: str, user_prompt: str) -> tuple[dict, dict,
                 }
             ]
         }
-        payload["tools"] = [{"type": "code_execution_20250825"}]
+        payload["tools"] = [
+            {"type": "code_execution_20250825", "name": "code_execution"}
+        ]
         timeout = ANTHROPIC_TIMEOUT_WITH_SKILL_S
 
     return headers, payload, timeout
