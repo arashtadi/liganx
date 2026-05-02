@@ -5,6 +5,38 @@ one of four classes. The class determines whether rigid-receptor Vina /
 GNINA can give a meaningful Δ. Knowing the class up front prevents
 wasting time on a case the method fundamentally can't resolve.
 
+Before the class, also know the **kinase-inhibitor type** because the
+target's conformational state interacts with the mutation's effect.
+
+## Type I / II / III / IV inhibitor classification
+
+This taxonomy is the lens through which every kinase audit should
+start. A mutation that's "in scope" for one inhibitor type can be
+"out of scope" for another.
+
+| Type | Binding mode | Receptor conformation needed | Canonical examples | Implication for docking |
+|------|---------------|-------------------------------|---------------------|---------------------------|
+| **Type I** | ATP-competitive, active-state | DFG-in, αC-in | Erlotinib, Gefitinib (EGFR); Crizotinib (ALK/MET); Dasatinib (ABL) | Dock against an active-state crystal. Most kinase PDBs are Type I-compatible. Gatekeeper mutations (T315I, T790M) hit hardest here because the back pocket is the binding region. |
+| **Type II** | ATP-competitive, inactive-state | DFG-out, αC-out (extends into back pocket) | Imatinib (ABL); Sorafenib (RAF, VEGFR); Nilotinib (ABL); Ponatinib (ABL) | Dock against a DFG-out crystal. **Don't use a Type I PDB for a Type II ligand** — pose will be wrong, score will be meaningless. Activation-loop mutations (V600E, D816V) often shift the equilibrium toward active state, weakening Type II binders. |
+| **Type III** | Allosteric (not ATP cleft) | Adjacent pocket, cleft-independent | Trametinib (MEK1/2); Asciminib (ABL myristoyl pocket); MEK162 | Need an allosteric-pocket-resolved crystal. Gatekeeper mutations are largely irrelevant; allosteric pocket mutations matter. Asciminib was specifically engineered to be T315I-insensitive by binding outside the ATP cleft. |
+| **Type IV** | Substrate-competitive or distal regulatory | Various | Rare; mostly research-stage | Treat as out-of-scope for standard kinase docking pipelines unless the substrate-binding pocket is mapped. |
+
+**Worked example of why type matters:** Imatinib (Type II) survives some
+ABL mutations that take out Dasatinib (Type I), and vice versa. If you
+dock both against an ABL DFG-in crystal, you'll mis-rank Imatinib —
+not because Imatinib is bad, but because you used the wrong receptor
+conformation. Always pair the inhibitor's type to the receptor PDB's
+DFG state. Strømgaard *et al.* 2017 (Ch. 21, p. 395) put it bluntly:
+**"Imatinib binds at the ATP-binding site of an inactive form of the
+kinase. High specificity is explained by this unusual binding mode."**
+
+**Checking the receptor's DFG state from a PDB:** The DFG motif's
+phenylalanine (Phe) torsion angle separates DFG-in (χ1 ≈ −60°) from
+DFG-out (χ1 ≈ +60° to +120°). Inspect the PDB's Phe sidechain near
+residues 380–410 of a typical kinase domain; PyMOL's `chi1`
+selection or a quick visual check of where the Phe sidechain points
+relative to the αC helix is enough.
+
 ## Class 1 — Gatekeeper-residue substitution
 
 **Mechanism:** A bulky residue at the gatekeeper position blocks the

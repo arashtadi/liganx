@@ -178,3 +178,111 @@ Before sending a recommendation:
 6. ☐ Did I distinguish "looks suspicious" from "is wrong"?
 
 If any box is unchecked, the recommendation is premature.
+
+## Anti-pattern 8: "Low activity = bad binder"
+
+**The reasoning that sounds clean:** A compound assayed at 10 µM IC50
+when we expected nM is a weak binder; drop it.
+
+**Why it's wrong:** Strømgaard *et al.* 2017 (Ch. 3, p. 47) puts it
+plainly: low activity *may not* mean bad binding. Three common
+masking effects:
+
+- **Poor permeability** (especially for highly polar acids and bases)
+- **Hepatic first-pass metabolism** (CYP3A4 can drop apparent oral
+  potency 10-100×)
+- **Plasma protein binding** (highly lipophilic compounds bind albumin
+  and never reach the target)
+
+**The right move:** Before discarding a compound for low cellular
+activity, check its *biochemical* IC50 against purified protein. If
+the biochemical activity is strong (nM) but cellular is weak (µM),
+the compound is a good binder with an ADMET problem — that's a
+solvable medchem question, not a binding problem.
+
+## Anti-pattern 9: "Rigidify everything"
+
+**The reasoning that sounds clean:** Conformational restriction
+reduces entropy penalty on binding, so rigidification always helps.
+
+**Why it's wrong:** Rigidification helps *only when the rigid form
+matches the bioactive conformation*. From Nadendla & Yemineni 2023
+(Section 11.2): "A more rigid molecule tends to create a stronger
+binding to its biological target. However, when the target receptor
+has a more flexible binding site, increasing molecular rigidity
+might decrease the ability of the drug to enter this site."
+
+**Concrete failure mode:** Locking a flexible chain into a ring
+constrains it to a *specific* conformation. If that conformation
+isn't the bound one, you've made the compound worse, not better.
+Strømgaard's amprenavir example saved 105 kJ/mol of entropy *because
+the rigid form matched the bound conformation*; the wrong rigidified
+form would have lost binding entirely.
+
+**The right move:** Before rigidifying, look at the docked pose —
+identify the bioactive conformation, then rigidify *to that*. If you
+don't have a pose, do unconstrained Vina first to find the binding
+geometry, then design the constraint.
+
+## Anti-pattern 10: "Stereochemistry doesn't matter for ranking"
+
+**The reasoning that sounds clean:** S- and R-enantiomers differ only
+in 3D arrangement; their MW, formula, and most properties are
+identical. Treat them as the same compound in early ranking.
+
+**Why it's wrong:** Enantiomers can differ in target potency by 5×,
+50×, or more. Nadendla & Yemineni cite warfarin (S-warfarin is 5×
+more potent as anticoagulant than R-warfarin) and salbutamol
+((R)-salbutamol is the active enantiomer; (S)- causes adverse
+effects). The clinically used drug may be a racemate, but assays
+that don't separate enantiomers are throwing away half the signal —
+and may carry hidden toxicity from the inactive enantiomer.
+
+**The right move:** When the user provides a SMILES with a chiral
+centre, ask which enantiomer they mean. Treat racemic SMILES (no
+stereo designation) as a flag, not a definite answer. If the AI
+compound editor's prompt has been ignoring stereochemistry, that's
+an explicit bug to flag.
+
+## Anti-pattern 11: "Adding a polar group always improves H-bonding"
+
+**The reasoning that sounds clean:** Carboxylic acids, amines, and
+hydroxyl groups are H-bond donors/acceptors; adding them should
+strengthen target binding.
+
+**Why it's wrong:** Strømgaard Ch. 4 (Figure 4.3) emphasises that
+**desolvation is a hidden cost**. A polar group has to shed its
+water shell to enter the pocket; this costs ~3-7 kcal/mol. If the
+new H-bond doesn't recover that energy, the net effect is negative.
+
+**The right move:** Polar additions help when the new group makes a
+*specific*, *complementary* H-bond to a known pocket residue. Random
+polar substitutions usually backfire on net. Use the docked pose to
+identify which residue the new group should reach.
+
+## Anti-pattern 12: "Vina absolute score → Kd"
+
+**The reasoning that sounds clean:** A Vina score of −10 kcal/mol
+is roughly 10 nM Kd via ΔG = -RT·ln(K).
+
+**Why it's wrong:** Vina is empirical scoring fit to ~2k known
+affinities; the relationship between score and absolute Kd has
+R²≈0.4-0.6 across diverse benchmarks. A −10 score might correspond
+to a Kd anywhere from 1 nM to 1 µM in practice. Read the score as
+**direction at above-noise magnitude**, not as ΔΔG of binding. For
+absolute affinity prediction use FEP+ or TI-MD; that's not what
+Vina (or GNINA, or Boltz-2) does.
+
+This is now **Anti-Pattern #4** in this file too — the textbook
+just lends it more weight.
+
+## Quick checklist v2 (post-PDF integration)
+
+Add to the original 6:
+
+7. ☐ Did I check whether the apparent low activity might be an ADMET
+   problem rather than a binding problem?
+8. ☐ Did I confirm the rigidification/flexibility direction matches
+   the bioactive conformation?
+9. ☐ Did I handle stereochemistry explicitly when relevant?
+10. ☐ Did I account for desolvation cost when adding polar groups?

@@ -147,7 +147,7 @@ template onto a quick question.
 | QuickVina2-GPU | kcal/mol | Same as Vina | Slightly noisier than CPU Vina; comparable at high exh |
 | Smina (Vinardo) | kcal/mol | More-negative = stronger | Re-scoring tool; comparable noise to Vina |
 | GNINA | CNN affinity (pK-like) | More-positive = stronger | Two outputs (CNN_pose_score, CNN_affinity) — don't conflate |
-| Boltz-2 | log10(IC50 µM) | Read carefully — this is `affinity_pred_value`; lower = stronger when expressed as log10(IC50). Some Boltz-2 variants emit pKd (positive-stronger). Always re-confirm with the model card you're using | Boltz-2 has its own confidence channel; treat as a separate dimension |
+| Boltz-2 | log10(IC50 µM) | More-negative = stronger (IC50=1nM→−3; IC50=1µM→0). NOT pIC50. See `references/boltz2.md` for the exact paper quote and a worked sign-convention pitfall caught by the 2026-05-01 audit | Binding-likelihood gates affinity reliability; only trust Δ when both WT and mutant likelihoods are >0.5 |
 
 **Δ convention used in the Liganx pipeline:** Δ = mutant_score − WT_score
 (in kcal/mol when using Vina; sign flips when using a positive-stronger
@@ -217,7 +217,15 @@ from 5/8 PASS to 2/8 PASS + 1 FAIL within hours.
   or "let's make X symmetric with Y." Has the v5 case study verbatim.
 - `references/medchem_moves.md` — advisor-mode suggestions. Bioisosteric
   catalogue, gatekeeper-bypass strategies (Ponatinib triple-bond linker,
-  Osimertinib acrylamide, Vemurafenib hydrophobic fill).
+  Osimertinib acrylamide, Vemurafenib hydrophobic fill), the
+  disjunction/conjunction/special-approaches taxonomy from
+  Nadendla & Yemineni 2023, and lead-optimisation principles drawn
+  from Strømgaard *et al.* 2017 (Drug Design & Discovery, 5th ed).
+- `references/boltz2.md` — Boltz-2 paper (Passaro 2025) digest:
+  exact output unit (log10(IC50 µM), more-negative-stronger), the
+  binding-likelihood gate, validation results, target-class fragility
+  (kinases ✓, GPCRs ✗), and worked WT-vs-mutant Δ interpretation.
+  Read this for any Boltz-2-specific question.
 
 Read references on demand, not eagerly. The body of this skill is
 enough for ~80% of questions; references are for the remaining 20%.

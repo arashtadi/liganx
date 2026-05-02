@@ -4,6 +4,35 @@ For advisor mode. When the user asks "suggest 3 modifications to make
 compound X retain potency against mutation Y," reach for this catalogue
 first, then specialise based on the pocket residue.
 
+## Top-level taxonomy
+
+Every modification falls into one of three umbrella strategies (drawn
+from Nadendla & Yemineni 2023, BJSTR; consistent with Strømgaard
+*et al.* 2017, Drug Design & Discovery, Ch. 3):
+
+1. **Disjunction** — break or simplify the parent scaffold. Un-join
+   bonds, replace aromatic rings with saturated equivalents, shrink the
+   hydrocarbon skeleton. Counterintuitive but powerful: removing rings
+   sometimes *increases* potency (the oestradiol → trans-diethyl-
+   stilbestrol example, where successive ring elimination reached
+   maximal estrogenic activity).
+2. **Conjunction** — join molecules. Three flavours:
+   - **Addition** — attach a new group (improve solubility, alter
+     metabolism, add a missing contact). E.g., loperamide + lipophilic
+     group → enhanced µ-opioid affinity.
+   - **Replication / scaffold hopping** — preserve the pharmacophore
+     with a different chemical skeleton. Useful when synthesis is hard
+     or IP is constrained.
+   - **Hybridization** — covalently fuse two pharmacophores (direct,
+     merged, or linker-mediated). E.g., streptoniazid (streptomycin +
+     isoniazid) for tuberculosis.
+3. **Special approaches** (10 specific tactics, see "Special-approaches
+   catalogue" section below).
+
+Use this taxonomy as a starting menu when asked for "diverse"
+modifications. A diverse 3-suggestion list ideally spans all three
+umbrella strategies, not three variants of the same disjunction.
+
 ## Bioisosteric replacements
 
 A bioisostere is a substructure swap that keeps biology roughly intact
@@ -161,3 +190,111 @@ Some asks should be redirected, not answered:
 In these cases, the right output is "this is outside what rigid
 docking can answer; here's what would" rather than a fabricated
 medchem move.
+
+## Special-approaches catalogue (Nadendla & Yemineni 2023)
+
+Ten specific tactics under the "Special approaches" umbrella. Each
+one is a small, well-scoped modification with predictable trade-offs.
+Useful when the user has a tight chemical lead and wants a focused
+SAR exploration plan.
+
+| Tactic | Effect | Worked example | Caveat |
+|--------|---------|-----------------|---------|
+| **Ring closure** (intramolecular cyclization) | Constrains conformation, locks bioactive geometry, ↓ entropy penalty | Geranyl diphosphate → taxane scaffold (paclitaxel) | ↑ synth complexity; rigid form must match active conformation |
+| **Ring opening** | Improves metabolic tractability, alters solubility, can generate reactive intermediates | Carbamazepine → 10,11-epoxide via CYP3A4 | Loss of conformational restraint; check for new metabolic liabilities |
+| **Lower-homolog formation** (chain shortening) | ↓ MW, ↓ logP, ↑ solubility, often ↓ potency per mass | Naproxen → ibuprofen direction | May lose key contacts at the modified position |
+| **Higher-homolog formation** (chain extension) | ↑ potency, ↑ logP, can pick up new pocket contacts | Statin series: pravastatin → atorvastatin → rosuvastatin | ↑ off-target binding risk; often hurts solubility |
+| **Introduction of a double bond** | Rigidifies, alters electronics + metabolism, affects pharmacokinetics | Diosgenin → progesterone (selective oxidation) | Costs synthetic steps; rigid geometry may not match pocket |
+| **Introduction of a chiral centre** (resolve to a single enantiomer) | Improves selectivity at target, drops enantiomer-specific toxicity | Racemic salbutamol → (R)-salbutamol — (S)- causes adverse effects | Manufacturing complexity ↑; not all "inactive" enantiomers are inert |
+| **Removal of bulky groups** | ↓ steric hindrance, ↓ off-target binding, ↑ solubility | Smaller analogs of bulky kinase scaffolds | May drop affinity if the bulky group made favourable hydrophobic contact |
+| **Replacement of bulky groups with polar equivalents** | ↑ water solubility, ↑ renal clearance, ↓ nonspecific binding | Aliphatic chain → ethylene-glycol chain | May reduce target affinity if hydrophobic contact was essential |
+| **Bioisosteric ring equivalents** (lactam → cyclic urea, phenyl → pyridine) | Preserves pharmacophore, alters polarity / metabolic stability / pKa | Phenyl → pyridine in zolpidem; lactam → cyclic urea in montelukast | Geometry preserved but electronic properties shift; re-test binding |
+| **Introduction of an alkylating moiety** | Enables covalent target engagement (cancer warheads) | Mustine, cyclophosphamide phosphoramide mustards | High systemic toxicity, off-target reactivity |
+| **Electronic-state modification** (EWG / EDG) | Tunes pKa, polarity, redox potential, modulates binding & metabolism | Warfarin EWG aromatic system; morphine EDG hydroxyl | Can backfire — EDG can ↑ autoxidation, EWG can ↑ metabolic instability |
+
+## Lead-optimisation principles (Strømgaard *et al.* 2017, Ch. 3-5)
+
+These are the rules a working medicinal chemist applies when going
+from hit → lead → candidate. Useful when the user has a series of
+compounds and wants to know what to vary first.
+
+1. **Remove low-occupancy groups first.** A substituent that contacts
+   solvent rather than the pocket is a free improvement target —
+   replacing it with H rarely hurts and often improves logP and ADME.
+2. **Rigidification > flexibility, when the rigid form matches the
+   bioactive conformation.** Conformationally restricted molecules pay
+   a lower entropy penalty on binding. The amprenavir example
+   (Strømgaard Ch. 3, p. 35) quantifies this at ~105 kJ/mol of
+   entropy saving via rigidification.
+3. **Hydrophobic pockets are hot targets.** Filling a hydrophobic
+   pocket with a lipophilic group yields disproportionate affinity
+   gain (van der Waals + desolvation entropy), but watch for off-
+   target binding and ADMET liabilities (CYP induction, low
+   solubility).
+4. **Hydrogen bonds to backbone atoms are mutation-resistant.** H-bonds
+   to side chains are sensitive to kinase mutations; backbone
+   interactions (amide NH, carbonyl O) are conserved across most
+   missense mutations. **Favour backbone contacts in multi-mutant
+   designs.** This is the structural reason gatekeeper-bypass
+   compounds like Ponatinib still bind well to multiple ABL mutants.
+5. **Fluorine for metabolic blocks.** The C–F bond is very strong; F
+   substitution at sites of expected CYP attack reliably extends
+   half-life. Effects are subtle and position-dependent; test
+   case-by-case rather than blanket-fluorinating.
+6. **Test bioisosteric swaps as a diagnostic tool.** Swap a suspected
+   H-bond donor for an isostere that cannot donate (e.g., amide →
+   oxazole). If activity drops, the H-bond is real. If activity is
+   unchanged, the donor wasn't load-bearing — you can drop it for
+   free.
+7. **Solubility & bioavailability are hidden costs.** A tight binder
+   that doesn't get absorbed is worthless. Strømgaard Ch. 3, p. 47:
+   "low activity may not mean bad binding" — check oral
+   bioavailability before blaming the compound.
+8. **Multi-parameter optimisation is mandatory.** You cannot maximise
+   affinity, lipophilicity, solubility, and metabolic stability
+   simultaneously. Compromise rationally based on the target class:
+   kinase inhibitors tolerate higher lipophilicity (cLogP up to ~5)
+   than GPCRs.
+
+## Worked drug-evolution examples worth citing in audits
+
+When the user asks "is this kind of move ever known to work?", reach
+for one of these as a precedent:
+
+- **Imatinib → Ponatinib (T315I bypass)** — Replaced amide-piperazine
+  linker with ethynyl spacer to thread past the gatekeeper Ile.
+  Reference: O'Hare et al., *Cancer Cell* 2009.
+- **Imatinib → Asciminib (allosteric, T315I-insensitive)** — Designed
+  to bind ABL's myristoyl pocket outside the ATP cleft, bypassing
+  every gatekeeper mutation by definition. Reference: Wylie et al.,
+  *Nature* 2017.
+- **Gefitinib/Erlotinib → Osimertinib (T790M retention + C797
+  covalent target)** — Acrylamide warhead anchors covalently to
+  C797 while compact scaffold accommodates the T790M Met bulk.
+  Reference: Cross et al., *Cancer Discov* 2014.
+- **Vemurafenib (V600E selectivity)** — Propylsulfonamide tail fits a
+  hydrophobic pocket only present in BRAF V600E's αC-helix-in active
+  state. Reference: Bollag et al., *Nature* 2010.
+- **Imatinib → Avapritinib (KIT D816V, active-state selective)** —
+  Engineered for the D816V-stabilised active conformation Imatinib
+  cannot bind. Reference: Evans et al., *Sci Transl Med* 2017.
+- **Ibrutinib → Pirtobrutinib (BTK C481S non-covalent escape)** —
+  Dropped the acrylamide warhead in favour of high-affinity
+  non-covalent binding; survives C481S because no covalent anchor
+  is lost. Reference: Mato et al., *NEJM* 2021.
+- **Successive ring-elimination in oestradiol → trans-diethyl-
+  stilbestrol** — Demonstrates that biological activity often does
+  not require the full parent scaffold (Nadendla & Yemineni 2023,
+  Section 3.1).
+- **Penicillin → amoxicillin** — Side-chain modification improves
+  oral absorption + spectrum (broader gram-negative coverage)
+  without losing the β-lactam pharmacophore. Classical conjunction-
+  by-addition example.
+
+Cite the canonical drug → modification → outcome rather than
+inventing precedents. If an analogue is being suggested without a
+literature anchor, label it explicitly as "general medchem
+principle, no specific precedent" — that's more credible than a
+fabricated citation (the v1 baseline got bitten by inventing an
+afatinib precedent for ABL T315I bypass; afatinib is an EGFR
+covalent inhibitor and unrelated).
