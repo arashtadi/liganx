@@ -1,12 +1,12 @@
 {
-  "timestamp_utc": "2026-05-02T05:59:28Z",
+  "timestamp_utc": "2026-05-02T06:22:44Z",
   "api_base": "https://api.liganx.com",
   "noise_floor_kcal": 1.0,
   "summary": {
     "total": 8,
-    "pass": 2,
-    "fail": 1,
-    "noise": 5,
+    "pass": 5,
+    "fail": 0,
+    "noise": 3,
     "skip": 0
   },
   "cases": [
@@ -20,12 +20,12 @@
       "expected_direction": "resistance",
       "literature": "O'Hare et al., Nat Rev Cancer 2007 \u2014 T315I drives near-total Imatinib loss in CML; >400-fold IC50 shift in cellular assays.",
       "caveat": null,
-      "share_id": "nZQsbpiQP_A",
-      "wt_score": -10.2,
-      "mut_score": -9.2,
-      "delta_kcal": 1.0,
+      "share_id": "ULj8u3zunmg",
+      "wt_score": -10.0,
+      "mut_score": -8.8,
+      "delta_kcal": 1.1999999999999993,
       "verdict": "PASS",
-      "verdict_note": "\u0394=+1.00 kcal/mol matches expected 'resistance'"
+      "verdict_note": "\u0394=+1.20 kcal/mol matches expected 'resistance'"
     },
     {
       "name": "EGFR T790M \u2014 Gefitinib resistance",
@@ -37,12 +37,12 @@
       "expected_direction": "resistance",
       "literature": "Pao et al., PLoS Med 2005 \u2014 T790M gatekeeper drives 1st-gen TKI resistance in NSCLC.",
       "caveat": null,
-      "share_id": "GCm_OoISDYM",
-      "wt_score": -6.6,
-      "mut_score": -6.6,
-      "delta_kcal": 0.0,
-      "verdict": "NOISE",
-      "verdict_note": "|\u0394|=0.00 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
+      "share_id": "weL13vWq_sE",
+      "wt_score": -7.7,
+      "mut_score": -6.4,
+      "delta_kcal": 1.2999999999999998,
+      "verdict": "PASS",
+      "verdict_note": "\u0394=+1.30 kcal/mol matches expected 'resistance'"
     },
     {
       "name": "EGFR T790M \u2014 Osimertinib retains/gains",
@@ -54,12 +54,12 @@
       "expected_direction": "selectivity",
       "literature": "Cross et al., Cancer Discov 2014 \u2014 Osimertinib (AZD9291) was specifically designed to retain potency against T790M; cellular IC50 ~1 nM vs T790M, comparable to or better than WT.",
       "caveat": "Osimertinib is a covalent acrylamide on C797. Vina is non-covalent \u2014 magnitude will be smaller than IC50 shifts suggest, but the geometric T790M preference (the methionine bulk fits the Osimertinib scaffold better than threonine does) still produces a measurable \u0394\u0394G.",
-      "share_id": "70vaOWC6yxI",
-      "wt_score": -7.4,
-      "mut_score": -7.1,
-      "delta_kcal": 0.3000000000000007,
+      "share_id": "zBScQOTggZs",
+      "wt_score": -7.2,
+      "mut_score": -7.0,
+      "delta_kcal": 0.20000000000000018,
       "verdict": "NOISE",
-      "verdict_note": "|\u0394|=0.30 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
+      "verdict_note": "|\u0394|=0.20 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
     },
     {
       "name": "BRAF V600E \u2014 Vemurafenib selectivity",
@@ -71,9 +71,9 @@
       "expected_direction": "selectivity",
       "literature": "Bollag et al., Nature 2010 \u2014 Vemurafenib (PLX4032) is V600E-selective; ~30 nM against V600E vs ~100 nM against WT BRAF in cellular assays.",
       "caveat": null,
-      "share_id": "wJM40hQ3ukg",
-      "wt_score": -11.3,
-      "mut_score": -11.3,
+      "share_id": "DUfhGC-nd7w",
+      "wt_score": -8.7,
+      "mut_score": -8.7,
       "delta_kcal": 0.0,
       "verdict": "NOISE",
       "verdict_note": "|\u0394|=0.00 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
@@ -88,12 +88,12 @@
       "expected_direction": "resistance",
       "literature": "Heinrich et al., J Clin Oncol 2003 \u2014 D816V shifts KIT into an active conformation Imatinib cannot bind; >100-fold loss in mastocytosis.",
       "caveat": null,
-      "share_id": "zYo2sHxXmgE",
-      "wt_score": -8.8,
-      "mut_score": -10.6,
-      "delta_kcal": -1.799999999999999,
-      "verdict": "FAIL",
-      "verdict_note": "\u0394=-1.80 kcal/mol DISAGREES with literature 'resistance' direction"
+      "share_id": "5_TzWRdMWEk",
+      "wt_score": -13.1,
+      "mut_score": -10.1,
+      "delta_kcal": 3.0,
+      "verdict": "PASS",
+      "verdict_note": "\u0394=+3.00 kcal/mol matches expected 'resistance'"
     },
     {
       "name": "KIT D816V \u2014 Avapritinib selectivity",
@@ -105,12 +105,12 @@
       "expected_direction": "selectivity",
       "literature": "Evans et al., Sci Transl Med 2017 \u2014 Avapritinib (BLU-285) was designed to bind the D816V active conformation; sub-nM cellular potency.",
       "caveat": null,
-      "share_id": "826B2KHRyxg",
-      "wt_score": -8.7,
-      "mut_score": -8.5,
-      "delta_kcal": 0.1999999999999993,
+      "share_id": "WmvuqrBBzkg",
+      "wt_score": -8.5,
+      "mut_score": -8.9,
+      "delta_kcal": -0.40000000000000036,
       "verdict": "NOISE",
-      "verdict_note": "|\u0394|=0.20 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
+      "verdict_note": "|\u0394|=0.40 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
     },
     {
       "name": "BTK C481S \u2014 Ibrutinib covalent escape",
@@ -122,12 +122,12 @@
       "expected_direction": "resistance",
       "literature": "Woyach et al., NEJM 2014 \u2014 C481S ablates the covalent cysteine target of Ibrutinib; >100-fold cellular IC50 loss in CLL.",
       "caveat": "Ibrutinib's WT advantage is COVALENT (acrylamide \u2192 C481 thiol). Vina is non-covalent and will under-represent this effect; the residual non-covalent \u0394\u0394G should still be positive (S is smaller than C, slight pocket reshape) but smaller than IC50 data suggests.",
-      "share_id": "0XHh4jU3SyU",
-      "wt_score": -8.9,
-      "mut_score": -8.4,
-      "delta_kcal": 0.5,
-      "verdict": "NOISE",
-      "verdict_note": "|\u0394|=0.50 below \u00b11.0 kcal/mol noise floor \u2014 direction not resolvable at exhaustiveness=16"
+      "share_id": "nu5XDOdRFfM",
+      "wt_score": -10.0,
+      "mut_score": -8.2,
+      "delta_kcal": 1.8000000000000007,
+      "verdict": "PASS",
+      "verdict_note": "\u0394=+1.80 kcal/mol matches expected 'resistance'"
     },
     {
       "name": "BTK C481S \u2014 Pirtobrutinib retention",
@@ -139,12 +139,12 @@
       "expected_direction": "retained",
       "literature": "Mato et al., NEJM 2021 \u2014 Pirtobrutinib is non-covalent; retains potency against C481S (cellular IC50 essentially unchanged).",
       "caveat": "Pirtobrutinib's clinical retention against C481S comes from being non-covalent \u2014 no acrylamide to lose. Rigid-receptor Vina cannot model covalent vs non-covalent mechanism, so Pirtobrutinib and Ibrutinib both return similar small-magnitude \u0394\u0394G against C481S even though their clinical IC50 shifts differ by >100\u00d7. Documented limitation, not a pipeline regression.",
-      "share_id": "a8vGHNErQVo",
-      "wt_score": -9.6,
-      "mut_score": -8.9,
-      "delta_kcal": 0.6999999999999993,
+      "share_id": "DCkFj6z4Bkc",
+      "wt_score": -9.9,
+      "mut_score": -9.4,
+      "delta_kcal": 0.5,
       "verdict": "PASS",
-      "verdict_note": "|\u0394|=0.70 within \u00b11.0 kcal/mol noise floor (retained as expected)"
+      "verdict_note": "|\u0394|=0.50 within \u00b11.0 kcal/mol noise floor (retained as expected)"
     }
   ]
 }
