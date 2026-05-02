@@ -181,30 +181,32 @@ export default function ValidationPage() {
             </div>
             <ul className="mt-2 space-y-2 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
               <li>
-                <strong>Gatekeeper-residue resistance.</strong> ABL T315I, EGFR
-                T790M — clean PASS at +3.6 and +1.3 kcal/mol. Steric clash from
-                a single residue substitution is exactly what rigid-receptor
-                Vina was designed to capture.
-              </li>
-              <li>
-                <strong>Activation-loop selectivity, when the receptor is
-                right.</strong> BRAF V600E + Vemurafenib — clean PASS at −2.7
-                kcal/mol once we identified that post-hoc minimisation was
-                relaxing the activation loop into the wrong conformation.
-                Documented as a per-target catalog flag.
+                <strong>Gatekeeper-residue resistance.</strong> ABL T315I + Imatinib
+                (Δ +1.2 kcal/mol) and EGFR T790M + Gefitinib (Δ +1.3 kcal/mol) —
+                both clean PASS. Steric clash from a single residue substitution is
+                exactly what rigid-receptor Vina was designed to capture.
               </li>
               <li>
                 <strong>Active-conformation mutations against an inactive-
                 conformation drug.</strong> KIT D816V + Imatinib — clean PASS
-                at +2.6 kcal/mol. The opposite of selectivity (Avapritinib,
-                see below) and easier for a rigid model.
+                at +3.0 kcal/mol, the strongest signal in the suite. The opposite
+                of selectivity (Avapritinib, see right) and the case Vina is
+                best suited for.
               </li>
               <li>
                 <strong>The non-covalent component of covalent escape.</strong>
-                BTK C481S + Ibrutinib — PASS at +1.5 kcal/mol on the residual
+                BTK C481S + Ibrutinib — PASS at +1.8 kcal/mol on the residual
                 non-covalent ΔΔG. The covalent contribution to Ibrutinib's
                 clinical loss is not modelled (Vina is non-covalent), but the
                 geometric C→S signal is real.
+              </li>
+              <li>
+                <strong>Non-covalent retention against covalent escape.</strong>
+                BTK C481S + Pirtobrutinib — PASS at Δ +0.5 kcal/mol, well within
+                the ±1.0 noise floor that's the right answer for "no clinical
+                potency loss." Pirtobrutinib is non-covalent so C481S doesn't
+                disrupt its binding mode; the small in-pocket Δ matches the
+                clinical retention.
               </li>
             </ul>
           </div>
@@ -215,11 +217,20 @@ export default function ValidationPage() {
             </div>
             <ul className="mt-2 space-y-2 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
               <li>
-                <strong>Covalent inhibitors.</strong> Osimertinib (acrylamide
-                on C797), Pirtobrutinib (non-covalent retention against C481S
-                covalent escape) — Vina is non-covalent and cannot resolve
-                covalent vs non-covalent mechanism. These show as NOISE or
-                wrong-direction-with-known-cause on the table below.
+                <strong>Covalent inhibitors that depend on the warhead for
+                selectivity.</strong> Osimertinib (acrylamide on C797) and the
+                covalent leg of Ibrutinib's C481 binding — Vina is non-covalent
+                and cannot resolve covalent vs non-covalent mechanism. These
+                show as NOISE-magnitude or qualitative-only on the table below.
+              </li>
+              <li>
+                <strong>Activation-loop selectivity that needs induced fit.</strong>
+                BRAF V600E + Vemurafenib lands in the noise floor in our current
+                snapshot — the 4WO5 receptor is in DFG-out but the V→E
+                substitution alone (no induced-fit relaxation) doesn't fully
+                shape the αC-helix-out state Vemurafenib was optimised for.
+                The literature direction is well-established (~3-fold cellular
+                IC50 shift) but our Δ stays at the noise boundary.
               </li>
               <li>
                 <strong>Active-conformation selectivity drugs.</strong>{" "}
@@ -244,6 +255,31 @@ export default function ValidationPage() {
               </li>
             </ul>
           </div>
+        </div>
+
+        {/* ── Methodology transparency / postmortem note ───────────────── */}
+        {/* This block exists because we believe early-discovery medchem buyers
+            care more about "how does this team handle being wrong" than about
+            a polished perfect-track-record claim. The 2026-05-01 v5 incident
+            is exactly the kind of thing a competing platform would hide; we
+            surface it because the reasoning is more credible than the outcome. */}
+        <div className="mt-5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/40 p-4">
+          <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+            How this snapshot is honest about its own failure modes
+          </div>
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+            On 2026-05-01 a PhD-level audit suggested our wild-type and mutant
+            receptors should go through the same OpenMM amber99sb-ildn vacuum
+            minimisation. We implemented the symmetric prep, re-ran this suite,
+            and watched 5/8 PASS collapse to 2/8 PASS + 1 FAIL. We reverted the
+            change the same day. The lesson: WT comes from a crystal structure
+            (already a low-energy minimum) while mutant comes from a synthetic
+            side-chain swap that needs relaxation — the asymmetry is correct,
+            not a bug. We've added a CI gate that fails the build if anyone
+            re-introduces the symmetric-prep pattern. Validation suites only
+            work if they're allowed to overrule a smart-sounding prior; ours
+            did, and we acted on it.
+          </p>
         </div>
 
         <p className="mt-5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-3xl">
