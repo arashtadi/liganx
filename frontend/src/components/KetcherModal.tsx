@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { api, ApiError } from "../api";
 
@@ -677,6 +678,150 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
     }
   }
 
+  // ── Quick dock + Optimize loop (the moat feature) ──
+  // Quick dock state. dockResult holds the most recent quick-dock
+  // outcome; needed by the Optimize button + variant ranking.
+  // dockGated tracks whether the backend returned 403 (feature off
+  // for this account) so we render a "By request" CTA inline.
+  const navigate = useNavigate();
+  const [quickDockStatus, setQuickDockStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [quickDockError, setQuickDockError] = useState<string | null>(null);
+  const [quickDockGated, setQuickDockGated] = useState(false);
+  const [dockResult, setDockResult] = useState<{
+    smiles: string; score: number; hits: string[]; misses: string[];
+  } | null>(null);
+  const [optimizeStatus, setOptimizeStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  const [optimizedVariants, setOptimizedVariants] = useState<
+    Array<{ new_smiles: string; rationale: string; score?: number; status: "queued" | "docking" | "done" | "error"; error?: string }>
+  >([]);
+
+  /** Quick dock the current canvas SMILES. Requires a target+mutation
+   *  context (not available on standalone CompoundsPage). */
+  async function runQuickDock() {
+    if (!targetPdb) {
+      setQuickDockError("Quick dock needs a target. Open the editor from the New job page after picking a target.");
+      setQuickDockStatus("error");
+      return;
+    }
+    const smi = await readSmiles();
+    if (!smi) return;
+    setQuickDockStatus("running");
+    setQuickDockError(null);
+    setDockResult(null);
+    setOptimizedVariants([]);
+    setOptimizeStatus("idle");
+    setOptimizeError(null);
+    try {
+      const r = await api.assistQuickDock({
+        smiles: smi,
+        target_pdb: targetPdb,
+        mutation: mutations,
+      });
+      if (!r.ok) {
+        setQuickDockStatus("error");
+        setQuickDockError(r.error || "Quick dock failed.");
+        return;
+      }
+      setDockResult({
+        smiles: smi,
+        score: r.score ?? 0,
+        hits: r.hits ?? [],
+        misses: r.misses ?? [],
+      });
+      setQuickDockStatus("done");
+    } catch (e) {
+      // 403 → feature is gated. Render the By-request CTA instead of
+      // a generic error so the user has a clear path forward.
+      if (e instanceof ApiError && e.status === 403) {
+        setQuickDockGated(true);
+        setQuickDockStatus("idle");
+        return;
+      }
+      setQuickDockStatus("error");
+      setQuickDockError(e instanceof ApiError ? e.message : "Quick dock failed");
+    }
+  }
+
+  /** Optimize: ask the AI for 3 variants targeting the missed
+   *  residues, then auto-quick-dock each variant in parallel and
+   *  display ranked by score. */
+  async function runOptimize() {
+    if (!dockResult || !targetPdb) return;
+    setOptimizeStatus("running");
+    setOptimizeError(null);
+    setOptimizedVariants([]);
+    try {
+      const opt = await api.assistOptimize({
+        smiles: dockResult.smiles,
+        score: dockResult.score,
+        hits: dockResult.hits,
+        misses: dockResult.misses,
+        target_pdb: targetPdb,
+        mutations: mutations,
+      });
+      if (!opt.variants || opt.variants.length === 0) {
+        setOptimizeStatus("error");
+        setOptimizeError("AI didn't propose any valid variants. Try again, or refine the structure manually.");
+        return;
+      }
+      // Initialise as queued; we'll dock each one in parallel below.
+      const initial = opt.variants.map((v) => ({
+        new_smiles: v.new_smiles,
+        rationale: v.rationale,
+        status: "docking" as const,
+        score: undefined as number | undefined,
+        error: undefined as string | undefined,
+      }));
+      setOptimizedVariants(initial);
+      setOptimizeStatus("done");
+      // Fan out 3 quick docks in parallel. Each updates its own slot
+      // on completion so the user sees scores trickle in.
+      initial.forEach((v, idx) => {
+        api.assistQuickDock({
+          smiles: v.new_smiles,
+          target_pdb: targetPdb,
+          mutation: mutations,
+        })
+          .then((r) => {
+            setOptimizedVariants((cur) => cur.map((cv, i) =>
+              i === idx
+                ? r.ok
+                  ? { ...cv, status: "done", score: r.score }
+                  : { ...cv, status: "error", error: r.error || "dock failed" }
+                : cv,
+            ));
+          })
+          .catch((e) => {
+            setOptimizedVariants((cur) => cur.map((cv, i) =>
+              i === idx
+                ? { ...cv, status: "error", error: e instanceof ApiError ? e.message : "dock failed" }
+                : cv,
+            ));
+          });
+      });
+    } catch (e) {
+      setOptimizeStatus("error");
+      setOptimizeError(e instanceof ApiError ? e.message : "Optimize failed");
+    }
+  }
+
+  /** Apply a variant SMILES to the canvas — same setMolecule path as
+   *  applyResultToCanvas but for the optimized variants. */
+  async function applyVariantToCanvas(smiles: string) {
+    const apiObj = getApi();
+    if (!apiObj?.setMolecule) return;
+    try { await apiObj.setMolecule(smiles); }
+    catch (e) { setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`); }
+  }
+
+  /** Open the Contact form pre-filled with a quick-dock-access request.
+   *  Reuses the same routing pattern as the Boltz-2 "By request" card
+   *  on NewJobPage. */
+  function requestQuickDockAccess() {
+    navigate("/contact", { state: { reason: "quick_dock_request" } });
+  }
+
   // Curated mutation hint — surfaced as a chip when the user's
   // selected mutation matches one of the well-known oncogenic
   // variants in MUTATION_HINTS. Domain-grounded starting point so
@@ -760,7 +905,168 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations }: AiSidebarProp
           🔬 <span className="font-medium">Suggest 5 analogs</span>
           <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Medchem variants worth docking</span>
         </button>
+        {/* Quick dock — only meaningful when the user has a target +
+            mutation context (NewJobPage flow). On standalone CompoundsPage
+            the button is hidden because there's nothing to dock against. */}
+        {targetPdb && (
+          <button
+            type="button"
+            disabled={!ketcherReady || quickDockStatus === "running"}
+            onClick={runQuickDock}
+            className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-900/10 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            🎯 <span className="font-medium">Quick dock</span>
+            <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+              ~10s · real Vina against {targetPdb}{mutations ? ` · ${mutations}` : ""}
+            </span>
+          </button>
+        )}
       </div>
+
+      {/* Quick dock by-request CTA — shown when backend returned 403,
+          mirroring the Boltz-2 "By request" pattern. Replaces the
+          quick-dock button area with a friendlier message + Contact
+          link instead of a generic error. */}
+      {quickDockGated && (
+        <div className="px-3 py-2.5 border-b border-amber-200 dark:border-amber-800/40 bg-amber-50/60 dark:bg-amber-900/15">
+          <div className="text-[11px] font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            Quick dock — available on request
+          </div>
+          <div className="text-[10px] text-amber-800 dark:text-amber-200 mt-1 leading-relaxed">
+            Quick dock runs real Vina on our GPU pod. We enable it per account so cost stays predictable.
+          </div>
+          <button
+            type="button"
+            onClick={requestQuickDockAccess}
+            className="mt-2 text-[11px] font-semibold px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white transition-colors"
+          >
+            Contact us to enable →
+          </button>
+        </div>
+      )}
+
+      {/* Quick dock + Optimize result panel. Sits between the actions
+          and the AI chat result so a Quick dock run doesn't blow away
+          a prior "Predict properties" or analog suggestion. Stays
+          visible across re-edits until the user runs Quick dock again. */}
+      {(quickDockStatus !== "idle" || dockResult) && !quickDockGated && (
+        <div className="px-3 py-2.5 border-b border-slate-200 dark:border-slate-700">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
+            Quick dock {targetPdb && <span className="font-mono normal-case text-slate-400">· {targetPdb}</span>}
+          </div>
+          {quickDockStatus === "running" && (
+            <div className="flex items-center gap-2 text-[12px] text-slate-600 dark:text-slate-300">
+              <Spinner size={12} /> Docking on GPU pod (5–15s)…
+            </div>
+          )}
+          {quickDockStatus === "error" && quickDockError && (
+            <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-relaxed">{quickDockError}</div>
+          )}
+          {dockResult && (
+            <>
+              <div className="text-[12px] text-ink dark:text-slate-100 mb-1">
+                <span className="font-semibold">{dockResult.score.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 ml-1">kcal/mol</span>
+                <span className="text-[10px] text-slate-400 ml-2">(lower = stronger)</span>
+              </div>
+              {dockResult.hits.length > 0 && (
+                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed mb-1">
+                  <span className="font-semibold text-emerald-700 dark:text-emerald-300">Hits:</span>{" "}
+                  {dockResult.hits.slice(0, 6).join(", ")}{dockResult.hits.length > 6 && ` +${dockResult.hits.length - 6}`}
+                </div>
+              )}
+              {dockResult.misses.length > 0 && (
+                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed mb-2">
+                  <span className="font-semibold text-amber-700 dark:text-amber-300">Misses:</span>{" "}
+                  {dockResult.misses.slice(0, 6).join(", ")}{dockResult.misses.length > 6 && ` +${dockResult.misses.length - 6}`}
+                </div>
+              )}
+              {/* Optimize button — fans out 3 variant docks targeting
+                  the misses. Hidden when there's nothing to optimize
+                  (no misses reported) or the AI is currently working. */}
+              {dockResult.misses.length > 0 && optimizeStatus === "idle" && (
+                <button
+                  type="button"
+                  onClick={runOptimize}
+                  className="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                >
+                  ✨ Optimize for this pocket
+                </button>
+              )}
+              {optimizeStatus === "running" && (
+                <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <Spinner size={11} /> Asking AI for variants…
+                </div>
+              )}
+              {optimizeStatus === "error" && optimizeError && (
+                <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-relaxed">{optimizeError}</div>
+              )}
+              {optimizedVariants.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {/* Sort by score ascending (most negative = best),
+                      pending docks at the end so the user sees the
+                      best-known variant on top as scores stream in. */}
+                  {[...optimizedVariants]
+                    .sort((a, b) => {
+                      const aHas = typeof a.score === "number";
+                      const bHas = typeof b.score === "number";
+                      if (aHas && bHas) return (a.score as number) - (b.score as number);
+                      if (aHas) return -1;
+                      if (bHas) return 1;
+                      return 0;
+                    })
+                    .map((v) => (
+                      <div key={v.new_smiles} className="rounded-md border border-slate-200 dark:border-slate-700 px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          {v.status === "docking" && (
+                            <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                              <Spinner size={9} /> docking…
+                            </span>
+                          )}
+                          {v.status === "done" && typeof v.score === "number" && (
+                            <span className="text-[11px] font-semibold text-ink dark:text-slate-100">
+                              {v.score.toFixed(2)}
+                              {dockResult && (
+                                <span className={
+                                  "ml-1 text-[10px] " +
+                                  (v.score < dockResult.score
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : "text-amber-600 dark:text-amber-400")
+                                }>
+                                  ({(v.score - dockResult.score).toFixed(2)})
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {v.status === "error" && (
+                            <span className="text-[10px] text-rose-600 dark:text-rose-400">{v.error || "dock failed"}</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => applyVariantToCanvas(v.new_smiles)}
+                            className="text-[10px] font-semibold text-delta-700 dark:text-delta-300 hover:underline"
+                          >
+                            Apply →
+                          </button>
+                        </div>
+                        <div className="font-mono text-[9px] text-slate-500 dark:text-slate-400 break-all leading-tight mb-1">
+                          {v.new_smiles}
+                        </div>
+                        <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          {v.rationale}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Result panel — scrolls if long */}
       <div className="flex-1 overflow-y-auto p-3 text-[12px]">

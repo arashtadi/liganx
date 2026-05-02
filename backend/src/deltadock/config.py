@@ -116,6 +116,18 @@ class Settings(BaseSettings):
     # flag is off, so this is belt-and-suspenders. Pod URL is the same
     # base as QuickVina/GNINA (boltz endpoints live on the same pod) but
     # we expose a separate setting in case we ever split.
+    # Quick-dock + AI-optimize loop in the Ketcher sidebar (#358).
+    # When enabled, the AI assistant can run a fast (exhaustiveness=4)
+    # Vina docking against the user's selected target+mutation right
+    # inside the editor, then propose 3 variant SMILES designed to
+    # gain contacts at residues the original compound missed. Each
+    # variant is also docked. This is the "moat" feature — costs real
+    # GPU time per click, so we gate it behind a feature flag and
+    # rate-limit aggressively (per-IP cap on _QUICK_DOCK_LIMIT).
+    # Mirrors the boltz2_enabled gating pattern: default off, frontend
+    # shows "By request" on the button, paying customers get the flag
+    # flipped server-side.
+    quick_dock_enabled: bool = False
     boltz2_enabled: bool = False
     # 600s — generous cold-start window. The first prediction after a pod
     # restart downloads ~5 GB of model weights from HuggingFace into

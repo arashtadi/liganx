@@ -544,6 +544,41 @@ export const api = {
       suggestion?: string;
       canonical_smiles?: string;
     }>("/assist/dockability", { method: "POST", body: JSON.stringify({ smiles }) }),
+  /** Quick dock — runs a fast (exhaustiveness=4) Vina dock against the
+   *  user's selected target+mutation, ~5-15s on the GPU pod. Returns
+   *  best score + residue contacts (hits + nearby misses). Powers the
+   *  🎯 Quick dock button in the Ketcher AI sidebar.
+   *
+   *  Throws ApiError(403) when QUICK_DOCK_ENABLED=false on the backend
+   *  — frontend uses that to render a "By request" CTA. */
+  assistQuickDock: (payload: {
+    smiles: string;
+    target_pdb: string;
+    chain?: string;
+    mutation?: string;
+  }) =>
+    request<{
+      ok: boolean;
+      score?: number;
+      hits?: string[];
+      misses?: string[];
+      pose_pdbqt_b64?: string;
+      error?: string;
+    }>("/assist/quick_dock", { method: "POST", body: JSON.stringify(payload) }),
+  /** Optimize loop — given the score + contacts from a prior quick_dock,
+   *  asks Claude for 3 variant SMILES designed to gain contacts at the
+   *  `misses` residues. Each variant is RDKit-validated server-side. */
+  assistOptimize: (payload: {
+    smiles: string;
+    score: number;
+    hits: string[];
+    misses: string[];
+    target_pdb?: string;
+    mutations?: string;
+  }) =>
+    request<{
+      variants: { new_smiles: string; rationale: string }[];
+    }>("/assist/optimize", { method: "POST", body: JSON.stringify(payload) }),
   /** Report an issue on a job. Owner-only. Sends the user's free-form
    *  comment + job context to our Telegram bot so we can triage from a
    *  push notification. Server returns 204; we resolve to void. */

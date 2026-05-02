@@ -120,6 +120,125 @@ def _extract_json(raw: str) -> Optional[dict]:
     return None
 
 
+_OPTIMIZE_SYSTEM_PROMPT = """You are a medicinal-chemistry assistant inside Liganx. \
+The user has just docked a compound against a specific target+mutation \
+and wants 3 variant compounds designed to gain contacts at residues the \
+original compound MISSED.
+
+Behavior rules:
+- Return EXACTLY 3 variants. Each is a SMILES + a one-sentence rationale.
+- Each variant must parse with RDKit (canonical-style SMILES).
+- Keep edits minimal: change only what's needed to reach the missed \
+residues. Do not redesign the molecule.
+- Each rationale should name the SPECIFIC missed residue the variant \
+targets and the chemical move (e.g. "adds a hydroxyl to reach Tyr541").
+- Prefer cheap, well-known medchem moves: bioisostere swap, ring \
+extension, hydroxyl/methyl/F addition at a specific position.
+
+Output format (STRICT — return ONLY this JSON, no preamble, no code fences):
+{"variants":[{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"}]}"""
+
+
+class OptimizeVariant(TypedDict, total=False):
+    new_smiles: str
+    rationale: str
+
+
+async def call_anthropic_optimize(
+    *,
+    smiles: str,
+    score: float,
+    hits: list[str],
+    misses: list[str],
+    target_pdb: Optional[str] = None,
+    mutations: Optional[str] = None,
+) -> list[OptimizeVariant]:
+    """Ask Claude for 3 variant SMILES designed to gain contacts at the
+    `misses` residues. Returns a list of {new_smiles, rationale} dicts;
+    each new_smiles is RDKit-validated before being included. Empty
+    list on parse failure (caller decides how to surface)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not configured on this server. "
+            "Set it via `flyctl secrets set ANTHROPIC_API_KEY=...`."
+        )
+
+    parts = [
+        f"Current SMILES: {smiles}",
+        f"Docked score: {score:.2f} kcal/mol",
+        f"Contacts (hits): {', '.join(hits) if hits else '(none reported)'}",
+        f"Nearby residues NOT contacted (misses): {', '.join(misses) if misses else '(none reported)'}",
+    ]
+    if target_pdb:
+        ctx = f"Target context: PDB {target_pdb}"
+        if mutations:
+            ctx += f", mutations: {mutations}"
+        parts.append(ctx)
+    user_prompt = "\n".join(parts)
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "system": _OPTIMIZE_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=ANTHROPIC_TIMEOUT_S) as client:
+            r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        log.error("Anthropic optimize network error: %s", e)
+        raise RuntimeError(f"AI service unreachable: {e}") from e
+
+    if r.status_code == 401:
+        raise RuntimeError("AI service authentication failed (bad API key)")
+    if r.status_code == 429:
+        raise RuntimeError("AI service rate-limited; please try again in a few seconds")
+    if r.status_code >= 400:
+        log.error("Anthropic optimize HTTP %d: %s", r.status_code, r.text[:300])
+        raise RuntimeError(f"AI service error (HTTP {r.status_code})")
+
+    body = r.json()
+    raw_text = ""
+    try:
+        for block in body.get("content", []):
+            if block.get("type") == "text":
+                raw_text += block.get("text", "")
+    except (AttributeError, TypeError):
+        pass
+
+    parsed = _extract_json(raw_text)
+    if not parsed:
+        log.warning("Anthropic optimize returned non-JSON: %r", raw_text[:300])
+        return []
+
+    raw_variants = parsed.get("variants") or []
+    if not isinstance(raw_variants, list):
+        return []
+
+    from .properties import validate_smiles
+    out: list[OptimizeVariant] = []
+    for raw in raw_variants[:3]:  # never more than 3 even if model overshoots
+        if not isinstance(raw, dict):
+            continue
+        smi_raw = str(raw.get("new_smiles") or "").strip()
+        rationale = str(raw.get("rationale") or "").strip()
+        if not smi_raw:
+            continue
+        valid, canonical, _ = validate_smiles(smi_raw)
+        if not valid or not canonical:
+            log.info("optimize variant rejected (RDKit): %r", smi_raw)
+            continue
+        out.append(OptimizeVariant(new_smiles=canonical, rationale=rationale))
+    return out
+
+
 async def call_anthropic(
     *,
     smiles: str,

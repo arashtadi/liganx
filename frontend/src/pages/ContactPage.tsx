@@ -50,6 +50,9 @@ const PREFILL_MESSAGES: Record<string, string> = {
   boltz2_request:
     "Hi — I'd like to enable Boltz-2 (the ML co-folding engine) on my account. " +
     "A bit about my use case:\n\n",
+  quick_dock_request:
+    "Hi — I'd like to enable Quick dock (the live dock-while-you-draw + AI optimize " +
+    "feature in the compound editor) on my account. A bit about my use case:\n\n",
 };
 
 type Status = "idle" | "sending" | "sent" | "error";
@@ -264,6 +267,14 @@ export default function ContactPage() {
             <strong>Requesting Boltz-2 access.</strong> The Boltz-2 ML engine runs on a
             dedicated GPU pod that we wake on demand for paying users. Tell us a bit about
             your use case and we'll get back to you within a day.
+          </div>
+        )}
+        {reason === "quick_dock_request" && (
+          <div className="mt-4 rounded-md border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200">
+            <strong>Requesting Quick dock access.</strong> Quick dock runs real Vina inside
+            the compound editor (~10s per click) so you see live scores + contact maps as
+            you draw, with an AI-optimize loop that proposes pocket-targeted variants.
+            We enable it per account so GPU cost stays predictable.
           </div>
         )}
       </header>
