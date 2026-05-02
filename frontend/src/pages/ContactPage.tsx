@@ -95,7 +95,20 @@ export default function ContactPage() {
   // reason: "boltz2_request"). We use that to pre-fill the message and
   // give the visit a clear "you came here to ask for X" framing.
   const location = useLocation();
-  const reason = (location.state as { reason?: string } | null)?.reason ?? "";
+  // Reason can arrive two ways:
+  //  1. Router state (`navigate("/contact", { state: { reason: ... } })`) —
+  //     used when the contact page opens IN-TAB. Survives SPA route
+  //     transitions but is lost across new-tab boundaries.
+  //  2. Query param (`?reason=...`) — used when the calling page opens
+  //     contact in a NEW TAB via window.open, because router state
+  //     can't cross window boundaries. Both Quick-dock and Boltz-2
+  //     request CTAs use this path so the user keeps their in-progress
+  //     work (Ketcher canvas, NewJob form state) in the original tab.
+  // We read state first (fast path for in-tab navigations), then fall
+  // back to the query param.
+  const stateReason = (location.state as { reason?: string } | null)?.reason ?? "";
+  const queryReason = new URLSearchParams(location.search).get("reason") ?? "";
+  const reason = stateReason || queryReason;
   const prefilled = reason && PREFILL_MESSAGES[reason] ? PREFILL_MESSAGES[reason] : "";
 
   const [name, setName] = useState("");

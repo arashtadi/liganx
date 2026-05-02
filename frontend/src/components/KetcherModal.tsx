@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { api, ApiError, type AIHistoryEntry } from "../api";
 
@@ -901,7 +900,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // outcome; needed by the Optimize button + variant ranking.
   // dockGated tracks whether the backend returned 403 (feature off
   // for this account) so we render a "By request" CTA inline.
-  const navigate = useNavigate();
+  // (No useNavigate needed here — the only routing action is the
+  // "Contact us to enable" CTA, which now opens in a new tab via
+  // window.open so the user keeps their in-progress canvas state.)
   const [quickDockStatus, setQuickDockStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [quickDockError, setQuickDockError] = useState<string | null>(null);
   const [quickDockGated, setQuickDockGated] = useState(false);
@@ -1166,7 +1167,18 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  Reuses the same routing pattern as the Boltz-2 "By request" card
    *  on NewJobPage. */
   function requestQuickDockAccess() {
-    navigate("/contact", { state: { reason: "quick_dock_request" } });
+    // Open in a NEW TAB so the user doesn't lose their in-progress work
+    // (Ketcher canvas, drawn structure, AI suggestion history). In-tab
+    // navigation would unmount the modal and discard everything. Reason
+    // is passed as a query param because router state doesn't survive
+    // a new-tab boundary; ContactPage reads from either state OR query.
+    // noopener+noreferrer is the modern security default — prevents the
+    // new tab from being able to manipulate window.opener.
+    window.open(
+      "/contact?reason=quick_dock_request",
+      "_blank",
+      "noopener,noreferrer",
+    );
   }
 
   // Curated mutation hint — surfaced as a chip when the user's

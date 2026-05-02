@@ -1624,7 +1624,18 @@ export default function NewJobPage() {
                 const isSelected = engine === opt.value;
                 const handleClick = () => {
                   if (requestOnly) {
-                    navigate("/contact", { state: { reason: "boltz2_request" } });
+                    // Open Contact in a NEW TAB so the user keeps their
+                    // in-progress New-job state (selected target,
+                    // mutations, compound rows) intact. In-tab navigate
+                    // would unmount this whole page and lose everything.
+                    // Reason travels via query param because router state
+                    // can't cross window boundaries; ContactPage reads
+                    // either state or query.
+                    window.open(
+                      "/contact?reason=boltz2_request",
+                      "_blank",
+                      "noopener,noreferrer",
+                    );
                     return;
                   }
                   setEngine(opt.value);
