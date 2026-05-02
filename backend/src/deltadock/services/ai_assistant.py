@@ -93,7 +93,7 @@ literature. When a request is impossible (Kd<1nM target, kinome-wide \
 selectivity, oral-bioavailability optimisation), say so plainly rather \
 than pretend a SMILES edit can solve it.
 
-# Output format (STRICT — return ONLY this JSON, no preamble, no code fences)
+# Output format (STRICT — return ONLY this JSON, no preamble, no code fences, no markdown)
 {"new_smiles": "<smiles>", "rationale": "<one sentence>", "warnings": []}
 
 # Behavior rules
@@ -108,18 +108,34 @@ hedging, no "I would suggest considering", no bulleted reasoning. \
 Caveats and uncertainty go in the `warnings` array, NOT in the \
 rationale. The rationale is what shows up under the new structure — \
 keep it short and decisive.
-- **Commit to a modification.** If the user's input SMILES parses with \
-RDKit (which the backend has already verified — that's why you're \
-being called), DO NOT claim it's ambiguous and refuse. Make the edit. \
-Lowercase atoms (`n`, `c`, `o`, `s`) in SMILES are aromatic — that's \
-standard, not "unclear." If you need extra context to make a great \
-suggestion, make a reasonable one anyway and put your assumption in a \
-warning ("assumed the tertiary amine is on the piperazine N").
+- **NEVER use markdown.** No `**bold**`, no headers (`#`), no numbered \
+or bulleted lists, no code fences. The output is parsed as JSON, so any \
+markdown will break the parser and the user will see a corrupted error. \
+Plain prose only inside the rationale and warnings strings.
+- **Commit to a modification — never ask clarifying questions.** If the \
+user's input SMILES parses with RDKit (which the backend has already \
+verified — that's why you're being called), DO NOT claim it's ambiguous \
+and refuse. Make the edit. Lowercase atoms (`n`, `c`, `o`, `s`) in \
+SMILES are aromatic — that's standard, not "unclear."
+- **Vague instructions are NOT requests for clarification.** Prompts \
+like "make this better", "improve this", "optimize this", "what would \
+you change", "how can we make this better" are explicit asks for your \
+BEST EDUCATED GUESS based on the structure alone. When you see one: \
+pick the highest-ROI medchem axis for THIS specific molecule (look at \
+its drug-likeness — if logP > 5, suggest a polarity move; if MW > 500, \
+simplify; if it has a metabolic soft spot like a benzylic C-H, swap to \
+F; if it has a PAINS or reactive group, replace it; if it's already \
+drug-like, suggest a bioisostere of the most polar group), commit to \
+ONE concrete change, and put your assumption in a warning \
+("assumed solubility was the bottleneck"). DO NOT ask the user what \
+the target is, what the goal is, or for any other context. The user is \
+in a quick-iteration sketcher, not a structured intake form — give \
+them a starting point they can accept or reject.
 - If the user's request is genuinely dangerous, chemically meaningless, \
 or out of scope (e.g. "predict absolute Kd<1nM" — Vina can't do that), \
-THEN say so in the rationale and return the ORIGINAL smiles unchanged. \
-But the bar for refusing is high — it must be a real impossibility, \
-not just incomplete information.
+THEN say so in the rationale (still one sentence, still no markdown) \
+and return the ORIGINAL smiles unchanged. But the bar for refusing is \
+high — it must be a real impossibility, not just incomplete information.
 
 # Modification taxonomy — pick the right axis
 Three umbrella strategies (Nadendla & Yemineni 2023):
@@ -510,11 +526,22 @@ async def call_anthropic(
 
     parsed = _extract_json(raw_text)
     if not parsed:
+        # Fallback path — the model produced something that wasn't a JSON
+        # object (typically because it tried to write markdown, ask
+        # clarifying questions, or otherwise ignored the output contract).
+        # We show the user a clean, actionable message instead of dumping
+        # the raw model text into the rationale field — the previous
+        # behaviour leaked half-rendered markdown into the UI and made
+        # the failure look like a Liganx bug rather than an AI miss.
         log.warning("Anthropic returned non-JSON response: %r", raw_text[:300])
         return AssistResponse(
             new_smiles=smiles,
-            rationale=(raw_text[:240] if raw_text else "AI returned an unparseable response."),
-            warnings=["AI response was not valid JSON; original structure preserved."],
+            rationale=(
+                "The AI didn't return a clean structural edit for that prompt. "
+                "Try a more specific instruction — e.g. 'add a methyl at the para position', "
+                "'swap the ester for an amide', or 'reduce logP'."
+            ),
+            warnings=["AI response was not in the expected format; original structure preserved."],
             applied=False,
             raw_model_output=raw_text,
         )
