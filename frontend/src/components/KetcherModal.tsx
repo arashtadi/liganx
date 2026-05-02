@@ -473,8 +473,15 @@ const MUTATION_HINTS: Record<string, string> = {
   // the pocket) plus loss of the OH H-bond, not stacking per se.
   D1228V: "Activation-loop Asp→Val removes a polar/charged contact and adds hydrophobic bulk. Often appears clustered with Y1230 mutations — design with the cluster in mind. Smaller, less rigid scaffolds tend to retain activity.",
   Y1230H: "Tyr→His swap loses the Tyr hydroxyl H-bond and introduces a (often protonated) imidazole that can clash or repel basic ligand groups in the pocket. Avoid relying on the Y1230 OH; consider neutral, smaller substituents in that region.",
-  // PIK3CA H1047R: hotspot. Allosteric pocket changes shape, charge.
-  H1047R: "Activating swap near the C-terminus reshapes the allosteric pocket. Larger, basic-leaning substituents have re-engaged this site.",
+  // PIK3CA H1047R: hotspot in the helical/kinase-domain interface.
+  // PhD audit (medchem-phd v2, 2026-05-02) noted this is an allosteric/
+  // distant mutation (Class 4 in mutation_classes.md) — its binding
+  // effect propagates through long-range conformational coupling that
+  // rigid-receptor docking cannot model. The design suggestion below
+  // is a directional starting point only; treat any rigid-docking Δ
+  // for H1047R as suggestive, not predictive, and validate
+  // experimentally before acting on it.
+  H1047R: "Activating swap near the C-terminus reshapes the allosteric pocket via long-range conformational coupling. Note: this is an allosteric mutation — rigid-receptor docking has limited predictive power here. Larger, basic-leaning substituents have re-engaged this site in the literature; treat any Δ as a directional hint and validate experimentally.",
 };
 
 /** Resolve a mutations string ("V600E" or "T790M+C797S" or "T315I, F317L")

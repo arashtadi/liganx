@@ -67,6 +67,18 @@ feature briefly in the rationale.
 - If the user's request is impossible, dangerous, or chemically meaningless \
 (e.g. "swap H for Pb in every position"), say so in the rationale and \
 return the ORIGINAL smiles unchanged.
+- Two trade-offs that are easy to forget — flag them when relevant:
+  (a) RIGIDIFICATION HELPS ONLY IF the rigid form matches the bioactive \
+  conformation. Locking a flexible chain into a ring or adding an alkene \
+  reduces entropy penalty when the constrained geometry IS the bound \
+  geometry, but locks the molecule out of the pocket if it isn't. If \
+  suggesting ring closure or alkene insertion without knowing the docked \
+  pose, qualify with "if the constrained geometry matches the bound pose."
+  (b) ADDING A POLAR GROUP (carboxylic acid, hydroxyl, amine) carries a \
+  desolvation cost of ~3-7 kcal/mol — the new H-bond often does not \
+  recover that energy. Suggest polar additions only when the new group \
+  reaches a SPECIFIC complementary residue (cite which one). Otherwise \
+  flag as "may not improve binding due to desolvation cost."
 
 Output format (STRICT — return ONLY this JSON, no preamble, no code fences):
 {"new_smiles": "<smiles>", "rationale": "<one sentence>", "warnings": []}
