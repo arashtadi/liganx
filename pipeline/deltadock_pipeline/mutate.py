@@ -133,6 +133,82 @@ def _minimize_with_openmm(topology, positions, max_iterations: int = 200):
         return None
 
 
+def minimize_pdb(input_pdb: Path | str, output_pdb: Path | str,
+                 max_iterations: int = 200) -> bool:
+    """Run a 200-step amber99sb-ildn vacuum minimisation on a PDB and
+    write the relaxed structure to ``output_pdb``.
+
+    Why this is a public helper: ``build_mutant_pdbfixer`` already does
+    this minimisation internally for mutant receptors. Until 2026-05-01
+    the WT receptor went straight from ``fix_pdb`` (PDBFixer-only) into
+    Vina with no minimisation, while every mutant got a relaxed structure.
+    The PhD audit caught this asymmetry — every Δ inherited a small bias
+    whose direction depended on the target. The runner now calls this
+    helper on the WT side too, gated by the same per-target flag
+    (``Target.minimize_mutant``), so WT and mutant get identical
+    treatment per target.
+
+    Hydrogen handling matches ``build_mutant_pdbfixer``: PDBFixer adds
+    missing heavy atoms, addMissingHydrogens adds the hydrogens
+    amber99sb-ildn needs, the minimisation runs in vacuum, then the
+    hydrogens are stripped from the output so the file matches the
+    "heavy atoms only" format the downstream Meeko/obabel pipeline
+    expects.
+
+    Returns True on successful minimisation, False if minimisation was
+    skipped or errored (in which case ``output_pdb`` still gets written
+    — using the un-minimised PDBFixer-cleaned structure — so callers
+    don't need separate fallback logic). Never raises for runtime
+    failures; only raises for missing OpenMM/PDBFixer dependencies.
+    """
+    try:
+        from pdbfixer import PDBFixer
+        from openmm.app import PDBFile, Modeller
+    except ImportError as e:
+        raise MutateError(f"PDBFixer/OpenMM not installed: {e}") from e
+
+    input_pdb = Path(input_pdb)
+    output_pdb = Path(output_pdb)
+    output_pdb.parent.mkdir(parents=True, exist_ok=True)
+
+    fixer = PDBFixer(filename=str(input_pdb))
+    # The input is already a clean PDB from fix_pdb (HETATMs stripped,
+    # numbering preserved, missing heavy atoms added). The hydrogens
+    # required by amber99sb-ildn aren't in the file yet — add them
+    # in-memory, minimise, then strip them before writing.
+    relaxed_positions = None
+    minimised = False
+    try:
+        fixer.addMissingHydrogens(pH=7.0)
+    except Exception as e:
+        log.warning("addMissingHydrogens failed on %s — skipping minimisation: %s",
+                    input_pdb.name, e)
+    else:
+        relaxed_positions = _minimize_with_openmm(
+            fixer.topology, fixer.positions, max_iterations=max_iterations
+        )
+        if relaxed_positions is not None:
+            fixer.positions = relaxed_positions
+            minimised = True
+            log.info("WT receptor relaxed via %d-step amber99sb-ildn vacuum minimisation: %s",
+                     max_iterations, input_pdb.name)
+
+    # Strip hydrogens before writing so the output file matches the
+    # heavy-atoms-only format the rest of the pipeline (Meeko, obabel)
+    # expects. This mirrors build_mutant_pdbfixer's output shape.
+    modeller = Modeller(fixer.topology, fixer.positions)
+    h_atoms = [a for a in modeller.topology.atoms()
+               if a.element is not None and a.element.symbol == "H"]
+    if h_atoms:
+        modeller.delete(h_atoms)
+    with output_pdb.open("w") as fh:
+        PDBFile.writeFile(modeller.topology, modeller.positions, fh, keepIds=True)
+    if not minimised:
+        log.info("Minimisation requested but did not run — saved un-minimised structure: %s",
+                 output_pdb.name)
+    return minimised
+
+
 def build_mutant_pdbfixer(
     pdb_path: Path | str,
     chain: str,
