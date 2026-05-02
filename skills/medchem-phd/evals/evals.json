@@ -1,0 +1,41 @@
+{
+  "skill_name": "medchem-phd",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm building a mutation-aware docking platform and I have a hint database that the AI compound editor reads as context when suggesting modifications. Here's the entry for MET Y1230H mutation:\n\n  Y1230H: \"Loop-flanking aromatic loss. Compounds that don't rely on stacking with Y1230 tend to survive.\"\n\nIs this scientifically accurate? If not, suggest a corrected version. The AI uses this hint string verbatim in its system prompt to bias compound suggestions for that mutation.",
+      "expected_output": "Audit identifies the hint as MISLEADING. The dominant Y1230H effect is a Tyr→His charge change (His often protonated at pocket pH) plus loss of the Tyr-OH H-bond donor — NOT loss of aromatic stacking. The skill should propose a reworded hint that mentions the protonated imidazole / charge effect / OH-loss. Bonus if it mentions D1228V/Y1230 cluster context (these mutations appear together in MET resistance).",
+      "expectations": [
+        "Identifies that the 'aromatic stacking' framing is wrong / misleading",
+        "Mentions histidine protonation state (pKa ~6, protonated in pocket) OR loss of Tyr-OH H-bond as the dominant mechanism",
+        "Provides a concrete reworded hint string",
+        "Output uses the structured Reviewer-mode format (Audit summary / CRITICAL / etc.) OR a clearly-headed rewrite — not a wall of text",
+        "Does NOT invent fake residue numbers or fake literature citations"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I'm reviewing a senior PhD audit recommendation that says: 'Your docking pipeline treats WT and mutant receptors asymmetrically — only mutant receptors go through OpenMM amber99sb-ildn vacuum minimisation, WT does not. This asymmetry biases every Δ. Recommend: apply the same 200-step minimisation to both WT and mutant receptors so the comparison is apples-to-apples.'\n\nThe team currently runs a positive-control validation suite of 8 literature-anchored mutation/drug pairs and the v4 prep (asymmetric, mutant-minimised only) gets 5/8 PASS. Should I implement this recommendation?",
+      "expected_output": "The skill MUST push back on the recommendation. WT comes from a crystal structure (already a low-energy minimum); minimising it just collapses the discriminating pocket geometry. Mutant comes from PDBFixer.applyMutations which leaves clashes — that's why it needs minimisation. The asymmetry is correct, not a bug. The skill should suggest reading the validation suite first AND running the change against it before shipping (or warn that doing so would likely regress PASS rate).",
+      "expectations": [
+        "The skill REJECTS the symmetric-min recommendation OR strongly cautions against it",
+        "The skill explains WHY the asymmetry is correct: WT is a crystal-derived low-energy minimum; mutant is a synthetic substitution with clashes",
+        "The skill recommends running the validation suite BEFORE making the change, not after",
+        "The skill does NOT just rubber-stamp the senior PhD's recommendation",
+        "Output mentions noise floor or empirical-vs-theoretical reasoning (validation suite > smart prior)"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Suggest 3 medicinal-chemistry modifications to make Imatinib retain potency against the BCR-ABL T315I gatekeeper mutation. Imatinib's SMILES is Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1. Each suggestion should name the structural rationale and a literature-anchored precedent if one exists. Don't invent precedents you can't justify.",
+      "expected_output": "3 diverse modifications targeting different design axes. At least one should be the canonical T315I-bypass move (linear linker, e.g., Ponatinib's ethynyl spacer). Each suggestion should name a specific pocket residue or mechanism (the gatekeeper Ile clash, αC-helix engagement, etc.) and either cite a real precedent (Ponatinib, Asciminib, Nilotinib, Bosutinib) or honestly say 'general medchem principle, no specific precedent'.",
+      "expectations": [
+        "Returns exactly 3 suggestions (not 1, not 5+)",
+        "At least one suggestion names a real T315I-bypass drug as precedent (Ponatinib, Asciminib, or similar)",
+        "Each suggestion names a specific structural rationale (gatekeeper clash, αC-helix, allosteric site, etc.) — not generic 'this might help'",
+        "The 3 suggestions are diverse (not 3 variations of the same move)",
+        "Does NOT invent literature citations that don't exist (e.g., a fake author/year combination)"
+      ]
+    }
+  ]
+}
