@@ -35,9 +35,38 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 # Conservative timeout — Haiku usually responds in 1-3s. 20s gives
 # headroom for a slow upstream without leaving the user staring at a
-# spinner forever.
+# spinner forever. Bumped to 40s when the medchem-phd skill is in
+# use, since lazy-loading a reference (boltz2.md, mutation_classes.md)
+# adds a roundtrip and the code-execution tool can take a few extra
+# seconds to spin up.
 ANTHROPIC_TIMEOUT_S = 20.0
+ANTHROPIC_TIMEOUT_WITH_SKILL_S = 40.0
 ANTHROPIC_MAX_TOKENS = 1024
+
+# Workspace-level Skill ID for the medchem-phd skill (uploaded at
+# https://platform.claude.com/workspaces/default/skills). When set,
+# every /assist/compound and /assist/optimize call attaches the skill
+# to the request via the `container.skills[]` field, so Claude has
+# the full medicinal-chemistry reference library (Boltz-2 conventions,
+# mutation classes, anti-patterns, modification taxonomy) available
+# on demand. Lazy-loaded — references only consume tokens when the
+# model decides it needs them. Set via:
+#   flyctl secrets set MEDCHEM_PHD_SKILL_ID=skill_01... --app liganx-api
+# When unset (e.g. local dev without API access to the workspace),
+# the calls fall back to the inline _SYSTEM_PROMPT chemistry rules.
+MEDCHEM_PHD_SKILL_ID = os.environ.get("MEDCHEM_PHD_SKILL_ID", "").strip()
+
+# Beta features required to use workspace skills via the Messages API.
+# Per Anthropic docs:
+#   skills-2025-10-02       — opt-in to the skills feature itself
+#   code-execution-2025-08-25 — required runtime tool that skills
+#                                use to read their bundled markdown
+#                                references. Without this, custom
+#                                skills can attach but can't be loaded.
+#   files-api-2025-04-14    — referenced files / attachments
+ANTHROPIC_SKILLS_BETA = (
+    "skills-2025-10-02,code-execution-2025-08-25,files-api-2025-04-14"
+)
 
 
 class AssistResponse(TypedDict, total=False):
@@ -50,42 +79,31 @@ class AssistResponse(TypedDict, total=False):
 
 _SYSTEM_PROMPT = """You are a medicinal-chemistry assistant inside Liganx, \
 a mutation-aware molecular-docking platform. The user is editing a small \
-molecule in a 2D structure editor and wants help making a specific edit \
-or improvement to it.
+molecule in a 2D structure editor and wants a specific edit.
 
-Behavior rules:
-- Always return a SINGLE valid SMILES string for the proposed compound.
-- The SMILES must parse with RDKit. Prefer canonical-style output.
-- Keep edits minimal: change only what the user asked for, plus the \
-unavoidable consequences of that change. Do not redesign the molecule.
-- One short sentence of rationale: WHY this edit is reasonable, and ONE \
-property delta (e.g. "logP +0.4 (rough estimate, Crippen wlogP), QED unchanged") if relevant. \
-Always qualify property deltas as estimates — these are computed predictions, not measurements.
-- If the user gave a target context (PDB + mutation), prefer edits that \
-are plausible for that pocket and mutation. Cite the residue or pocket \
-feature briefly in the rationale.
-- If the user's request is impossible, dangerous, or chemically meaningless \
-(e.g. "swap H for Pb in every position"), say so in the rationale and \
-return the ORIGINAL smiles unchanged.
-- Two trade-offs that are easy to forget — flag them when relevant:
-  (a) RIGIDIFICATION HELPS ONLY IF the rigid form matches the bioactive \
-  conformation. Locking a flexible chain into a ring or adding an alkene \
-  reduces entropy penalty when the constrained geometry IS the bound \
-  geometry, but locks the molecule out of the pocket if it isn't. If \
-  suggesting ring closure or alkene insertion without knowing the docked \
-  pose, qualify with "if the constrained geometry matches the bound pose."
-  (b) ADDING A POLAR GROUP (carboxylic acid, hydroxyl, amine) carries a \
-  desolvation cost of ~3-7 kcal/mol — the new H-bond often does not \
-  recover that energy. Suggest polar additions only when the new group \
-  reaches a SPECIFIC complementary residue (cite which one). Otherwise \
-  flag as "may not improve binding due to desolvation cost."
+CONSULT the medchem-phd skill for the chemistry knowledge you need: \
+mutation classes (gatekeeper / activation-loop / covalent / allosteric), \
+Type I vs Type II inhibitor selection, scoring conventions, \
+bioisosteric replacements, lead-optimisation principles, and the \
+anti-patterns to avoid (rigidification trade-off, desolvation cost, \
+inventing residue names, treating low cellular activity as bad binding). \
+The skill's references contain the full literature-anchored guidance.
 
-Output format (STRICT — return ONLY this JSON, no preamble, no code fences):
+Output contract (STRICT — return ONLY this JSON, no preamble, no code fences):
 {"new_smiles": "<smiles>", "rationale": "<one sentence>", "warnings": []}
 
-Optional warnings array entries: "PAINS-like substructure introduced", \
+Hard rules:
+- The SMILES MUST parse with RDKit. Prefer canonical-style output.
+- Keep edits minimal: only what the user asked for, no full redesign.
+- Rationale is ONE sentence; if it cites a literature precedent, the \
+precedent must be real (Ponatinib, Vemurafenib, etc. — never invent).
+- If the user's request is impossible, dangerous, or out of scope \
+(e.g. predict absolute Kd, kinome-wide selectivity), say so in the \
+rationale and return the ORIGINAL smiles unchanged.
+- Optional warnings entries: "PAINS-like substructure introduced", \
 "violates Lipinski rule of 5", "synthetically challenging", \
-"reactive functional group" — any caveat the user should see."""
+"reactive functional group", "may not improve binding due to \
+desolvation cost", "stereochemistry ambiguous"."""
 
 
 def _build_user_prompt(
@@ -108,6 +126,56 @@ def _build_user_prompt(
             ctx += f", mutations: {mutations}"
         parts.append(ctx)
     return "\n".join(parts)
+
+
+def _build_request(*, system_prompt: str, user_prompt: str) -> tuple[dict, dict, float]:
+    """Build the (headers, payload, timeout) tuple for an Anthropic Messages
+    API call, automatically attaching the medchem-phd workspace skill
+    when MEDCHEM_PHD_SKILL_ID is configured.
+
+    Returns the timeout to use for the call — bumped when the skill is
+    attached, since lazy-loading a reference adds a roundtrip.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not configured on this server. "
+            "Set it via `flyctl secrets set ANTHROPIC_API_KEY=...`."
+        )
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    timeout = ANTHROPIC_TIMEOUT_S
+
+    if MEDCHEM_PHD_SKILL_ID:
+        # Attach the workspace skill so Claude has the full medchem-phd
+        # reference library available on demand. The code-execution tool
+        # is required by Anthropic's skills runtime to load reference
+        # files; without it the skill is rejected at the API layer even
+        # if the skill_id is valid.
+        headers["anthropic-beta"] = ANTHROPIC_SKILLS_BETA
+        payload["container"] = {
+            "skills": [
+                {
+                    "type": "custom",
+                    "skill_id": MEDCHEM_PHD_SKILL_ID,
+                    "version": "latest",
+                }
+            ]
+        }
+        payload["tools"] = [{"type": "code_execution_20250825"}]
+        timeout = ANTHROPIC_TIMEOUT_WITH_SKILL_S
+
+    return headers, payload, timeout
 
 
 # Match a JSON object even when the model wraps it in ```json … ``` or
@@ -138,23 +206,30 @@ The user has just docked a compound against a specific target+mutation \
 and wants 3 variant compounds designed to gain contacts at residues the \
 original compound MISSED.
 
-Behavior rules:
-- Return EXACTLY 3 variants. Each is a SMILES + a one-sentence rationale.
-- Each variant must parse with RDKit (canonical-style SMILES).
-- Keep edits minimal: change only what's needed to reach the missed \
-residues. Do not redesign the molecule.
-- Each rationale should name the SPECIFIC missed residue the variant \
-targets and the chemical move (e.g. "adds a hydroxyl to reach Tyr541").
-- CRITICAL — DO NOT INVENT RESIDUE NAMES. Only refer to residues that \
-appear verbatim in the `hits` or `misses` lists provided in the user \
-message. If a variant doesn't target a specific residue from those \
-lists, describe the chemical move generically ("adds a fluorine for \
-metabolic stability") without inventing a residue label.
-- Prefer cheap, well-known medchem moves: bioisostere swap, ring \
-extension, hydroxyl/methyl/F addition at a specific position.
+CONSULT the medchem-phd skill for: mutation classes and which design \
+moves apply, the disjunction/conjunction/special-approaches modification \
+taxonomy (use it to FORCE diversity across the 3 variants), worked drug \
+precedents (Ponatinib alkyne for T315I, Asciminib allosteric, Pirtobrutinib \
+non-covalent for C481S, Vemurafenib hydrophobic-fill for V600E, Avapritinib \
+active-state for D816V), and the trade-offs to flag (rigidification matching \
+bioactive conformation, desolvation cost of polar additions, stereochemistry \
+non-equivalence).
 
-Output format (STRICT — return ONLY this JSON, no preamble, no code fences):
-{"variants":[{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"}]}"""
+Output contract (STRICT — return ONLY this JSON, no preamble, no code fences):
+{"variants":[{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"}]}
+
+Hard rules:
+- Return EXACTLY 3 variants. Each SMILES MUST parse with RDKit \
+(canonical-style).
+- DIVERSITY > MAGNITUDE. The 3 variants must span DIFFERENT design axes \
+(use the modification taxonomy from the skill — one disjunction-style, \
+one conjunction-style, one special-approach — NOT three variations of \
+the same move).
+- DO NOT INVENT RESIDUE NAMES. Only refer to residues that appear \
+verbatim in the `hits` or `misses` lists in the user message. If a \
+variant doesn't target a specific residue from those lists, describe \
+the move generically ("adds a fluorine for metabolic stability") \
+without inventing a residue label."""
 
 
 class OptimizeVariant(TypedDict, total=False):
@@ -175,13 +250,6 @@ async def call_anthropic_optimize(
     `misses` residues. Returns a list of {new_smiles, rationale} dicts;
     each new_smiles is RDKit-validated before being included. Empty
     list on parse failure (caller decides how to surface)."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not configured on this server. "
-            "Set it via `flyctl secrets set ANTHROPIC_API_KEY=...`."
-        )
-
     parts = [
         f"Current SMILES: {smiles}",
         f"Docked score: {score:.2f} kcal/mol",
@@ -195,20 +263,12 @@ async def call_anthropic_optimize(
         parts.append(ctx)
     user_prompt = "\n".join(parts)
 
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    payload = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "system": _OPTIMIZE_SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }
+    headers, payload, timeout = _build_request(
+        system_prompt=_OPTIMIZE_SYSTEM_PROMPT, user_prompt=user_prompt
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=ANTHROPIC_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
     except (httpx.TimeoutException, httpx.RequestError) as e:
         log.error("Anthropic optimize network error: %s", e)
@@ -267,32 +327,17 @@ async def call_anthropic(
     """Single-turn Anthropic call. Returns AssistResponse with new_smiles
     + rationale on success, or raises RuntimeError on auth/network/quota
     failures (caller maps those to 503/502 HTTPException)."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not configured on this server. "
-            "Set it via `flyctl secrets set ANTHROPIC_API_KEY=...`."
-        )
-
     user_prompt = _build_user_prompt(
         smiles=smiles, instruction=instruction,
         target_pdb=target_pdb, mutations=mutations,
     )
 
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    payload = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "system": _SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }
+    headers, payload, timeout = _build_request(
+        system_prompt=_SYSTEM_PROMPT, user_prompt=user_prompt
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=ANTHROPIC_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
     except (httpx.TimeoutException, httpx.RequestError) as e:
         log.error("Anthropic API network error: %s", e)
