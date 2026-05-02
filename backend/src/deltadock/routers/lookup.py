@@ -499,3 +499,150 @@ def inspect_smiles(payload: SmilesInspectIn) -> SmilesInspectOut:
     height = max(60, min(300, int(payload.height)))
     data = _inspect_cached(smi, bool(payload.embed_check), width, height)
     return SmilesInspectOut(**data)
+
+
+# ── 3D embedding (gas-phase conformer for the AI sidebar 3D preview) ───
+#
+# Backs the optional "📐 3D" toggle inside the Ketcher modal's AI
+# sidebar. The user clicks once to expand a 200x200 3Dmol.js viewer
+# next to their 2D drawing; thereafter every SMILES change (debounced
+# 1.5s) triggers a fetch here that returns a MOL block the frontend
+# renders client-side.
+#
+# IMPORTANT — this is a GAS-PHASE conformer, not a docked pose. The
+# molecule is embedded in vacuum and minimised with UFF; nothing about
+# this calculation knows about the receptor pocket. The frontend labels
+# the panel accordingly so users don't conflate this with binding
+# prediction (that's what Quick dock + the JobPage 3D viewer are for).
+
+
+class EmbedSmilesIn(BaseModel):
+    """Compound SMILES to embed in 3D and minimise.
+
+    Same string-bounding rules as inspect-smiles since the failure modes
+    (oversize, malformed) are identical at this layer."""
+    smiles: str
+    # If true, run a UFF minimisation after embedding. Disabling it
+    # cuts ~30-100ms but the resulting geometry has obvious bond-length
+    # artefacts (especially around aromatic rings), so we default to on
+    # and let the caller opt out for the rare "I just want a quick first
+    # cut" case.
+    minimise: bool = True
+
+
+class EmbedSmilesOut(BaseModel):
+    valid: bool
+    """True iff RDKit parsed AND embedded a 3D conformer. False on either
+    a parse failure or an embed failure (very large rings, unusual valences,
+    disconnected fragments)."""
+    error: str | None = None
+    """Trimmed RDKit error message when valid=False."""
+    mol_block: str | None = None
+    """V2000 MOL block ready to feed into 3Dmol.js's addModel(text, "mol").
+    Always includes hydrogens (chemists need to see them in 3D — H on a
+    polar atom is the difference between an H-bond donor and a stub).
+    None when valid=False."""
+    atom_count: int = 0
+    """Heavy-atom count of the embedded molecule, for telemetry."""
+
+
+@lru_cache(maxsize=512)
+def _embed_cached(smiles: str, minimise: bool) -> dict:
+    """LRU-cached 3D embed. Same SMILES + minimise flag = same answer,
+    so a debounced burst of identical-canonical-form requests collapses
+    to one calculation. The cache key is the raw SMILES string (NOT the
+    canonical form) — RDKit canonicalises internally, so two callers
+    that send different stringifications of the same molecule each pay
+    the embed cost once. That's an acceptable cost for a cache that's
+    mostly hit by the SAME user editing the SAME molecule."""
+    out: dict = {
+        "valid": False, "error": None, "mol_block": None, "atom_count": 0,
+    }
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError:
+        out["error"] = "RDKit not available in this deployment"
+        return out
+
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=True)
+    except Exception as e:
+        out["error"] = _trim_error(str(e))
+        return out
+    if mol is None:
+        out["error"] = "RDKit could not parse this SMILES"
+        return out
+
+    out["atom_count"] = mol.GetNumHeavyAtoms()
+
+    # Add explicit hydrogens BEFORE embedding — without them the conformer
+    # won't have H positions and the rendered structure looks bald.
+    # Chemists reading 3D need the H atoms (especially polar H) to judge
+    # H-bond geometry and stereo at sp3 centres.
+    try:
+        mol_h = Chem.AddHs(mol)
+    except Exception as e:
+        out["error"] = f"AddHs failed: {_trim_error(str(e))}"
+        return out
+
+    # Embed in 3D. Fixed seed = deterministic output, so the cached value
+    # is stable across calls. maxAttempts=10 matches the inspect-smiles
+    # embed sanity check — same threshold the docking pipeline uses.
+    try:
+        result = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+        if result < 0:
+            out["error"] = (
+                "RDKit couldn't embed this molecule in 3D. Most common causes: "
+                "very large rings, unusual valences, or disconnected fragments."
+            )
+            return out
+    except Exception as e:
+        out["error"] = f"3D embed failed: {_trim_error(str(e))}"
+        return out
+
+    # Minimise with UFF. Universal force field is fast and covers every
+    # element a user might draw; MMFF94 would be slightly more accurate
+    # for organics but it bombs out on metals or unusual valences and
+    # we'd rather show a slightly-imperfect geometry than fail to render
+    # anything. 200 iterations is plenty for a small molecule — UFF
+    # converges fast.
+    if minimise:
+        try:
+            AllChem.UFFOptimizeMolecule(mol_h, maxIters=200)
+        except Exception as e:
+            # Minimisation failed but the embedded geometry is still
+            # usable — log and ship the unminimised conformer rather
+            # than failing the whole call.
+            log.debug("UFF minimise failed for %s: %s", smiles[:40], e)
+
+    try:
+        mol_block = Chem.MolToMolBlock(mol_h)
+    except Exception as e:
+        out["error"] = f"MOL block serialisation failed: {_trim_error(str(e))}"
+        return out
+
+    out["valid"] = True
+    out["mol_block"] = mol_block
+    return out
+
+
+@router.post("/embed-smiles", response_model=EmbedSmilesOut)
+def embed_smiles(payload: EmbedSmilesIn) -> EmbedSmilesOut:
+    """Embed a SMILES in 3D, optionally minimise, return a MOL block.
+
+    Synchronous + cached — typical hot path is ~10ms (cached) or
+    ~80-200ms (cold + small molecule) up to ~500ms (cold + large
+    flexible molecule). The frontend debounces calls at 1.5s after
+    SMILES changes so we don't get hammered while the user is mid-edit.
+
+    Same input bounds as inspect-smiles (1000 char cap) — anything
+    longer is almost certainly a paste-error, not a real molecule we
+    want to embed."""
+    smi = (payload.smiles or "").strip()
+    if not smi:
+        return EmbedSmilesOut(valid=False, error="empty SMILES")
+    if len(smi) > 1000:
+        return EmbedSmilesOut(valid=False, error=f"SMILES too long ({len(smi)} chars; max 1000)")
+    data = _embed_cached(smi, bool(payload.minimise))
+    return EmbedSmilesOut(**data)

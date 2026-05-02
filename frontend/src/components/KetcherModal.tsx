@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { api, ApiError, type AIHistoryEntry } from "../api";
+
+// Lazy-load the 3D preview so the modal's main bundle stays small. The
+// 3Dmol.js dependency (~600KB) only downloads when a user actually
+// clicks the "📐 3D" toggle. This matches StructureViewer's pattern.
+const Mol3DPreview = lazy(() => import("./Mol3DPreview"));
 
 /**
  * Ketcher 2D structure-editor modal — opens the self-hosted Ketcher
@@ -702,6 +707,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // panel) so the user can keep a Predict-properties result expanded
   // while the strip continues to refresh as they edit.
   const [liveProps, setLiveProps] = useState<PropertiesResult | null>(null);
+  // Live SMILES from the canvas — separate from liveProps because the
+  // 3D preview wants the raw SMILES (to embed) not the parsed property
+  // object. Updated by the same 2.5s polling loop that feeds liveProps,
+  // so we don't add a second timer to the modal.
+  const [liveSmiles, setLiveSmiles] = useState<string>("");
+  // 3D preview toggle. Off by default so the user pays the 3Dmol.js
+  // download (~600KB) only when they ask for it. Persists for the
+  // lifetime of the modal — closing/reopening starts off again, which
+  // is the right default for a feature most users won't need.
+  const [show3D, setShow3D] = useState<boolean>(false);
   // Track which kind of action ran last so the result panel labels itself
   // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
   const [lastAction, setLastAction] = useState<"none" | "edit" | "props" | "analogs">("none");
@@ -723,6 +738,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         const smi: string = await apiObj.getSmiles();
         if (cancelled) return;
         const trimmed = (smi || "").trim();
+        // Mirror the live SMILES into state so the 3D preview can
+        // re-render when the canvas changes. Cheap setState — only
+        // fires when the value differs.
+        setLiveSmiles((prev) => (prev === trimmed ? prev : trimmed));
         // Empty canvas → clear the strip.
         if (!trimmed) {
           if (liveProps !== null) setLiveProps(null);
@@ -1083,7 +1102,49 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 PAINS {liveProps.pains_hits!.length}
               </span>
             )}
+            {/* 3D toggle — sits at the end of the property strip so it
+                shares the same row when there's space, wraps to its own
+                line on narrow viewports. Off by default; first click
+                lazy-loads the 3Dmol.js bundle (~600KB) and starts the
+                debounced fetch loop. The honesty caveat about gas-phase
+                vs docked pose lives inside the panel itself. */}
+            <button
+              type="button"
+              onClick={() => setShow3D((v) => !v)}
+              disabled={!ketcherReady}
+              className={
+                "ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors " +
+                (show3D
+                  ? "border-delta-400 bg-delta-50 text-delta-800 dark:border-delta-700 dark:bg-delta-900/30 dark:text-delta-200"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300 dark:hover:bg-slate-700/50") +
+                " disabled:opacity-50 disabled:cursor-not-allowed"
+              }
+              title={show3D ? "Hide 3D preview" : "Show 3D preview (gas-phase, not docked pose)"}
+            >
+              <span aria-hidden="true">📐</span>
+              {show3D ? "3D ✓" : "3D"}
+            </button>
           </div>
+        </div>
+      )}
+
+      {/* 3D preview panel — only mounted when the toggle is on, so the
+          3Dmol.js bundle stays unrequested for users who never expand it.
+          Suspense fallback covers the lazy-import gap (~100ms typical).
+          Renders below the property strip, above the quick-actions row,
+          so chemists can scan MW/logP and the 3D shape together without
+          scrolling. */}
+      {show3D && (
+        <div className="px-4 pt-2 pb-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 flex justify-center">
+          <Suspense
+            fallback={
+              <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
+                <Spinner size={14} />
+              </div>
+            }
+          >
+            <Mol3DPreview smiles={liveSmiles} size={200} />
+          </Suspense>
         </div>
       )}
 

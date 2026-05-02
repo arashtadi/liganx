@@ -457,6 +457,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  /** 3D-embed a SMILES and return a MOL block ready for 3Dmol.js. Used
+   *  by the Ketcher modal's optional "📐 3D" toggle. Server LRU-caches
+   *  by (smiles, minimise) so repeat calls for the same molecule are
+   *  ~10ms; first call ~80-500ms depending on size + flexibility. The
+   *  resulting conformer is GAS-PHASE — not a docked pose. The UI
+   *  surfaces this caveat in a tooltip so users don't conflate it with
+   *  binding prediction. */
+  embedSmiles: (payload: { smiles: string; minimise?: boolean }) =>
+    request<{
+      valid: boolean;
+      error: string | null;
+      mol_block: string | null;
+      atom_count: number;
+    }>("/lookup/embed-smiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   /** Submit the public contact form. Backend forwards to a Telegram bot.
    *  `website` is the honeypot field — leave empty; bots fill every
    *  input they find. Returns 200 + accepted:true on both genuine
