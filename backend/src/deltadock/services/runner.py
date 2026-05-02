@@ -1010,17 +1010,7 @@ def _run_real(session: Session, job: Job) -> None:
     # survive a local-energy-minimum search — the validation suite went
     # -2.90 → -0.70 → +2.20 across three samples. Bumping to v4 forces
     # BRAF mutant rebuilds with minimisation skipped on next request.
-    #
-    # v5 (2026-05-01): symmetric WT/mutant minimisation. Until v4 the WT
-    # receptor went straight from fix_pdb (PDBFixer-only) into Vina, while
-    # every mutant got a 200-step amber99sb-ildn vacuum minimisation via
-    # build_mutant_pdbfixer. That asymmetry seeded a small bias in every
-    # Δ. v5 calls minimize_pdb() on WT too, gated by the same per-target
-    # minimize_mutant flag — so BRAF stays "neither minimised" and the
-    # other 12 catalog targets become "both minimised". Bumping to v5
-    # invalidates every cached WT and mutant on next first-hit per target
-    # (~30 s extra WT prep per target the first time, then cached).
-    PREP_VERSION = "v5-symmetric-min"
+    PREP_VERSION = "v4-per-target-min"
 
     def _is_stale(path: Path) -> bool:
         """A cache file is stale if its sibling .prep_version marker is missing
@@ -1119,38 +1109,16 @@ def _run_real(session: Session, job: Job) -> None:
         return
 
     set_stage(session, job.id, "preparing_receptor")
-    # Step 2: prep WT receptor once. Cached across jobs.
-    #
-    # Symmetric minimisation (v5, 2026-05-01): if the target's
-    # minimize_mutant flag is True, run the same 200-step amber99sb-ildn
-    # vacuum minimisation on the WT receptor that build_mutant_pdbfixer
-    # runs on the mutant. Without this WT and mutant get apples-to-oranges
-    # treatment — every Δ inherits a small bias whose direction depends
-    # on the target. PhD audit caught this; BRAF (minimize_mutant=False)
-    # had been disabled per-target after validation showed the bias, but
-    # the same asymmetry was silently affecting the other 12 targets.
-    #
-    # Per-target rule: BRAF → neither minimised. Everything else → both
-    # minimised. The flag controls both sides identically.
+    # Step 2: prep WT receptor once. Cached across jobs. The WT receptor is
+    # derived from cleaned_pdb so when the latter gets re-built (stale
+    # invalidation), the WT PDBQT must also be rebuilt — otherwise it'd
+    # still reference the old renumbered residues.
     RECEPTOR_CACHE.mkdir(parents=True, exist_ok=True)
     wt_receptor = RECEPTOR_CACHE / f"{pdb_id}_{chain}_WT.pdbqt"
     if _is_stale(wt_receptor):
         log.info("Prepping WT receptor %s chain %s (prep %s)", pdb_id, chain, PREP_VERSION)
         try:
-            should_minimize_wt = (
-                catalog_target.minimize_mutant if catalog_target else True
-            )
-            wt_input_for_prepare = cleaned_pdb
-            if should_minimize_wt:
-                from deltadock_pipeline.mutate import minimize_pdb
-                wt_min_pdb = RECEPTOR_CACHE / f"{pdb_id}_{chain}_WT.min.pdb"
-                if _is_stale(wt_min_pdb):
-                    log.info("Minimising WT %s chain %s for symmetric Δ (prep %s)",
-                             pdb_id, chain, PREP_VERSION)
-                    minimize_pdb(cleaned_pdb, wt_min_pdb)
-                    _stamp(wt_min_pdb)
-                wt_input_for_prepare = wt_min_pdb
-            prepare_receptor(wt_input_for_prepare, wt_receptor, chain=chain)
+            prepare_receptor(cleaned_pdb, wt_receptor, chain=chain)
             _stamp(wt_receptor)
         except Exception as e:
             raise RuntimeError(
