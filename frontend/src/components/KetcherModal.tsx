@@ -674,7 +674,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiHistory]);
 
-  /** Prepend a new history entry. Used by runEdit and runAnalogs after
+  /** Prepend a new history entry. Used by runEdit after
    *  a successful AI response. No-op when the result is empty (no SMILES
    *  to record). pruneHistory keeps the list at MAX_AI_HISTORY entries
    *  with star-protection. */
@@ -752,7 +752,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // results, and Optimize variants are all stacked above), and users
   // assume the AI didn't respond. The ref is attached to the wrapper
   // <div> below; the effect fires whenever `result` flips from null to
-  // a populated object after a successful runEdit/runAnalogs call.
+  // a populated object after a successful runEdit call.
   const resultPanelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (status === "ok" && result && resultPanelRef.current) {
@@ -764,7 +764,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   }, [result, status]);
   // Track which kind of action ran last so the result panel labels itself
   // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
-  const [lastAction, setLastAction] = useState<"none" | "edit" | "props" | "analogs">("none");
+  const [lastAction, setLastAction] = useState<"none" | "edit" | "props">("none");
 
   // Live property strip: every 2.5s, read the current SMILES from
   // Ketcher and ask the backend for its property panel. Cheap
@@ -876,55 +876,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
   }
 
-  async function runAnalogs() {
-    const smi = await readSmiles();
-    if (!smi) return;
-    setStatus("running");
-    setErrorMsg(null);
-    setResult(null);
-    setLastAction("analogs");
-    try {
-      // Reuse /assist/compound with a fixed "suggest analogs" instruction
-      // so we don't need a separate endpoint. The AI returns ONE smiles
-      // + rationale per the contract, but we phrase the instruction so
-      // the rationale reads as a "5 analogs to consider" list.
-      //
-      // Docking-aware spread: same staleness guard as runEdit. When a
-      // fresh dock matches the live SMILES, pass score/hits/misses so
-      // the AI's analog suggestions are biased toward fixing the
-      // missed residues. Without this the analogs are generic medchem
-      // ideas; with it they're targeted at the specific binding
-      // problem the user just measured.
-      const dockFresh = dockResult && dockResult.smiles === smi;
-      const instruction = dockFresh
-        ? "Suggest 5 promising medchem analogs of this compound that would" +
-          " improve binding to the target pocket — especially address the" +
-          " missed residues from the dock results. Return the most promising" +
-          " one as new_smiles, and list the other 4 + brief rationale for" +
-          " each (referencing the relevant residue interactions) in the" +
-          " rationale field."
-        : "Suggest 5 promising medchem analogs of this compound. Return the most" +
-          " interesting one as new_smiles, and list the other 4 + brief rationale" +
-          " for each in the rationale field.";
-      const r = await api.assistCompound({
-        smiles: smi,
-        instruction,
-        target_pdb: targetPdb,
-        mutations: mutations,
-        ...(dockFresh ? {
-          score: dockResult!.score,
-          hits: dockResult!.hits,
-          misses: dockResult!.misses,
-        } : {}),
-      });
-      setResult(r);
-      setStatus("ok");
-      addToHistory(dockFresh ? "Suggest 5 medchem analogs (docking-aware)" : "Suggest 5 medchem analogs", r);
-    } catch (e) {
-      setStatus("error");
-      setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
-    }
-  }
+  /** (runAnalogs — fixed-instruction "give me 5 medchem analogs"
+   *  helper — was removed 2026-05-02 along with its button. Optimize is
+   *  the sole AI-variants action now: 3 variants targeting missed
+   *  residues, each auto-docked so the user sees real score deltas.
+   *  The 5-analog flow returned 1 structured suggestion + 4 listed in
+   *  rationale text, none auto-docked, so it was strictly weaker. Power
+   *  users who specifically want 5 brainstorm ideas can type that into
+   *  Chat with AI directly — runEdit will route it through the same
+   *  /assist/compound endpoint with whatever dock context is live.) */
 
   async function runProperties() {
     const smi = await readSmiles();
@@ -1485,30 +1445,19 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         {status === "ok" && lastAction === "props" && properties && (
           <PropertiesPanel p={properties} />
         )}
-        {/* Suggest 5 analogs — only appears after a fresh Quick dock
-            against the live SMILES. Reasoning: without dock context the
-            AI gives generic medchem ideas, which is much less useful
-            than analogs targeted at the specific missed residues from
-            the dock. Gating the button behind dockFreshForLive removes
-            the "weaker" version of this action entirely — the chemist
-            either sees no button (run Quick dock first) or sees the
-            docking-aware one (real value). */}
-        {dockFreshForLive && (
-          <button
-            type="button"
-            disabled={!ketcherReady || status === "running"}
-            onClick={runAnalogs}
-            title="AI will use the dock score and missed residues to bias the analog suggestions toward fixing the binding gaps"
-            className="w-full text-left text-[11px] px-2 py-1.5 rounded-md border border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 text-emerald-800 dark:text-emerald-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            🔬 <span className="font-medium">Suggest 5 analogs</span>
-            <span className="text-[10px] ml-1 opacity-70">(docking-aware)</span>
-          </button>
-        )}
+        {/* (Suggest 5 analogs button removed 2026-05-02 — overlapped
+            with Optimize, which is strictly better: 3 variants targeting
+            the missed residues, each auto-docked, with measured score
+            deltas + Apply button. The 5-analogs flow returned only one
+            structured suggestion + 4 listed in rationale text, none of
+            them docked, so the user had no measured proof any were
+            actually better. Optimize is the sole AI-variants action now.
+            Chemists who want unstructured brainstorm can type "suggest
+            5 analogs" directly into Chat with AI below.) */}
         {status === "idle" && lastAction === "none" && (
           <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
             {targetPdb
-              ? "Run Quick dock above to unlock docking-aware analog suggestions, or ask the AI for an edit below."
+              ? "Run Quick dock above to see a draft score, then click Optimize for AI variants — or ask the AI for an edit below."
               : "Sketch above, then ask the AI for an edit below."}
           </div>
         )}
@@ -1522,7 +1471,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             {errorMsg}
           </div>
         )}
-        {status === "ok" && (lastAction === "edit" || lastAction === "analogs") && result && (
+        {status === "ok" && lastAction === "edit" && result && (
           <ResultPanel result={result} onApply={applyResultToCanvas} />
         )}
         {/* Optimized variants list — collapsed compact card per variant.
