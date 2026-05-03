@@ -139,7 +139,13 @@ def list_users(
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
-                -- :uid parameter because parameter binding auto-coerces.
+                -- user-id parameter because parameter binding auto-coerces.
+                -- (Don't put a literal colon-identifier token like
+                --  COLON+name in this comment; SQLAlchemy text() parses
+                --  that pattern as a bind parameter even inside SQL
+                --  comments and the query then needs a value supplied
+                --  — which crashed the admin panel with "A value is
+                --  required for bind parameter".)
                 (SELECT COUNT(*) FROM job j
                  WHERE j.user_id = u.id
                    AND j.status IN ('PENDING','RUNNING','COMPLETED')
