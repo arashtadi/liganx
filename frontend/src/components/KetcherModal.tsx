@@ -716,11 +716,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   }
 
   /** Push a history entry's SMILES back to the canvas. Same setMolecule
-   *  path as the main result panel's Apply button.
-   *  (The dockFreshForLive helper + runDockAndImprove combo function
-   *  are declared further down, after the dockResult/liveSmiles state
-   *  hooks they depend on — TypeScript's temporal-dead-zone check
-   *  prevents using a `const` before its declaration.) */
+   *  path as the main result panel's Apply button. */
   async function applyHistoryEntry(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) {
@@ -1035,104 +1031,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     navigate("/new", { state: { reseed } });
   }
 
-  /** Dock + Improve combo — used when the user has a target picked but
-   *  no fresh dock exists. Runs Quick dock first, then immediately
-   *  fires the AI with full docking context. Single click, ~13s total
-   *  (10s dock + 3s AI).
-   *
-   *  Why not just `await runQuickDock(); runEdit(text)`: setState is
-   *  async and dockResult won't update on the same tick. We need the
-   *  fresh score/hits/misses inline so the AI call can use them
-   *  without a state-update round-trip — hence the dock call is
-   *  inlined here instead of delegated. */
-  async function runDockAndImprove(text: string) {
-    if (!text.trim()) return;
-    if (!targetPdb) {
-      // Should never reach here — UI gates the combo on targetPdb — but
-      // defensive in case of stale render.
-      return runEdit(text);
-    }
-    const apiObj = getApi();
-    if (!apiObj?.getSmiles) {
-      setQuickDockError("Ketcher hasn't finished loading — wait a moment.");
-      setQuickDockStatus("error");
-      return;
-    }
-    let smi: string;
-    try {
-      const raw: string = await apiObj.getSmiles();
-      smi = (raw || "").trim();
-    } catch (e) {
-      setQuickDockError(`Couldn't read SMILES: ${(e as Error).message}`);
-      setQuickDockStatus("error");
-      return;
-    }
-    if (!smi) {
-      setQuickDockError("Draw a structure on the left first.");
-      setQuickDockStatus("error");
-      return;
-    }
-    setQuickDockStatus("running");
-    setQuickDockError(null);
-    try {
-      const dockR = await api.assistQuickDock({
-        smiles: smi,
-        target_pdb: targetPdb,
-        mutation: mutations,
-      });
-      if (!dockR.ok) {
-        setQuickDockStatus("error");
-        setQuickDockError(dockR.error || "Quick dock failed.");
-        return;
-      }
-      // Update state so the panel + mode pill reflect the new dock,
-      // then fire the AI with the same data inline. Decode the pose
-      // PDBQT here (server returns it base64-encoded) so the 3D viewer
-      // can mount the docked-pose mode immediately without a second
-      // round-trip.
-      const fresh = {
-        smiles: smi,
-        score: dockR.score ?? 0,
-        hits: dockR.hits ?? [],
-        misses: dockR.misses ?? [],
-        posePdbqt: dockR.pose_pdbqt_b64 ? safeAtob(dockR.pose_pdbqt_b64) : "",
-        pdbId: dockR.pdb_id,
-        chain: dockR.chain,
-      };
-      setDockResult(fresh);
-      setQuickDockStatus("done");
-      // Step 2: AI call with the fresh dock context.
-      setStatus("running");
-      setErrorMsg(null);
-      setResult(null);
-      setLastAction("edit");
-      try {
-        const r = await api.assistCompound({
-          smiles: smi,
-          instruction: text.trim(),
-          target_pdb: targetPdb,
-          mutations: mutations,
-          score: fresh.score,
-          hits: fresh.hits,
-          misses: fresh.misses,
-        });
-        setResult(r);
-        setStatus("ok");
-        addToHistory(text.trim(), r);
-      } catch (e) {
-        setStatus("error");
-        setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
-      }
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 403) {
-        setQuickDockGated(true);
-        setQuickDockStatus("idle");
-        return;
-      }
-      setQuickDockStatus("error");
-      setQuickDockError(e instanceof ApiError ? e.message : "Quick dock failed");
-    }
-  }
+  /** (runDockAndImprove — the single-click "dock then immediately
+   *  fire the AI with dock context" combo function — was removed
+   *  2026-05-02 along with its bottom-of-form button. Now that the
+   *  Quick Dock card has its own prominent CTA at the top, the combo
+   *  was a confusing duplicate. The two-step flow is: click Run Quick
+   *  dock → wait for the green docking-aware pill → Chat with AI.) */
 
   /** Quick dock the current canvas SMILES. Requires a target+mutation
    *  context (not available on standalone CompoundsPage). */
@@ -1715,7 +1619,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          placeholder="e.g. swap COOH for tetrazole"
+          placeholder="Type here…"
           className="w-full text-[11px] px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
         />
         <button
@@ -1728,35 +1632,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           }
           className="w-full text-[11px] font-semibold px-2 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
         >
-          {status === "running" && quickDockStatus !== "running"
-            ? "Sending…"
-            : dockFreshForLive
-              ? instruction.trim() ? "✨ Improve (docking-aware)" : "✨ Suggest improvement"
-              : instruction.trim() ? "✨ Improve" : "✨ Suggest improvement"}
+          {status === "running" && quickDockStatus !== "running" ? "Sending…" : "💬 Chat with AI"}
         </button>
-        {/* Dock + Improve combo — only when target picked but no fresh dock. */}
-        {targetPdb && !dockFreshForLive && !quickDockGated && (
-          <button
-            type="button"
-            onClick={() => {
-              const text = instruction.trim() ||
-                "Based on the docking results, suggest the highest-impact structural edit to improve binding.";
-              runDockAndImprove(text);
-              setInstruction("");
-            }}
-            disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-            className="w-full text-[10px] font-semibold px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Run Quick dock first, then ask the AI with the dock results in context (~13s total)"
-          >
-            {quickDockStatus === "running"
-              ? "🎯 Docking…"
-              : status === "running"
-                ? "✨ AI thinking…"
-                : instruction.trim()
-                  ? "🎯 Dock + Improve (grounded)"
-                  : "🎯 Dock + suggest improvement"}
-          </button>
-        )}
+        {/* (Dock + Improve combo button removed 2026-05-02 — was a
+            second "dock" CTA below the prominent Quick Dock card,
+            confusing because it duplicated that card's job. The two-step
+            flow — click Run Quick dock above, then Suggest improvement
+            here once the context pill flips to docking-aware — is one
+            extra click but the intent at each step is now obvious.) */}
       </form>
 
       {/* (Fullscreen 3D overlay block lived here. Removed 2026-05-02
