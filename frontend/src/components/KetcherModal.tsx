@@ -6,6 +6,20 @@ import { api, ApiError, type AIHistoryEntry } from "../api";
 // 3Dmol.js dependency (~600KB) only downloads when a user actually
 // clicks the "📐 3D" toggle. This matches StructureViewer's pattern.
 const Mol3DPreview = lazy(() => import("./Mol3DPreview"));
+// Lazy-load the docked-pose viewer too — shares the 3Dmol bundle with
+// Mol3DPreview so this is a code-split only, no extra payload.
+const DockedPoseViewer = lazy(() => import("./DockedPoseViewer"));
+
+/** Defensive atob — base64 decoding can throw on padding errors or
+ *  Unicode characters. Returns empty string on any failure so the
+ *  caller renders a graceful empty state instead of crashing. */
+function safeAtob(b64: string): string {
+  try {
+    return atob(b64);
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Ketcher 2D structure-editor modal — opens the self-hosted Ketcher
@@ -952,8 +966,26 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   const [quickDockError, setQuickDockError] = useState<string | null>(null);
   const [quickDockGated, setQuickDockGated] = useState(false);
   const [dockResult, setDockResult] = useState<{
-    smiles: string; score: number; hits: string[]; misses: string[];
+    smiles: string;
+    score: number;
+    hits: string[];
+    misses: string[];
+    /** PDBQT text of the docked ligand pose — base64-decoded server
+     *  output. Fed straight into 3Dmol.js's addModel(text, "pdbqt").
+     *  Empty when the dock pipeline produced no parseable pose. */
+    posePdbqt?: string;
+    /** Resolved RCSB PDB id (e.g. "4OBE") so the receptor can be
+     *  fetched via /structures for the docked-pose 3D viewer. */
+    pdbId?: string;
+    /** Resolved chain id (e.g. "A"). Same use as pdbId. */
+    chain?: string;
   } | null>(null);
+  // 3D column mode — "ligand" shows the gas-phase UFF conformer of just
+  // the molecule (the original v1), "pose" shows the receptor + docked
+  // ligand together so you can read distances. Auto-flips to "pose"
+  // when a fresh dockResult arrives. The user can toggle back to
+  // "ligand" at any time via the header switch.
+  const [view3DMode, setView3DMode] = useState<"ligand" | "pose">("ligand");
   const [optimizeStatus, setOptimizeStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [optimizedVariants, setOptimizedVariants] = useState<
@@ -1024,14 +1056,21 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         return;
       }
       // Update state so the panel + mode pill reflect the new dock,
-      // then fire the AI with the same data inline.
+      // then fire the AI with the same data inline. Decode the pose
+      // PDBQT here (server returns it base64-encoded) so the 3D viewer
+      // can mount the docked-pose mode immediately without a second
+      // round-trip.
       const fresh = {
         smiles: smi,
         score: dockR.score ?? 0,
         hits: dockR.hits ?? [],
         misses: dockR.misses ?? [],
+        posePdbqt: dockR.pose_pdbqt_b64 ? safeAtob(dockR.pose_pdbqt_b64) : "",
+        pdbId: dockR.pdb_id,
+        chain: dockR.chain,
       };
       setDockResult(fresh);
+      setView3DMode("pose");  // auto-flip to pose view on fresh dock
       setQuickDockStatus("done");
       // Step 2: AI call with the fresh dock context.
       setStatus("running");
@@ -1121,7 +1160,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         score: r.score ?? 0,
         hits: r.hits ?? [],
         misses: r.misses ?? [],
+        // Decode the base64 PDBQT pose and capture the resolved PDB id
+        // + chain so the 3D column can switch into docked-pose mode
+        // immediately without another round-trip.
+        posePdbqt: r.pose_pdbqt_b64 ? safeAtob(r.pose_pdbqt_b64) : "",
+        pdbId: r.pdb_id,
+        chain: r.chain,
       });
+      setView3DMode("pose");  // auto-flip to pose view on fresh dock
       setQuickDockStatus("done");
     } catch (e) {
       // 403 → feature is gated. Render the By-request CTA instead of
@@ -1332,8 +1378,46 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
 
         {/* ─── 3D COLUMN ─── */}
         <div className="w-1/4 flex flex-col overflow-hidden min-w-0">
-          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between">
-            <span>3D conformer · UFF</span>
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between gap-1">
+            {/* Mode switch — Ligand (gas-phase UFF) vs Pose (receptor +
+                docked ligand). Pose mode only enables when there's a
+                fresh dockResult with a usable pose; otherwise the button
+                is greyed out. The view auto-flips to Pose on a fresh
+                dock so the user sees the docked geometry without any
+                extra clicks. */}
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setView3DMode("ligand")}
+                className={
+                  "px-1.5 py-0.5 rounded transition-colors " +
+                  (view3DMode === "ligand"
+                    ? "bg-delta-600 text-white"
+                    : "text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800")
+                }
+                title="Show the gas-phase UFF conformer of just the ligand"
+              >
+                Ligand
+              </button>
+              <button
+                type="button"
+                onClick={() => setView3DMode("pose")}
+                disabled={!dockResult || !dockResult.pdbId || !dockResult.chain}
+                className={
+                  "px-1.5 py-0.5 rounded transition-colors " +
+                  (view3DMode === "pose"
+                    ? "bg-amber-600 text-white"
+                    : "text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent")
+                }
+                title={
+                  dockResult && dockResult.pdbId
+                    ? "Show receptor + docked ligand for distance measurements"
+                    : "Run Quick dock first to enable docked-pose view"
+                }
+              >
+                Pose
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setFullscreen3D((v) => !v)}
@@ -1350,11 +1434,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             </button>
           </div>
           <div className="flex-1 flex items-center justify-center p-2 min-h-0 overflow-hidden">
-            {/* Auto-load on first render — no gate button. The
-                fullscreen branch hides this inline viewer to avoid
-                mounting two 3Dmol instances that would compete for the
-                same WebGL context. */}
-            {!fullscreen3D && (
+            {/* Switch viewer based on view3DMode. The fullscreen branch
+                hides whichever inline viewer is mounted to avoid two
+                3Dmol instances competing for the same WebGL context —
+                fullscreen renders its OWN viewer in the overlay below. */}
+            {!fullscreen3D && view3DMode === "ligand" && (
               <Suspense
                 fallback={
                   <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
@@ -1363,6 +1447,23 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 }
               >
                 <Mol3DPreview smiles={liveSmiles} size={210} />
+              </Suspense>
+            )}
+            {!fullscreen3D && view3DMode === "pose" && dockResult?.pdbId && dockResult?.chain && (
+              <Suspense
+                fallback={
+                  <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
+                    <Spinner size={12} />
+                  </div>
+                }
+              >
+                <DockedPoseViewer
+                  pdbId={dockResult.pdbId}
+                  chain={dockResult.chain}
+                  variant="WT"
+                  posePdbqt={dockResult.posePdbqt || ""}
+                  size={200}
+                />
               </Suspense>
             )}
           </div>
@@ -1674,7 +1775,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       {fullscreen3D && show3D && (
         <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 flex flex-col">
           <div className="flex items-center justify-between px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
-            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">3D conformer · fullscreen</span>
+            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">
+              {view3DMode === "pose" && dockResult
+                ? `Docked pose · ${dockResult.pdbId}/${dockResult.chain} · ${dockResult.score.toFixed(2)} kcal/mol — fullscreen`
+                : "3D conformer · fullscreen"}
+            </span>
             <button
               type="button"
               onClick={() => setFullscreen3D(false)}
@@ -1689,7 +1794,17 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           </div>
           <div className="flex-1 flex items-center justify-center min-h-0 p-2">
             <Suspense fallback={<Spinner size={16} />}>
-              <Mol3DPreview smiles={liveSmiles} size={260} />
+              {view3DMode === "pose" && dockResult?.pdbId && dockResult?.chain ? (
+                <DockedPoseViewer
+                  pdbId={dockResult.pdbId}
+                  chain={dockResult.chain}
+                  variant="WT"
+                  posePdbqt={dockResult.posePdbqt || ""}
+                  size={420}
+                />
+              ) : (
+                <Mol3DPreview smiles={liveSmiles} size={300} />
+              )}
             </Suspense>
           </div>
         </div>

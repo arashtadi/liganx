@@ -38,6 +38,8 @@ class QuickDockResult(TypedDict, total=False):
     hits: list[str]              # residues within 4 Å of any ligand atom (e.g. ["A:LYS483", ...])
     misses: list[str]            # nearby residues (≤8 Å of pocket centroid) NOT in hits — "what we could be reaching"
     pose_pdbqt_b64: str          # base64-encoded pose PDBQT for optional 3D viewer rendering
+    pdb_id: str                  # resolved RCSB PDB id (e.g. "4OBE") — frontend uses this to fetch receptor for the pose viewer
+    chain: str                   # resolved chain id (e.g. "A") — same use as pdb_id
     error: str                   # human-readable error when ok=False
 
 
@@ -263,6 +265,13 @@ def quick_dock(
             hits=hits[:_MAX_HITS],
             misses=misses[:_MAX_MISSES],
             pose_pdbqt_b64=pose_b64,
+            # Surface the resolved RCSB PDB id + chain so the frontend
+            # can fetch the cleaned receptor for the docked-pose 3D
+            # viewer (the editor only knows the catalog id like 'kras',
+            # not the underlying '4OBE'). Both are already cached on
+            # the same Fly volume the receptor came from.
+            pdb_id=pdb_id,
+            chain=chain,
         )
 
 

@@ -626,6 +626,12 @@ export const api = {
       hits?: string[];
       misses?: string[];
       pose_pdbqt_b64?: string;
+      /** Resolved RCSB PDB id the dock actually used (e.g. "4OBE" when
+       *  the request asked for catalog id "kras"). Frontend uses this
+       *  to fetch the cleaned receptor for the docked-pose viewer. */
+      pdb_id?: string;
+      /** Resolved chain id (e.g. "A"). Same use as pdb_id. */
+      chain?: string;
       error?: string;
     }>("/assist/quick_dock", { method: "POST", body: JSON.stringify(payload) }),
   /** Optimize loop — given the score + contacts from a prior quick_dock,
