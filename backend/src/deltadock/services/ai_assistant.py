@@ -269,6 +269,82 @@ principle" instead — fabricated citations are worse than no citation.
 desolvation cost"."""
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Diagnose mode — the user's SMILES doesn't parse. Don't try to edit it
+# (the JSON contract requires a new_smiles, but RDKit-validation will
+# reject anything we generate from a broken parent). Instead route to a
+# pure-text diagnostic prompt that explains what's wrong in plain
+# language, then suggests how to fix it. Returns the original (broken)
+# SMILES + a richer rationale + applied=False so the editor doesn't
+# overwrite the canvas.
+# ──────────────────────────────────────────────────────────────────────
+_DIAGNOSE_SYSTEM_PROMPT = """You are a PhD-level medicinal chemist embedded in \
+the Liganx structure editor. The user has drawn a molecule whose SMILES does \
+NOT parse with RDKit. Your job is to explain what is wrong in plain language \
+that a working chemist (not necessarily a SMILES expert) can act on.
+
+# Output format (STRICT — return ONLY this JSON, no preamble, no markdown)
+{"new_smiles": "<original_smiles_unchanged>", "rationale": "<diagnosis + fix>", "warnings": []}
+
+# Rules
+1. ECHO THE ORIGINAL SMILES BACK in the new_smiles field unchanged. Do NOT \
+attempt to repair the structure — the user is in an interactive editor and \
+needs to fix it themselves so they understand the lesson.
+2. The `rationale` field must be 2–4 short sentences:
+   • What is structurally wrong (over-bonded atom, disconnected fragments, \
+     impossible valence, weird charges, broken ring closure, etc.)
+   • WHERE in the structure the problem is, in chemist terms (e.g. \
+     "the central carbon attached to two carbonyls and a methyl now has 5 \
+     bonds — carbon can only support 4").
+   • WHAT the user should do in the editor (e.g. "delete one of the C=O \
+     double bonds, or replace the central C with a phosphorus or sulfur \
+     if you intended a phosphate/sulfonate"; or "use the Eraser tool to \
+     remove the disconnected fragment in the lower right").
+3. If you can identify multiple problems, mention the WORST one first; the \
+user fixes things one at a time.
+4. If the SMILES has multiple disconnected fragments (contains a `.`), \
+that's almost always the problem — name it and tell them to keep only \
+the largest fragment or use the Keep Largest tool.
+5. Speak in friendly, professional tone. Not condescending. The user is a \
+chemist and just made a drawing slip.
+
+# Common errors and the fix-language to use
+- Over-bonded carbon (5+ bonds): "Carbon can only have 4 bonds. The atom at \
+{position} currently has {n} — remove a double bond or a substituent."
+- Over-bonded nitrogen with no charge: "This nitrogen has 4 bonds but no + \
+charge. Either add a + charge (ammonium) or remove a bond."
+- Disconnected fragments (`.` in the SMILES): "Your structure has two or \
+more disconnected pieces. Use the Eraser to delete the smaller one, or \
+'Keep largest fragment' from the menu."
+- Unclosed ring (mismatched ring-closure digit): "A ring-closure number \
+appears once but should appear twice. The ring around {position} isn't \
+closed — connect the two open ends."
+- Aromatic ring valence issue: "An aromatic atom in your ring doesn't have \
+the right number of bonds for aromaticity — try drawing the ring as \
+single/double bonds instead, or check that all ring atoms are sp2."
+- Empty SMILES / nothing on canvas: "The canvas appears empty — sketch a \
+structure first."
+"""
+
+
+def _build_diagnose_user_prompt(*, smiles: str, rdkit_error: str, instruction: str) -> str:
+    """Compose the diagnose-mode user message. The RDKit error is the
+    most important signal — it usually names the offending atom or
+    valence — so it gets surfaced verbatim. The user instruction (if any)
+    is included so a chemist who already knows what's wrong can ask a
+    targeted follow-up like 'why doesn't the eraser remove the salt?'"""
+    parts = [
+        f"SMILES (does not parse): {smiles!r}",
+        f"RDKit error message: {rdkit_error or '(no error text — likely empty or wholly invalid)'}",
+    ]
+    instr = (instruction or "").strip()
+    if instr:
+        parts.append(f"User question: {instr}")
+    else:
+        parts.append("User has not asked a specific question — give the most useful diagnosis + fix.")
+    return "\n".join(parts)
+
+
 def _build_user_prompt(
     *,
     smiles: str,
@@ -585,15 +661,39 @@ async def call_anthropic(
     the system prompt receives a contact-data block and biases its edits
     toward residues the compound is missing. The router only forwards
     these when the dock data is fresh (its smiles matches the current
-    canvas SMILES); stale dock data isn't passed through."""
-    user_prompt = _build_user_prompt(
-        smiles=smiles, instruction=instruction,
-        target_pdb=target_pdb, mutations=mutations,
-        score=score, hits=hits, misses=misses,
-    )
+    canvas SMILES); stale dock data isn't passed through.
+
+    DIAGNOSE MODE — if the input SMILES doesn't parse with RDKit, we
+    switch to a diagnostic prompt that explains what's wrong and how
+    to fix it (instead of trying to edit a structure we can't even
+    parse). Returns the original SMILES + a chemist-friendly rationale
+    + applied=False so the editor doesn't overwrite the canvas. This
+    is what makes the chat box useful even when the validity pill is
+    red — chemists can ask "what's broken?" and get a real answer."""
+    # Pre-flight RDKit validation. If the input is broken, route to the
+    # diagnose prompt instead of the edit prompt.
+    from .properties import validate_smiles
+    parent_valid, _, parent_err = validate_smiles(smiles)
+    diagnose_mode = not parent_valid
+
+    if diagnose_mode:
+        user_prompt = _build_diagnose_user_prompt(
+            smiles=smiles, rdkit_error=parent_err or "", instruction=instruction,
+        )
+        # Diagnose prompt is short (no skill content) — the medchem
+        # skill is for design/edit reasoning, not SMILES syntax debugging.
+        # Skipping it also makes diagnose responses faster and cheaper.
+        system_prompt = _DIAGNOSE_SYSTEM_PROMPT
+    else:
+        user_prompt = _build_user_prompt(
+            smiles=smiles, instruction=instruction,
+            target_pdb=target_pdb, mutations=mutations,
+            score=score, hits=hits, misses=misses,
+        )
+        system_prompt = _augment_with_skill(_SYSTEM_PROMPT)
 
     headers, payload, timeout = _build_request(
-        system_prompt=_augment_with_skill(_SYSTEM_PROMPT),
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
 
@@ -657,14 +757,23 @@ async def call_anthropic(
     # produced an unparseable string we keep its rationale (might still
     # be informative) but flag applied=False so the frontend doesn't
     # push the broken SMILES into Ketcher.
+    #
+    # In DIAGNOSE MODE the rationale IS the deliverable and the SMILES
+    # is supposed to come back unchanged-and-broken. Don't add the
+    # "AI's suggested structure didn't parse" warning — it would
+    # misleadingly blame the AI for the user's drawing slip.
     from .properties import validate_smiles
     valid, canonical, err = validate_smiles(new_smi_raw)
     if not valid:
-        log.info("AI-suggested SMILES failed RDKit validation: %s (raw=%r)", err, new_smi_raw)
+        if not diagnose_mode:
+            log.info("AI-suggested SMILES failed RDKit validation: %s (raw=%r)", err, new_smi_raw)
         return AssistResponse(
             new_smiles=smiles,
             rationale=rationale or "AI returned an invalid SMILES.",
-            warnings=[*warnings, f"AI's suggested structure didn't parse: {err}. Keeping the original."],
+            warnings=warnings if diagnose_mode else [
+                *warnings,
+                f"AI's suggested structure didn't parse: {err}. Keeping the original.",
+            ],
             applied=False,
             raw_model_output=raw_text,
         )

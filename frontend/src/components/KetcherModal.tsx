@@ -1702,10 +1702,21 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0 bg-white dark:bg-slate-900"
         onSubmit={(e) => {
           e.preventDefault();
+          // Default-instruction selection by mode:
+          //   invalid SMILES  → ask for a diagnosis
+          //   fresh dock data → improve based on contacts
+          //   otherwise       → open-ended improve
+          // The backend auto-detects invalid SMILES and routes to its
+          // diagnose prompt, so this default just gives the AI something
+          // to work with when the user hits Send without typing.
           const text = instruction.trim() || (
-            dockFreshForLive
-              ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
-              : "Suggest the most meaningful medchem improvement to this compound."
+            liveValidity === "invalid"
+              ? "What's wrong with this structure and how do I fix it in the editor?"
+              : liveValidity === "fragments"
+              ? "My structure has multiple disconnected fragments — explain why and tell me which one to keep."
+              : dockFreshForLive
+                ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
+                : "Suggest the most meaningful medchem improvement to this compound."
           );
           runEdit(text);
           setInstruction("");
@@ -1738,27 +1749,54 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 : "Structure only"}
           </span>
         </div>
+        {/* Chat input + send. UN-gated on liveValidity === "invalid" —
+            the backend auto-detects an unparseable SMILES and switches
+            to DIAGNOSE MODE, which explains what's wrong instead of
+            trying to edit. So the chat is actually MORE valuable when
+            the structure is broken: the user can ask "what's wrong
+            with this?" and get a chemist-friendly diagnosis. The
+            placeholder + button label morph to advertise that. */}
         <input
           type="text"
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || liveValidity === "invalid"}
-          placeholder={liveValidity === "invalid" ? "Fix the SMILES first…" : "Type here…"}
-          className="w-full text-[11px] px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+          placeholder={
+            liveValidity === "invalid"
+              ? "Ask what's wrong with the structure…"
+              : liveValidity === "fragments"
+              ? "Ask why the structure is split…"
+              : "Type here…"
+          }
+          className={
+            "w-full text-[11px] px-2 py-1.5 rounded-md border bg-white dark:bg-slate-900 placeholder-slate-400 focus:ring-1 outline-none disabled:opacity-60 disabled:cursor-not-allowed " +
+            (liveValidity === "invalid"
+              ? "border-rose-300 dark:border-rose-700/50 focus:border-rose-500 focus:ring-rose-500"
+              : "border-slate-300 dark:border-slate-700 focus:border-delta-500 focus:ring-delta-500")
+          }
         />
         <button
           type="submit"
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || liveValidity === "invalid"}
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
           title={
             liveValidity === "invalid"
-              ? "Fix the SMILES first — RDKit can't parse the current structure"
+              ? "Ask the AI what's wrong with the structure and how to fix it."
               : instruction.trim()
               ? "Send your instruction to the AI."
               : "Click without typing for an open-ended improvement; or type a specific edit."
           }
-          className="w-full text-[11px] font-semibold px-2 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
+          className={
+            "w-full text-[11px] font-semibold px-2 py-1.5 rounded-md disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors " +
+            (liveValidity === "invalid"
+              ? "bg-rose-600 hover:bg-rose-700"
+              : "bg-delta-600 hover:bg-delta-700")
+          }
         >
-          {status === "running" && quickDockStatus !== "running" ? "Sending…" : "💬 Chat with Liganx AI"}
+          {status === "running" && quickDockStatus !== "running"
+            ? "Sending…"
+            : liveValidity === "invalid"
+            ? "🩺 Diagnose with Liganx AI"
+            : "💬 Chat with Liganx AI"}
         </button>
         {/* (Dock + Improve combo button removed 2026-05-02 — was a
             second "dock" CTA below the prominent Quick Dock card,
