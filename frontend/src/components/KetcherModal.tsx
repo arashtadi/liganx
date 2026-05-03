@@ -1277,30 +1277,43 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           MW/logP/score without clicking anything. Bottom half is the
           AI chat — the dominant action. Each stat card is clickable:
           3D card → fullscreen viewer; Dock card → fullscreen pose. */}
-      <div className="px-3 py-1 border-b border-slate-200 dark:border-slate-700 flex items-center gap-1.5 text-[11px] bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400" aria-hidden="true">
+      {/* Row 1 — title only. Single line, never wraps. The pocket-aware
+          context moved to a smaller line below the status pills so the
+          title stays clean and the pills get the visual weight they
+          deserve as the headline features. */}
+      <div className="px-3 pt-2 pb-1 border-b border-slate-200/60 dark:border-slate-700/60 flex items-center gap-1.5 text-[11px] bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400 shrink-0" aria-hidden="true">
           <path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M3 13l2-2M11 5l2-2" />
         </svg>
-        <span className="font-semibold text-slate-700 dark:text-slate-200 text-[12px]">Liganx AI</span>
-        <span className="text-[9px] uppercase tracking-wide text-slate-400">beta</span>
-        {/* SMILES validity dot — green/yellow/red traffic light fed by
-            useSmilesValidity (which hits /lookup/inspect-smiles, cached).
-            Quick-dock + Chat buttons below are also gated on this so a
-            broken SMILES can't burn a Pod call or confuse the LLM with
-            an unparseable input. */}
-        <ValidityDot validity={liveValidity} />
+        <span className="font-semibold text-slate-700 dark:text-slate-200 text-[13px] whitespace-nowrap">Liganx AI</span>
+        <span className="text-[9px] uppercase tracking-wide text-slate-400 whitespace-nowrap">beta</span>
         {targetPdb && (
-          <span className="text-[11px] text-slate-500 dark:text-slate-400">
-            · Pocket-aware for <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
+          <span className="ml-auto text-[10px] text-slate-500 dark:text-slate-400 truncate" title={`Pocket-aware for ${targetPdb}${mutations ? " · " + mutations : ""}`}>
+            <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
             {mutations && <> · {mutations}</>}
           </span>
         )}
-        {mutationHint && (
-          <span className="ml-auto px-2 py-0.5 rounded bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 text-[10px] text-delta-900 dark:text-delta-100 truncate max-w-[600px]" title={mutationHint}>
-            <span className="font-semibold">Hint:</span> {mutationHint}
-          </span>
+      </div>
+
+      {/* Row 2 — STATUS PILLS. Big, prominent, color-coded so the
+          chemist can read structural validity AND make-ability at a
+          glance. These are the headline features of the editor — the
+          old single-dot treatment buried them in a noisy header. */}
+      <div className="px-3 py-1.5 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 flex-wrap text-[11px] shrink-0">
+        <ValidityPill validity={liveValidity} />
+        {liveSa && <SaPill score={liveSa.score} label={liveSa.label} />}
+        {!liveSa && liveValidity === "valid" && (
+          <span className="text-[10px] text-slate-400 dark:text-slate-500 italic">SA loading…</span>
         )}
       </div>
+
+      {mutationHint && (
+        <div className="px-3 py-1 border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <span className="block px-2 py-0.5 rounded bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 text-[10px] text-delta-900 dark:text-delta-100 truncate" title={mutationHint}>
+            <span className="font-semibold">Pocket hint:</span> {mutationHint}
+          </span>
+        </div>
+      )}
 
       {/* ── Properties strip ───────────────────────────────────────────
           Full-width chip row matching JobPage's "MW 180 / LogP 1.3 / QED
@@ -1878,43 +1891,105 @@ function Pill({ ok, okLabel, badLabel }: { ok: boolean | undefined; okLabel: str
  *  the dot when they're confused why a Dock button is greyed out — the
  *  green tooltip is the confirmation they need that the SMILES is OK
  *  and the disable is for some other reason (no target, etc.). */
-function ValidityDot({ validity }: { validity: SmilesValidity }) {
-  // Empty canvas = no signal to display. Suppress entirely instead of
-  // showing a grey dot so the header stays clean before the user draws.
-  if (validity === "empty") return null;
-  const palette: Record<SmilesValidity, { dot: string; label: string; tip: string }> = {
-    empty: { dot: "", label: "", tip: "" },
+/** Big, prominent SMILES-validity pill for the rail's status row.
+ *  Replaces the earlier tiny ValidityDot — the dot was getting lost
+ *  in header noise; chemists need to read this at a glance. Full
+ *  bordered pill with bg color + icon + label, sized to the same
+ *  visual weight as the SA pill next to it. */
+function ValidityPill({ validity }: { validity: SmilesValidity }) {
+  // Empty canvas → render a neutral "Sketch a molecule" placeholder
+  // pill so the row is never empty. The placeholder doubles as a
+  // discoverability nudge for first-time users.
+  if (validity === "empty") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 text-[11px] text-slate-500 dark:text-slate-400 italic">
+        <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+        Sketch a molecule
+      </span>
+    );
+  }
+  const palette: Record<Exclude<SmilesValidity, "empty">, {
+    bg: string; dot: string; label: string; icon: string; tip: string;
+  }> = {
     loading: {
+      bg: "border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300",
       dot: "bg-slate-300 dark:bg-slate-600 animate-pulse",
-      label: "Checking",
-      tip: "Validating the SMILES…",
+      label: "Checking…",
+      icon: "·",
+      tip: "Validating the SMILES with RDKit…",
     },
     valid: {
+      bg: "border-emerald-300 dark:border-emerald-700/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200",
       dot: "bg-emerald-500 dark:bg-emerald-400",
-      label: "Valid",
+      label: "Valid SMILES",
+      icon: "✓",
       tip: "RDKit parsed the structure cleanly. Safe to dock or save.",
     },
     fragments: {
+      bg: "border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200",
       dot: "bg-amber-400 dark:bg-amber-300",
-      label: "Fragments",
-      tip: "Multiple disconnected fragments — split before docking, or pick the largest.",
+      label: "Fragments — split first",
+      icon: "⚠",
+      tip: "Multiple disconnected fragments detected (e.g. salt form). Pick the largest fragment before docking.",
     },
     invalid: {
+      bg: "border-rose-300 dark:border-rose-700/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-200",
       dot: "bg-rose-500 dark:bg-rose-400",
-      label: "Invalid",
-      tip: "RDKit can't parse this structure. Fix it before docking or saving.",
+      label: "Invalid SMILES",
+      icon: "✗",
+      tip: "RDKit can't parse this structure. Fix the canvas before docking or saving — every action is gated on this.",
     },
   };
   const p = palette[validity];
   return (
     <span
-      className="ml-1 inline-flex items-center gap-1 cursor-help"
+      className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-semibold cursor-help " + p.bg}
       title={p.tip}
     >
-      <span className={`inline-block w-2 h-2 rounded-full ${p.dot}`} aria-hidden="true" />
-      <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {p.label}
-      </span>
+      <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} aria-hidden="true" />
+      <span>{p.label}</span>
+    </span>
+  );
+}
+
+/** Big SA Score pill for the rail's status row — same visual weight
+ *  as ValidityPill so the two read as a unified status block. The
+ *  smaller SaChip lives in the Properties strip for a denser glance,
+ *  but THIS is the headline placement chemists land on first. */
+function SaPill({ score, label }: { score: number; label: string }) {
+  const bucket: "easy" | "moderate" | "hard" =
+    score <= 4 ? "easy" : score <= 6 ? "moderate" : "hard";
+  const styles = {
+    easy: {
+      bg: "border-emerald-300 dark:border-emerald-700/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200",
+      dot: "bg-emerald-500 dark:bg-emerald-400",
+    },
+    moderate: {
+      bg: "border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200",
+      dot: "bg-amber-400 dark:bg-amber-300",
+    },
+    hard: {
+      bg: "border-rose-300 dark:border-rose-700/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-200",
+      dot: "bg-rose-500 dark:bg-rose-400",
+    },
+  }[bucket];
+  const tip = (() => {
+    const head = `Synthetic Accessibility: ${score.toFixed(1)} / 10 (${label}).`;
+    const body =
+      bucket === "easy"
+        ? "Any contract-synthesis lab can make this off-the-shelf."
+        : bucket === "moderate"
+        ? "Routine for a medchem lab — a few weeks, modest cost."
+        : "Hard — likely needs a custom route, new chemistry, or a CRO with specialist capability.";
+    return `${head} ${body}`;
+  })();
+  return (
+    <span
+      className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-semibold cursor-help " + styles.bg}
+      title={tip}
+    >
+      <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${styles.dot}`} aria-hidden="true" />
+      <span>SA {score.toFixed(1)} · {label.toUpperCase()}</span>
     </span>
   );
 }
