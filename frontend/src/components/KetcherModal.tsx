@@ -1,14 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { api, ApiError, type AIHistoryEntry } from "../api";
 
-// Lazy-load the 3D preview so the modal's main bundle stays small. The
-// 3Dmol.js dependency (~600KB) only downloads when a user actually
-// clicks the "📐 3D" toggle. This matches StructureViewer's pattern.
-const Mol3DPreview = lazy(() => import("./Mol3DPreview"));
-// Lazy-load the docked-pose viewer too — shares the 3Dmol bundle with
-// Mol3DPreview so this is a code-split only, no extra payload.
-const DockedPoseViewer = lazy(() => import("./DockedPoseViewer"));
+// 3D viewers (Mol3DPreview, DockedPoseViewer) used to live in this
+// modal as an inline thumbnail + fullscreen overlay. Removed 2026-05-02
+// because (a) JobPage's full 3D viewer is much richer (cartoon/surface,
+// pose styles, ProLIF coloring, measure mode at usable size) so the
+// 138px modal thumb was always inferior, (b) the Quick-dock drafty
+// repositioning made the iterate-loop fundamentally non-visual (chemists
+// iterate on score deltas, not pose inspection at this scale), and
+// (c) dropping them frees ~600KB of 3Dmol.js from the modal-open path.
+// Users who want to inspect a pose visually now do that on JobPage
+// after Promote-to-Full-Job.
 
 /** Defensive atob — base64 decoding can throw on padding errors or
  *  Unicode characters. Returns empty string on any failure so the
@@ -363,6 +367,8 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
             mutations={mutations}
             compoundId={compoundId}
             initialAIHistory={initialAIHistory}
+            onAccept={onAccept}
+            onClose={onClose}
           />
         </div>
 
@@ -461,6 +467,11 @@ interface AiSidebarProps {
   /** Hydrate the history list with this compound's prior AI conversation
    *  on mount. Mutations after mount are tracked by local state. */
   initialAIHistory?: AIHistoryEntry[];
+  /** Threaded down so the Promote-to-Full-Job button on the drafty
+   *  Quick-dock card can apply the current SMILES to the parent's
+   *  compound list and close the modal before navigating to /new. */
+  onAccept: (smiles: string, unchanged: boolean) => void;
+  onClose: () => void;
 }
 
 // Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
@@ -609,7 +620,7 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose }: AiSidebarProps) {
   const [instruction, setInstruction] = useState("");
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -734,34 +745,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // object. Updated by the same 2.5s polling loop that feeds liveProps,
   // so we don't add a second timer to the modal.
   const [liveSmiles, setLiveSmiles] = useState<string>("");
-  // 3D preview toggle. Defaults to TRUE — the viewer auto-loads when
-  // the modal opens (Option D dashboard layout puts the 3D column right
-  // there alongside Properties / Dock / Chat, so a manual "Load 3D"
-  // step would just be friction). The 3Dmol.js bundle (~600KB) lazy-
-  // imports on first render; that cost is one-time per browser session
-  // because Vite's chunk hashing keeps the module cached.
-  const [show3D] = useState<boolean>(true);
-
-  // ── Bottom dashboard layout state ───────────────────────────────────
-  // Option D (Maestro-style): Ketcher fills the modal width on top, AI
-  // panels live in 4 columns underneath. No tabs — Properties, 3D,
-  // Dock, and Chat are all visible at once. The user opts in to 3D by
-  // clicking "Load 3D viewer" in the 3D column (one-time ~600KB cost).
-  // (An earlier tabbed-sidebar iteration had `activeTab` state here;
-  // removed because the dashboard shows everything at once.)
-  // Fullscreen mode for the 3D viewer — lifts the viewer out of its
-  // ~210×210 cell to overlay the entire dashboard. Off by default;
-  // ESC + the ⤢ icon toggle it.
-  const [fullscreen3D, setFullscreen3D] = useState<boolean>(false);
-  // ESC closes fullscreen 3D.
-  useEffect(() => {
-    if (!fullscreen3D) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFullscreen3D(false);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [fullscreen3D]);
+  // (3D viewer state — view3DMode, fullscreen3D, show3D, plus the ESC
+  // handler that toggled it — was removed 2026-05-02 along with the
+  // inline thumbnail and fullscreen overlay. See the import-block note.)
+  const navigate = useNavigate();
 
   // Auto-scroll the sidebar to the ResultPanel when a fresh AI suggestion
   // lands. Without this the most-recent suggestion frequently lands below
@@ -980,12 +967,8 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     /** Resolved chain id (e.g. "A"). Same use as pdbId. */
     chain?: string;
   } | null>(null);
-  // 3D column mode — "ligand" shows the gas-phase UFF conformer of just
-  // the molecule (the original v1), "pose" shows the receptor + docked
-  // ligand together so you can read distances. Auto-flips to "pose"
-  // when a fresh dockResult arrives. The user can toggle back to
-  // "ligand" at any time via the header switch.
-  const [view3DMode, setView3DMode] = useState<"ligand" | "pose">("ligand");
+  // (3D column mode state — ligand vs pose — was removed with the
+  // inline 3D viewers on 2026-05-02.)
   const [optimizeStatus, setOptimizeStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [optimizedVariants, setOptimizedVariants] = useState<
@@ -1004,6 +987,53 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   const dockFreshForLive = !!(
     dockResult && liveSmiles && dockResult.smiles === liveSmiles
   );
+
+  /** Promote-to-Full-Job — converts the current "drafty" Quick-dock
+   *  iteration into a real submitted docking job with the full
+   *  validation pipeline (PoseBusters, ProLIF, Vinardo refined score,
+   *  R2 pose storage, shareable UUID URL, engine choice).
+   *
+   *  Reads the live SMILES from Ketcher, applies it to the parent's
+   *  compound list via onAccept (so when the user lands on /new the
+   *  compound is already there), closes the modal, then navigates to
+   *  /new with reseed state so the form pre-selects the same target +
+   *  mutation. The user picks engine/exhaustiveness/name and clicks
+   *  Run docking from there.
+   *
+   *  When Quick dock has been run we use the resolved PDB id from the
+   *  dockResult; otherwise we fall back to whatever the parent passed
+   *  in `targetPdb` (which may be a catalog id like "kras" — handled
+   *  by the new `catalog_target_id` reseed field on NewJobPage). */
+  async function promoteToFullJob() {
+    const apiObj = getApi();
+    if (!apiObj?.getSmiles) return;
+    let smi: string;
+    try {
+      smi = (await apiObj.getSmiles() || "").trim();
+    } catch {
+      return;
+    }
+    if (!smi) return;
+    // Apply to parent's compound list (idempotent — parent dedupes).
+    onAccept(smi, false);
+    onClose();
+    // Reseed payload: pass the resolved PDB id when we have it (post-
+    // Quick-dock), else fall back to catalog_target_id so the
+    // NewJobPage reseed handler can map it back to a catalog target.
+    const reseed: Record<string, unknown> = {
+      compounds: [{ name: "", smiles: smi }],
+    };
+    if (dockResult?.pdbId) {
+      reseed.pdb_id = dockResult.pdbId;
+      if (dockResult.chain) reseed.chain = dockResult.chain;
+    } else if (targetPdb) {
+      reseed.catalog_target_id = targetPdb;
+    }
+    if (mutations) {
+      reseed.mutations = mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    navigate("/new", { state: { reseed } });
+  }
 
   /** Dock + Improve combo — used when the user has a target picked but
    *  no fresh dock exists. Runs Quick dock first, then immediately
@@ -1070,7 +1100,6 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         chain: dockR.chain,
       };
       setDockResult(fresh);
-      setView3DMode("pose");  // auto-flip to pose view on fresh dock
       setQuickDockStatus("done");
       // Step 2: AI call with the fresh dock context.
       setStatus("running");
@@ -1167,7 +1196,6 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         pdbId: r.pdb_id,
         chain: r.chain,
       });
-      setView3DMode("pose");  // auto-flip to pose view on fresh dock
       setQuickDockStatus("done");
     } catch (e) {
       // 403 → feature is gated. Render the By-request CTA instead of
@@ -1306,156 +1334,62 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </div>
 
-      {/* ── Stat cards row ─────────────────────────────────────────────
-          Two stat cards side by side at the top of the rail. Properties
-          card on the left (flexible width), 3D thumbnail on the right
-          (fixed 138px). Both clickable to drill into a richer view —
-          the 3D card click toggles fullscreen overlay; the Properties
-          card has a "Predict full panel" button at the bottom that
-          replaces its body with the full RDKit panel inline. */}
-      <div className="px-2 pt-2 pb-1.5 flex gap-2 shrink-0">
-        {/* Properties card — flex-1 so it absorbs any extra width */}
-        <div className="flex-1 min-w-0 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30 px-2 py-1.5 flex flex-col gap-1">
-          <div className="flex items-center justify-between text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            <span>Properties</span>
-            <button
-              type="button"
-              disabled={!ketcherReady || status === "running"}
-              onClick={runProperties}
-              className="text-[9px] text-delta-700 dark:text-delta-300 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:no-underline"
-              title="Compute the full RDKit property panel (HBA/HBD, rotatable bonds, Veber, PAINS detail)"
-            >
-              {status === "running" && lastAction === "props" ? "Computing…" : "Predict full →"}
-            </button>
-          </div>
-          {liveProps && liveProps.valid ? (
-            <>
-              <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[10px] text-slate-700 dark:text-slate-200">
-                <LivePropPair label="MW" value={liveProps.mw} />
-                <LivePropPair label="logP" value={liveProps.logp} />
-                <LivePropPair label="QED" value={liveProps.qed} />
-                <LivePropPair label="TPSA" value={liveProps.tpsa} />
-              </div>
-              <div className="flex items-center gap-2 flex-wrap text-[9px]">
-                {liveProps.lipinski_pass !== undefined && (
-                  <span
-                    className={
-                      liveProps.lipinski_pass
-                        ? "text-emerald-700 dark:text-emerald-300"
-                        : "text-rose-700 dark:text-rose-300"
-                    }
-                    title="Lipinski rule of 5"
-                  >
-                    {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
-                  </span>
-                )}
-                {(liveProps.pains_hits?.length ?? 0) > 0 && (
-                  <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
-                    PAINS {liveProps.pains_hits!.length}
-                  </span>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="text-slate-400 dark:text-slate-500 text-[10px] leading-tight">
-              Sketch to see MW · logP · QED · Lipinski.
-            </div>
-          )}
-          {status === "error" && errorMsg && lastAction === "props" && (
-            <div className="text-[9px] text-rose-700 dark:text-rose-300">{errorMsg}</div>
-          )}
-        </div>
-
-        {/* 3D thumbnail card — fixed 138px so it always fits the rail.
-            Click anywhere on the thumb to fullscreen it. The mode toggle
-            (Ligand vs Pose) sits below the thumb so the user can switch
-            without leaving the rail. */}
-        <div className="w-[138px] shrink-0 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30 px-1.5 pt-1.5 pb-1 flex flex-col gap-1">
-          <div className="flex items-center justify-between text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            <span>3D</span>
-            <button
-              type="button"
-              onClick={() => setFullscreen3D(true)}
-              title="Fullscreen 3D viewer"
-              className="text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 p-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M3 8V5a2 2 0 0 1 2-2h3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3"/>
-              </svg>
-            </button>
-          </div>
+      {/* ── Properties strip ───────────────────────────────────────────
+          Full-width chip row matching JobPage's "MW 180 / LogP 1.3 / QED
+          0.55 / Ro5 ✓" idiom. Slim — properties are a sanity-check
+          glance, not the headline content. Tap "Predict full" for the
+          PropertiesPanel inline below. (3D thumbnail card removed
+          2026-05-02 — JobPage's full viewer is much richer.) */}
+      <div className="px-3 pt-2 pb-1.5 shrink-0">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Properties</span>
           <button
             type="button"
-            onClick={() => setFullscreen3D(true)}
-            className="block w-full p-0 m-0 rounded overflow-hidden cursor-pointer border-0 bg-transparent"
-            title="Click to view in fullscreen"
+            disabled={!ketcherReady || status === "running"}
+            onClick={runProperties}
+            className="text-[10px] text-delta-700 dark:text-delta-300 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:no-underline"
+            title="Compute the full RDKit property panel (HBA/HBD, rotatable bonds, Veber, PAINS detail)"
           >
-            {!fullscreen3D && view3DMode === "ligand" && (
-              <Suspense
-                fallback={
-                  <div className="w-[124px] h-[110px] rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
-                    <Spinner size={11} />
-                  </div>
-                }
-              >
-                <Mol3DPreview smiles={liveSmiles} size={124} />
-              </Suspense>
-            )}
-            {!fullscreen3D && view3DMode === "pose" && dockResult?.pdbId && dockResult?.chain && (
-              <Suspense
-                fallback={
-                  <div className="w-[124px] h-[110px] rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
-                    <Spinner size={11} />
-                  </div>
-                }
-              >
-                <DockedPoseViewer
-                  pdbId={dockResult.pdbId}
-                  chain={dockResult.chain}
-                  variant="WT"
-                  posePdbqt={dockResult.posePdbqt || ""}
-                  size={124}
-                />
-              </Suspense>
-            )}
+            {status === "running" && lastAction === "props" ? "Computing…" : "Predict full →"}
           </button>
-          {/* Mode toggle — Ligand (gas-phase) vs Pose (receptor + docked
-              ligand). Pose disabled until there's a fresh dock with a
-              pdbId/chain. The view auto-flips to Pose on a fresh dock. */}
-          <div className="flex items-center gap-0.5 text-[9px]">
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setView3DMode("ligand"); }}
-              className={
-                "flex-1 px-1 py-0.5 rounded transition-colors " +
-                (view3DMode === "ligand"
-                  ? "bg-delta-600 text-white"
-                  : "text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800")
-              }
-              title="Show the gas-phase UFF conformer of just the ligand"
-            >
-              Ligand
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setView3DMode("pose"); }}
-              disabled={!dockResult || !dockResult.pdbId || !dockResult.chain}
-              className={
-                "flex-1 px-1 py-0.5 rounded transition-colors " +
-                (view3DMode === "pose"
-                  ? "bg-amber-600 text-white"
-                  : "text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent")
-              }
-              title={
-                dockResult && dockResult.pdbId
-                  ? "Show receptor + docked ligand for distance measurements"
-                  : "Run Quick dock first to enable docked-pose view"
-              }
-            >
-              Pose
-            </button>
-          </div>
         </div>
+        {liveProps && liveProps.valid ? (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {/* JobPage-idiom pill chips: each property gets its own
+                bordered chip with label + value inline. Matches the
+                "MW 180 / LogP 1.3 / QED 0.55 / Ro5 ✓" pattern from the
+                results page so the editor feels like the same product. */}
+            <PropChip label="MW" value={liveProps.mw} />
+            <PropChip label="logP" value={liveProps.logp} />
+            <PropChip label="QED" value={liveProps.qed} />
+            <PropChip label="TPSA" value={liveProps.tpsa} />
+            {liveProps.lipinski_pass !== undefined && (
+              <span
+                className={
+                  "px-2 py-0.5 rounded-md border text-[11px] font-medium " +
+                  (liveProps.lipinski_pass
+                    ? "border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300"
+                    : "border-rose-300 dark:border-rose-800/40 bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300")
+                }
+                title="Lipinski rule of 5"
+              >
+                Ro5 {liveProps.lipinski_pass ? "✓" : "✗"}
+              </span>
+            )}
+            {(liveProps.pains_hits?.length ?? 0) > 0 && (
+              <span className="px-2 py-0.5 rounded-md border border-amber-300 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 text-[11px] font-medium text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
+                PAINS {liveProps.pains_hits!.length}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-tight">
+            Sketch above to see MW · logP · QED · Lipinski.
+          </div>
+        )}
+        {status === "error" && errorMsg && lastAction === "props" && (
+          <div className="text-[11px] text-rose-700 dark:text-rose-300 mt-1">{errorMsg}</div>
+        )}
       </div>
 
       {/* ── Quick dock score card ──────────────────────────────────────
@@ -1465,65 +1399,75 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           scroll area; this card stays small to keep the chat above the
           fold. */}
       {targetPdb && (
-        <div className="mx-2 mb-1.5 rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50/60 dark:bg-amber-900/15 px-2 py-1.5 shrink-0 space-y-1.5">
-          <div className="flex items-center justify-between gap-1 text-[9px] uppercase tracking-wide text-amber-800 dark:text-amber-200">
-            <span>Quick dock <span className="font-mono normal-case text-amber-700 dark:text-amber-300">· {targetPdb}</span></span>
-            {dockResult && (
-              <button
-                type="button"
-                onClick={() => { setView3DMode("pose"); setFullscreen3D(true); }}
-                className="text-amber-700 dark:text-amber-300 hover:underline normal-case"
-                title="Open the docked pose in the fullscreen 3D viewer"
-              >
-                View pose →
-              </button>
-            )}
+        <div
+          className="mx-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/20 px-3 py-2.5 shrink-0 space-y-2"
+          title="Quick dock is a draft estimate — fast Vina re-dock for iteration. For a publishable result with PoseBusters validation, ProLIF interactions, and a shareable URL, click Promote to Full Job."
+        >
+          {/* Drafty header — tiny "DRAFT" tag is the key visual cue.
+              Dashed border + neutral slate (vs solid amber) makes the
+              card feel like a sketch rather than a published result. */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">Quick dock</span>
+              <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">Draft</span>
+              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">· {targetPdb}</span>
+            </div>
           </div>
           {quickDockGated ? (
             <>
-              <div className="text-[10px] text-amber-900 dark:text-amber-200 leading-tight">
-                Real Vina on our GPU pod. Enabled per account.
+              <div className="text-[11px] text-slate-600 dark:text-slate-300 leading-tight italic">
+                Real Vina on our GPU pod — enabled per account. Use it to iterate fast before committing to a full validated job.
               </div>
               <button
                 type="button"
                 onClick={requestQuickDockAccess}
-                className="w-full text-[10px] font-semibold px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white transition-colors"
+                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white transition-colors"
               >
                 Contact us →
               </button>
             </>
           ) : quickDockStatus === "running" ? (
-            <div className="flex items-center gap-2 text-[10px] text-amber-900 dark:text-amber-200">
-              <Spinner size={11} /> Docking on GPU pod…
+            <div className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 italic">
+              <Spinner size={12} /> Docking on GPU pod…
             </div>
           ) : quickDockStatus === "error" && quickDockError ? (
             <>
-              <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-tight">{quickDockError}</div>
+              <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-tight">{quickDockError}</div>
               <button
                 type="button"
                 disabled={!ketcherReady}
                 onClick={runQuickDock}
-                className="w-full text-[10px] font-semibold px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 🎯 Retry
               </button>
             </>
           ) : dockResult ? (
             <>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[14px] font-bold text-ink dark:text-slate-100 leading-none">{dockResult.score.toFixed(2)}</span>
-                <span className="text-[9px] text-slate-500 dark:text-slate-400">kcal/mol</span>
-                <span className="text-[8px] text-slate-400">(lower=stronger)</span>
+              {/* Drafty score — italic, smaller font, muted color, no
+                  bold. The "draft estimate" caveat is in the hover tooltip
+                  on the card AND surfaced here as plain text so the user
+                  can't miss it. */}
+              <div className="space-y-0.5">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[18px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">kcal/mol</span>
+                </div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-tight">
+                  Estimate · no PoseBusters · no ProLIF · not shareable
+                </div>
               </div>
+              {/* Hits/misses are heuristic residue contacts, not real
+                  ProLIF interactions. De-emphasized vs the JobPage. */}
               {dockResult.hits.length > 0 && (
-                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-tight">
-                  <span className="font-semibold text-emerald-700 dark:text-emerald-300">Hits:</span>{" "}
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                  <span className="text-emerald-700 dark:text-emerald-400">contact ~</span>{" "}
                   {dockResult.hits.slice(0, 5).join(", ")}{dockResult.hits.length > 5 && ` +${dockResult.hits.length - 5}`}
                 </div>
               )}
               {dockResult.misses.length > 0 && (
-                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-tight">
-                  <span className="font-semibold text-amber-700 dark:text-amber-300">Misses:</span>{" "}
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                  <span className="text-amber-700 dark:text-amber-400">missing ~</span>{" "}
                   {dockResult.misses.slice(0, 5).join(", ")}{dockResult.misses.length > 5 && ` +${dockResult.misses.length - 5}`}
                 </div>
               )}
@@ -1532,7 +1476,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                   type="button"
                   disabled={!ketcherReady}
                   onClick={runQuickDock}
-                  className="flex-1 text-[10px] font-semibold px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-white hover:bg-amber-50 dark:bg-slate-800/40 dark:hover:bg-amber-900/20 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex-1 text-[11px] font-medium px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   🎯 Re-dock
                 </button>
@@ -1540,31 +1484,54 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                   <button
                     type="button"
                     onClick={runOptimize}
-                    className="flex-1 text-[10px] font-semibold px-2 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                    className="flex-1 text-[11px] font-medium px-2 py-1.5 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors"
                     title="Ask AI for 3 variants targeting the missed residues, then dock each one"
                   >
                     ✨ Optimize
                   </button>
                 )}
                 {optimizeStatus === "running" && (
-                  <span className="flex-1 flex items-center justify-center gap-1 text-[9px] text-slate-500 dark:text-slate-400 px-2 py-1">
-                    <Spinner size={9} /> variants…
+                  <span className="flex-1 flex items-center justify-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 px-2 py-1.5 italic">
+                    <Spinner size={10} /> variants…
                   </span>
                 )}
               </div>
               {optimizeStatus === "error" && optimizeError && (
-                <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-tight">{optimizeError}</div>
+                <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-tight">{optimizeError}</div>
               )}
+              {/* Promote-to-Full-Job — the conversion path from "drafty
+                  estimate" to "publishable validated result." Solid
+                  delta-blue button so it stands out as the next action
+                  once the user has found a winner. Thin dashed divider
+                  visually separates "iterate here" from "ship it." */}
+              <div className="pt-2 mt-1 border-t border-dashed border-slate-300 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={promoteToFullJob}
+                  className="w-full text-[12px] font-semibold px-3 py-2 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1.5"
+                  title="Submit this compound for a full validated docking job (PoseBusters, ProLIF, Vinardo refined score, shareable URL)"
+                >
+                  ⚡ Promote to Full Job →
+                </button>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 italic text-center mt-1">
+                  Validated score · contact map · shareable
+                </div>
+              </div>
             </>
           ) : (
-            <button
-              type="button"
-              disabled={!ketcherReady}
-              onClick={runQuickDock}
-              className="w-full text-[10px] font-semibold px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              🎯 Run Quick dock
-            </button>
+            <>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 italic leading-tight">
+                Run a 5-second draft dock to see an estimated score before committing to a full job.
+              </div>
+              <button
+                type="button"
+                disabled={!ketcherReady}
+                onClick={runQuickDock}
+                className="w-full text-[11px] font-medium px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                🎯 Run Quick dock (draft)
+              </button>
+            </>
           )}
         </div>
       )}
@@ -1792,50 +1759,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </form>
 
-      {/* ── Fullscreen 3D overlay ───────────────────────────────────────
-          Covers the whole dashboard (above all 4 columns) when ⤢ is
-          clicked or when fullscreen3D state flips. ESC also exits (see
-          the useEffect higher up). For v1 this overlay only spans the
-          dashboard, not the entire modal — a future iteration could
-          lift state up to KetcherModal and overlay both Ketcher and
-          dashboard for a true full-window 3D view. */}
-      {fullscreen3D && show3D && (
-        <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 flex flex-col">
-          <div className="flex items-center justify-between px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
-            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">
-              {view3DMode === "pose" && dockResult
-                ? `Docked pose · ${dockResult.pdbId}/${dockResult.chain} · ${dockResult.score.toFixed(2)} kcal/mol — fullscreen`
-                : "3D conformer · fullscreen"}
-            </span>
-            <button
-              type="button"
-              onClick={() => setFullscreen3D(false)}
-              className="text-[11px] px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors flex items-center gap-1"
-              title="Press Esc to exit"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>
-              </svg>
-              Exit
-            </button>
-          </div>
-          <div className="flex-1 flex items-center justify-center min-h-0 p-2">
-            <Suspense fallback={<Spinner size={16} />}>
-              {view3DMode === "pose" && dockResult?.pdbId && dockResult?.chain ? (
-                <DockedPoseViewer
-                  pdbId={dockResult.pdbId}
-                  chain={dockResult.chain}
-                  variant="WT"
-                  posePdbqt={dockResult.posePdbqt || ""}
-                  size={420}
-                />
-              ) : (
-                <Mol3DPreview smiles={liveSmiles} size={300} />
-              )}
-            </Suspense>
-          </div>
-        </div>
-      )}
+      {/* (Fullscreen 3D overlay block lived here. Removed 2026-05-02
+          along with the inline 3D thumbnails — the JobPage 3D viewer
+          is the single source of truth for pose inspection now.) */}
     </aside>
   );
 }
@@ -1943,14 +1869,19 @@ function Pill({ ok, okLabel, badLabel }: { ok: boolean | undefined; okLabel: str
   );
 }
 
-/** Inline label/value pair for the live property strip. Compact format
- *  ("MW 180", "logP 1.3") so multiple stats fit horizontally without
- *  needing the larger Stat card layout. */
-function LivePropPair({ label, value }: { label: string; value: number | undefined }) {
+/** (LivePropPair was the un-bordered inline label/value used by the
+ *  Option E stat-card layout; replaced by PropChip below when the
+ *  editor switched to the JobPage idiom on 2026-05-02.) */
+
+/** JobPage-style pill chip for properties. Matches the bordered chip
+ *  pattern from the results page ("MW 180 / LogP 1.3 / QED 0.55 / Ro5 ✓")
+ *  so the editor's properties strip feels like the same product as the
+ *  matrix's per-row property chips. */
+function PropChip({ label, value }: { label: string; value: number | undefined }) {
   if (value === undefined) return null;
   return (
-    <span>
-      <span className="text-slate-400 dark:text-slate-500">{label}</span>{" "}
+    <span className="px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/40 text-[11px]">
+      <span className="text-slate-500 dark:text-slate-400">{label}</span>{" "}
       <span className="font-medium text-slate-700 dark:text-slate-200">{value}</span>
     </span>
   );

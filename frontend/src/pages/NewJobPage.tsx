@@ -185,6 +185,12 @@ export default function NewJobPage() {
     if (!catalog) return; // wait for catalog to load before deciding catalog vs custom
     const state = location.state as { reseed?: {
       pdb_id?: string; chain?: string; mutations?: string[];
+      // catalog_target_id is the editor's Promote-to-Full-Job path —
+      // when the user iterates with Quick dock against a catalog target
+      // (e.g. "kras") and never resolves a real PDB id, this lets us
+      // map back to the catalog target by id directly. Tried first;
+      // falls through to pdb_id lookup when absent.
+      catalog_target_id?: string;
       compounds?: { name?: string; smiles: string }[];
       engine?: string; exhaustiveness?: number; include_wt?: boolean;
     } } | null;
@@ -192,32 +198,43 @@ export default function NewJobPage() {
     if (!seed) return;
     reseedRef.current = true;
 
-    // Only touch target/mutation state when the seed actually carries a
-    // PDB. The "Use in new job" path from /compounds reseeds JUST the
-    // compound list — nothing about the target — and we used to flip
-    // Custom mode on with an empty pdbId, leaving the user staring at
-    // an unwanted "Other PDB" tile pre-selected. Bail early here so the
-    // target picker stays in its untouched default state.
-    const pdbUp = (seed.pdb_id ?? "").trim().toUpperCase();
-    if (pdbUp) {
-      const match = catalog.find((t) => t.pdb_id.toUpperCase() === pdbUp);
-      if (match) {
-        // Catalog target — flip to single-target catalog mode.
-        setSelectedIds([match.id]);
-        setCustomMode(false);
-        if (seed.mutations && seed.mutations.length > 0) {
-          setCustomMutationsByTarget((prev) => ({ ...prev, [match.id]: seed.mutations!.join(", ") }));
-        }
-      } else {
-        // PDB not in catalog (e.g. a user-uploaded structure) — flip to
-        // Custom mode and pre-fill the id + chain. Runner self-heals the
-        // receptor on first dock.
-        setSelectedIds([]);
-        setCustomMode(true);
-        setPdbId(pdbUp);
-        setChain((seed.chain || "A").toUpperCase());
-        if (seed.mutations && seed.mutations.length > 0) {
-          setCustomMutationsByTarget((prev) => ({ ...prev, [CUSTOM_KEY]: seed.mutations!.join(", ") }));
+    // Catalog-id-first lookup (Promote-to-Full-Job from editor).
+    const catId = (seed.catalog_target_id ?? "").trim();
+    const catMatch = catId ? catalog.find((t) => t.id === catId) : undefined;
+    if (catMatch) {
+      setSelectedIds([catMatch.id]);
+      setCustomMode(false);
+      if (seed.mutations && seed.mutations.length > 0) {
+        setCustomMutationsByTarget((prev) => ({ ...prev, [catMatch.id]: seed.mutations!.join(", ") }));
+      }
+    } else {
+      // Only touch target/mutation state when the seed actually carries a
+      // PDB. The "Use in new job" path from /compounds reseeds JUST the
+      // compound list — nothing about the target — and we used to flip
+      // Custom mode on with an empty pdbId, leaving the user staring at
+      // an unwanted "Other PDB" tile pre-selected. Bail early here so the
+      // target picker stays in its untouched default state.
+      const pdbUp = (seed.pdb_id ?? "").trim().toUpperCase();
+      if (pdbUp) {
+        const match = catalog.find((t) => t.pdb_id.toUpperCase() === pdbUp);
+        if (match) {
+          // Catalog target — flip to single-target catalog mode.
+          setSelectedIds([match.id]);
+          setCustomMode(false);
+          if (seed.mutations && seed.mutations.length > 0) {
+            setCustomMutationsByTarget((prev) => ({ ...prev, [match.id]: seed.mutations!.join(", ") }));
+          }
+        } else {
+          // PDB not in catalog (e.g. a user-uploaded structure) — flip to
+          // Custom mode and pre-fill the id + chain. Runner self-heals the
+          // receptor on first dock.
+          setSelectedIds([]);
+          setCustomMode(true);
+          setPdbId(pdbUp);
+          setChain((seed.chain || "A").toUpperCase());
+          if (seed.mutations && seed.mutations.length > 0) {
+            setCustomMutationsByTarget((prev) => ({ ...prev, [CUSTOM_KEY]: seed.mutations!.join(", ") }));
+          }
         }
       }
     }
