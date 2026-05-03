@@ -1394,10 +1394,23 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 </div>
               )}
               <div className="flex items-center gap-1.5">
+                {/* Re-dock disabled when the cached score is still
+                    fresh for the live SMILES — running it again would
+                    burn 5s of GPU and return the same number (Vina is
+                    deterministic given the same input + box). The
+                    button only enables once the user edits the canvas
+                    or applies a variant, so its presence implicitly
+                    tells them "your structure has changed since this
+                    score was measured." */}
                 <button
                   type="button"
-                  disabled={!ketcherReady}
+                  disabled={!ketcherReady || dockFreshForLive}
                   onClick={runQuickDock}
+                  title={
+                    dockFreshForLive
+                      ? "Score is up to date — edit the structure first to enable a re-dock"
+                      : "Re-dock the current structure"
+                  }
                   className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   🎯 Re-dock
