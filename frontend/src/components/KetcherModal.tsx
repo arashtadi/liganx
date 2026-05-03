@@ -1213,7 +1213,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400" aria-hidden="true">
           <path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M3 13l2-2M11 5l2-2" />
         </svg>
-        <span className="font-semibold text-slate-700 dark:text-slate-200 text-[12px]">AI assistant</span>
+        <span className="font-semibold text-slate-700 dark:text-slate-200 text-[12px]">Liganx AI</span>
         <span className="text-[9px] uppercase tracking-wide text-slate-400">beta</span>
         {targetPdb && (
           <span className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -1418,7 +1418,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           variants list (when present), and history. The chat form
           sticks to the very bottom (sibling, not inside this scroll). */}
       <div className="px-2 pt-1 pb-1 flex items-center justify-between text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400 shrink-0">
-        <span>AI assistant</span>
+        <span>Liganx AI</span>
         {aiHistory.length > 0 && (
           <span className="text-slate-400 normal-case">
             {aiHistory.length}/{MAX_AI_HISTORY}
