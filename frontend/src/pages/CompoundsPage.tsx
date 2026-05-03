@@ -65,17 +65,52 @@ export default function CompoundsPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // ── Mutation error surface ──────────────────────────────────────────
+  // Single state for "the most recent mutation failed with this message"
+  // — not perfect (a delete error can stomp a save error if both happen
+  // back-to-back) but vastly better than the previous behaviour, which
+  // was: react-query rejected the mutation, no onError was wired, no
+  // toast/alert showed, and the user thought their save succeeded. The
+  // 2026-05-03 bug report ("compounds aren't being saved anymore" on a
+  // newly-created account) was caused by exactly this — server returned
+  // an error and we silently swallowed it. See git log for context.
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  function handleMutationError(action: string, err: unknown): void {
+    const msg =
+      err instanceof ApiError
+        ? `${err.status} ${err.message}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    // Console log too so devs can grab the full stack without parsing
+    // the user-facing text.
+    console.error(`[CompoundsPage] ${action} failed:`, err);
+    setMutationError(`${action} failed: ${msg}`);
+  }
+
   const deleteMut = useMutation({
     mutationFn: (id: number) => api.deleteMyCompound(id),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
+    onSuccess: () => {
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["my-compounds"] });
+    },
+    onError: (err) => handleMutationError("Delete", err),
   });
   const saveMut = useMutation({
     mutationFn: (payload: { name: string; smiles: string }) => api.saveMyCompound(payload),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
+    onSuccess: () => {
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["my-compounds"] });
+    },
+    onError: (err) => handleMutationError("Save", err),
   });
   const tagsMut = useMutation({
     mutationFn: ({ id, tags }: { id: number; tags: string[] }) => api.saveMyCompoundTags(id, tags),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
+    onSuccess: () => {
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["my-compounds"] });
+    },
+    onError: (err) => handleMutationError("Tag update", err),
   });
 
   // Aggregated set of tags currently in use across the library — drives
@@ -226,6 +261,26 @@ export default function CompoundsPage() {
           <div>{error instanceof ApiError ? error.message : "Try refreshing."}</div>
           <button onClick={() => refetch()} className="mt-2 btn-ghost btn-sm">
             Retry
+          </button>
+        </div>
+      )}
+
+      {/* Mutation-error banner — surfaces save/delete/tag failures so the
+          user isn't left thinking their action succeeded when it didn't.
+          Auto-clears on the next successful mutation. */}
+      {mutationError && (
+        <div className="card border-rose-300 bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300 text-sm flex items-start justify-between gap-3">
+          <div>
+            <div className="font-semibold mb-1">Action didn&apos;t save</div>
+            <div className="break-words">{mutationError}</div>
+            <div className="text-xs mt-1 opacity-75">Open the browser devtools console for the full error.</div>
+          </div>
+          <button
+            onClick={() => setMutationError(null)}
+            className="text-rose-600 hover:text-rose-800 dark:text-rose-400 dark:hover:text-rose-200 p-1 -m-1 rounded hover:bg-rose-100 dark:hover:bg-rose-900/40 shrink-0"
+            aria-label="Dismiss"
+          >
+            <Close size={14} />
           </button>
         </div>
       )}

@@ -14,6 +14,7 @@ direct API call.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Annotated, Literal, Optional
 
@@ -24,6 +25,14 @@ from sqlmodel import Session
 
 from ..auth import CurrentUser, current_user
 from ..db import get_session
+
+# Module logger — explicit save/delete failures get logged with the
+# user_id + payload so we can root-cause silent breakage in production
+# without tailing the entire request log. Added 2026-05-03 after a
+# user reported "compounds aren't being saved" on a newly-created
+# account; the root cause was opaque because failures returned
+# 500-with-no-detail and the frontend silently swallowed them.
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/me/compounds", tags=["me", "compounds"])
 
@@ -136,6 +145,15 @@ def upsert_my_compound(
     if not name or not smiles:
         raise HTTPException(status_code=400, detail="name and smiles required")
 
+    # Diagnostic: log the user.id at entry so we can correlate any later
+    # SQL exceptions with the actual JWT subject. Cheap (one log line per
+    # save) and makes "save isn't working for user X" debuggable from
+    # logs alone.
+    log.info(
+        "upsert_my_compound: uid=%r email=%r name=%r smiles_len=%d",
+        user.id, user.email, name, len(smiles),
+    )
+
     # Check the cap, but only when this would be a NEW row — updating an
     # existing entry can never push the user over the cap.
     existing = session.execute(
@@ -160,18 +178,35 @@ def upsert_my_compound(
     # back the canonical row so the frontend can display the new id and
     # timestamps without a follow-up GET. Tags are preserved on update —
     # the upsert never touches them; tag edits go through PATCH /tags.
-    row = session.execute(
-        text(
-            "INSERT INTO public.user_compound (user_id, name, smiles)"
-            " VALUES (:uid, :name, :smiles)"
-            " ON CONFLICT (user_id, name) DO UPDATE SET"
-            "   smiles = EXCLUDED.smiles,"
-            "   updated_at = NOW()"
-            " RETURNING id, name, smiles, tags, ai_history, created_at, updated_at"
-        ),
-        {"uid": user.id, "name": name, "smiles": smiles},
-    ).mappings().first()
-    session.commit()
+    try:
+        row = session.execute(
+            text(
+                "INSERT INTO public.user_compound (user_id, name, smiles)"
+                " VALUES (:uid, :name, :smiles)"
+                " ON CONFLICT (user_id, name) DO UPDATE SET"
+                "   smiles = EXCLUDED.smiles,"
+                "   updated_at = NOW()"
+                " RETURNING id, name, smiles, tags, ai_history, created_at, updated_at"
+            ),
+            {"uid": user.id, "name": name, "smiles": smiles},
+        ).mappings().first()
+        session.commit()
+    except Exception as e:
+        # Log the full traceback + the user/payload context. Without this
+        # the FastAPI default handler returns a generic 500 with no detail
+        # and swallows the underlying exception, which is exactly what
+        # made the 2026-05-03 "saves aren't persisting" bug invisible in
+        # logs. Re-raise as HTTPException so the frontend gets a clear
+        # error message it can surface to the user.
+        log.exception(
+            "upsert_my_compound: SQL failed uid=%r email=%r name=%r",
+            user.id, user.email, name,
+        )
+        session.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Couldn't save compound: {type(e).__name__}: {e}",
+        )
     if row is None:  # defensive — shouldn't happen with RETURNING
         raise HTTPException(status_code=500, detail="upsert returned no row")
     return CompoundOut(**dict(row))
