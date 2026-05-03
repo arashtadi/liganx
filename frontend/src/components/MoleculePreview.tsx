@@ -235,7 +235,11 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 export type SmilesValidity = "empty" | "loading" | "valid" | "invalid" | "fragments";
 
 export function useSmilesValidity(smiles: string): SmilesValidity {
-  const debounced = useDebouncedValue(smiles.trim(), 400);
+  // 150ms debounce — short enough that the dot feels live as the user
+  // sketches, long enough to coalesce the rapid Ketcher canvas-poll
+  // updates that arrive every ~350ms while drawing. inspect-smiles is
+  // cached (5 min staleTime) so re-fetches are nearly free.
+  const debounced = useDebouncedValue(smiles.trim(), 150);
   const { data, isFetching } = useQuery({
     queryKey: ["inspect-smiles", debounced, 140, 88],
     queryFn: () => api.inspectSmiles({ smiles: debounced, width: 140, height: 88 }),
@@ -248,4 +252,22 @@ export function useSmilesValidity(smiles: string): SmilesValidity {
   if (!data.valid) return "invalid";
   if (data.fragment_count > 1) return "fragments";
   return "valid";
+}
+
+/** Synthetic Accessibility score [1=easy, 10=impossible] read from
+ *  the SAME inspect-smiles cache entry as useSmilesValidity. Returns
+ *  { score, label } or null if the SMILES isn't valid yet. The shared
+ *  cache key means calling both hooks in the same component costs one
+ *  network round-trip total, not two. */
+export function useSmilesSaScore(smiles: string): { score: number; label: string } | null {
+  const debounced = useDebouncedValue(smiles.trim(), 150);
+  const { data } = useQuery({
+    queryKey: ["inspect-smiles", debounced, 140, 88],
+    queryFn: () => api.inspectSmiles({ smiles: debounced, width: 140, height: 88 }),
+    enabled: debounced.length > 0,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+  if (!data || !data.valid || data.sa_score == null) return null;
+  return { score: data.sa_score, label: data.sa_label ?? "unknown" };
 }

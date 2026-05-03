@@ -453,6 +453,8 @@ export const api = {
       embed_ok: boolean | null;
       embed_error: string | null;
       atom_count: number;
+      sa_score: number | null;
+      sa_label: string | null;
     }>("/lookup/inspect-smiles", {
       method: "POST",
       body: JSON.stringify(payload),

@@ -376,6 +376,14 @@ class SmilesInspectOut(BaseModel):
     atom_count: int = 0
     """Heavy-atom count of the parsed molecule. Used by the Keep-largest
     suggestion to compare fragments."""
+    sa_score: float | None = None
+    """Synthetic Accessibility score in [1, 10]: 1=trivial to make,
+    10=essentially impossible. Heuristic — see services/sa_score.py for
+    the calibration. Only set when valid=True."""
+    sa_label: str | None = None
+    """Bucket label matching the frontend chip color: 'easy', 'moderate',
+    'hard', 'very hard'. Pre-computed server-side so the UI doesn't
+    have to repeat the cutoffs in two places."""
 
 
 def _trim_error(msg: str, limit: int = 200) -> str:
@@ -395,6 +403,7 @@ def _inspect_cached(smiles: str, embed: bool, w: int, h: int) -> dict:
         "valid": False, "error": None, "canonical_smiles": None,
         "svg": None, "fragment_count": 0, "largest_fragment": None,
         "embed_ok": None, "embed_error": None, "atom_count": 0,
+        "sa_score": None, "sa_label": None,
     }
     try:
         from rdkit import Chem
@@ -419,6 +428,17 @@ def _inspect_cached(smiles: str, embed: bool, w: int, h: int) -> dict:
         out["canonical_smiles"] = Chem.MolToSmiles(mol, canonical=True)
     except Exception:
         pass
+
+    # Synthetic Accessibility score — cheap (~1ms), heuristic only,
+    # ships in the same response so the editor's chip updates in the
+    # same round-trip as the validity dot. See services/sa_score.py.
+    try:
+        from ..services.sa_score import compute_sa_score, sa_label
+        sa = compute_sa_score(out.get("canonical_smiles") or smiles)
+        out["sa_score"] = sa
+        out["sa_label"] = sa_label(sa)
+    except Exception as e:
+        log.debug("SA score failed for %s: %s", smiles[:40], e)
 
     # Fragment detection — frags is a list of disconnected molecules.
     try:

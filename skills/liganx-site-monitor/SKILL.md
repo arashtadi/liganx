@@ -70,13 +70,23 @@ HTTP fetch. Note any pages that load slowly (>3 s for SPA shell).
 Read `https://liganx.com/validation_results.json` and check:
 - `timestamp_utc` is within 30 days
 - `summary.pass + noise + fail + skip == total`
-- Per-case `verdict` matches `delta_kcal` against `noise_floor_kcal`
-  (within ±noise → NOISE; matches expected_direction → PASS;
-  contradicts expected_direction → FAIL)
+- Per-case `verdict` matches `delta_kcal` against `noise_floor_kcal`,
+  with the **expected_direction** taken into account:
+  - `expected_direction == "resistance"` → PASS iff Δ > +noise_floor;
+    NOISE iff |Δ| ≤ noise_floor; FAIL iff Δ < −noise_floor
+  - `expected_direction == "selectivity"` → PASS iff Δ < −noise_floor;
+    NOISE iff |Δ| ≤ noise_floor; FAIL iff Δ > +noise_floor
+  - `expected_direction == "retained"` → PASS iff |Δ| ≤ noise_floor
+    (small Δ within noise IS the correct retention result);
+    SOMETHING-WEIRD iff |Δ| > noise_floor (could be PASS or FAIL
+    depending on which way; flag for human review)
 - The headline PASS count on the page matches `summary.pass`
 
 If any case looks miscategorized, FLAG IT — verdict logic might have
-drifted from the JSON content.
+drifted from the JSON content. **Don't forget the retained branch** —
+prior versions of this monitor flagged Pirtobrutinib (a retention case
+at Δ=+0.50, correctly PASS) as a consistency failure, which is a
+self-bug, not a production issue.
 
 ### Phase 4 — Science-correctness spot check
 
@@ -105,6 +115,22 @@ that touched:
 
 Flag any commit that bumped PREP_VERSION (cache invalidation —
 expect ~30 s extra prep time on first hit per target).
+
+**Backend deploy lag:** compare `api.liganx.com/health.git_sha` to
+`git rev-parse origin/main`. If they differ, **don't immediately
+flag it as a stalled deploy**. First check whether the divergent
+commits actually touched backend code:
+
+```bash
+git log --name-only $BACKEND_SHA..origin/main -- backend/ pipeline/ Dockerfile fly.toml
+```
+
+If that command returns no commits, the lag is expected — Fly
+auto-deploy is gated by changes to backend-relevant paths and
+correctly skips frontend/JSON/skills-only commits. Report it as
+HEALTHY with a one-line note ("backend N commits behind, 0 of those
+touch backend paths — expected"). Only escalate to SHOULD-FIX if
+backend-touching commits are unmerged for >2 hours.
 
 ### Phase 6 — Cost & infra sanity
 
@@ -144,11 +170,30 @@ Use this structure:
 ## Reporting destination
 
 The user's primary Telegram alert channel is configured in Fly secrets
-(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`). When run as a scheduled
-task, post the full markdown report to Telegram.
+(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 
-If running manually (user invoked you directly), just print the report
-inline.
+**Quiet by default.** Do not Telegram-post the full report on every
+run — that trains the user to ignore the channel. Instead:
+
+1. Always save the full markdown report to
+   `/Users/arash/Documents/Claude/Projects/DockingOnline/site-monitor-reports/YYYY-MM-DD.md`
+2. **Telegram only when there's something actionable**:
+   - 🔴 CRITICAL findings → post a short alert + link/snippet
+   - 🟡 SHOULD-FIX findings → post once a week (Mondays) as a digest;
+     otherwise silent
+   - 🟢 All-healthy → save the report, no Telegram post
+3. **Compare to previous run.** Read the most recent report file from
+   `site-monitor-reports/` before writing the new one. If a finding
+   has persisted for 3+ runs unchanged, escalate its severity by one
+   level (HEALTHY → SHOULD-FIX, SHOULD-FIX → CRITICAL) and post to
+   Telegram. Persistent issues need attention even if individually mild.
+4. **First-of-month digest.** On the 1st of each month, post a
+   one-line summary regardless ("Monitor still alive, last 30 days:
+   X CRITICAL / Y SHOULD-FIX / Z HEALTHY runs").
+
+If running manually (user invoked you directly), print the report
+inline AND save it to disk; skip Telegram entirely (the user is
+already looking at the output).
 
 ## When to escalate to a fix proposal
 

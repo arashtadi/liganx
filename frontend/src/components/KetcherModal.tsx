@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
+import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "./MoleculePreview";
 import { api, ApiError, type AIHistoryEntry } from "../api";
 
 // 3D viewers (Mol3DPreview, DockedPoseViewer) used to live in this
@@ -786,6 +787,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // object. Updated by the same 2.5s polling loop that feeds liveProps,
   // so we don't add a second timer to the modal.
   const [liveSmiles, setLiveSmiles] = useState<string>("");
+  // Live SMILES validity — drives the green/yellow/red dot in the
+  // header AND gates dock + chat actions when the structure is invalid.
+  // Reuses the same /lookup/inspect-smiles endpoint that the New-job
+  // form uses for its row-level validity tinting, so the cache is
+  // shared and a SMILES inspected in one place is hot in the other.
+  const liveValidity = useSmilesValidity(liveSmiles);
+  // Live SA Score [1, 10] — shares the same inspect-smiles cache entry
+  // as useSmilesValidity so this is a free read once validity has run.
+  // Drives the "Make-ability" chip in the Properties strip below.
+  const liveSa = useSmilesSaScore(liveSmiles);
   // (3D viewer state — view3DMode, fullscreen3D, show3D, plus the ESC
   // handler that toggled it — was removed 2026-05-02 along with the
   // inline thumbnail and fullscreen overlay. See the import-block note.)
@@ -811,53 +822,75 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
   const [lastAction, setLastAction] = useState<"none" | "edit" | "props">("none");
 
-  // Live property strip: every 2.5s, read the current SMILES from
-  // Ketcher and ask the backend for its property panel. Cheap
-  // (RDKit-only, no LLM, ~5ms server-side) but rate-limited
-  // (300/hr/IP — at one call every 2.5s that's 1440/hr if the modal
-  // is left open all day, well above the cap, so we also debounce
-  // against unchanged SMILES).
+  // Two-tier polling so the validity dot + SA Score chip update almost
+  // instantly while the heavier MW/logP/QED RDKit call stays at 2.5s
+  // (rate-limited 300/hr/IP, can't poll faster).
+  //
+  // Tier 1 — FAST: 350ms canvas snapshot. Just reads getSmiles() (a
+  // pure JS call, no network) and mirrors it into liveSmiles. The
+  // useSmilesValidity hook then debounces+caches the inspect-smiles
+  // call which serves both validity AND SA Score from a single
+  // server response. Net effect: dot + SA chip update within ~half
+  // a second of any edit.
+  //
+  // Tier 2 — SLOW: 2.5s assistProperties call for MW/logP/QED/Lipinski/
+  // PAINS. Heavier RDKit panel + actual rate-limit. Debounced against
+  // unchanged SMILES so a stable canvas costs nothing.
   const lastQueriedSmilesRef = useRef<string>("");
+  // FAST tier — canvas snapshot, no network.
   useEffect(() => {
     if (!ketcherReady) return;
     let cancelled = false;
-    const tick = async () => {
+    const snapshot = async () => {
       const apiObj = getApi();
       if (!apiObj?.getSmiles) return;
       try {
         const smi: string = await apiObj.getSmiles();
         if (cancelled) return;
         const trimmed = (smi || "").trim();
-        // Mirror the live SMILES into state so the 3D preview can
-        // re-render when the canvas changes. Cheap setState — only
-        // fires when the value differs.
+        // Functional update — only triggers a re-render when the value
+        // actually changed, so a steady canvas at 350ms costs nothing.
         setLiveSmiles((prev) => (prev === trimmed ? prev : trimmed));
-        // Empty canvas → clear the strip.
-        if (!trimmed) {
-          if (liveProps !== null) setLiveProps(null);
-          lastQueriedSmilesRef.current = "";
-          return;
-        }
-        // Skip if we already fetched for this exact SMILES — keeps the
-        // 300/hr cap healthy when the user is just staring at a stable
-        // structure with the modal open.
-        if (trimmed === lastQueriedSmilesRef.current) return;
-        lastQueriedSmilesRef.current = trimmed;
+      } catch {
+        // Best-effort.
+      }
+    };
+    snapshot();
+    const interval = window.setInterval(snapshot, 350);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [ketcherReady, getApi]);
+
+  // SLOW tier — full RDKit property panel. Driven off liveSmiles so it
+  // also feels responsive (panel updates as soon as the user pauses for
+  // ~2.5s on a new structure) without burning the rate limit.
+  useEffect(() => {
+    if (!ketcherReady) return;
+    let cancelled = false;
+    const fetchProps = async () => {
+      const trimmed = liveSmiles.trim();
+      if (!trimmed) {
+        if (liveProps !== null) setLiveProps(null);
+        lastQueriedSmilesRef.current = "";
+        return;
+      }
+      // Skip if we already fetched for this exact SMILES.
+      if (trimmed === lastQueriedSmilesRef.current) return;
+      lastQueriedSmilesRef.current = trimmed;
+      try {
         const p = await api.assistProperties(trimmed);
         if (!cancelled) setLiveProps(p);
       } catch {
-        // Live strip is best-effort. A transient failure just means the
-        // strip lags by one tick.
+        // Tier-2 best-effort — the validity dot still works.
       }
     };
-    // Fire one immediately on mount, then on a 2.5s interval.
-    tick();
-    const interval = window.setInterval(tick, 2500);
+    // Fire immediately on SMILES change so a paused canvas refreshes
+    // the panel within one debounce, then continue polling at 2.5s
+    // in case the same SMILES had a transient earlier failure.
+    fetchProps();
+    const interval = window.setInterval(fetchProps, 2500);
     return () => { cancelled = true; window.clearInterval(interval); };
-    // liveProps deliberately not in deps — including it would cause
-    // the interval to be re-created on every fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ketcherReady, getApi]);
+  }, [ketcherReady, liveSmiles]);
 
   /** Read SMILES from Ketcher. Returns null + sets an error if the
    *  canvas is empty or Ketcher hasn't finished loading. */
@@ -1250,6 +1283,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </svg>
         <span className="font-semibold text-slate-700 dark:text-slate-200 text-[12px]">Liganx AI</span>
         <span className="text-[9px] uppercase tracking-wide text-slate-400">beta</span>
+        {/* SMILES validity dot — green/yellow/red traffic light fed by
+            useSmilesValidity (which hits /lookup/inspect-smiles, cached).
+            Quick-dock + Chat buttons below are also gated on this so a
+            broken SMILES can't burn a Pod call or confuse the LLM with
+            an unparseable input. */}
+        <ValidityDot validity={liveValidity} />
         {targetPdb && (
           <span className="text-[11px] text-slate-500 dark:text-slate-400">
             · Pocket-aware for <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
@@ -1310,6 +1349,24 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 PAINS {liveProps.pains_hits!.length}
               </span>
             )}
+            {/* Synthetic Accessibility chip — green/amber/rose by score
+                bucket. Lives in the same row as Ro5/PAINS so chemists
+                see make-ability alongside drug-likeness without
+                scrolling. Score is heuristic — see services/sa_score.py
+                for the calibration. */}
+            {liveSa && <SaChip score={liveSa.score} label={liveSa.label} />}
+          </div>
+        ) : liveSa ? (
+          // SA Score arrives via the fast inspect-smiles cache (~150ms
+          // after the canvas changes), well before the slow MW/logP
+          // panel (up to 2.5s). Render the SA chip alone so chemists
+          // get instant make-ability feedback even before the rest of
+          // the strip lands.
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <SaChip score={liveSa.score} label={liveSa.label} />
+            <span className="text-slate-400 dark:text-slate-500 text-[10px] italic">
+              MW · logP · QED · Lipinski loading…
+            </span>
           </div>
         ) : (
           <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-tight">
@@ -1362,8 +1419,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-tight">{quickDockError}</div>
               <button
                 type="button"
-                disabled={!ketcherReady}
+                disabled={!ketcherReady || liveValidity === "invalid"}
                 onClick={runQuickDock}
+                title={liveValidity === "invalid" ? "Fix the SMILES first — RDKit can't parse the current structure" : undefined}
                 className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 🎯 Retry
@@ -1404,10 +1462,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                     score was measured." */}
                 <button
                   type="button"
-                  disabled={!ketcherReady || dockFreshForLive}
+                  disabled={!ketcherReady || dockFreshForLive || liveValidity === "invalid"}
                   onClick={runQuickDock}
                   title={
-                    dockFreshForLive
+                    liveValidity === "invalid"
+                      ? "Fix the SMILES first — RDKit can't parse the current structure"
+                      : dockFreshForLive
                       ? "Score is up to date — edit the structure first to enable a re-dock"
                       : "Re-dock the current structure"
                   }
@@ -1449,9 +1509,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           ) : (
             <button
               type="button"
-              disabled={!ketcherReady}
+              disabled={!ketcherReady || liveValidity === "invalid"}
               onClick={runQuickDock}
-              title="5-second draft Vina re-dock — estimated score for fast iteration. Promote to Full Job for validated results."
+              title={liveValidity === "invalid"
+                ? "Fix the SMILES first — RDKit can't parse the current structure"
+                : "5-second draft Vina re-dock — estimated score for fast iteration. Promote to Full Job for validated results."}
               className="w-full text-[11px] font-medium px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               🎯 Run Quick dock
@@ -1667,15 +1729,17 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           type="text"
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          placeholder="Type here…"
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || liveValidity === "invalid"}
+          placeholder={liveValidity === "invalid" ? "Fix the SMILES first…" : "Type here…"}
           className="w-full text-[11px] px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
         />
         <button
           type="submit"
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+          disabled={!ketcherReady || status === "running" || quickDockStatus === "running" || liveValidity === "invalid"}
           title={
-            instruction.trim()
+            liveValidity === "invalid"
+              ? "Fix the SMILES first — RDKit can't parse the current structure"
+              : instruction.trim()
               ? "Send your instruction to the AI."
               : "Click without typing for an open-ended improvement; or type a specific edit."
           }
@@ -1804,6 +1868,98 @@ function Pill({ ok, okLabel, badLabel }: { ok: boolean | undefined; okLabel: str
 /** (LivePropPair was the un-bordered inline label/value used by the
  *  Option E stat-card layout; replaced by PropChip below when the
  *  editor switched to the JobPage idiom on 2026-05-02.) */
+
+/** Three-state validity dot for the AI rail header. Mirrors the same
+ *  semantic palette the New-job compound rows use (emerald = valid,
+ *  amber = mixture/fragments, rose = invalid, slate = empty/loading) so
+ *  a chemist sees one consistent traffic-light across the app.
+ *
+ *  Why a tooltip on every state instead of just on red: chemists hover
+ *  the dot when they're confused why a Dock button is greyed out — the
+ *  green tooltip is the confirmation they need that the SMILES is OK
+ *  and the disable is for some other reason (no target, etc.). */
+function ValidityDot({ validity }: { validity: SmilesValidity }) {
+  // Empty canvas = no signal to display. Suppress entirely instead of
+  // showing a grey dot so the header stays clean before the user draws.
+  if (validity === "empty") return null;
+  const palette: Record<SmilesValidity, { dot: string; label: string; tip: string }> = {
+    empty: { dot: "", label: "", tip: "" },
+    loading: {
+      dot: "bg-slate-300 dark:bg-slate-600 animate-pulse",
+      label: "Checking",
+      tip: "Validating the SMILES…",
+    },
+    valid: {
+      dot: "bg-emerald-500 dark:bg-emerald-400",
+      label: "Valid",
+      tip: "RDKit parsed the structure cleanly. Safe to dock or save.",
+    },
+    fragments: {
+      dot: "bg-amber-400 dark:bg-amber-300",
+      label: "Fragments",
+      tip: "Multiple disconnected fragments — split before docking, or pick the largest.",
+    },
+    invalid: {
+      dot: "bg-rose-500 dark:bg-rose-400",
+      label: "Invalid",
+      tip: "RDKit can't parse this structure. Fix it before docking or saving.",
+    },
+  };
+  const p = palette[validity];
+  return (
+    <span
+      className="ml-1 inline-flex items-center gap-1 cursor-help"
+      title={p.tip}
+    >
+      <span className={`inline-block w-2 h-2 rounded-full ${p.dot}`} aria-hidden="true" />
+      <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {p.label}
+      </span>
+    </span>
+  );
+}
+
+/** Synthetic Accessibility chip — answers "can a chemist actually
+ *  make this?" with a 1-10 score from RDKit-only heuristics (see
+ *  backend services/sa_score.py). Three-bucket color: green ≤4 (any
+ *  contract synthesis lab), amber ≤6 (medchem-routine), rose >6 (custom
+ *  route or new chemistry). The bucket label is computed server-side
+ *  so the cutoffs only live in one place.
+ *
+ *  Sits in the Properties row right after Ro5/PAINS so chemists see
+ *  drug-likeness AND make-ability without scrolling. The tooltip
+ *  carries the longer "what this means in practice" copy because the
+ *  chip itself has to fit in a tight pill. */
+function SaChip({ score, label }: { score: number; label: string }) {
+  const bucket: "easy" | "moderate" | "hard" =
+    score <= 4 ? "easy" : score <= 6 ? "moderate" : "hard";
+  const styles = {
+    easy: "border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300",
+    moderate: "border-amber-300 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300",
+    hard: "border-rose-300 dark:border-rose-800/40 bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300",
+  }[bucket];
+  // Tooltip is intentionally chemist-friendly — explains the 1-10
+  // scale AND what THIS bucket means for an actual lab. Without it
+  // a non-medchem user can't tell whether 5.2 is good or bad.
+  const tip = (() => {
+    const head = `Synthetic accessibility: ${score.toFixed(1)} / 10 (${label}).`;
+    const body =
+      bucket === "easy"
+        ? "Any contract-synthesis lab can make this off-the-shelf."
+        : bucket === "moderate"
+        ? "Routine for a medchem lab — a few weeks, modest cost."
+        : "Hard — likely needs a custom route, new chemistry, or a CRO with specialist capability.";
+    return `${head} ${body} Heuristic — see services/sa_score.py for calibration.`;
+  })();
+  return (
+    <span
+      className={"px-2 py-0.5 rounded-md border text-[11px] font-medium " + styles}
+      title={tip}
+    >
+      SA {score.toFixed(1)}
+    </span>
+  );
+}
 
 /** JobPage-style pill chip for properties. Matches the bordered chip
  *  pattern from the results page ("MW 180 / LogP 1.3 / QED 0.55 / Ro5 ✓")
