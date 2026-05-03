@@ -719,7 +719,41 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // download (~600KB) only when they ask for it. Persists for the
   // lifetime of the modal — closing/reopening starts off again, which
   // is the right default for a feature most users won't need.
+  // (Now controlled implicitly by the 3D tab being active rather than
+  // a separate toggle button — kept here because the lazy-import gate
+  // still consults it; the 3D tab sets it true on mount.)
   const [show3D, setShow3D] = useState<boolean>(false);
+
+  // ── Tabbed sidebar state ────────────────────────────────────────────
+  // Replaced the all-stacked layout with 4 tabs: Properties · 3D · Dock
+  // · Chat. Each tab gets the full sidebar height so panels don't fight
+  // for vertical space. Chat is the default since most users open the
+  // editor to use the AI; the other tabs are for specific workflows
+  // (property panel, 3D inspection, docking).
+  const [activeTab, setActiveTab] = useState<"props" | "3d" | "dock" | "chat">("chat");
+  // Fullscreen mode for the 3D viewer — lifts the viewer out of its
+  // 200x200 cell to fill the entire sidebar (or the whole modal body
+  // when we get there). Off by default; ESC + the ⤢ icon toggle it.
+  const [fullscreen3D, setFullscreen3D] = useState<boolean>(false);
+  // When the 3D tab becomes active, automatically enable show3D so the
+  // viewer mounts. (The viewer was previously gated behind a separate
+  // toggle inside the property strip — that toggle is gone in the new
+  // tab layout.) When the user leaves the tab, we KEEP show3D true so
+  // a re-visit doesn't re-pay the lazy-load cost.
+  useEffect(() => {
+    if (activeTab === "3d" && !show3D) {
+      setShow3D(true);
+    }
+  }, [activeTab, show3D]);
+  // ESC closes fullscreen 3D.
+  useEffect(() => {
+    if (!fullscreen3D) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen3D(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [fullscreen3D]);
 
   // Auto-scroll the sidebar to the ResultPanel when a fresh AI suggestion
   // lands. Without this the most-recent suggestion frequently lands below
@@ -1228,136 +1262,191 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </div>
 
-      {/* Live property strip — auto-updates as the user draws so they
-          see MW / logP / QED / Lipinski feedback at a glance without
-          clicking Predict properties. Hidden when canvas is empty or
-          SMILES doesn't parse cleanly (live fetch sets liveProps to
-          null in those cases). */}
-      {liveProps && liveProps.valid && (
-        <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30">
-          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-slate-600 dark:text-slate-300">
-            <LivePropPair label="MW" value={liveProps.mw} />
-            <LivePropPair label="logP" value={liveProps.logp} />
-            <LivePropPair label="QED" value={liveProps.qed} />
-            <LivePropPair label="TPSA" value={liveProps.tpsa} />
-            {liveProps.lipinski_pass !== undefined && (
-              <span
-                className={
-                  liveProps.lipinski_pass
-                    ? "text-emerald-700 dark:text-emerald-300"
-                    : "text-rose-700 dark:text-rose-300"
-                }
-                title="Lipinski rule of 5"
-              >
-                {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
-              </span>
-            )}
-            {(liveProps.pains_hits?.length ?? 0) > 0 && (
-              <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
-                PAINS {liveProps.pains_hits!.length}
-              </span>
-            )}
-            {/* 3D toggle — sits at the end of the property strip so it
-                shares the same row when there's space, wraps to its own
-                line on narrow viewports. Off by default; first click
-                lazy-loads the 3Dmol.js bundle (~600KB) and starts the
-                debounced fetch loop. The honesty caveat about gas-phase
-                vs docked pose lives inside the panel itself. */}
+      {/* ── Tab nav ─────────────────────────────────────────────────────
+          Replaces the all-stacked layout with 4 self-contained tabs.
+          Each tab gets the full sidebar height so panels don't fight
+          for vertical space. Badges signal content without forcing the
+          user to switch tabs to discover it (green dot when dock data
+          is fresh, count when AI history has entries). */}
+      <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40">
+        {[
+          { id: "props" as const, label: "Props", title: "Properties — MW, logP, QED, Lipinski, PAINS" },
+          { id: "3d" as const, label: "3D", title: "3D conformer preview" },
+          { id: "dock" as const, label: "Dock", title: "Quick dock + Optimize" },
+          { id: "chat" as const, label: "Chat", title: "AI assistant + history" },
+        ].map((t) => {
+          const isActive = activeTab === t.id;
+          // Per-tab content badge — small dot/count to indicate the tab
+          // has fresh content the user might want to look at.
+          let badge: React.ReactNode = null;
+          if (t.id === "dock" && dockResult && !quickDockGated) {
+            badge = <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />;
+          }
+          if (t.id === "chat" && aiHistory.length > 0) {
+            badge = <span className="ml-1 text-[9px] text-slate-400">{aiHistory.length}</span>;
+          }
+          if (t.id === "3d" && show3D) {
+            badge = <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-delta-500" />;
+          }
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTab(t.id)}
+              title={t.title}
+              className={
+                "flex-1 text-[11px] font-medium px-2 py-2 transition-colors " +
+                (isActive
+                  ? "text-delta-700 dark:text-delta-300 border-b-2 border-delta-500 bg-white dark:bg-slate-900"
+                  : "text-slate-500 dark:text-slate-400 border-b-2 border-transparent hover:text-ink dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/50")
+              }
+            >
+              {t.label}{badge}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Tab content ─────────────────────────────────────────────────
+          Single scrollable region; each tab provides its own panels.
+          The form footer (chat input + Improve buttons) is rendered
+          OUTSIDE this scroll area but ONLY on the chat tab — see below. */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+
+      {/* ─── PROPERTIES TAB ─── */}
+      {activeTab === "props" && (
+        <>
+          {/* Live property strip — moved here from the always-visible
+              header so it doesn't compete for vertical space when the
+              user is on a different tab. Still updates every 2.5s when
+              the modal is open. */}
+          {liveProps && liveProps.valid ? (
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Live properties</div>
+              <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-slate-700 dark:text-slate-200">
+                <LivePropPair label="MW" value={liveProps.mw} />
+                <LivePropPair label="logP" value={liveProps.logp} />
+                <LivePropPair label="QED" value={liveProps.qed} />
+                <LivePropPair label="TPSA" value={liveProps.tpsa} />
+                {liveProps.lipinski_pass !== undefined && (
+                  <span
+                    className={
+                      liveProps.lipinski_pass
+                        ? "text-emerald-700 dark:text-emerald-300"
+                        : "text-rose-700 dark:text-rose-300"
+                    }
+                    title="Lipinski rule of 5"
+                  >
+                    {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
+                  </span>
+                )}
+                {(liveProps.pains_hits?.length ?? 0) > 0 && (
+                  <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
+                    PAINS {liveProps.pains_hits!.length}
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="px-4 py-3 text-[11px] text-slate-400 dark:text-slate-500">
+              Sketch a structure on the left to see live MW · logP · QED · Lipinski · PAINS.
+            </div>
+          )}
+          <div className="p-3 space-y-1.5">
             <button
               type="button"
-              onClick={() => setShow3D((v) => !v)}
-              disabled={!ketcherReady}
-              className={
-                "ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors " +
-                (show3D
-                  ? "border-delta-400 bg-delta-50 text-delta-800 dark:border-delta-700 dark:bg-delta-900/30 dark:text-delta-200"
-                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300 dark:hover:bg-slate-700/50") +
-                " disabled:opacity-50 disabled:cursor-not-allowed"
-              }
-              title={show3D ? "Hide 3D preview" : "Show 3D preview (gas-phase, not docked pose)"}
+              disabled={!ketcherReady || status === "running"}
+              onClick={runProperties}
+              className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <span aria-hidden="true">📐</span>
-              {show3D ? "3D ✓" : "3D"}
+              ⚡ <span className="font-medium">Predict properties</span>
+              <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Full panel: HBA/HBD, rotatable bonds, Veber, PAINS detail</span>
             </button>
+          </div>
+          {/* Properties result panel — only renders the detailed view
+              when the user has explicitly clicked Predict. */}
+          <div className="p-3 text-[12px]">
+            {status === "running" && lastAction === "props" && (
+              <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                <Spinner size={12} /> Computing properties…
+              </div>
+            )}
+            {status === "error" && errorMsg && lastAction === "props" && (
+              <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2.5 py-2 text-rose-800 dark:text-rose-200">
+                {errorMsg}
+              </div>
+            )}
+            {status === "ok" && lastAction === "props" && properties && (
+              <PropertiesPanel p={properties} />
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ─── 3D TAB ─── */}
+      {activeTab === "3d" && (
+        <div className={fullscreen3D ? "p-0" : "p-3"}>
+          {/* 3D viewer — bigger than the old 200×200 since it now owns
+              the whole tab. Fullscreen mode (⤢) lets it fill the sidebar
+              edge-to-edge, useful for chiral / macrocycle inspection. */}
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2 px-1">
+            <span>3D conformer · UFF</span>
+            <button
+              type="button"
+              onClick={() => setFullscreen3D((v) => !v)}
+              title={fullscreen3D ? "Exit fullscreen (or press Esc)" : "Fullscreen 3D viewer"}
+              className="text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              {fullscreen3D ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M3 8V5a2 2 0 0 1 2-2h3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3"/>
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className="flex justify-center">
+            <Suspense
+              fallback={
+                <div className={(fullscreen3D ? "w-full" : "w-[280px]") + " h-[280px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center"}>
+                  <Spinner size={14} />
+                </div>
+              }
+            >
+              <Mol3DPreview smiles={liveSmiles} size={fullscreen3D ? 320 : 280} />
+            </Suspense>
           </div>
         </div>
       )}
 
-      {/* ── Scrollable middle region ────────────────────────────────────
-          Everything between the sticky header (AI title + property strip
-          + 3D toggle) and the sticky footer (chat input form) lives in
-          ONE scroll container. Earlier each panel had its own scroll
-          (result panel + history both used overflow-y-auto), which fell
-          apart when the optional 3D preview was enabled — the 3D panel
-          ate ~230px of fixed space, the result/history scrollers shrank
-          to nothing, and the user could neither read nor scroll. Single
-          scroll region = predictable layout regardless of which optional
-          panels are visible. */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-
-      {/* 3D preview panel — only mounted when the toggle is on, so the
-          3Dmol.js bundle stays unrequested for users who never expand it.
-          Suspense fallback covers the lazy-import gap (~100ms typical).
-          Renders below the property strip, above the quick-actions row,
-          so chemists can scan MW/logP and the 3D shape together without
-          scrolling. */}
-      {show3D && (
-        <div className="px-4 pt-2 pb-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 flex justify-center">
-          <Suspense
-            fallback={
-              <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
-                <Spinner size={14} />
+      {/* ─── DOCK TAB ─── */}
+      {activeTab === "dock" && (
+        <>
+          <div className="p-3 space-y-1.5">
+            {targetPdb ? (
+              <button
+                type="button"
+                disabled={!ketcherReady || quickDockStatus === "running"}
+                onClick={runQuickDock}
+                className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-900/10 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                🎯 <span className="font-medium">Run Quick dock</span>
+                <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  ~10s · real Vina against {targetPdb}{mutations ? ` · ${mutations}` : ""}
+                </span>
+              </button>
+            ) : (
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 leading-relaxed px-1 py-2">
+                Quick dock needs a target. Pick one in Step 1 of the New job form before opening the editor.
               </div>
-            }
-          >
-            <Mol3DPreview smiles={liveSmiles} size={200} />
-          </Suspense>
-        </div>
-      )}
+            )}
+          </div>
 
-      {/* Quick actions */}
-      <div className="p-3 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
-        <button
-          type="button"
-          disabled={!ketcherReady || status === "running"}
-          onClick={runProperties}
-          className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          ⚡ <span className="font-medium">Predict properties</span>
-          <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">MW · logP · TPSA · QED · PAINS</span>
-        </button>
-        <button
-          type="button"
-          disabled={!ketcherReady || status === "running"}
-          onClick={runAnalogs}
-          className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          🔬 <span className="font-medium">Suggest 5 analogs</span>
-          <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Medchem variants worth docking</span>
-        </button>
-        {/* Quick dock — only meaningful when the user has a target +
-            mutation context (NewJobPage flow). On standalone CompoundsPage
-            the button is hidden because there's nothing to dock against. */}
-        {targetPdb && (
-          <button
-            type="button"
-            disabled={!ketcherReady || quickDockStatus === "running"}
-            onClick={runQuickDock}
-            className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-900/10 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            🎯 <span className="font-medium">Quick dock</span>
-            <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-              ~10s · real Vina against {targetPdb}{mutations ? ` · ${mutations}` : ""}
-            </span>
-          </button>
-        )}
-      </div>
-
-      {/* Quick dock by-request CTA — shown when backend returned 403,
-          mirroring the Boltz-2 "By request" pattern. Replaces the
-          quick-dock button area with a friendlier message + Contact
-          link instead of a generic error. */}
-      {quickDockGated && (
+          {/* Quick dock by-request CTA — shown when backend returned 403. */}
+          {quickDockGated && (
         <div className="px-3 py-2.5 border-b border-amber-200 dark:border-amber-800/40 bg-amber-50/60 dark:bg-amber-900/15">
           <div className="text-[11px] font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
@@ -1498,18 +1587,34 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </div>
       )}
 
-      {/* Result panel — flows naturally inside the parent scroll region.
-          (Earlier had its own flex-1 overflow-y-auto, but now the whole
-          middle column scrolls as one and individual panels just stack.)
-          The ref is used by the auto-scroll effect below so a fresh AI
-          suggestion is brought into view instead of landing below the
-          fold — without that, users on shorter viewports thought the
-          AI hadn't responded when in fact the rationale + Apply button
-          were just out of sight. */}
+        </>
+      )}{/* end activeTab === "dock" */}
+
+      {/* ─── CHAT TAB ─── */}
+      {activeTab === "chat" && (
+        <>
+          {/* Suggest 5 analogs — moved here from the global "Quick actions"
+              row because it's an AI action, not a property/dock action.
+              Lives at the top of the chat tab so users see it before the
+              free-text input. */}
+          <div className="p-3 border-b border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              disabled={!ketcherReady || status === "running"}
+              onClick={runAnalogs}
+              className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              🔬 <span className="font-medium">Suggest 5 analogs</span>
+              <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Medchem variants worth docking</span>
+            </button>
+          </div>
+
+      {/* Result panel — auto-scrolled into view on new AI responses
+          (see resultPanelRef + the useEffect above). */}
       <div ref={resultPanelRef} className="p-3 text-[12px]">
         {status === "idle" && lastAction === "none" && (
           <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
-            Sketch a structure on the left, then ask for an edit below or run a quick action above.
+            Sketch a structure on the left, then ask the AI for an edit below.
           </div>
         )}
         {status === "running" && (
@@ -1521,9 +1626,6 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2.5 py-2 text-rose-800 dark:text-rose-200">
             {errorMsg}
           </div>
-        )}
-        {status === "ok" && lastAction === "props" && properties && (
-          <PropertiesPanel p={properties} />
         )}
         {status === "ok" && (lastAction === "edit" || lastAction === "analogs") && result && (
           <ResultPanel result={result} onApply={applyResultToCanvas} />
@@ -1578,13 +1680,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </div>
       )}
 
-      </div>{/* end scrollable middle region */}
+        </>
+      )}{/* end activeTab === "chat" */}
 
-      {/* Free-text input — sticks to bottom. Above the input itself sits
-          an "AI context" pill that tells the user what the AI knows when
-          they hit Improve, plus (when applicable) a "Dock + Improve"
-          combo button so users with a target picked but no fresh dock
-          can ground the AI in one click. */}
+      </div>{/* end scrollable tab content */}
+
+      {/* Free-text input — sticky bottom of the sidebar, ONLY visible
+          on the chat tab. Other tabs have their own primary actions
+          baked into their content (Predict properties, Run Quick dock,
+          etc.) so they don't need a sticky footer. */}
+      {activeTab === "chat" && (
       <form
         className="p-3 border-t border-slate-200 dark:border-slate-700 space-y-2"
         onSubmit={(e) => {
@@ -1709,6 +1814,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           </button>
         )}
       </form>
+      )}{/* end activeTab === "chat" form footer */}
     </aside>
   );
 }
