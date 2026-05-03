@@ -78,6 +78,29 @@ export default function NewJobPage() {
     mutationFn: (id: number) => api.deleteMyCompound(id),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["my-compounds"] }); },
   });
+  // Persist a sketcher-produced compound to the user's library on
+  // explicit save (Save-as-new from RenamePrompt). Distinct from the
+  // 800ms auto-save we removed in #334 — that fired on every keystroke
+  // and spammed the table; this one only fires when the user
+  // deliberately commits a renamed structure. Surfaces failures via
+  // an inline banner so saves never fail silently again (the same
+  // class of bug as the CompoundsPage save-without-onError issue).
+  const [saveCompoundError, setSaveCompoundError] = useState<string | null>(null);
+  const saveCompoundMut = useMutation({
+    mutationFn: (payload: { name: string; smiles: string }) => api.saveMyCompound(payload),
+    onSuccess: () => {
+      setSaveCompoundError(null);
+      queryClient.invalidateQueries({ queryKey: ["my-compounds"] });
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof ApiError ? `${err.status} ${err.message}`
+        : err instanceof Error ? err.message
+        : String(err);
+      console.error("[NewJobPage] saveMyCompound failed:", err);
+      setSaveCompoundError(`Couldn't save to library: ${msg}`);
+    },
+  });
   // Re-run-from-history payload — a History row pushes navigate("/new", {state: {reseed: ...}})
   // and we hydrate the form once the catalog has loaded. The reseed handler
   // runs at most once per mount; after firing we replace the route to clear
@@ -693,6 +716,40 @@ export default function NewJobPage() {
             aria-label="Dismiss"
             className="shrink-0 -mr-1 -mt-0.5 text-white/80 hover:text-white"
             onClick={(e) => { e.stopPropagation(); setCapToast(null); }}
+          >
+            <Close size={14} />
+          </button>
+        </div>
+      </div>
+    )}
+    {/* Library-save error toast — fires when saveCompoundMut fails
+        (the rare case where the user names a sketcher-produced
+        structure but the POST to /me/compounds errors out — auth
+        expired, network blip, library cap reached). The job-form
+        flow is unaffected; this just tells the user the *library*
+        copy didn't persist so they can retry from /compounds. */}
+    {saveCompoundError && (
+      <div
+        role="alert"
+        aria-live="polite"
+        onClick={() => setSaveCompoundError(null)}
+        className="fixed top-32 left-1/2 -translate-x-1/2 z-[300] cursor-pointer"
+      >
+        <div className="flex items-start gap-3 max-w-md bg-amber-600 text-white px-4 py-3 rounded-lg shadow-lg ring-1 ring-amber-700 animate-fade-in">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <div className="text-sm leading-snug">
+            <div className="font-semibold">Compound saved to job, not library</div>
+            <div className="text-white/90 mt-0.5 break-words">{saveCompoundError}</div>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className="shrink-0 -mr-1 -mt-0.5 text-white/80 hover:text-white"
+            onClick={(e) => { e.stopPropagation(); setSaveCompoundError(null); }}
           >
             <Close size={14} />
           </button>
@@ -1918,7 +1975,18 @@ export default function NewJobPage() {
           setRenamePrompt(null);
         }}
         onSave={(newName) => {
+          // Two side effects in lockstep: update the form row in
+          // local state AND persist the new compound to the user's
+          // library so it shows up on /compounds for re-use later.
+          // Until 2026-05-03 we only did the local update — meaning
+          // a user would name a structure here, submit a job, and
+          // then wonder why the compound never appeared in their
+          // library. Save is fire-and-forget (no await) — failures
+          // surface via the saveCompoundError banner; the form row
+          // update happens regardless so the in-progress job flow
+          // isn't blocked by a library-save hiccup.
           setCompound(renamePrompt.rowIdx, { smiles: renamePrompt.newSmiles, name: newName });
+          saveCompoundMut.mutate({ name: newName, smiles: renamePrompt.newSmiles });
           setRenamePrompt(null);
         }}
       />
