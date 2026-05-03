@@ -208,6 +208,68 @@ def quick_dock(
                 ),
             )
 
+        # Vina-pod sanity gate — added 2026-05-03 after repeated
+        # `vina-gpu rc=255` crashes from AI-generated Optimize variants.
+        # `prepare_ligand` validates "can produce a PDBQT"; this checks
+        # the molecule against vina-gpu's structural limits, which are
+        # tighter than CPU vina:
+        #   - >32 rotatable bonds: vina-gpu's flex parser overflows
+        #     (we cap at 25 to leave headroom for the GPU implementation,
+        #      which is even stricter than the upstream vina spec).
+        #   - >100 heavy atoms: PDBQT array sizing assumptions break
+        #     somewhere in the GPU kernel; cap at 80 to be safe.
+        #   - MW >900 Da: vina's empirical scoring function was trained
+        #     on drug-like molecules; predictions drift wildly above
+        #     this threshold and the score is meaningless even when the
+        #     dock "succeeds." Better to stop early than ship junk.
+        # Failures here return ok=False with a clear reason — the
+        # Optimize loop on the frontend then renders this as the
+        # variant's error pill instead of a generic Pod 500.
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import Lipinski, Descriptors
+            mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                return QuickDockResult(
+                    ok=False,
+                    error="RDKit can't parse this SMILES — skip.",
+                )
+            n_heavy = mol.GetNumHeavyAtoms()
+            n_rot = Lipinski.NumRotatableBonds(mol)
+            mw = Descriptors.MolWt(mol)
+            if n_rot > 25:
+                return QuickDockResult(
+                    ok=False,
+                    error=(
+                        f"Too flexible for vina-gpu ({n_rot} rotatable bonds; "
+                        f"limit 25). Try a more rigid analog."
+                    ),
+                )
+            if n_heavy > 80:
+                return QuickDockResult(
+                    ok=False,
+                    error=(
+                        f"Too large for vina-gpu ({n_heavy} heavy atoms; "
+                        f"limit 80). Simplify the scaffold."
+                    ),
+                )
+            if mw > 900:
+                return QuickDockResult(
+                    ok=False,
+                    error=(
+                        f"MW {mw:.0f} Da exceeds vina's reliable range (~900 Da). "
+                        f"Score would be unreliable; skipping."
+                    ),
+                )
+            log.info(
+                "quick_dock sanity gate ok: heavy=%d rot=%d mw=%.1f",
+                n_heavy, n_rot, mw,
+            )
+        except Exception as e:
+            # Sanity check itself failed — log + proceed. Better to attempt
+            # the dock than block on a bad import.
+            log.warning("quick_dock sanity gate skipped (error: %s)", e)
+
         cfg = PodDockConfig(
             base_url=pod_url,
             timeout_s=min(settings.pod_dock_timeout_s, 60),

@@ -1681,7 +1681,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           }
           className="w-full text-[11px] font-semibold px-2 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
         >
-          {status === "running" && quickDockStatus !== "running" ? "Sending…" : "💬 Chat with AI"}
+          {status === "running" && quickDockStatus !== "running" ? "Sending…" : "💬 Chat with Liganx AI"}
         </button>
         {/* (Dock + Improve combo button removed 2026-05-02 — was a
             second "dock" CTA below the prominent Quick Dock card,
