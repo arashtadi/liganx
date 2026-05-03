@@ -74,6 +74,71 @@ ANTHROPIC_SKILLS_BETA = (
     "skills-2025-10-02,code-execution-2025-08-25,files-api-2025-04-14"
 )
 
+# ── Inline medchem-phd skill content ─────────────────────────────────────
+# 2026-05-03: We tried wiring the medchem-phd skill via Anthropic's
+# proper Skills API (uploaded the .skill bundle, set MEDCHEM_PHD_SKILL_ID,
+# attached container.skills[] + code_execution tool to every call). The
+# API returned 502s — our best guess is Haiku 4.5 doesn't yet support
+# workspace skills, OR the beta combo isn't enabled on this account
+# tier. Rather than block on Anthropic-support, we fall back to the
+# crude-but-reliable approach: read the SKILL.md content at module
+# import and prepend it to every system prompt. Cost: ~4-5K extra
+# tokens per call. Benefit: production AI now has the same medchem
+# reasoning that the eval suite measured at 100% pass vs 40% baseline.
+# When Anthropic adds Haiku skills support, swap back to the lazy-load
+# path (the MEDCHEM_PHD_SKILL_ID env + container.skills wiring is
+# still in _build_request below; just set the env var to re-enable).
+MEDCHEM_PHD_INLINE = os.environ.get("MEDCHEM_PHD_INLINE", "1").strip() not in ("", "0", "false", "False")
+
+
+def _load_inline_skill() -> str:
+    """Read the medchem-phd skill content from the sibling .md file.
+    Returns empty string on any failure (file missing, encoding error)
+    so a deploy with a broken file path doesn't take the AI offline —
+    we just fall back to the inline _SYSTEM_PROMPT rules."""
+    if not MEDCHEM_PHD_INLINE:
+        return ""
+    try:
+        skill_path = os.path.join(os.path.dirname(__file__), "medchem_phd_skill.md")
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Strip the YAML frontmatter (between --- markers) — that's
+        # for the Skills API loader, not the LLM.
+        if content.startswith("---\n"):
+            end = content.find("\n---\n", 4)
+            if end > 0:
+                content = content[end + 5:]
+        return content.strip()
+    except Exception as e:
+        log.warning("Failed to load inline medchem-phd skill: %s", e)
+        return ""
+
+
+_INLINE_SKILL_CONTENT = _load_inline_skill()
+if _INLINE_SKILL_CONTENT:
+    log.info(
+        "Medchem-phd skill loaded inline: %d chars (~%d tokens estimated)",
+        len(_INLINE_SKILL_CONTENT), len(_INLINE_SKILL_CONTENT) // 4,
+    )
+
+
+def _augment_with_skill(base_prompt: str) -> str:
+    """Prepend the medchem-phd skill content to a base system prompt.
+    Returns base_prompt unchanged when the skill failed to load (so
+    we never break the AI just because the .md file went missing)."""
+    if not _INLINE_SKILL_CONTENT:
+        return base_prompt
+    # Skill content first (sets the persona + reference frame), then
+    # the call-specific rules (output format, behavior contract). The
+    # call-specific rules win on conflicts because they're closer to
+    # the user prompt in the context window.
+    return (
+        "# Medchem-PhD reference (always-on consultant brief)\n\n"
+        + _INLINE_SKILL_CONTENT
+        + "\n\n# Call-specific rules (these override anything above on conflict)\n\n"
+        + base_prompt
+    )
+
 
 class AssistResponse(TypedDict, total=False):
     new_smiles: str
@@ -448,7 +513,8 @@ async def call_anthropic_optimize(
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
-        system_prompt=_OPTIMIZE_SYSTEM_PROMPT, user_prompt=user_prompt
+        system_prompt=_augment_with_skill(_OPTIMIZE_SYSTEM_PROMPT),
+        user_prompt=user_prompt,
     )
 
     try:
@@ -527,7 +593,8 @@ async def call_anthropic(
     )
 
     headers, payload, timeout = _build_request(
-        system_prompt=_SYSTEM_PROMPT, user_prompt=user_prompt
+        system_prompt=_augment_with_skill(_SYSTEM_PROMPT),
+        user_prompt=user_prompt,
     )
 
     try:
