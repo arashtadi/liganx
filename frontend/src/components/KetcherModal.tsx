@@ -1447,11 +1447,40 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             Chemists who want unstructured brainstorm can type "suggest
             5 analogs" directly into Chat with AI below.) */}
         {status === "idle" && lastAction === "none" && (
-          <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
-            {targetPdb
-              ? "Run Quick dock above to see a draft score, then click Optimize for AI variants — or ask the AI for an edit below."
-              : "Sketch above, then ask the AI for an edit below."}
-          </div>
+          targetPdb ? (
+            <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
+              Run Quick dock above to see a draft score, then click Optimize for AI variants — or ask the AI for an edit below.
+            </div>
+          ) : (
+            // No-target explainer card — surfaces WHY the dock features
+            // are missing instead of leaving the user wondering. This is
+            // the CompoundsPage-edit flow path: the modal was opened
+            // from the standalone library, so there's no receptor to
+            // dock against. The Use in New Job button calls
+            // promoteToFullJob (which already handles the no-dockResult
+            // case by passing just the compound to /new's reseed
+            // payload), letting the user pick a target there and come
+            // back to the editor with full features unlocked.
+            <div className="rounded-lg border border-delta-200 dark:border-delta-800/40 bg-delta-50/50 dark:bg-delta-900/15 px-2.5 py-2 space-y-2">
+              <div className="text-[11px] font-semibold text-delta-900 dark:text-delta-200">
+                🎯 No target selected
+              </div>
+              <div className="text-[11px] text-delta-800 dark:text-delta-300 leading-tight">
+                Quick dock + Optimize need a receptor to dock against. To unlock them, use this compound in a New Job and pick a target there.
+              </div>
+              <button
+                type="button"
+                onClick={promoteToFullJob}
+                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                title="Close the editor, navigate to New Job with this compound pre-filled, then pick a target there"
+              >
+                ⚡ Use in New Job →
+              </button>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-tight">
+                Or chat with the AI below for general medchem advice (no dock context).
+              </div>
+            </div>
+          )
         )}
         {status === "running" && lastAction !== "props" && (
           <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-[10px]">
