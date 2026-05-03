@@ -37,6 +37,14 @@ export interface RenamePromptProps {
   submitLabel?: string;
   onCancel: () => void;
   onSave: (newName: string) => void;
+  /** Optional "Update <OriginalName>" path — when provided, surfaces a
+   *  prominent secondary action that overwrites the existing library
+   *  entry instead of forcing the user to create a new one. Without
+   *  this, users were getting stuck saving Aspirin_, Aspirin__, etc.
+   *  every time they iterated on the same compound — they didn't see
+   *  that typing the SAME name back was allowed because the input
+   *  was pre-filled with the underscore-suffixed variant. */
+  onOverwrite?: () => void;
 }
 
 export default function RenamePrompt({
@@ -48,6 +56,7 @@ export default function RenamePrompt({
   submitLabel,
   onCancel,
   onSave,
+  onOverwrite,
 }: RenamePromptProps) {
   const [name, setName] = useState(initialName);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -79,8 +88,13 @@ export default function RenamePrompt({
     if (canSave) onSave(trimmed);
   }
 
-  const headerTitle = title ?? "Name your modified structure";
-  const defaultSubtitle = (
+  const headerTitle = title ?? (onOverwrite ? "Save your edit" : "Name your modified structure");
+  const defaultSubtitle = onOverwrite ? (
+    <>
+      You changed the structure of <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{currentRowName}</span>.
+      Update it in your library, or save the modified molecule under a new name.
+    </>
+  ) : (
     <>
       You changed the structure of <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{currentRowName}</span>,
       so it isn&apos;t {currentRowName} anymore. Give the new molecule its
@@ -105,9 +119,40 @@ export default function RenamePrompt({
             {subtitle ?? defaultSubtitle}
           </p>
         </header>
-        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
+
+        {/* PRIMARY action when overwrite is available — full-width
+            emerald button. The previous design buried the "use the
+            same name" path behind the rename input, so users iterating
+            on the same compound kept ending up with foo, foo_, foo__
+            entries. With this button surfaced as a clear primary
+            action, one click overwrites the library entry. */}
+        {onOverwrite && (
+          <div className="px-5 pt-4">
+            <button
+              type="button"
+              onClick={onOverwrite}
+              className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+            >
+              <span aria-hidden="true">↻</span>
+              Update <span className="font-mono">{currentRowName}</span> in your library
+            </button>
+            <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 text-center">
+              Replaces the saved structure under the same name.
+            </p>
+          </div>
+        )}
+
+        {/* SECONDARY path — save as a new compound. Visually demoted
+            (smaller header, divider above) when the overwrite path is
+            present so the user's eye lands on Update first. */}
+        <form onSubmit={handleSubmit} className={"px-5 py-4 space-y-3 " + (onOverwrite ? "border-t border-slate-200 dark:border-slate-700 mt-4" : "")}>
+          {onOverwrite && (
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">
+              Or save as a new compound
+            </div>
+          )}
           <div>
-            <label htmlFor="rename-name" className="label">New compound name</label>
+            <label htmlFor="rename-name" className="label">{onOverwrite ? "New name" : "New compound name"}</label>
             <input
               id="rename-name"
               ref={inputRef}
@@ -142,7 +187,7 @@ export default function RenamePrompt({
               disabled={!canSave}
               className="btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submitLabel ?? "Save & use"}
+              {submitLabel ?? (onOverwrite ? "Save as new" : "Save & use")}
             </button>
           </div>
         </form>

@@ -1974,6 +1974,30 @@ export default function NewJobPage() {
           // explicitly chose to back out.
           setRenamePrompt(null);
         }}
+        // PRIMARY ACTION when the row was sourced from the user's
+        // library. Backend upserts on (user_id, name), so re-saving
+        // the same name overwrites the existing entry — exactly the
+        // "iterate on the same compound" workflow chemists want.
+        // Without this, every edit forced a renamed copy and users
+        // couldn't tell their changes were being persisted at all
+        // (they were, just to a NEW row each time). Only offered
+        // when the original name actually exists in the library —
+        // for an unnamed-row workflow there's no existing entry to
+        // overwrite, so the rename input is the only path.
+        onOverwrite={
+          savedCompounds.some(
+            (c) => c.name.toLowerCase() === renamePrompt.originalName.toLowerCase(),
+          )
+            ? () => {
+                setCompound(renamePrompt.rowIdx, { smiles: renamePrompt.newSmiles });
+                saveCompoundMut.mutate({
+                  name: renamePrompt.originalName,
+                  smiles: renamePrompt.newSmiles,
+                });
+                setRenamePrompt(null);
+              }
+            : undefined
+        }
         onSave={(newName) => {
           // Two side effects in lockstep: update the form row in
           // local state AND persist the new compound to the user's
