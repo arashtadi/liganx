@@ -720,14 +720,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // object. Updated by the same 2.5s polling loop that feeds liveProps,
   // so we don't add a second timer to the modal.
   const [liveSmiles, setLiveSmiles] = useState<string>("");
-  // 3D preview toggle. Off by default so the user pays the 3Dmol.js
-  // download (~600KB) only when they ask for it. Persists for the
-  // lifetime of the modal — closing/reopening starts off again, which
-  // is the right default for a feature most users won't need.
-  // (Now controlled implicitly by the 3D tab being active rather than
-  // a separate toggle button — kept here because the lazy-import gate
-  // still consults it; the 3D tab sets it true on mount.)
-  const [show3D, setShow3D] = useState<boolean>(false);
+  // 3D preview toggle. Defaults to TRUE — the viewer auto-loads when
+  // the modal opens (Option D dashboard layout puts the 3D column right
+  // there alongside Properties / Dock / Chat, so a manual "Load 3D"
+  // step would just be friction). The 3Dmol.js bundle (~600KB) lazy-
+  // imports on first render; that cost is one-time per browser session
+  // because Vite's chunk hashing keeps the module cached.
+  const [show3D] = useState<boolean>(true);
 
   // ── Bottom dashboard layout state ───────────────────────────────────
   // Option D (Maestro-style): Ketcher fills the modal width on top, AI
@@ -1351,28 +1350,20 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             </button>
           </div>
           <div className="flex-1 flex items-center justify-center p-2 min-h-0 overflow-hidden">
-            {!show3D ? (
-              <button
-                type="button"
-                onClick={() => setShow3D(true)}
-                disabled={!ketcherReady}
-                className="text-[11px] px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Load the 3D viewer (one-time ~600KB download)"
+            {/* Auto-load on first render — no gate button. The
+                fullscreen branch hides this inline viewer to avoid
+                mounting two 3Dmol instances that would compete for the
+                same WebGL context. */}
+            {!fullscreen3D && (
+              <Suspense
+                fallback={
+                  <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
+                    <Spinner size={12} />
+                  </div>
+                }
               >
-                Load 3D viewer
-              </button>
-            ) : (
-              !fullscreen3D && (
-                <Suspense
-                  fallback={
-                    <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
-                      <Spinner size={12} />
-                    </div>
-                  }
-                >
-                  <Mol3DPreview smiles={liveSmiles} size={210} />
-                </Suspense>
-              )
+                <Mol3DPreview smiles={liveSmiles} size={210} />
+              </Suspense>
             )}
           </div>
         </div>
