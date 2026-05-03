@@ -1654,7 +1654,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                       </span>
                     )}
                     {v.status === "error" && (
-                      <span className="text-[9px] text-rose-600 dark:text-rose-400 truncate" title={v.error || "dock failed"}>{v.error || "fail"}</span>
+                      // Hide raw 'vina-gpu rc=255' / HTTP 500 / Pod
+                      // tracebacks behind a friendly "Pod couldn't dock"
+                      // label. The full error is preserved in the
+                      // tooltip for power users / support.
+                      <span
+                        className="text-[9px] text-rose-600 dark:text-rose-400 truncate cursor-help"
+                        title={`Pod couldn't dock this variant. Common causes: too flexible/large for vina-gpu, or a transient Pod hiccup. Click Apply to inspect on canvas, or try Optimize again.\n\nRaw error: ${v.error || "dock failed"}`}
+                      >
+                        ⚠ Pod couldn't dock — try Apply
+                      </span>
                     )}
                     <button
                       type="button"

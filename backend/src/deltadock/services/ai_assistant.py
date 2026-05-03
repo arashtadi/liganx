@@ -501,19 +501,74 @@ def _extract_json(raw: str) -> Optional[dict]:
 
 _OPTIMIZE_SYSTEM_PROMPT = """You are a PhD-level medicinal-chemistry assistant inside Liganx. \
 The user has just docked a compound against a specific target+mutation \
-and wants 3 variant compounds designed to gain contacts at residues the \
-original compound MISSED.
+and wants 3 variant compounds designed to BEAT the parent score AND \
+specifically engage the MUTATED residue (not just any missed residue).
+
+# Goal — read it carefully
+Your variants will be re-docked with the SAME engine (Vina/QuickVina2-GPU) \
+and SAME pocket box as the parent. So a successful variant must:
+  1. Score MORE NEGATIVE than the parent (better binding affinity) — \
+     Vina noise floor is ±0.5 kcal/mol so target ≥ 0.7 kcal/mol \
+     improvement to be reproducible.
+  2. Add at least one specific contact in the missed-residue list \
+     (ideally the mutated residue itself).
+  3. NOT introduce features that crash vina-gpu (see "Synthesis sanity" below).
 
 # Output format (STRICT — return ONLY this JSON, no preamble, no code fences)
 {"variants":[{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"}]}
 
 # Behavior rules
 - Return EXACTLY 3 variants. Each SMILES MUST parse with RDKit (canonical-style).
-- Keep edits minimal: change only what's needed to reach the missed residues.
+- Keep edits minimal: change only what's needed to reach the missed residues. \
+Tiny edits (single-atom swaps, methyl→ethyl, F→Cl) often improve scores by \
+0.3-0.8 kcal/mol with low risk; prefer those over scaffold rewrites unless \
+the parent is fundamentally wrong-shape.
 - DIVERSITY > MAGNITUDE: the 3 variants must span DIFFERENT design axes \
-(one disjunction = simplify scaffold, one conjunction = add a group / scaffold-hop, \
+(one disjunction = simplify/strip a group, one conjunction = add a group / scaffold-hop, \
 one special-approach = ring closure / chiral resolution / bioisosteric swap / EWG-EDG tuning) \
 — NOT three variations of the same move.
+
+# Mutation residue is the PRIMARY target
+At least ONE of the 3 variants MUST be designed to engage the actual \
+MUTATED residue (the one whose identity changed in the user's mutation \
+string), not just generic missed residues. State the mutated residue \
+name explicitly in that variant's rationale.
+
+For SUBSTITUTIONS (the common case — like G2032R, T315I, T790M, V600E):
+- Identify the BIOPHYSICAL DELTA between original and new residue:
+  • Gly → Arg/Lys/His (small→big basic): new positive charge in pocket. \
+    Add an ANIONIC group (carboxylate, tetrazole, sulfonate, acyl-sulfonamide) \
+    OR a neutral H-bond acceptor (sulfonyl, carbonyl, pyridine N) within \
+    reach of the new side chain. ANIONIC > neutral acceptor for affinity.
+  • Gly → Asp/Glu (small→acidic): new negative charge. Add a basic group \
+    (amine, guanidine, imidazole) or H-bond donor (NH, OH).
+  • Thr/Ser/Cys → bulky hydrophobic (T315I, T790M, T550M, C481S, etc.): \
+    "gatekeeper-style" steric clash. Either (a) BYPASS with an extended \
+    linker (Ponatinib alkyne for T315I), (b) SHRINK the offending substituent \
+    (smaller cyclopropyl/methyl), or (c) flip to a NON-COVALENT scaffold if \
+    the mutation killed a covalent cysteine.
+  • Hydrophobic → Hydrophobic of similar size (L→I, V→L): rarely changes \
+    binding much; design should usually target NEARBY residues instead.
+  • Anything → Pro: backbone rigidification — flag as "may shift loop \
+    conformation; rigid-receptor docking under-predicts effect."
+  • Activation-loop residues (V600E, D816V, etc.): mutation flips the \
+    DFG/aC-helix conformation. Vina against the WT receptor is the WRONG \
+    state. Flag this in the rationale and suggest the user consider \
+    a mutation-specific PDB.
+
+# Synthesis sanity (very important — vina-gpu crashes if violated)
+The Pod crashes (rc=255) on molecules that pass RDKit but blow past \
+practical limits. Avoid generating variants that:
+- Have > 25 rotatable bonds (Vina's torsion limit)
+- Have > 80 heavy atoms (Vina's atom limit)
+- Have molecular weight > 900 Da
+- Contain Boron (B), Silicon (Si), or transition metals — Vina has no \
+  parameters for these
+- Contain unusual valences that survived RDKit but won't survive Meeko \
+  ligand prep (5-coordinate carbon, etc.)
+If your design naturally drifts there (e.g. macrocyclic natural products), \
+STRIP back to a drug-like core before emitting the SMILES. A working \
+variant beats a clever one that the engine can't dock.
 
 # Citing residues — strict rules
 - Each rationale should name the SPECIFIC missed residue the variant \
@@ -639,8 +694,68 @@ async def call_anthropic_optimize(
         if not valid or not canonical:
             log.info("optimize variant rejected (RDKit): %r", smi_raw)
             continue
+        # Pre-flight Vina/QuickVina-GPU sanity gate. The Pod crashes
+        # rc=255 on too-big/too-flexible/wrong-element molecules even
+        # when RDKit accepts them. Mirrors the gate in services/quick_dock.py
+        # — keeping the cutoffs in sync prevents the AI from emitting
+        # variants the user will only see fail in the UI. We append a
+        # note to the rationale (rather than dropping the variant
+        # entirely) so the chemist sees why the AI's design got
+        # rejected and can either accept the limitation or hand-edit.
+        skip_reason = _vina_pod_pre_flight(canonical)
+        if skip_reason:
+            log.info("optimize variant skipped (pod pre-flight): %s for %r", skip_reason, canonical)
+            # Drop this variant — Pod would just crash on it. Don't
+            # leak rc=255 into the UI. The 3-of-3 contract gets relaxed
+            # to "up to 3"; frontend already handles fewer.
+            continue
         out.append(OptimizeVariant(new_smiles=canonical, rationale=rationale))
     return out
+
+
+def _vina_pod_pre_flight(smiles: str) -> Optional[str]:
+    """Check whether a SMILES will survive QuickVina2-GPU. Returns None
+    if the molecule is OK, or a short string explaining why it would
+    crash. Same cutoffs as services/quick_dock.py — keep them in sync.
+
+    These are the rc=255 triggers we've actually seen in production:
+    too many torsions (Vina's hard limit), too many heavy atoms,
+    out-of-Vina-allowlist elements (B, Si, transition metals)."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import Lipinski, Descriptors
+    except ImportError:
+        return None  # if RDKit isn't available we can't check; let it through
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+    except Exception:
+        return None
+    if mol is None:
+        return None
+    n_heavy = mol.GetNumHeavyAtoms()
+    if n_heavy > 80:
+        return f"too large for vina-gpu ({n_heavy} heavy atoms; limit 80)"
+    try:
+        n_rot = Lipinski.NumRotatableBonds(mol)
+    except Exception:
+        n_rot = 0
+    if n_rot > 25:
+        return f"too flexible for vina-gpu ({n_rot} rotatable bonds; limit 25)"
+    try:
+        mw = Descriptors.MolWt(mol)
+    except Exception:
+        mw = 0
+    if mw > 900:
+        return f"MW {mw:.0f} > 900 Da (Vina limit)"
+    # Vina element allow-list: H/C/N/O/F/P/S/Cl/Br/I (matches Meeko defaults).
+    bad_elements = set()
+    for atom in mol.GetAtoms():
+        sym = atom.GetSymbol()
+        if sym not in ("H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"):
+            bad_elements.add(sym)
+    if bad_elements:
+        return f"unsupported element(s): {','.join(sorted(bad_elements))}"
+    return None
 
 
 async def call_anthropic(
