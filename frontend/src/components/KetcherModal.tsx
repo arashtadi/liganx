@@ -888,18 +888,38 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // so we don't need a separate endpoint. The AI returns ONE smiles
       // + rationale per the contract, but we phrase the instruction so
       // the rationale reads as a "5 analogs to consider" list.
+      //
+      // Docking-aware spread: same staleness guard as runEdit. When a
+      // fresh dock matches the live SMILES, pass score/hits/misses so
+      // the AI's analog suggestions are biased toward fixing the
+      // missed residues. Without this the analogs are generic medchem
+      // ideas; with it they're targeted at the specific binding
+      // problem the user just measured.
+      const dockFresh = dockResult && dockResult.smiles === smi;
+      const instruction = dockFresh
+        ? "Suggest 5 promising medchem analogs of this compound that would" +
+          " improve binding to the target pocket — especially address the" +
+          " missed residues from the dock results. Return the most promising" +
+          " one as new_smiles, and list the other 4 + brief rationale for" +
+          " each (referencing the relevant residue interactions) in the" +
+          " rationale field."
+        : "Suggest 5 promising medchem analogs of this compound. Return the most" +
+          " interesting one as new_smiles, and list the other 4 + brief rationale" +
+          " for each in the rationale field.";
       const r = await api.assistCompound({
         smiles: smi,
-        instruction:
-          "Suggest 5 promising medchem analogs of this compound. Return the most" +
-          " interesting one as new_smiles, and list the other 4 + brief rationale" +
-          " for each in the rationale field.",
+        instruction,
         target_pdb: targetPdb,
         mutations: mutations,
+        ...(dockFresh ? {
+          score: dockResult!.score,
+          hits: dockResult!.hits,
+          misses: dockResult!.misses,
+        } : {}),
       });
       setResult(r);
       setStatus("ok");
-      addToHistory("Suggest 5 medchem analogs", r);
+      addToHistory(dockFresh ? "Suggest 5 medchem analogs (docking-aware)" : "Suggest 5 medchem analogs", r);
     } catch (e) {
       setStatus("error");
       setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
@@ -1465,14 +1485,29 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         {status === "ok" && lastAction === "props" && properties && (
           <PropertiesPanel p={properties} />
         )}
-        {/* Suggest 5 analogs - secondary AI action */}
+        {/* Suggest 5 analogs — secondary AI action. Upgrades to
+            "docking-aware" copy + emerald accent when there's a fresh
+            dock for the live SMILES, signaling that the AI will use the
+            score/hits/misses to bias the suggestions toward fixing the
+            missed residues. */}
         <button
           type="button"
           disabled={!ketcherReady || status === "running"}
           onClick={runAnalogs}
-          className="w-full text-left text-[10px] px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          title={
+            dockFreshForLive
+              ? "AI will use the dock score and missed residues to bias the analog suggestions"
+              : "Generic medchem analogs. Run Quick dock first for docking-aware suggestions."
+          }
+          className={
+            "w-full text-left text-[11px] px-2 py-1.5 rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed " +
+            (dockFreshForLive
+              ? "border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 text-emerald-800 dark:text-emerald-200"
+              : "border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200")
+          }
         >
           🔬 <span className="font-medium">Suggest 5 analogs</span>
+          {dockFreshForLive && <span className="text-[10px] ml-1 opacity-70">(docking-aware)</span>}
         </button>
         {status === "idle" && lastAction === "none" && (
           <div className="text-slate-400 dark:text-slate-500 text-[10px] leading-relaxed">
