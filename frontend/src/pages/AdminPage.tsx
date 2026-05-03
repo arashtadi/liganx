@@ -120,6 +120,24 @@ function AdminDashboard() {
   if (apiErr instanceof ApiError && apiErr.status === 403) {
     return <NotAuthorizedCard reason="not-admin" />;
   }
+  // Any non-403 error on the users query was previously hidden — the
+  // page just rendered "No users yet" with the correct USERS count in
+  // the stat card, leaving the admin guessing. Surface it inline so
+  // we can see exactly what the backend is complaining about (500
+  // detail string, 503 from auth, etc.). Stats errors handled
+  // similarly — both the count and the list need to be honest.
+  function fmtErr(e: unknown): string {
+    if (e instanceof ApiError) return `HTTP ${e.status} — ${e.message}`;
+    if (e instanceof Error) return e.message;
+    return String(e);
+  }
+  const usersErr = usersQuery.error;
+  const statsErr = statsQuery.error;
+  const banner = usersErr
+    ? `users query failed: ${fmtErr(usersErr)}`
+    : statsErr
+      ? `stats query failed: ${fmtErr(statsErr)}`
+      : null;
 
   if (statsQuery.isLoading || usersQuery.isLoading) {
     return (
@@ -157,6 +175,16 @@ function AdminDashboard() {
           </div>
         )}
       </header>
+
+      {banner && (
+        <div className="card border-rose-300 bg-rose-50 text-rose-800 dark:bg-rose-900/20 dark:text-rose-200 text-sm mb-4">
+          <div className="font-semibold mb-1">Admin endpoint error</div>
+          <div className="break-words font-mono text-xs">{banner}</div>
+          <div className="text-xs mt-2 opacity-75">
+            Stats may still be visible above; the user list won&apos;t load. Check Fly logs for the full traceback.
+          </div>
+        </div>
+      )}
 
       {/* Stats strip */}
       {stats && (

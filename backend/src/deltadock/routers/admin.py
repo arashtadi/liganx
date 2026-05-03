@@ -115,50 +115,82 @@ def list_users(
     """Return every user with profile + job stats, sorted by signup
     desc (newest first). Single LEFT JOIN; per-user job counts are a
     correlated subquery — fine at our user-count scale (handful to
-    hundreds), upgrade to a window function if we cross thousands."""
-    rows = session.execute(text(
-        f"""
-        SELECT
-            u.id::text AS user_id,
-            u.email,
-            u.created_at,
-            u.last_sign_in_at,
-            p.full_name,
-            p.organization,
-            p.role,
-            COALESCE(p.job_quota, 10) AS job_quota,
-            -- job.user_id is UUID; u.id is also UUID. Don't cast either
-            -- side or Postgres complains "operator does not exist:
-            -- uuid = text". The earlier quota check works with a bound
-            -- :uid parameter because parameter binding auto-coerces.
-            (SELECT COUNT(*) FROM job j
-             WHERE j.user_id = u.id
-               AND j.status IN ('PENDING','RUNNING','COMPLETED')
-            ) AS jobs_used,
-            (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id) AS jobs_total
-        FROM auth.users u
-        LEFT JOIN public.user_profile p ON p.user_id = u.id
-        ORDER BY u.created_at DESC
-        """
-    )).mappings().all()
+    hundreds), upgrade to a window function if we cross thousands.
+
+    Wrapped in try/except as of 2026-05-03 — was returning 503 silently
+    (no traceback in logs because the default FastAPI 500 handler
+    swallows the exception body). The wrapper logs the full traceback
+    + admin email so we can root-cause invisible breakage in prod.
+    Per-row defensiveness because one malformed row (e.g. orphaned
+    auth.users entry from a partial delete, weird timestamp format)
+    shouldn't blackhole the whole admin panel."""
+    try:
+        rows = session.execute(text(
+            f"""
+            SELECT
+                u.id::text AS user_id,
+                u.email,
+                u.created_at,
+                u.last_sign_in_at,
+                p.full_name,
+                p.organization,
+                p.role,
+                COALESCE(p.job_quota, 10) AS job_quota,
+                -- job.user_id is UUID; u.id is also UUID. Don't cast either
+                -- side or Postgres complains "operator does not exist:
+                -- uuid = text". The earlier quota check works with a bound
+                -- :uid parameter because parameter binding auto-coerces.
+                (SELECT COUNT(*) FROM job j
+                 WHERE j.user_id = u.id
+                   AND j.status IN ('PENDING','RUNNING','COMPLETED')
+                ) AS jobs_used,
+                (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id) AS jobs_total
+            FROM auth.users u
+            LEFT JOIN public.user_profile p ON p.user_id = u.id
+            ORDER BY u.created_at DESC
+            """
+        )).mappings().all()
+    except Exception as e:
+        log.exception("admin/users SQL failed for admin=%r", admin.email)
+        raise HTTPException(
+            status_code=500,
+            detail=f"admin/users query failed: {type(e).__name__}: {e}",
+        )
+
     out: list[AdminUserRow] = []
     admin_email_lc = admin.email.strip().lower()
+    skipped_rows: list[str] = []
     for r in rows:
-        out.append(AdminUserRow(
-            user_id=r["user_id"],
-            email=r["email"] or "",
-            full_name=r["full_name"],
-            organization=r["organization"],
-            role=r["role"],
-            # Postgres returns datetimes; psycopg2 deserializes to Python
-            # datetime — isoformat for JSON.
-            created_at=r["created_at"].isoformat() if r["created_at"] else "",
-            last_sign_in_at=r["last_sign_in_at"].isoformat() if r["last_sign_in_at"] else None,
-            job_quota=int(r["job_quota"]),
-            jobs_used=int(r["jobs_used"]),
-            jobs_total=int(r["jobs_total"]),
-            is_admin=(r["email"] or "").strip().lower() == admin_email_lc,
-        ))
+        try:
+            out.append(AdminUserRow(
+                user_id=r["user_id"],
+                email=r["email"] or "",
+                full_name=r["full_name"],
+                organization=r["organization"],
+                role=r["role"],
+                # Postgres returns datetimes; psycopg2 deserializes to Python
+                # datetime — isoformat for JSON.
+                created_at=r["created_at"].isoformat() if r["created_at"] else "",
+                last_sign_in_at=r["last_sign_in_at"].isoformat() if r["last_sign_in_at"] else None,
+                job_quota=int(r["job_quota"]),
+                jobs_used=int(r["jobs_used"]),
+                jobs_total=int(r["jobs_total"]),
+                is_admin=(r["email"] or "").strip().lower() == admin_email_lc,
+            ))
+        except Exception as e:
+            uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
+            email = (r.get("email") or "?") if hasattr(r, "get") else "?"
+            log.exception(
+                "admin/users: skipping row uid=%r email=%r: %s",
+                uid, email, e,
+            )
+            skipped_rows.append(f"{email} ({uid}): {type(e).__name__}: {e}")
+
+    if skipped_rows:
+        log.warning(
+            "admin/users: skipped %d/%d rows: %s",
+            len(skipped_rows), len(rows), skipped_rows,
+        )
     return out
 
 
