@@ -314,11 +314,16 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
           </button>
         </header>
 
-        {/* Body — split into Ketcher iframe (left, ~70%) + AI sidebar
-            (right, ~320px). The sidebar reads/writes SMILES via the
-            same getKetcherApi helper the Accept button uses. */}
-        <div className="flex-1 flex min-h-0">
-          <div className="flex-1 relative bg-slate-50 dark:bg-slate-800/40 min-w-0">
+        {/* Body — Maestro-style stacked layout (Option D, 2026-05-02
+            redesign). Ketcher fills the FULL modal width on top so the
+            user gets the best possible drawing surface. The dashboard
+            below it lays the AI panels (Properties · 3D · Dock · Chat)
+            out HORIZONTALLY in 4 columns so everything is visible at
+            once with no tabs to switch and no panels falling below the
+            fold. The sidebar reads/writes SMILES via the same
+            getKetcherApi helper the Accept button uses. */}
+        <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 relative bg-slate-50 dark:bg-slate-800/40 min-w-0 min-h-0">
             {!ketcherReady && (
               <div className="absolute inset-0 flex items-center justify-center text-slate-500 dark:text-slate-400 text-sm pointer-events-none z-10">
                 Loading Ketcher…
@@ -724,27 +729,17 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // still consults it; the 3D tab sets it true on mount.)
   const [show3D, setShow3D] = useState<boolean>(false);
 
-  // ── Tabbed sidebar state ────────────────────────────────────────────
-  // Replaced the all-stacked layout with 4 tabs: Properties · 3D · Dock
-  // · Chat. Each tab gets the full sidebar height so panels don't fight
-  // for vertical space. Chat is the default since most users open the
-  // editor to use the AI; the other tabs are for specific workflows
-  // (property panel, 3D inspection, docking).
-  const [activeTab, setActiveTab] = useState<"props" | "3d" | "dock" | "chat">("chat");
+  // ── Bottom dashboard layout state ───────────────────────────────────
+  // Option D (Maestro-style): Ketcher fills the modal width on top, AI
+  // panels live in 4 columns underneath. No tabs — Properties, 3D,
+  // Dock, and Chat are all visible at once. The user opts in to 3D by
+  // clicking "Load 3D viewer" in the 3D column (one-time ~600KB cost).
+  // (An earlier tabbed-sidebar iteration had `activeTab` state here;
+  // removed because the dashboard shows everything at once.)
   // Fullscreen mode for the 3D viewer — lifts the viewer out of its
-  // 200x200 cell to fill the entire sidebar (or the whole modal body
-  // when we get there). Off by default; ESC + the ⤢ icon toggle it.
+  // ~210×210 cell to overlay the entire dashboard. Off by default;
+  // ESC + the ⤢ icon toggle it.
   const [fullscreen3D, setFullscreen3D] = useState<boolean>(false);
-  // When the 3D tab becomes active, automatically enable show3D so the
-  // viewer mounts. (The viewer was previously gated behind a separate
-  // toggle inside the property strip — that toggle is gone in the new
-  // tab layout.) When the user leaves the tab, we KEEP show3D true so
-  // a re-visit doesn't re-pay the lazy-load cost.
-  useEffect(() => {
-    if (activeTab === "3d" && !show3D) {
-      setShow3D(true);
-    }
-  }, [activeTab, show3D]);
   // ESC closes fullscreen 3D.
   useEffect(() => {
     if (!fullscreen3D) return;
@@ -1239,582 +1234,475 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   const mutationHint = resolveMutationHint(mutations);
 
   return (
-    <aside className="w-[320px] shrink-0 border-l border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-        <div className="flex items-center gap-2 text-sm font-semibold text-ink dark:text-slate-100">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400" aria-hidden="true">
-            <path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M3 13l2-2M11 5l2-2" />
-          </svg>
-          AI assistant
-          <span className="ml-auto text-[10px] font-normal text-slate-400 dark:text-slate-500 uppercase tracking-wide">beta</span>
-        </div>
+    <aside className="h-[300px] shrink-0 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden relative">
+      {/* ── Thin context strip ──────────────────────────────────────────
+          Maestro-style horizontal layout: thin top strip carries the
+          "AI assistant" identity + pocket context, then 4 columns
+          underneath show all the panels side-by-side. The user never
+          has to switch tabs or scroll to see Properties + 3D + Dock +
+          Chat — everything is glanceable at once. */}
+      <div className="px-4 py-1 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 text-[11px] bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-delta-600 dark:text-delta-400" aria-hidden="true">
+          <path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M3 13l2-2M11 5l2-2" />
+        </svg>
+        <span className="font-semibold text-slate-700 dark:text-slate-200 text-[12px]">AI assistant</span>
+        <span className="text-[9px] uppercase tracking-wide text-slate-400">beta</span>
         {targetPdb && (
-          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-            Pocket-aware for <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            · Pocket-aware for <span className="font-mono text-slate-600 dark:text-slate-300">{targetPdb}</span>
             {mutations && <> · {mutations}</>}
-          </div>
+          </span>
         )}
         {mutationHint && (
-          <div className="mt-2 px-2 py-1.5 rounded-md bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 text-[10px] text-delta-900 dark:text-delta-100 leading-relaxed">
+          <span className="ml-auto px-2 py-0.5 rounded bg-delta-50 dark:bg-delta-900/20 border border-delta-200 dark:border-delta-800/40 text-[10px] text-delta-900 dark:text-delta-100 truncate max-w-[600px]" title={mutationHint}>
             <span className="font-semibold">Hint:</span> {mutationHint}
-          </div>
+          </span>
         )}
       </div>
 
-      {/* ── Tab nav ─────────────────────────────────────────────────────
-          Replaces the all-stacked layout with 4 self-contained tabs.
-          Each tab gets the full sidebar height so panels don't fight
-          for vertical space. Badges signal content without forcing the
-          user to switch tabs to discover it (green dot when dock data
-          is fresh, count when AI history has entries). */}
-      <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40">
-        {[
-          { id: "props" as const, label: "Props", title: "Properties — MW, logP, QED, Lipinski, PAINS" },
-          { id: "3d" as const, label: "3D", title: "3D conformer preview" },
-          { id: "dock" as const, label: "Dock", title: "Quick dock + Optimize" },
-          { id: "chat" as const, label: "Chat", title: "AI assistant + history" },
-        ].map((t) => {
-          const isActive = activeTab === t.id;
-          // Per-tab content badge — small dot/count to indicate the tab
-          // has fresh content the user might want to look at.
-          let badge: React.ReactNode = null;
-          if (t.id === "dock" && dockResult && !quickDockGated) {
-            badge = <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />;
-          }
-          if (t.id === "chat" && aiHistory.length > 0) {
-            badge = <span className="ml-1 text-[9px] text-slate-400">{aiHistory.length}</span>;
-          }
-          if (t.id === "3d" && show3D) {
-            badge = <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-delta-500" />;
-          }
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setActiveTab(t.id)}
-              title={t.title}
-              className={
-                "flex-1 text-[11px] font-medium px-2 py-2 transition-colors " +
-                (isActive
-                  ? "text-delta-700 dark:text-delta-300 border-b-2 border-delta-500 bg-white dark:bg-slate-900"
-                  : "text-slate-500 dark:text-slate-400 border-b-2 border-transparent hover:text-ink dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/50")
-              }
-            >
-              {t.label}{badge}
-            </button>
-          );
-        })}
-      </div>
+      {/* ── 4-column dashboard ──────────────────────────────────────────
+          Each column is independently scrollable and has its own
+          primary action button at the bottom (no more global "which
+          button do I click" confusion). divide-x adds the column
+          separators without needing per-column borders. */}
+      <div className="flex-1 flex min-h-0 divide-x divide-slate-200 dark:divide-slate-700">
 
-      {/* ── Tab content ─────────────────────────────────────────────────
-          Single scrollable region; each tab provides its own panels.
-          The form footer (chat input + Improve buttons) is rendered
-          OUTSIDE this scroll area but ONLY on the chat tab — see below. */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-
-      {/* ─── PROPERTIES TAB ─── */}
-      {activeTab === "props" && (
-        <>
-          {/* Live property strip — moved here from the always-visible
-              header so it doesn't compete for vertical space when the
-              user is on a different tab. Still updates every 2.5s when
-              the modal is open. */}
-          {liveProps && liveProps.valid ? (
-            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Live properties</div>
-              <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-slate-700 dark:text-slate-200">
-                <LivePropPair label="MW" value={liveProps.mw} />
-                <LivePropPair label="logP" value={liveProps.logp} />
-                <LivePropPair label="QED" value={liveProps.qed} />
-                <LivePropPair label="TPSA" value={liveProps.tpsa} />
-                {liveProps.lipinski_pass !== undefined && (
-                  <span
-                    className={
-                      liveProps.lipinski_pass
-                        ? "text-emerald-700 dark:text-emerald-300"
-                        : "text-rose-700 dark:text-rose-300"
-                    }
-                    title="Lipinski rule of 5"
-                  >
-                    {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
-                  </span>
-                )}
-                {(liveProps.pains_hits?.length ?? 0) > 0 && (
-                  <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
-                    PAINS {liveProps.pains_hits!.length}
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="px-4 py-3 text-[11px] text-slate-400 dark:text-slate-500">
-              Sketch a structure on the left to see live MW · logP · QED · Lipinski · PAINS.
-            </div>
-          )}
-          <div className="p-3 space-y-1.5">
-            <button
-              type="button"
-              disabled={!ketcherReady || status === "running"}
-              onClick={runProperties}
-              className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              ⚡ <span className="font-medium">Predict properties</span>
-              <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Full panel: HBA/HBD, rotatable bonds, Veber, PAINS detail</span>
-            </button>
+        {/* ─── PROPERTIES COLUMN ─── */}
+        <div className="w-1/4 flex flex-col overflow-hidden min-w-0">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0">
+            Properties
           </div>
-          {/* Properties result panel — only renders the detailed view
-              when the user has explicitly clicked Predict. */}
-          <div className="p-3 text-[12px]">
-            {status === "running" && lastAction === "props" && (
-              <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
-                <Spinner size={12} /> Computing properties…
-              </div>
-            )}
-            {status === "error" && errorMsg && lastAction === "props" && (
-              <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2.5 py-2 text-rose-800 dark:text-rose-200">
-                {errorMsg}
+          <div className="flex-1 overflow-y-auto p-3 text-[11px] space-y-2 min-h-0">
+            {liveProps && liveProps.valid ? (
+              <>
+                <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-slate-700 dark:text-slate-200">
+                  <LivePropPair label="MW" value={liveProps.mw} />
+                  <LivePropPair label="logP" value={liveProps.logp} />
+                  <LivePropPair label="QED" value={liveProps.qed} />
+                  <LivePropPair label="TPSA" value={liveProps.tpsa} />
+                </div>
+                <div className="flex items-center gap-2 flex-wrap text-[10px]">
+                  {liveProps.lipinski_pass !== undefined && (
+                    <span
+                      className={
+                        liveProps.lipinski_pass
+                          ? "text-emerald-700 dark:text-emerald-300"
+                          : "text-rose-700 dark:text-rose-300"
+                      }
+                      title="Lipinski rule of 5"
+                    >
+                      {liveProps.lipinski_pass ? "Lipinski ✓" : "Lipinski ✗"}
+                    </span>
+                  )}
+                  {(liveProps.pains_hits?.length ?? 0) > 0 && (
+                    <span className="text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
+                      PAINS {liveProps.pains_hits!.length}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-slate-400 dark:text-slate-500 text-[10px] leading-relaxed">
+                Sketch above to see live MW · logP · QED · Lipinski · PAINS.
               </div>
             )}
             {status === "ok" && lastAction === "props" && properties && (
               <PropertiesPanel p={properties} />
             )}
+            {status === "running" && lastAction === "props" && (
+              <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-[10px]">
+                <Spinner size={11} /> Computing…
+              </div>
+            )}
+            {status === "error" && errorMsg && lastAction === "props" && (
+              <div className="text-[10px] text-rose-700 dark:text-rose-300">{errorMsg}</div>
+            )}
           </div>
-        </>
-      )}
+          <div className="p-2 border-t border-slate-200 dark:border-slate-700 shrink-0">
+            <button
+              type="button"
+              disabled={!ketcherReady || status === "running"}
+              onClick={runProperties}
+              className="w-full text-[10px] px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Compute the full RDKit property panel (HBA/HBD, rotatable bonds, Veber, PAINS detail)"
+            >
+              ⚡ <span className="font-medium">Predict full panel</span>
+            </button>
+          </div>
+        </div>
 
-      {/* ─── 3D TAB ─── */}
-      {activeTab === "3d" && (
-        <div className={fullscreen3D ? "p-0" : "p-3"}>
-          {/* 3D viewer — bigger than the old 200×200 since it now owns
-              the whole tab. Fullscreen mode (⤢) lets it fill the sidebar
-              edge-to-edge, useful for chiral / macrocycle inspection. */}
-          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2 px-1">
+        {/* ─── 3D COLUMN ─── */}
+        <div className="w-1/4 flex flex-col overflow-hidden min-w-0">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between">
             <span>3D conformer · UFF</span>
             <button
               type="button"
               onClick={() => setFullscreen3D((v) => !v)}
-              title={fullscreen3D ? "Exit fullscreen (or press Esc)" : "Fullscreen 3D viewer"}
-              className="text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              title={fullscreen3D ? "Exit fullscreen (Esc)" : "Fullscreen 3D viewer"}
+              className="text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-100 p-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
-              {fullscreen3D ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                {fullscreen3D ? (
                   <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                ) : (
                   <path d="M3 8V5a2 2 0 0 1 2-2h3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3"/>
-                </svg>
-              )}
+                )}
+              </svg>
             </button>
           </div>
-          <div className="flex justify-center">
-            <Suspense
-              fallback={
-                <div className={(fullscreen3D ? "w-full" : "w-[280px]") + " h-[280px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center"}>
-                  <Spinner size={14} />
-                </div>
-              }
-            >
-              <Mol3DPreview smiles={liveSmiles} size={fullscreen3D ? 320 : 280} />
-            </Suspense>
+          <div className="flex-1 flex items-center justify-center p-2 min-h-0 overflow-hidden">
+            {!show3D ? (
+              <button
+                type="button"
+                onClick={() => setShow3D(true)}
+                disabled={!ketcherReady}
+                className="text-[11px] px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Load the 3D viewer (one-time ~600KB download)"
+              >
+                Load 3D viewer
+              </button>
+            ) : (
+              !fullscreen3D && (
+                <Suspense
+                  fallback={
+                    <div className="w-[200px] h-[200px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-center">
+                      <Spinner size={12} />
+                    </div>
+                  }
+                >
+                  <Mol3DPreview smiles={liveSmiles} size={210} />
+                </Suspense>
+              )
+            )}
           </div>
         </div>
-      )}
 
-      {/* ─── DOCK TAB ─── */}
-      {activeTab === "dock" && (
-        <>
-          <div className="p-3 space-y-1.5">
-            {targetPdb ? (
+        {/* ─── DOCK COLUMN ─── */}
+        <div className="w-1/4 flex flex-col overflow-hidden min-w-0">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0">
+            Quick dock {targetPdb && <span className="font-mono normal-case text-slate-400">· {targetPdb}</span>}
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 text-[11px] min-h-0 space-y-1.5">
+            {!targetPdb && (
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed px-1 py-2">
+                Quick dock needs a target. Pick one in Step 1 of the New job form.
+              </div>
+            )}
+            {quickDockGated && (
+              <div className="rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/15 p-2">
+                <div className="text-[10px] font-semibold text-amber-900 dark:text-amber-200 mb-1">
+                  Quick dock — by request
+                </div>
+                <div className="text-[9px] text-amber-800 dark:text-amber-200 leading-relaxed mb-2">
+                  Real Vina on our GPU pod. Enabled per account.
+                </div>
+                <button
+                  type="button"
+                  onClick={requestQuickDockAccess}
+                  className="text-[10px] font-semibold px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white transition-colors"
+                >
+                  Contact us →
+                </button>
+              </div>
+            )}
+            {!quickDockGated && quickDockStatus === "running" && (
+              <div className="flex items-center gap-2 text-[10px] text-slate-600 dark:text-slate-300 px-1 py-2">
+                <Spinner size={11} /> Docking on GPU pod…
+              </div>
+            )}
+            {!quickDockGated && quickDockStatus === "error" && quickDockError && (
+              <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-relaxed px-1 py-2">{quickDockError}</div>
+            )}
+            {!quickDockGated && dockResult && (
+              <>
+                <div className="text-[12px] text-ink dark:text-slate-100">
+                  <span className="font-semibold">{dockResult.score.toFixed(2)}</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 ml-1">kcal/mol</span>
+                  <span className="text-[9px] text-slate-400 ml-1">(lower=stronger)</span>
+                </div>
+                {dockResult.hits.length > 0 && (
+                  <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-tight">
+                    <span className="font-semibold text-emerald-700 dark:text-emerald-300">Hits:</span>{" "}
+                    {dockResult.hits.slice(0, 4).join(", ")}{dockResult.hits.length > 4 && ` +${dockResult.hits.length - 4}`}
+                  </div>
+                )}
+                {dockResult.misses.length > 0 && (
+                  <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-tight">
+                    <span className="font-semibold text-amber-700 dark:text-amber-300">Misses:</span>{" "}
+                    {dockResult.misses.slice(0, 4).join(", ")}{dockResult.misses.length > 4 && ` +${dockResult.misses.length - 4}`}
+                  </div>
+                )}
+                {optimizeStatus === "running" && (
+                  <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+                    <Spinner size={9} /> AI variants…
+                  </div>
+                )}
+                {optimizeStatus === "error" && optimizeError && (
+                  <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-relaxed">{optimizeError}</div>
+                )}
+                {optimizedVariants.length > 0 && (
+                  <div className="space-y-1 mt-1">
+                    {/* Sort by score; pending docks at the end. */}
+                    {[...optimizedVariants]
+                      .sort((a, b) => {
+                        const aHas = typeof a.score === "number";
+                        const bHas = typeof b.score === "number";
+                        if (aHas && bHas) return (a.score as number) - (b.score as number);
+                        if (aHas) return -1;
+                        if (bHas) return 1;
+                        return 0;
+                      })
+                      .map((v) => (
+                        <div key={v.new_smiles} className="rounded border border-slate-200 dark:border-slate-700 px-2 py-1">
+                          <div className="flex items-center justify-between gap-1">
+                            {v.status === "docking" && (
+                              <span className="text-[9px] text-slate-400 flex items-center gap-1">
+                                <Spinner size={8} /> docking
+                              </span>
+                            )}
+                            {v.status === "done" && typeof v.score === "number" && (
+                              <span className="text-[10px] font-semibold text-ink dark:text-slate-100">
+                                {v.score.toFixed(2)}
+                                {dockResult && (
+                                  <span className={"ml-1 text-[9px] " + (v.score < dockResult.score ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
+                                    ({(v.score - dockResult.score).toFixed(2)})
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                            {v.status === "error" && (
+                              <span className="text-[9px] text-rose-600 dark:text-rose-400 truncate" title={v.error || "dock failed"}>{v.error || "fail"}</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => applyVariantToCanvas(v.new_smiles)}
+                              className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline"
+                            >
+                              Apply →
+                            </button>
+                          </div>
+                          <div className="text-[9px] text-slate-600 dark:text-slate-300 leading-tight mt-0.5 line-clamp-2" title={v.rationale}>
+                            {v.rationale}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          {/* Dock primary actions stuck to bottom — Run/Re-dock + Optimize.
+              Only rendered when target context exists and the gate is open. */}
+          {!quickDockGated && targetPdb && (
+            <div className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0">
               <button
                 type="button"
                 disabled={!ketcherReady || quickDockStatus === "running"}
                 onClick={runQuickDock}
-                className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-amber-200 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-900/10 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="w-full text-[10px] font-semibold px-2 py-1.5 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                🎯 <span className="font-medium">Run Quick dock</span>
-                <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  ~10s · real Vina against {targetPdb}{mutations ? ` · ${mutations}` : ""}
-                </span>
+                {quickDockStatus === "running" ? "🎯 Docking…" : dockResult ? "🎯 Re-dock" : "🎯 Run Quick dock"}
               </button>
-            ) : (
-              <div className="text-[11px] text-slate-400 dark:text-slate-500 leading-relaxed px-1 py-2">
-                Quick dock needs a target. Pick one in Step 1 of the New job form before opening the editor.
-              </div>
-            )}
-          </div>
-
-          {/* Quick dock by-request CTA — shown when backend returned 403. */}
-          {quickDockGated && (
-        <div className="px-3 py-2.5 border-b border-amber-200 dark:border-amber-800/40 bg-amber-50/60 dark:bg-amber-900/15">
-          <div className="text-[11px] font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
-              <rect x="3" y="11" width="18" height="11" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            Quick dock — available on request
-          </div>
-          <div className="text-[10px] text-amber-800 dark:text-amber-200 mt-1 leading-relaxed">
-            Quick dock runs real Vina on our GPU pod. We enable it per account so cost stays predictable.
-          </div>
-          <button
-            type="button"
-            onClick={requestQuickDockAccess}
-            className="mt-2 text-[11px] font-semibold px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white transition-colors"
-          >
-            Contact us to enable →
-          </button>
-        </div>
-      )}
-
-      {/* Quick dock + Optimize result panel. Sits between the actions
-          and the AI chat result so a Quick dock run doesn't blow away
-          a prior "Predict properties" or analog suggestion. Stays
-          visible across re-edits until the user runs Quick dock again. */}
-      {(quickDockStatus !== "idle" || dockResult) && !quickDockGated && (
-        <div className="px-3 py-2.5 border-b border-slate-200 dark:border-slate-700">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
-            Quick dock {targetPdb && <span className="font-mono normal-case text-slate-400">· {targetPdb}</span>}
-          </div>
-          {quickDockStatus === "running" && (
-            <div className="flex items-center gap-2 text-[12px] text-slate-600 dark:text-slate-300">
-              <Spinner size={12} /> Docking on GPU pod (5–15s)…
-            </div>
-          )}
-          {quickDockStatus === "error" && quickDockError && (
-            <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-relaxed">{quickDockError}</div>
-          )}
-          {dockResult && (
-            <>
-              <div className="text-[12px] text-ink dark:text-slate-100 mb-1">
-                <span className="font-semibold">{dockResult.score.toFixed(2)}</span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 ml-1">kcal/mol</span>
-                <span className="text-[10px] text-slate-400 ml-2">(lower = stronger)</span>
-              </div>
-              {dockResult.hits.length > 0 && (
-                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed mb-1">
-                  <span className="font-semibold text-emerald-700 dark:text-emerald-300">Hits:</span>{" "}
-                  {dockResult.hits.slice(0, 6).join(", ")}{dockResult.hits.length > 6 && ` +${dockResult.hits.length - 6}`}
-                </div>
-              )}
-              {dockResult.misses.length > 0 && (
-                <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed mb-2">
-                  <span className="font-semibold text-amber-700 dark:text-amber-300">Misses:</span>{" "}
-                  {dockResult.misses.slice(0, 6).join(", ")}{dockResult.misses.length > 6 && ` +${dockResult.misses.length - 6}`}
-                </div>
-              )}
-              {/* Optimize button — fans out 3 variant docks targeting
-                  the misses. Hidden when there's nothing to optimize
-                  (no misses reported) or the AI is currently working. */}
-              {dockResult.misses.length > 0 && optimizeStatus === "idle" && (
+              {dockResult && dockResult.misses.length > 0 && optimizeStatus === "idle" && (
                 <button
                   type="button"
                   onClick={runOptimize}
-                  className="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                  className="w-full text-[10px] font-semibold px-2 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                  title="Ask AI for 3 variants targeting the missed residues, then dock each one"
                 >
-                  ✨ Optimize for this pocket
+                  ✨ Optimize for misses
                 </button>
               )}
-              {optimizeStatus === "running" && (
-                <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                  <Spinner size={11} /> Asking AI for variants…
-                </div>
-              )}
-              {optimizeStatus === "error" && optimizeError && (
-                <div className="text-[10px] text-rose-700 dark:text-rose-300 leading-relaxed">{optimizeError}</div>
-              )}
-              {optimizedVariants.length > 0 && (
-                <div className="mt-2 space-y-1.5">
-                  {/* Sort by score ascending (most negative = best),
-                      pending docks at the end so the user sees the
-                      best-known variant on top as scores stream in. */}
-                  {[...optimizedVariants]
-                    .sort((a, b) => {
-                      const aHas = typeof a.score === "number";
-                      const bHas = typeof b.score === "number";
-                      if (aHas && bHas) return (a.score as number) - (b.score as number);
-                      if (aHas) return -1;
-                      if (bHas) return 1;
-                      return 0;
-                    })
-                    .map((v) => (
-                      <div key={v.new_smiles} className="rounded-md border border-slate-200 dark:border-slate-700 px-2 py-1.5">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          {v.status === "docking" && (
-                            <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                              <Spinner size={9} /> docking…
-                            </span>
-                          )}
-                          {v.status === "done" && typeof v.score === "number" && (
-                            <span className="text-[11px] font-semibold text-ink dark:text-slate-100">
-                              {v.score.toFixed(2)}
-                              {dockResult && (
-                                <span className={
-                                  "ml-1 text-[10px] " +
-                                  (v.score < dockResult.score
-                                    ? "text-emerald-600 dark:text-emerald-400"
-                                    : "text-amber-600 dark:text-amber-400")
-                                }>
-                                  ({(v.score - dockResult.score).toFixed(2)})
-                                </span>
-                              )}
-                            </span>
-                          )}
-                          {v.status === "error" && (
-                            <span className="text-[10px] text-rose-600 dark:text-rose-400">{v.error || "dock failed"}</span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => applyVariantToCanvas(v.new_smiles)}
-                            className="text-[10px] font-semibold text-delta-700 dark:text-delta-300 hover:underline"
-                          >
-                            Apply →
-                          </button>
-                        </div>
-                        <div className="font-mono text-[9px] text-slate-500 dark:text-slate-400 break-all leading-tight mb-1">
-                          {v.new_smiles}
-                        </div>
-                        <div className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                          {v.rationale}
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </>
+            </div>
           )}
         </div>
-      )}
 
-        </>
-      )}{/* end activeTab === "dock" */}
-
-      {/* ─── CHAT TAB ─── */}
-      {activeTab === "chat" && (
-        <>
-          {/* Suggest 5 analogs — moved here from the global "Quick actions"
-              row because it's an AI action, not a property/dock action.
-              Lives at the top of the chat tab so users see it before the
-              free-text input. */}
-          <div className="p-3 border-b border-slate-200 dark:border-slate-700">
+        {/* ─── CHAT COLUMN ─── */}
+        <div className="w-1/4 flex flex-col overflow-hidden min-w-0">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50/60 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between">
+            <span>AI chat</span>
+            {aiHistory.length > 0 && (
+              <span className="text-slate-400 normal-case text-[10px]">
+                {aiHistory.length}/{MAX_AI_HISTORY}
+                {historySaveError && (
+                  <span className="ml-1 text-amber-700 dark:text-amber-300" title={historySaveError}>· retry</span>
+                )}
+                {!historySaveError && !compoundId && (
+                  <span className="ml-1 text-slate-400" title="Save the compound to persist history">· unsaved</span>
+                )}
+              </span>
+            )}
+          </div>
+          <div ref={resultPanelRef} className="flex-1 overflow-y-auto p-2 text-[11px] min-h-0 space-y-2">
+            {/* Suggest 5 analogs - secondary AI action */}
             <button
               type="button"
               disabled={!ketcherReady || status === "running"}
               onClick={runAnalogs}
-              className="w-full text-left text-[12px] px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full text-left text-[10px] px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               🔬 <span className="font-medium">Suggest 5 analogs</span>
-              <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Medchem variants worth docking</span>
             </button>
-          </div>
-
-      {/* Result panel — auto-scrolled into view on new AI responses
-          (see resultPanelRef + the useEffect above). */}
-      <div ref={resultPanelRef} className="p-3 text-[12px]">
-        {status === "idle" && lastAction === "none" && (
-          <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
-            Sketch a structure on the left, then ask the AI for an edit below.
-          </div>
-        )}
-        {status === "running" && (
-          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
-            <Spinner size={12} /> Thinking…
-          </div>
-        )}
-        {status === "error" && errorMsg && (
-          <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2.5 py-2 text-rose-800 dark:text-rose-200">
-            {errorMsg}
-          </div>
-        )}
-        {status === "ok" && (lastAction === "edit" || lastAction === "analogs") && result && (
-          <ResultPanel result={result} onApply={applyResultToCanvas} />
-        )}
-      </div>
-
-      {/* Conversation history — scrollable list of prior AI suggestions
-          for THIS compound. Sits between the live result panel and the
-          input form so the user can scroll back through what they've
-          already tried without losing the current suggestion above.
-          Persisted server-side when compoundId is set; in-memory-only
-          for unsaved compounds (NewJobPage path, create-from-scratch
-          before naming). */}
-      {aiHistory.length > 0 && (
-        <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40">
-          {/* History header — was sticky inside its own scroll container;
-              now the whole sidebar scrolls as one, so a position:sticky
-              here would stick to the parent scroll region instead, which
-              is what we want when the user has scrolled deep into a long
-              history list. */}
-          <div className="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 sticky top-0 z-10 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-sm">
-            <span>History · {aiHistory.length}/{MAX_AI_HISTORY}</span>
-            {historySaveError && (
-              <span
-                className="text-[9px] normal-case tracking-normal text-amber-700 dark:text-amber-300"
-                title={historySaveError}
-              >
-                save retrying…
-              </span>
+            {status === "idle" && lastAction === "none" && (
+              <div className="text-slate-400 dark:text-slate-500 text-[10px] leading-relaxed">
+                Sketch above, then ask the AI for an edit below.
+              </div>
             )}
-            {!historySaveError && !compoundId && (
-              <span
-                className="text-[9px] normal-case tracking-normal text-slate-400"
-                title="History will be lost when you close this modal — save the compound to persist it."
-              >
-                unsaved
-              </span>
+            {status === "running" && lastAction !== "props" && (
+              <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-[10px]">
+                <Spinner size={11} /> Thinking…
+              </div>
+            )}
+            {status === "error" && errorMsg && lastAction !== "props" && (
+              <div className="rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/40 px-2 py-1.5 text-[10px] text-rose-800 dark:text-rose-200">
+                {errorMsg}
+              </div>
+            )}
+            {status === "ok" && (lastAction === "edit" || lastAction === "analogs") && result && (
+              <ResultPanel result={result} onApply={applyResultToCanvas} />
+            )}
+            {aiHistory.length > 0 && (
+              <div className="border-t border-slate-200 dark:border-slate-700 pt-2 space-y-1">
+                <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  History
+                </div>
+                <ul className="space-y-1">
+                  {aiHistory.map((entry) => (
+                    <HistoryRow
+                      key={entry.id}
+                      entry={entry}
+                      onApply={() => applyHistoryEntry(entry.smiles)}
+                      onToggleStar={() => toggleHistoryStar(entry.id)}
+                      onToggleReject={() => toggleHistoryReject(entry.id)}
+                      onDelete={() => deleteHistoryEntry(entry.id)}
+                    />
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
-          <ul className="px-2 pb-2 space-y-1.5">
-            {aiHistory.map((entry) => (
-              <HistoryRow
-                key={entry.id}
-                entry={entry}
-                onApply={() => applyHistoryEntry(entry.smiles)}
-                onToggleStar={() => toggleHistoryStar(entry.id)}
-                onToggleReject={() => toggleHistoryReject(entry.id)}
-                onDelete={() => deleteHistoryEntry(entry.id)}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
-
-        </>
-      )}{/* end activeTab === "chat" */}
-
-      </div>{/* end scrollable tab content */}
-
-      {/* Free-text input — sticky bottom of the sidebar, ONLY visible
-          on the chat tab. Other tabs have their own primary actions
-          baked into their content (Predict properties, Run Quick dock,
-          etc.) so they don't need a sticky footer. */}
-      {activeTab === "chat" && (
-      <form
-        className="p-3 border-t border-slate-200 dark:border-slate-700 space-y-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          // Default submit = use the cheap Improve path. Users who want
-          // dock-grounding click the dedicated combo button (rendered
-          // separately when applicable). When the chat is empty, fall
-          // back to a sensible open-ended prompt so the user can click
-          // Improve straight in without having to invent an instruction.
-          // The system prompt's "vague instructions" rule kicks in and
-          // tells the AI exactly how to handle this case.
-          const text = instruction.trim() || (
-            dockFreshForLive
-              ? "Based on the docking results above, suggest the highest-impact structural edit to improve binding."
-              : "Suggest the most meaningful medchem improvement to this compound."
-          );
-          runEdit(text);
-          setInstruction("");
-        }}
-      >
-        {/* AI context pill — three states:
-            - 🟢 Docking-aware (green) when fresh dock data exists for the
-              CURRENT canvas SMILES. AI gets score+hits+misses.
-            - 🟡 Structure + target (amber) when target is picked but
-              the dock data is stale or never run. AI gets target name
-              and mutation hints only.
-            - ⚪ Structure only (slate) when no target context at all
-              (Library editor flow). AI gets just the SMILES.
-            The icon + label match what's actually being sent so the
-            user is never surprised by a "blind" AI suggestion. */}
-        <div
-          className={
-            "flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-md border " +
-            (dockFreshForLive
-              ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-200"
-              : targetPdb
-                ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-200"
-                : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300")
-          }
-          title={
-            dockFreshForLive
-              ? `AI has full docking context for this exact compound: score ${dockResult!.score.toFixed(2)} kcal/mol, ${dockResult!.hits.length} contacted residues, ${dockResult!.misses.length} missed.`
-              : targetPdb
-                ? `AI has the target name (${targetPdb}${mutations ? ` · ${mutations}` : ""}) but no docking results for this compound. Click 'Dock + Improve' below for grounded suggestions.`
-                : "AI is reasoning from the structure alone. No target context available in this flow."
-          }
-        >
-          <span aria-hidden="true">
-            {dockFreshForLive ? "🟢" : targetPdb ? "🟡" : "⚪"}
-          </span>
-          <span className="font-medium">AI context:</span>
-          {dockFreshForLive ? (
-            <span className="truncate">
-              Docking-aware · {dockResult!.score.toFixed(2)} kcal/mol ·{" "}
-              {dockResult!.hits.length} hits, {dockResult!.misses.length} misses
-            </span>
-          ) : targetPdb ? (
-            <span className="truncate">Structure + target hints</span>
-          ) : (
-            <span className="truncate">Structure only</span>
-          )}
-        </div>
-
-        <input
-          type="text"
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          placeholder="e.g. swap COOH for tetrazole"
-          className="w-full text-[12px] px-2.5 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-        />
-        <button
-          type="submit"
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          title={
-            instruction.trim()
-              ? "Send your instruction to the AI."
-              : "Click without typing to get an open-ended improvement suggestion. Type for a specific edit."
-          }
-          className="w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
-        >
-          {status === "running" && quickDockStatus !== "running"
-            ? "Sending…"
-            : dockFreshForLive
-              ? instruction.trim() ? "✨ Improve (docking-aware)" : "✨ Suggest improvement"
-              : instruction.trim() ? "✨ Improve" : "✨ Suggest improvement"}
-        </button>
-        {/* Dock + Improve combo — shown ONLY when target is picked AND
-            dock data is stale or missing AND the Quick dock feature
-            isn't gated for this user. Single click does both: ~10s
-            for the dock, ~3s for the AI. Hidden when quickDockGated
-            because the user can't run a dock at all (would be a dead
-            button). Hidden when dockFreshForLive because the standard
-            Improve button already includes docking context. */}
-        {targetPdb && !dockFreshForLive && !quickDockGated && (
-          <button
-            type="button"
-            onClick={() => {
-              // Same empty-input fallback as the standard Improve button:
-              // an empty chat means "give me your best general improvement
-              // grounded in the dock results we're about to compute".
-              const text = instruction.trim() ||
-                "Based on the docking results, suggest the highest-impact structural edit to improve binding.";
-              runDockAndImprove(text);
+          {/* Chat input + Improve button stuck to bottom of chat column */}
+          <form
+            className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const text = instruction.trim() || (
+                dockFreshForLive
+                  ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
+                  : "Suggest the most meaningful medchem improvement to this compound."
+              );
+              runEdit(text);
               setInstruction("");
             }}
-            disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-            className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title={
-              instruction.trim()
-                ? "Run Quick dock first, then ask the AI with the dock results in context. ~13 seconds total."
-                : "Run Quick dock first, then ask the AI for an open-ended improvement using the dock results. ~13 seconds total."
-            }
           >
-            {quickDockStatus === "running"
-              ? "🎯 Docking…"
-              : status === "running"
-                ? "✨ AI thinking…"
-                : instruction.trim()
-                  ? "🎯 Dock + Improve (grounded)"
-                  : "🎯 Dock + suggest improvement"}
-          </button>
-        )}
-      </form>
-      )}{/* end activeTab === "chat" form footer */}
+            {/* Compact AI context pill — three states (green/amber/slate). */}
+            <div
+              className={
+                "flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded border " +
+                (dockFreshForLive
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-200"
+                  : targetPdb
+                    ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-200"
+                    : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300")
+              }
+              title={
+                dockFreshForLive
+                  ? `Docking-aware: ${dockResult!.score.toFixed(2)} kcal/mol, ${dockResult!.hits.length} hits, ${dockResult!.misses.length} misses`
+                  : targetPdb
+                    ? `Target ${targetPdb}${mutations ? ` · ${mutations}` : ""}; no fresh dock yet`
+                    : "Structure only — no target context"
+              }
+            >
+              <span aria-hidden="true">{dockFreshForLive ? "🟢" : targetPdb ? "🟡" : "⚪"}</span>
+              <span className="truncate">
+                {dockFreshForLive
+                  ? `Docking-aware · ${dockResult!.score.toFixed(2)} · ${dockResult!.hits.length}h/${dockResult!.misses.length}m`
+                  : targetPdb
+                    ? "Structure + target hints"
+                    : "Structure only"}
+              </span>
+            </div>
+            <input
+              type="text"
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+              placeholder="e.g. swap COOH for tetrazole"
+              className="w-full text-[10px] px-2 py-1 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder-slate-400 focus:border-delta-500 focus:ring-1 focus:ring-delta-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+            />
+            <button
+              type="submit"
+              disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+              title={
+                instruction.trim()
+                  ? "Send your instruction to the AI."
+                  : "Click without typing for an open-ended improvement; or type a specific edit."
+              }
+              className="w-full text-[10px] font-semibold px-2 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors"
+            >
+              {status === "running" && quickDockStatus !== "running"
+                ? "Sending…"
+                : dockFreshForLive
+                  ? instruction.trim() ? "✨ Improve (docking-aware)" : "✨ Suggest improvement"
+                  : instruction.trim() ? "✨ Improve" : "✨ Suggest improvement"}
+            </button>
+            {/* Dock + Improve combo — only when target picked but no fresh dock. */}
+            {targetPdb && !dockFreshForLive && !quickDockGated && (
+              <button
+                type="button"
+                onClick={() => {
+                  const text = instruction.trim() ||
+                    "Based on the docking results, suggest the highest-impact structural edit to improve binding.";
+                  runDockAndImprove(text);
+                  setInstruction("");
+                }}
+                disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
+                className="w-full text-[10px] font-semibold px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-900 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Run Quick dock first, then ask the AI with the dock results in context (~13s total)"
+              >
+                {quickDockStatus === "running"
+                  ? "🎯 Docking…"
+                  : status === "running"
+                    ? "✨ AI thinking…"
+                    : instruction.trim()
+                      ? "🎯 Dock + Improve (grounded)"
+                      : "🎯 Dock + suggest improvement"}
+              </button>
+            )}
+          </form>
+        </div>
+      </div>
+
+      {/* ── Fullscreen 3D overlay ───────────────────────────────────────
+          Covers the whole dashboard (above all 4 columns) when ⤢ is
+          clicked or when fullscreen3D state flips. ESC also exits (see
+          the useEffect higher up). For v1 this overlay only spans the
+          dashboard, not the entire modal — a future iteration could
+          lift state up to KetcherModal and overlay both Ketcher and
+          dashboard for a true full-window 3D view. */}
+      {fullscreen3D && show3D && (
+        <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 flex flex-col">
+          <div className="flex items-center justify-between px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-900/40 shrink-0">
+            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">3D conformer · fullscreen</span>
+            <button
+              type="button"
+              onClick={() => setFullscreen3D(false)}
+              className="text-[11px] px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors flex items-center gap-1"
+              title="Press Esc to exit"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>
+              </svg>
+              Exit
+            </button>
+          </div>
+          <div className="flex-1 flex items-center justify-center min-h-0 p-2">
+            <Suspense fallback={<Spinner size={16} />}>
+              <Mol3DPreview smiles={liveSmiles} size={260} />
+            </Suspense>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
