@@ -720,6 +720,23 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // lifetime of the modal — closing/reopening starts off again, which
   // is the right default for a feature most users won't need.
   const [show3D, setShow3D] = useState<boolean>(false);
+
+  // Auto-scroll the sidebar to the ResultPanel when a fresh AI suggestion
+  // lands. Without this the most-recent suggestion frequently lands below
+  // the visible scroll area (especially when 3D preview, Quick dock
+  // results, and Optimize variants are all stacked above), and users
+  // assume the AI didn't respond. The ref is attached to the wrapper
+  // <div> below; the effect fires whenever `result` flips from null to
+  // a populated object after a successful runEdit/runAnalogs call.
+  const resultPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (status === "ok" && result && resultPanelRef.current) {
+      // block: 'start' aligns the panel with the top of the scroll
+      // viewport so the rationale is visible immediately, not just the
+      // header. behavior: 'smooth' keeps it from feeling like a jump.
+      resultPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [result, status]);
   // Track which kind of action ran last so the result panel labels itself
   // ("Properties:" vs "Suggested edit:" vs "5 analogs:").
   const [lastAction, setLastAction] = useState<"none" | "edit" | "props" | "analogs">("none");
@@ -1483,8 +1500,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
 
       {/* Result panel — flows naturally inside the parent scroll region.
           (Earlier had its own flex-1 overflow-y-auto, but now the whole
-          middle column scrolls as one and individual panels just stack.) */}
-      <div className="p-3 text-[12px]">
+          middle column scrolls as one and individual panels just stack.)
+          The ref is used by the auto-scroll effect below so a fresh AI
+          suggestion is brought into view instead of landing below the
+          fold — without that, users on shorter viewports thought the
+          AI hadn't responded when in fact the rationale + Apply button
+          were just out of sight. */}
+      <div ref={resultPanelRef} className="p-3 text-[12px]">
         {status === "idle" && lastAction === "none" && (
           <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
             Sketch a structure on the left, then ask for an edit below or run a quick action above.
