@@ -240,12 +240,47 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [ketcherReady]);
 
-  // Esc to close, like every other modal in the app
+  /** Close-with-guard. Used for the implicit dismiss paths — backdrop
+   *  click and ESC keypress — which are easy to trigger accidentally
+   *  while drawing. When the user has unsaved structural edits we
+   *  confirm before discarding them; with no edits we close silently.
+   *
+   *  Explicit close paths (the header X button and the Cancel button)
+   *  stay unconfirmed: those are deliberate user actions that say "I'm
+   *  done with this modal" — adding a confirm there would be
+   *  click-fatigue. The accidental-loss problem is specifically about
+   *  clicking outside the modal or hitting ESC mid-draw.
+   *
+   *  Intentionally only gates on `hasChanges` (structure edits). AI
+   *  history is auto-saved server-side via the debounced PATCH; dock
+   *  results are ephemeral and cheap to recompute. The structure is
+   *  the unique work that lives only in Ketcher's iframe state. */
+  function attemptClose() {
+    if (hasChanges) {
+      // Browser native confirm() is blocking + sync — fine here, and
+      // matches the "are you sure?" pattern used elsewhere in the app
+      // (history-page delete, NewJob target-change wipe, etc.). A custom
+      // dialog would be nicer but adds state machinery for marginal UX gain.
+      const ok = window.confirm(
+        "You have unsaved changes to the structure. Discard them and close?",
+      );
+      if (!ok) return;
+    }
+    onClose();
+  }
+
+  // Esc to close, like every other modal in the app — but routed
+  // through attemptClose so we don't lose mid-draw work to a
+  // misplaced ESC press.
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") attemptClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+    // attemptClose closes over hasChanges, but we re-bind via the
+    // effect dep on hasChanges so the latest value is used. onClose is
+    // stable from the parent (passed by reference).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasChanges, onClose]);
 
   async function handleAccept() {
     const api = getKetcherApi(iframeRef.current);
@@ -318,7 +353,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={onClose}
+      onClick={attemptClose}
     >
       <div
         className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-7xl flex flex-col overflow-hidden ring-1 ring-slate-200 dark:ring-slate-700"
