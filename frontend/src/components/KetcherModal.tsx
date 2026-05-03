@@ -25,6 +25,16 @@ function safeAtob(b64: string): string {
   }
 }
 
+/** Compact a residue label by stripping the "A:" chain prefix.
+ *  "A:LEU1196" → "LEU1196". The Quick dock card is single-chain by
+ *  construction (the editor always picks one resolved chain) so the
+ *  prefix is wasted screen space. Falls through unchanged when the
+ *  string doesn't match the expected pattern. */
+function stripChain(residue: string): string {
+  const m = /^[A-Z]:(.+)$/.exec(residue);
+  return m ? m[1] : residue;
+}
+
 /**
  * Ketcher 2D structure-editor modal — opens the self-hosted Ketcher
  * Standalone (served from /ketcher/index.html on the same origin) inside
@@ -1284,18 +1294,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           fold. */}
       {targetPdb && (
         <div
-          className="mx-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/20 px-3 py-2.5 shrink-0 space-y-2"
+          className="mx-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/20 px-2.5 py-2 shrink-0 space-y-1.5"
           title="Quick dock is a draft estimate — fast Vina re-dock for iteration. For a publishable result with PoseBusters validation, ProLIF interactions, and a shareable URL, click Promote to Full Job."
         >
-          {/* Drafty header — tiny "DRAFT" tag is the key visual cue.
-              Dashed border + neutral slate (vs solid amber) makes the
-              card feel like a sketch rather than a published result. */}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">Quick dock</span>
-              <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">Draft</span>
-              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">· {targetPdb}</span>
-            </div>
+          {/* Compact header — DRAFT tag + dashed border together convey
+              "this is a sketch, not a publishable result." Score sits on
+              the same line when present (see dockResult branch below). */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">Quick dock</span>
+            <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">Draft</span>
+            <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">· {targetPdb}</span>
           </div>
           {quickDockGated ? (
             <>
@@ -1328,31 +1336,26 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             </>
           ) : dockResult ? (
             <>
-              {/* Drafty score — italic, smaller font, muted color, no
-                  bold. The "draft estimate" caveat is in the hover tooltip
-                  on the card AND surfaced here as plain text so the user
-                  can't miss it. */}
-              <div className="space-y-0.5">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-[18px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400">kcal/mol</span>
-                </div>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-tight">
-                  Estimate · no PoseBusters · no ProLIF · not shareable
-                </div>
+              {/* Score on a single tight line. DRAFT tag in the header +
+                  dashed border + tilde prefix already convey "estimate";
+                  the previous explicit caveat line was redundant. */}
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[15px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">kcal/mol</span>
               </div>
-              {/* Hits/misses are heuristic residue contacts, not real
-                  ProLIF interactions. De-emphasized vs the JobPage. */}
+              {/* Hits/misses, compact: 3 residues, no A:CHAIN prefix
+                  (assumed single-chain context for the editor's quick
+                  dock — Liganx targets are always single-chain anyway). */}
               {dockResult.hits.length > 0 && (
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-                  <span className="text-emerald-700 dark:text-emerald-400">contact ~</span>{" "}
-                  {dockResult.hits.slice(0, 5).join(", ")}{dockResult.hits.length > 5 && ` +${dockResult.hits.length - 5}`}
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight truncate" title={dockResult.hits.join(", ")}>
+                  <span className="text-emerald-700 dark:text-emerald-400">✓</span>{" "}
+                  {dockResult.hits.slice(0, 3).map(stripChain).join(", ")}{dockResult.hits.length > 3 && ` +${dockResult.hits.length - 3}`}
                 </div>
               )}
               {dockResult.misses.length > 0 && (
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-                  <span className="text-amber-700 dark:text-amber-400">missing ~</span>{" "}
-                  {dockResult.misses.slice(0, 5).join(", ")}{dockResult.misses.length > 5 && ` +${dockResult.misses.length - 5}`}
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight truncate" title={dockResult.misses.join(", ")}>
+                  <span className="text-amber-700 dark:text-amber-400">✗</span>{" "}
+                  {dockResult.misses.slice(0, 3).map(stripChain).join(", ")}{dockResult.misses.length > 3 && ` +${dockResult.misses.length - 3}`}
                 </div>
               )}
               <div className="flex items-center gap-1.5">
@@ -1360,7 +1363,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                   type="button"
                   disabled={!ketcherReady}
                   onClick={runQuickDock}
-                  className="flex-1 text-[11px] font-medium px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   🎯 Re-dock
                 </button>
@@ -1368,14 +1371,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                   <button
                     type="button"
                     onClick={runOptimize}
-                    className="flex-1 text-[11px] font-medium px-2 py-1.5 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors"
+                    className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors"
                     title="Ask AI for 3 variants targeting the missed residues, then dock each one"
                   >
                     ✨ Optimize
                   </button>
                 )}
                 {optimizeStatus === "running" && (
-                  <span className="flex-1 flex items-center justify-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 px-2 py-1.5 italic">
+                  <span className="flex-1 flex items-center justify-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 px-2 py-1 italic">
                     <Spinner size={10} /> variants…
                   </span>
                 )}
@@ -1383,39 +1386,28 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               {optimizeStatus === "error" && optimizeError && (
                 <div className="text-[11px] text-rose-700 dark:text-rose-300 leading-tight">{optimizeError}</div>
               )}
-              {/* Promote-to-Full-Job — the conversion path from "drafty
-                  estimate" to "publishable validated result." Solid
-                  delta-blue button so it stands out as the next action
-                  once the user has found a winner. Thin dashed divider
-                  visually separates "iterate here" from "ship it." */}
-              <div className="pt-2 mt-1 border-t border-dashed border-slate-300 dark:border-slate-700">
-                <button
-                  type="button"
-                  onClick={promoteToFullJob}
-                  className="w-full text-[12px] font-semibold px-3 py-2 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1.5"
-                  title="Submit this compound for a full validated docking job (PoseBusters, ProLIF, Vinardo refined score, shareable URL)"
-                >
-                  ⚡ Promote to Full Job →
-                </button>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400 italic text-center mt-1">
-                  Validated score · contact map · shareable
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 italic leading-tight">
-                Run a 5-second draft dock to see an estimated score before committing to a full job.
-              </div>
+              {/* Promote — solid delta-blue. Tooltip carries the "what
+                  Full Job adds" copy that used to live as a subtitle
+                  below the button (cut for vertical density). */}
               <button
                 type="button"
-                disabled={!ketcherReady}
-                onClick={runQuickDock}
-                className="w-full text-[11px] font-medium px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                onClick={promoteToFullJob}
+                className="w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1.5"
+                title="Submit a full validated docking job: PoseBusters, ProLIF interactions, Vinardo refined score, shareable URL"
               >
-                🎯 Run Quick dock (draft)
+                ⚡ Promote to Full Job →
               </button>
             </>
+          ) : (
+            <button
+              type="button"
+              disabled={!ketcherReady}
+              onClick={runQuickDock}
+              title="5-second draft Vina re-dock — estimated score for fast iteration. Promote to Full Job for validated results."
+              className="w-full text-[11px] font-medium px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              🎯 Run Quick dock
+            </button>
           )}
         </div>
       )}
