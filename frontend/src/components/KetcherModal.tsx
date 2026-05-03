@@ -1485,34 +1485,30 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         {status === "ok" && lastAction === "props" && properties && (
           <PropertiesPanel p={properties} />
         )}
-        {/* Suggest 5 analogs — secondary AI action. Upgrades to
-            "docking-aware" copy + emerald accent when there's a fresh
-            dock for the live SMILES, signaling that the AI will use the
-            score/hits/misses to bias the suggestions toward fixing the
-            missed residues. */}
-        <button
-          type="button"
-          disabled={!ketcherReady || status === "running"}
-          onClick={runAnalogs}
-          title={
-            dockFreshForLive
-              ? "AI will use the dock score and missed residues to bias the analog suggestions"
-              : "Generic medchem analogs. Run Quick dock first for docking-aware suggestions."
-          }
-          className={
-            "w-full text-left text-[11px] px-2 py-1.5 rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed " +
-            (dockFreshForLive
-              ? "border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 text-emerald-800 dark:text-emerald-200"
-              : "border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200")
-          }
-        >
-          🔬 <span className="font-medium">Suggest 5 analogs</span>
-          {dockFreshForLive && <span className="text-[10px] ml-1 opacity-70">(docking-aware)</span>}
-        </button>
+        {/* Suggest 5 analogs — only appears after a fresh Quick dock
+            against the live SMILES. Reasoning: without dock context the
+            AI gives generic medchem ideas, which is much less useful
+            than analogs targeted at the specific missed residues from
+            the dock. Gating the button behind dockFreshForLive removes
+            the "weaker" version of this action entirely — the chemist
+            either sees no button (run Quick dock first) or sees the
+            docking-aware one (real value). */}
+        {dockFreshForLive && (
+          <button
+            type="button"
+            disabled={!ketcherReady || status === "running"}
+            onClick={runAnalogs}
+            title="AI will use the dock score and missed residues to bias the analog suggestions toward fixing the binding gaps"
+            className="w-full text-left text-[11px] px-2 py-1.5 rounded-md border border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 text-emerald-800 dark:text-emerald-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            🔬 <span className="font-medium">Suggest 5 analogs</span>
+            <span className="text-[10px] ml-1 opacity-70">(docking-aware)</span>
+          </button>
+        )}
         {status === "idle" && lastAction === "none" && (
-          <div className="text-slate-400 dark:text-slate-500 text-[10px] leading-relaxed">
+          <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
             {targetPdb
-              ? "Click Run Quick dock above, or ask the AI for an edit below."
+              ? "Run Quick dock above to unlock docking-aware analog suggestions, or ask the AI for an edit below."
               : "Sketch above, then ask the AI for an edit below."}
           </div>
         )}
