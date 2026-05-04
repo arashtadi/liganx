@@ -1183,18 +1183,24 @@ export default function NewJobPage() {
                         }}
                         getValue={(item) => item.code}
                         renderItem={(item) => (
-                          // Match the compound dropdown row structure:
-                          // icon square + bold label + secondary line +
-                          // right-side source pill. Same visual rhythm so
-                          // both Step 2 and Step 3 dropdowns read as one
-                          // consistent picker pattern.
+                          // Visual parity with the PubChem compound row:
+                          // - icon square (same as compound)
+                          // - WHITE/light headline label (compound uses
+                          //   text-ink/slate-100 for the name; we mirror
+                          //   that so the picker reads as the same pattern
+                          //   instead of "blue mutation rows vs white
+                          //   compound rows" which was visually jarring)
+                          // - secondary slate-gray line beneath
+                          // - violet source pill matching the PUBCHEM pill
+                          //   styling (both are "where this came from"
+                          //   provenance tags — same semantic, same color)
                           <div className="flex items-center gap-3 w-full min-w-0">
                             <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
                               <Beaker size={14} />
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col">
                               <div className="flex items-baseline gap-2">
-                                <span className="font-mono font-semibold text-sm text-delta-700 dark:text-delta-300">{item.code}</span>
+                                <span className="font-mono font-semibold text-sm text-ink dark:text-slate-100">{item.code}</span>
                                 <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.gene}</span>
                               </div>
                               {item.note && (
@@ -1202,14 +1208,7 @@ export default function NewJobPage() {
                               )}
                             </div>
                             <span
-                              className={
-                                "shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded " +
-                                (item.source === "uniprot"
-                                  ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                                  : item.source === "cbioportal"
-                                  ? "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-                                  : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300")
-                              }
+                              className="shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
                               title={
                                 item.source === "uniprot" ? "From UniProt annotated variants"
                                 : item.source === "cbioportal" ? "From cBioPortal cohorts"
@@ -1387,19 +1386,18 @@ export default function NewJobPage() {
                         }}
                         getValue={(item) => item.code}
                         renderItem={(item) => (
-                          // Same row pattern as the catalog-target mutation
-                          // dropdown above so the picker UX is consistent
-                          // across modes. Custom-PDB suggestions only ever
-                          // come from the curated library (no UniProt
-                          // accession to query), so the source pill is
-                          // always Curated here.
+                          // Visual parity with the PubChem compound row —
+                          // same icon, same white headline label, same
+                          // violet provenance pill (Curated here, since
+                          // custom-PDB suggestions only come from our
+                          // curated library; no UniProt accession to query).
                           <div className="flex items-center gap-3 w-full min-w-0">
                             <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
                               <Beaker size={14} />
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col">
                               <div className="flex items-baseline gap-2">
-                                <span className="font-mono font-semibold text-sm text-delta-700 dark:text-delta-300">{item.code}</span>
+                                <span className="font-mono font-semibold text-sm text-ink dark:text-slate-100">{item.code}</span>
                                 <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.gene}</span>
                               </div>
                               {item.note && (
@@ -1407,7 +1405,7 @@ export default function NewJobPage() {
                               )}
                             </div>
                             <span
-                              className="shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                              className="shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
                               title="From Liganx curated mutation library"
                             >
                               Curated
