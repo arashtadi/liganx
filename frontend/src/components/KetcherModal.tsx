@@ -1121,8 +1121,29 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // inline 3D viewers on 2026-05-02.)
   const [optimizeStatus, setOptimizeStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  /** Soft, non-blocking informational message — present when the
+   *  Generate-Score-Filter loop fell back to un-docked variants (pod
+   *  down, no receptor cached, all candidates filtered by SA, etc).
+   *  Distinct from optimizeError so a happy-path "done" status doesn't
+   *  swallow it via the rose error pill. */
+  const [optimizeNote, setOptimizeNote] = useState<string | null>(null);
   const [optimizedVariants, setOptimizedVariants] = useState<
-    Array<{ new_smiles: string; rationale: string; score?: number; status: "queued" | "docking" | "done" | "error"; error?: string }>
+    Array<{
+      new_smiles: string;
+      rationale: string;
+      score?: number;
+      /** parent_score - score; positive = improvement. Populated by the
+       *  Generate-Score-Filter loop on the backend. */
+      delta?: number;
+      /** Synthetic Accessibility Score [1=easy, 10=impossible]. */
+      saScore?: number;
+      /** True iff this variant's docked pose contacts the mutated residue.
+       *  Renders a "🎯 mutation" badge that's stronger evidence of a
+       *  meaningful improvement than score alone. */
+      mutationContact?: boolean;
+      status: "queued" | "docking" | "done" | "error";
+      error?: string;
+    }>
   >([]);
 
   /** Is the current dockResult applicable to the live canvas SMILES?
@@ -1268,13 +1289,29 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
   }
 
-  /** Optimize: ask the AI for 3 variants targeting the missed
-   *  residues, then auto-quick-dock each variant in parallel and
-   *  display ranked by score. */
+  /** Optimize: ask the AI for variant compounds targeting the missed
+   *  residues, then display ranked by score.
+   *
+   *  Two paths depending on what the backend returns:
+   *
+   *  HAPPY PATH — Generate-Score-Filter loop (post-2026-05-03):
+   *    The backend asked Claude for ~12 candidates, dropped the
+   *    synthetically-implausible ones, batch-docked the survivors
+   *    against the same target+mutation, and returned the top 3 with
+   *    `score`/`delta`/`sa_score`/`fitness`/`mutation_contact` already
+   *    populated. We just render them. No per-variant fan-out needed.
+   *
+   *  FALLBACK PATH — un-docked variants:
+   *    The docking pipeline wasn't available (pod down, no receptor
+   *    cached, all candidates filtered out by SA, etc). Backend returns
+   *    variants without scores. We fall back to the legacy fan-out:
+   *    fire one quick_dock per variant in parallel and let the rows
+   *    fill in as scores arrive. Same UX as before. */
   async function runOptimize() {
     if (!dockResult || !targetPdb) return;
     setOptimizeStatus("running");
     setOptimizeError(null);
+    setOptimizeNote(null);
     setOptimizedVariants([]);
     try {
       const opt = await api.assistOptimize({
@@ -1287,21 +1324,46 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       });
       if (!opt.variants || opt.variants.length === 0) {
         setOptimizeStatus("error");
-        setOptimizeError("AI didn't propose any valid variants. Try again, or refine the structure manually.");
+        setOptimizeError(opt.note || "AI didn't propose any valid variants. Try again, or refine the structure manually.");
         return;
       }
-      // Initialise as queued; we'll dock each one in parallel below.
+      // Detect happy-path: backend already populated scores. If even one
+      // variant has a score, the whole batch was docked server-side and
+      // we should NOT re-fan-out (would be wasted GPU + might disagree
+      // with the server's already-ranked order).
+      const preScored = opt.variants.some((v) => typeof v.score === "number");
+
       const initial = opt.variants.map((v) => ({
         new_smiles: v.new_smiles,
         rationale: v.rationale,
-        status: "docking" as const,
-        score: undefined as number | undefined,
+        // For pre-scored variants, mark as "done" right away with the
+        // server's score. For un-scored variants, mark as "docking" so
+        // the spinner shows while the per-variant fan-out runs.
+        status: preScored
+          ? typeof v.score === "number" ? ("done" as const) : ("error" as const)
+          : ("docking" as const),
+        score: typeof v.score === "number" ? v.score : undefined,
+        delta: typeof v.delta === "number" ? v.delta : undefined,
+        saScore: typeof v.sa_score === "number" ? v.sa_score : undefined,
+        mutationContact: typeof v.mutation_contact === "boolean" ? v.mutation_contact : undefined,
         error: undefined as string | undefined,
       }));
       setOptimizedVariants(initial);
       setOptimizeStatus("done");
-      // Fan out 3 quick docks in parallel. Each updates its own slot
-      // on completion so the user sees scores trickle in.
+      // Surface the fallback note (if any) as a soft non-blocking
+      // informational pill above the variants. Doesn't trigger the
+      // rose error rendering — the variants still render normally,
+      // we just want the chemist to know why these aren't pre-scored.
+      if (opt.note) {
+        setOptimizeNote(opt.note);
+      }
+
+      if (preScored) {
+        // Server already docked + ranked everything. Done.
+        return;
+      }
+
+      // FALLBACK: legacy per-variant fan-out (existing behaviour).
       initial.forEach((v, idx) => {
         api.assistQuickDock({
           smiles: v.new_smiles,
@@ -1722,6 +1784,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
               Optimized variants
             </div>
+            {optimizeNote && (
+              // Soft amber pill when the backend fell back to un-docked
+              // variants (pod down, no receptor cached, all candidates
+              // filtered by SA, etc). Doesn't trigger the rose error
+              // rendering — variants still render normally.
+              <div className="text-[9.5px] text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded px-1.5 py-1 leading-snug">
+                {optimizeNote}
+              </div>
+            )}
             {[...optimizedVariants]
               .sort((a, b) => {
                 const aHas = typeof a.score === "number";
@@ -1734,37 +1805,74 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               .map((v) => (
                 <div key={v.new_smiles} className="rounded border border-slate-200 dark:border-slate-700 px-2 py-1">
                   <div className="flex items-center justify-between gap-1">
-                    {v.status === "docking" && (
-                      <span className="text-[9px] text-slate-400 flex items-center gap-1">
-                        <Spinner size={8} /> docking
-                      </span>
-                    )}
-                    {v.status === "done" && typeof v.score === "number" && (
-                      <span className="text-[10px] font-semibold text-ink dark:text-slate-100">
-                        {v.score.toFixed(2)}
-                        {dockResult && (
-                          <span className={"ml-1 text-[9px] " + (v.score < dockResult.score ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
-                            ({(v.score - dockResult.score).toFixed(2)})
+                    <div className="flex items-center gap-1 flex-wrap min-w-0">
+                      {v.status === "docking" && (
+                        <span className="text-[9px] text-slate-400 flex items-center gap-1">
+                          <Spinner size={8} /> docking
+                        </span>
+                      )}
+                      {v.status === "done" && typeof v.score === "number" && (
+                        <>
+                          <span className="text-[10px] font-semibold text-ink dark:text-slate-100">
+                            {v.score.toFixed(2)}
+                            {dockResult && (
+                              <span className={"ml-1 text-[9px] " + (v.score < dockResult.score ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
+                                ({(v.score - dockResult.score).toFixed(2)})
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                    )}
-                    {v.status === "error" && (
-                      // Hide raw 'vina-gpu rc=255' / HTTP 500 / Pod
-                      // tracebacks behind a friendly "Pod couldn't dock"
-                      // label. The full error is preserved in the
-                      // tooltip for power users / support.
-                      <span
-                        className="text-[9px] text-rose-600 dark:text-rose-400 truncate cursor-help"
-                        title={`Pod couldn't dock this variant. Common causes: too flexible/large for vina-gpu, or a transient Pod hiccup. Click Apply to inspect on canvas, or try Optimize again.\n\nRaw error: ${v.error || "dock failed"}`}
-                      >
-                        ⚠ Pod couldn't dock — try Apply
-                      </span>
-                    )}
+                          {/* Mutation-contact badge — only shown when
+                              the server's Generate-Score-Filter loop
+                              detected the variant docked-pose actually
+                              touches the mutation residue. Stronger
+                              evidence than score alone. */}
+                          {v.mutationContact && (
+                            <span
+                              className="text-[8.5px] px-1 py-px rounded bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200 font-semibold"
+                              title="This variant's docked pose contacts the mutated residue — exactly what we asked the AI to design for."
+                            >
+                              🎯 mutation
+                            </span>
+                          )}
+                          {/* SA Score chip — only shown when the
+                              backend populated it (Generate-Score-Filter
+                              path). Color-coded so the chemist can see
+                              at a glance which variants are easy to
+                              actually make. */}
+                          {typeof v.saScore === "number" && (
+                            <span
+                              className={
+                                "text-[8.5px] px-1 py-px rounded font-semibold " +
+                                (v.saScore <= 4
+                                  ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200"
+                                  : v.saScore <= 6
+                                    ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200"
+                                    : "bg-rose-100 dark:bg-rose-900/30 text-rose-800 dark:text-rose-200")
+                              }
+                              title={`Synthetic Accessibility Score ${v.saScore.toFixed(1)} (1=easy, 10=impossible)`}
+                            >
+                              SA {v.saScore.toFixed(1)}
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {v.status === "error" && (
+                        // Hide raw 'vina-gpu rc=255' / HTTP 500 / Pod
+                        // tracebacks behind a friendly "Pod couldn't dock"
+                        // label. The full error is preserved in the
+                        // tooltip for power users / support.
+                        <span
+                          className="text-[9px] text-rose-600 dark:text-rose-400 truncate cursor-help"
+                          title={`Pod couldn't dock this variant. Common causes: too flexible/large for vina-gpu, or a transient Pod hiccup. Click Apply to inspect on canvas, or try Optimize again.\n\nRaw error: ${v.error || "dock failed"}`}
+                        >
+                          ⚠ Pod couldn't dock — try Apply
+                        </span>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => applyVariantToCanvas(v.new_smiles)}
-                      className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline"
+                      className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0"
                     >
                       Apply →
                     </button>

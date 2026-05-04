@@ -499,40 +499,83 @@ def _extract_json(raw: str) -> Optional[dict]:
     return None
 
 
-_OPTIMIZE_SYSTEM_PROMPT = """You are a PhD-level medicinal-chemistry assistant inside Liganx. \
+# ──────────────────────────────────────────────────────────────────────
+# Generate-Score-Filter loop config
+#
+# 2026-05-03: switched from "ask AI for 3, ship 3" to "ask AI for ~12,
+# filter by SA + pod pre-flight, batch-dock survivors, ship the best 3
+# by composite fitness". The AI is doing what it's good at (proposing
+# diverse chemistry); the docker is doing what IT'S good at (scoring).
+# Net effect: the 3 variants the user sees are now empirically the best
+# of a wider design space, not the AI's first guess. See routers/assist.py
+# /optimize endpoint and services/optimize_loop.py for the orchestration.
+# ──────────────────────────────────────────────────────────────────────
+N_OPTIMIZE_CANDIDATES = 12
+# Lower bound — if we ask for 12 and only 4 survive RDKit + SA + pod
+# pre-flight, that's still enough to dock and pick the best 3 from.
+# Below 3 survivors we just return what we have.
+MIN_OPTIMIZE_CANDIDATES = 3
+
+
+def _build_optimize_system_prompt(n_variants: int) -> str:
+    """The optimize system prompt parameterised by how many variants to
+    request. The Generate-Score-Filter loop asks for ~12 candidates;
+    callers that want the legacy 3-variant behaviour pass n_variants=3.
+
+    Behaviour rules + output schema interpolate {n_variants} so the
+    model isn't surprised by the count mismatch. Other rules (mutation
+    targeting, residue-name guard, vina-gpu sanity) are unchanged."""
+    return _OPTIMIZE_SYSTEM_PROMPT_TEMPLATE.format(n_variants=n_variants)
+
+
+_OPTIMIZE_SYSTEM_PROMPT_TEMPLATE = """You are a PhD-level medicinal-chemistry assistant inside Liganx. \
 The user has just docked a compound against a specific target+mutation \
-and wants 3 variant compounds designed to BEAT the parent score AND \
-specifically engage the MUTATED residue (not just any missed residue).
+and wants {n_variants} CANDIDATE variant compounds. The Liganx server will \
+re-dock all {n_variants} candidates against the same target+mutation, score \
+them with the same engine, then surface the best 3 to the user. So your job \
+is to generate a DIVERSE pool of plausible candidates — not just 3 hand-picked \
+"best guesses".
 
 # Goal — read it carefully
-Your variants will be re-docked with the SAME engine (Vina/QuickVina2-GPU) \
-and SAME pocket box as the parent. So a successful variant must:
+Your candidates will be re-docked with the SAME engine (Vina/QuickVina2-GPU) \
+and SAME pocket box as the parent. The server then picks the best 3 by:
+  delta_score (improvement over parent) × 1.0
+  + (4 − SA_score) × 0.3   (rewards easy-to-make designs)
+  + mutation_contact × 0.5 (rewards reaching the mutated residue)
+
+So a successful candidate must:
   1. Score MORE NEGATIVE than the parent (better binding affinity) — \
      Vina noise floor is ±0.5 kcal/mol so target ≥ 0.7 kcal/mol \
      improvement to be reproducible.
   2. Add at least one specific contact in the missed-residue list \
      (ideally the mutated residue itself).
   3. NOT introduce features that crash vina-gpu (see "Synthesis sanity" below).
+  4. Stay synthetically tractable (SA Score ≤ 6 ideally — anything above \
+     gets penalised in the fitness function and is unlikely to make the \
+     final 3).
 
 # Output format (STRICT — return ONLY this JSON, no preamble, no code fences)
-{"variants":[{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"},{"new_smiles":"<smiles>","rationale":"<sentence>"}]}
+{{"variants":[{{"new_smiles":"<smiles>","rationale":"<sentence>"}}, ... {n_variants} entries]}}
 
 # Behavior rules
-- Return EXACTLY 3 variants. Each SMILES MUST parse with RDKit (canonical-style).
+- Return EXACTLY {n_variants} variants. Each SMILES MUST parse with RDKit (canonical-style).
 - Keep edits minimal: change only what's needed to reach the missed residues. \
 Tiny edits (single-atom swaps, methyl→ethyl, F→Cl) often improve scores by \
 0.3-0.8 kcal/mol with low risk; prefer those over scaffold rewrites unless \
 the parent is fundamentally wrong-shape.
-- DIVERSITY > MAGNITUDE: the 3 variants must span DIFFERENT design axes \
-(one disjunction = simplify/strip a group, one conjunction = add a group / scaffold-hop, \
-one special-approach = ring closure / chiral resolution / bioisosteric swap / EWG-EDG tuning) \
-— NOT three variations of the same move.
+- DIVERSITY > MAGNITUDE: spread the {n_variants} variants across DIFFERENT \
+design axes — disjunction (simplify/strip a group), conjunction (add a group / \
+scaffold-hop / hybridise), special-approach (ring closure, ring opening, \
+bioisosteric swap, EWG/EDG tuning, chiral resolution, alkyne linker, fluorine \
+walk). Aim for at least 4 distinct axes across the pool. Do NOT submit \
+{n_variants} micro-variations of the same move; the docker will rank them \
+near-identically and you'll have wasted the budget.
 
 # Mutation residue is the PRIMARY target
-At least ONE of the 3 variants MUST be designed to engage the actual \
-MUTATED residue (the one whose identity changed in the user's mutation \
+At LEAST half of the {n_variants} variants MUST be designed to engage the \
+actual MUTATED residue (the one whose identity changed in the user's mutation \
 string), not just generic missed residues. State the mutated residue \
-name explicitly in that variant's rationale.
+name explicitly in those variants' rationales.
 
 For SUBSTITUTIONS (the common case — like G2032R, T315I, T790M, V600E):
 - Identify the BIOPHYSICAL DELTA between original and new residue:
@@ -625,11 +668,28 @@ async def call_anthropic_optimize(
     misses: list[str],
     target_pdb: Optional[str] = None,
     mutations: Optional[str] = None,
+    n_variants: int = 3,
+    apply_pod_pre_flight: bool = True,
 ) -> list[OptimizeVariant]:
-    """Ask Claude for 3 variant SMILES designed to gain contacts at the
-    `misses` residues. Returns a list of {new_smiles, rationale} dicts;
-    each new_smiles is RDKit-validated before being included. Empty
-    list on parse failure (caller decides how to surface)."""
+    """Ask Claude for `n_variants` candidate SMILES designed to gain contacts
+    at the `misses` residues. Returns RDKit-validated, canonical-form
+    variants in the order the model produced them.
+
+    Two distinct callers:
+
+    1. **Legacy path** (n_variants=3, apply_pod_pre_flight=True): the
+       behaviour shipped with the original /assist/optimize — ask for 3,
+       drop anything that doesn't survive the pod pre-flight, ship up to 3.
+       No re-dock; the frontend dispatches per-variant quick docks itself.
+
+    2. **Generate-Score-Filter loop** (n_variants=12, apply_pod_pre_flight=True):
+       called by services/optimize_loop.py. Wider candidate pool; the
+       orchestrator batch-docks survivors and ranks by composite fitness
+       before returning the top 3 to the user.
+
+    `apply_pod_pre_flight` is exposed so callers that have their own
+    filtering pipeline can short-circuit it (currently always True; future
+    ToolUse-style flow may set it False to keep the model's own choices)."""
     parts = [
         f"Current SMILES: {smiles}",
         f"Docked score: {score:.2f} kcal/mol",
@@ -644,9 +704,18 @@ async def call_anthropic_optimize(
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
-        system_prompt=_augment_with_skill(_OPTIMIZE_SYSTEM_PROMPT),
+        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_variants)),
         user_prompt=user_prompt,
     )
+    # The base max_tokens budget is sized for a single edit (~1024); 12
+    # variants with per-variant rationales push toward 2-3K. Bump the
+    # budget when asking for >3 variants so the JSON doesn't get
+    # truncated mid-array (which then fails _extract_json and we silently
+    # ship 0 variants — a high-cost-zero-output failure mode).
+    if n_variants > 3:
+        # 200 tokens per variant gives generous headroom for the 1-sentence
+        # rationale + SMILES; 12 × 200 = 2400, plus 600 for JSON scaffolding.
+        payload["max_tokens"] = max(int(payload.get("max_tokens", 1024)), 200 * n_variants + 600)
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -683,7 +752,13 @@ async def call_anthropic_optimize(
 
     from .properties import validate_smiles
     out: list[OptimizeVariant] = []
-    for raw in raw_variants[:3]:  # never more than 3 even if model overshoots
+    # Cap at n_variants × 1.5 so a model that overshoots the request (Haiku
+    # sometimes returns 14 when asked for 12) doesn't waste downstream
+    # GPU time on extras the orchestrator would just discard. Floor at 3
+    # so the legacy n=3 path keeps its old behaviour.
+    cap = max(3, int(n_variants * 1.5))
+    seen_canonical: set[str] = set()
+    for raw in raw_variants[:cap]:
         if not isinstance(raw, dict):
             continue
         smi_raw = str(raw.get("new_smiles") or "").strip()
@@ -694,21 +769,22 @@ async def call_anthropic_optimize(
         if not valid or not canonical:
             log.info("optimize variant rejected (RDKit): %r", smi_raw)
             continue
-        # Pre-flight Vina/QuickVina-GPU sanity gate. The Pod crashes
-        # rc=255 on too-big/too-flexible/wrong-element molecules even
-        # when RDKit accepts them. Mirrors the gate in services/quick_dock.py
-        # — keeping the cutoffs in sync prevents the AI from emitting
-        # variants the user will only see fail in the UI. We append a
-        # note to the rationale (rather than dropping the variant
-        # entirely) so the chemist sees why the AI's design got
-        # rejected and can either accept the limitation or hand-edit.
-        skip_reason = _vina_pod_pre_flight(canonical)
-        if skip_reason:
-            log.info("optimize variant skipped (pod pre-flight): %s for %r", skip_reason, canonical)
-            # Drop this variant — Pod would just crash on it. Don't
-            # leak rc=255 into the UI. The 3-of-3 contract gets relaxed
-            # to "up to 3"; frontend already handles fewer.
+        # De-dupe — Haiku occasionally repeats the same SMILES across
+        # rationale variants when the parent has limited modification
+        # surface (e.g. tiny molecules). Save the docker round-trip.
+        if canonical in seen_canonical:
             continue
+        seen_canonical.add(canonical)
+        if apply_pod_pre_flight:
+            # Pre-flight Vina/QuickVina-GPU sanity gate. The Pod crashes
+            # rc=255 on too-big/too-flexible/wrong-element molecules even
+            # when RDKit accepts them. Mirrors the gate in services/quick_dock.py
+            # — keeping the cutoffs in sync prevents the AI from emitting
+            # variants the user will only see fail in the UI.
+            skip_reason = _vina_pod_pre_flight(canonical)
+            if skip_reason:
+                log.info("optimize variant skipped (pod pre-flight): %s for %r", skip_reason, canonical)
+                continue
         out.append(OptimizeVariant(new_smiles=canonical, rationale=rationale))
     return out
 

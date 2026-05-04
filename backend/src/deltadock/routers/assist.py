@@ -32,7 +32,8 @@ from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, current_user
 from ..config import get_settings
-from ..services.ai_assistant import call_anthropic, call_anthropic_optimize
+from ..services.ai_assistant import call_anthropic
+from ..services.optimize_loop import generate_score_filter_optimize
 from ..services.properties import check_dockability, compute_properties
 from ..services.quick_dock import quick_dock
 from ..services.rate_limit import RateLimit, rate_limit
@@ -241,22 +242,50 @@ async def optimize_endpoint(
     payload: OptimizeRequest,
     user: Annotated[CurrentUser, Depends(current_user)],
 ) -> dict:
-    """Generate 3 variant SMILES designed to gain contacts at the
-    `misses` residues from a prior quick_dock. Returns {variants:
-    [{new_smiles, rationale}, ...]}. Always returns up to 3 variants
-    that pass RDKit validation; may return fewer (or empty list) if
-    the model produces invalid SMILES.
+    """Generate-Score-Filter loop. Returns the top 3 variants (by composite
+    fitness) from a wider AI-proposed pool of ~12 candidates that have all
+    been re-docked against the same target+mutation as the parent.
 
-    Same auth + AI rate limit (30/hr) as /assist/compound. Same gate
-    as /assist/quick_dock — feature-flagged off by default."""
+    Response shape (backwards-compatible — frontend's existing per-variant
+    fan-out path still works when score is missing):
+        {
+          "variants": [
+             {
+               "new_smiles": "...",
+               "rationale": "...",
+               "score": -8.4,            # Vina kcal/mol (lower=better)
+               "delta": 0.7,             # parent_score - score; positive=improvement
+               "sa_score": 3.2,          # 1=easy, 10=impossible
+               "fitness": 1.85,          # composite ranking value
+               "mutation_contact": true, # variant touches the mutated residue
+               "hits": [...],            # context for UI badges
+               "misses": [...]
+             },
+             ... up to 3
+          ],
+          "candidates_generated": 12,    # diagnostic
+          "candidates_filtered": 7,      # post SA + pod pre-flight
+          "candidates_docked": 6,
+          "note": "..."                  # human-readable, present on fallbacks
+        }
+
+    On any docking-pipeline failure (pod down, no receptor cached, all
+    candidates unsynthesisable), falls back to returning the AI's variants
+    WITHOUT scores — the frontend's existing per-variant fan-out then
+    fills them in or surfaces per-variant errors. Net effect: the user
+    always sees variants; in the happy path they're already ranked by
+    the docker; in the degraded path they're ranked by the LLM.
+
+    Same auth + AI rate limit (30/hr) as /assist/compound. Same gate as
+    /assist/quick_dock — feature-flagged off by default."""
     _check_quick_dock_enabled()
     try:
-        variants = await call_anthropic_optimize(
+        result = await generate_score_filter_optimize(
             smiles=payload.smiles.strip(),
-            score=payload.score,
+            parent_score=payload.score,
             hits=payload.hits or [],
             misses=payload.misses or [],
-            target_pdb=payload.target_pdb,
+            target_pdb=payload.target_pdb or "",
             mutations=payload.mutations,
         )
     except RuntimeError as e:
@@ -266,4 +295,10 @@ async def optimize_endpoint(
         if "rate-limited" in msg:
             raise HTTPException(status_code=429, detail=msg)
         raise HTTPException(status_code=502, detail=msg)
-    return {"variants": [dict(v) for v in variants]}
+    return {
+        "variants": [dict(v) for v in result.get("variants", [])],
+        "candidates_generated": result.get("candidates_generated", 0),
+        "candidates_filtered": result.get("candidates_filtered", 0),
+        "candidates_docked": result.get("candidates_docked", 0),
+        "note": result.get("note", ""),
+    }

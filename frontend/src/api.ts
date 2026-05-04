@@ -647,8 +647,42 @@ export const api = {
     target_pdb?: string;
     mutations?: string;
   }) =>
+    /** Generate-Score-Filter loop response. The backend asks Claude for ~12
+     *  candidate variants, drops the synthetically-implausible ones, batch-
+     *  docks the survivors against the same target+mutation as the parent,
+     *  and returns the top 3 ranked by composite fitness:
+     *    delta_score × 1.0 + (4 − SA) × 0.3 + mutation_contact × 0.5
+     *
+     *  When the docking pipeline isn't available (pod down, no receptor
+     *  cached) the backend falls back to returning AI variants WITHOUT
+     *  score/delta/sa_score/fitness — the frontend then dispatches its
+     *  own per-variant quick docks (existing fan-out path).
+     */
     request<{
-      variants: { new_smiles: string; rationale: string }[];
+      variants: {
+        new_smiles: string;
+        rationale: string;
+        /** Vina kcal/mol — lower = stronger binding. Present iff backend
+         *  successfully batch-docked this variant. */
+        score?: number;
+        /** parent_score - score; positive = improvement. */
+        delta?: number;
+        /** Synthetic Accessibility Score, 1=easy, 10=impossible. */
+        sa_score?: number;
+        /** Composite ranking value used to pick the top 3. */
+        fitness?: number;
+        /** True iff variant docked-pose contacts the mutated residue. */
+        mutation_contact?: boolean;
+        hits?: string[];
+        misses?: string[];
+      }[];
+      /** Diagnostics — useful for debug, not currently surfaced in UI. */
+      candidates_generated?: number;
+      candidates_filtered?: number;
+      candidates_docked?: number;
+      /** Human-readable hint, present on fallback paths (no docking
+       *  pipeline, all candidates unsynthesisable, etc). */
+      note?: string;
     }>("/assist/optimize", { method: "POST", body: JSON.stringify(payload) }),
   /** Report an issue on a job. Owner-only. Sends the user's free-form
    *  comment + job context to our Telegram bot so we can triage from a
