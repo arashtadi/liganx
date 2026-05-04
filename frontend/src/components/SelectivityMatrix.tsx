@@ -330,13 +330,16 @@ export default function SelectivityMatrix({
                       Lets users triage compounds by chemistry quality (QED, Ro5)
                       without leaving the matrix. */}
                   <AdmetChips admet={compound.admet} layout="compact" />
-                  {/* Edit & re-dock — closes the iterate-after-results loop.
-                      Opens KetcherModal in the parent (JobPage owns it),
-                      then navigates to /new with a reseed payload so the
-                      target/mutations/engine are preserved and the user
-                      just clicks Submit. The button only renders when the
-                      parent provided onEditCompound (omitted on shared
-                      subset views that don't own a sketcher). */}
+                  {/* Edit & re-dock — closes the iterate-after-results
+                      loop. Promoted to a prominent solid primary button
+                      because it's THE headline iterate-after-results
+                      action: the previous outline-chip treatment looked
+                      like a tertiary detail and chemists missed it.
+                      Brand-colored fill + pencil icon + arrow makes the
+                      "edit then go" workflow visually unambiguous. The
+                      button only renders when the parent provided
+                      onEditCompound (omitted on shared subset views
+                      that don't own a sketcher). */}
                   {onEditCompound && (
                     <button
                       type="button"
@@ -344,10 +347,15 @@ export default function SelectivityMatrix({
                         e.stopPropagation();
                         onEditCompound(compound);
                       }}
-                      className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border border-delta-300 dark:border-delta-700/50 bg-delta-50 dark:bg-delta-900/20 text-delta-700 dark:text-delta-300 hover:bg-delta-100 dark:hover:bg-delta-900/40 transition-colors"
-                      title="Open the structure editor with this SMILES — your edit submits a fresh job against the same target + mutations."
+                      className="mt-2 group inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-delta-600 hover:bg-delta-700 text-white shadow-sm hover:shadow-md transition-all w-full justify-center"
+                      title="Open the structure editor with this SMILES. Your edit submits a fresh job against the same target + mutations — engine, exhaustiveness, and WT setting are preserved."
                     >
-                      <span aria-hidden="true">✎</span> Edit &amp; re-dock
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                      </svg>
+                      Edit &amp; re-dock
+                      <span className="opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" aria-hidden="true">→</span>
                     </button>
                   )}
                 </td>
