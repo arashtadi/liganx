@@ -41,6 +41,20 @@ export interface AutocompleteInputProps<T> {
    *  the user doesn't hit a dead-end when their query has no autocomplete
    *  match. The dropdown stays open so the hint is visible alongside the input. */
   emptyState?: React.ReactNode;
+  /** When true, dropdown rows render with a checkbox and the user can pick
+   *  multiple items in one open. A footer button commits the batch via
+   *  onMultiCommit, which receives the selected items in pick order.
+   *  Cap with `multiMax` (default 5). Useful for token-mode fields where
+   *  the user often wants to add several at once (mutations, compound
+   *  names) instead of re-opening the dropdown for each. */
+  multi?: boolean;
+  multiMax?: number;
+  /** Called when the user clicks the "Add N" footer button in multi mode.
+   *  Receives the items in the order they were checked. Caller is
+   *  responsible for inserting them into the value (we don't auto-update
+   *  via getValue/onChange in multi mode because the join semantics
+   *  vary — comma-list, separate rows, etc.). */
+  onMultiCommit?: (items: T[]) => void;
 }
 
 export default function AutocompleteInput<T>({
@@ -58,6 +72,9 @@ export default function AutocompleteInput<T>({
   inputClassName = "input",
   inputProps,
   emptyState,
+  multi = false,
+  multiMax = 5,
+  onMultiCommit,
 }: AutocompleteInputProps<T>) {
   const [items, setItems] = useState<T[]>([]);
   const [open, setOpen] = useState(false);
@@ -65,6 +82,32 @@ export default function AutocompleteInput<T>({
   const [loading, setLoading] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const listId = useId();
+  // Multi-select state — preserved across re-fetches so the user can
+  // refine their query and the existing checks survive (matched on the
+  // string returned by getValue, since the suggestion objects can be
+  // re-allocated by the fetcher between renders). Cleared when the
+  // dropdown closes, so opening it next time starts fresh.
+  const [picked, setPicked] = useState<T[]>([]);
+  const pickedKeys = new Set(picked.map((p) => getValue(p)));
+  function togglePick(item: T) {
+    const key = getValue(item);
+    setPicked((cur) => {
+      if (cur.some((c) => getValue(c) === key)) {
+        return cur.filter((c) => getValue(c) !== key);
+      }
+      // Cap-respect: drop the oldest pick to make room for the new one
+      // rather than silently ignoring the click. This matches user
+      // expectation of "I just clicked, something should have changed."
+      if (cur.length >= multiMax) {
+        return [...cur.slice(1), item];
+      }
+      return [...cur, item];
+    });
+  }
+  // Reset picks when the dropdown closes so reopening starts clean.
+  useEffect(() => {
+    if (!open) setPicked([]);
+  }, [open]);
 
   // Compute the "current token" — what we actually feed to the suggester.
   // For tokens mode that's the slice after the last comma; for single mode it's
@@ -185,26 +228,97 @@ export default function AutocompleteInput<T>({
         aria-autocomplete="list"
       />
       {open && items.length > 0 && (
-        <ul
-          id={listId}
-          role="listbox"
-          className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl max-h-72 overflow-y-auto py-1 dark:bg-slate-800 dark:border-slate-700"
-        >
-          {items.map((item, i) => (
-            <li
-              key={i}
-              role="option"
-              aria-selected={i === active}
-              onMouseDown={(e) => { e.preventDefault(); pick(item); }}
-              onMouseEnter={() => setActive(i)}
-              className={`cursor-pointer px-3 py-1.5 text-sm transition-colors ${
-                i === active ? "bg-delta-50 dark:bg-delta-900/30" : "hover:bg-slate-50 dark:hover:bg-slate-700"
-              }`}
-            >
-              {renderItem(item, i === active)}
-            </li>
-          ))}
-        </ul>
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl dark:bg-slate-800 dark:border-slate-700">
+          <ul
+            id={listId}
+            role="listbox"
+            className="max-h-72 overflow-y-auto py-1"
+          >
+            {items.map((item, i) => {
+              const isPicked = multi && pickedKeys.has(getValue(item));
+              return (
+                <li
+                  key={i}
+                  role="option"
+                  aria-selected={multi ? isPicked : i === active}
+                  onMouseDown={(e) => {
+                    // In multi mode a click toggles the checkbox without
+                    // closing the dropdown, so the user can pick several
+                    // in one open. In single mode it commits as before.
+                    e.preventDefault();
+                    if (multi) togglePick(item);
+                    else pick(item);
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                  className={`cursor-pointer px-3 py-1.5 text-sm transition-colors flex items-center gap-2 ${
+                    isPicked
+                      ? "bg-delta-50 dark:bg-delta-900/30"
+                      : i === active
+                        ? "bg-slate-50 dark:bg-slate-700/50"
+                        : "hover:bg-slate-50 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  {multi && (
+                    <span
+                      aria-hidden="true"
+                      className={
+                        "shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors " +
+                        (isPicked
+                          ? "bg-delta-600 border-delta-600 text-white"
+                          : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
+                      }
+                    >
+                      {isPicked && (
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </span>
+                  )}
+                  <span className="flex-1 min-w-0">{renderItem(item, i === active)}</span>
+                </li>
+              );
+            })}
+          </ul>
+          {/* Multi-select footer — sticky bar with selected count + commit
+              button. Disabled state when no picks; cap warning when at max. */}
+          {multi && (
+            <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 rounded-b-lg">
+              <span className="text-[11px] text-slate-600 dark:text-slate-400">
+                {picked.length === 0
+                  ? `Pick up to ${multiMax}`
+                  : picked.length >= multiMax
+                    ? `${picked.length}/${multiMax} selected (max)`
+                    : `${picked.length}/${multiMax} selected`}
+              </span>
+              <div className="flex items-center gap-1.5">
+                {picked.length > 0 && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => { e.preventDefault(); setPicked([]); }}
+                    className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 px-2 py-1 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={picked.length === 0}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (picked.length === 0) return;
+                    onMultiCommit?.(picked);
+                    setPicked([]);
+                    setOpen(false);
+                  }}
+                  className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed transition-colors"
+                >
+                  Add {picked.length || ""}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
       {open && loading && items.length === 0 && currentToken.length >= minChars && (
         <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">

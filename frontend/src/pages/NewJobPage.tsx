@@ -496,6 +496,24 @@ export default function NewJobPage() {
   const [lookupDropdownOpen, setLookupDropdownOpen] = useState(false);
   const [lookupActiveIdx, setLookupActiveIdx] = useState(0);
   const lookupWrapRef = useRef<HTMLDivElement>(null);
+  // Multi-select for PubChem suggestions — chemists triaging a series often
+  // want to grab 3–5 related compounds in one search ("aspirin" + several
+  // ester/amide analogs surfaced by the suggester) instead of re-firing the
+  // dropdown for each. Cap at 5 so the per-job compound list stays
+  // manageable. Picks reset when the dropdown closes.
+  const PUBCHEM_MULTI_MAX = 5;
+  const [lookupPicked, setLookupPicked] = useState<string[]>([]);
+  function togglePubchemPick(name: string) {
+    setLookupPicked((cur) => {
+      if (cur.includes(name)) return cur.filter((n) => n !== name);
+      if (cur.length >= PUBCHEM_MULTI_MAX) return [...cur.slice(1), name];
+      return [...cur, name];
+    });
+  }
+  // Reset picks when the dropdown closes so reopening starts clean.
+  useEffect(() => {
+    if (!lookupDropdownOpen) setLookupPicked([]);
+  }, [lookupDropdownOpen]);
   // Reset the highlighted row whenever the suggestion list changes so we
   // don't end up with activeIdx pointing past the new array's length.
   useEffect(() => { setLookupActiveIdx(0); }, [suggestions]);
@@ -552,6 +570,52 @@ export default function NewJobPage() {
     if (!name.trim()) return;
     setLookupErr(null);
     lookupMut.mutate(name.trim());
+  }
+
+  /** Multi-select commit — fire N PubChem lookups in parallel and append
+   *  every successful resolution to the compound list. Misses get
+   *  collected in a single error banner so the user knows which names
+   *  failed without seeing N separate toasts. Skips duplicates against
+   *  the current compound list (case-insensitive on name). */
+  async function runMultiLookup(names: string[]) {
+    if (names.length === 0) return;
+    setLookupErr(null);
+    setLookupQ("");
+    setSuggestions([]);
+    setLookupDropdownOpen(false);
+    setLookupPicked([]);
+    // Skip names already in the compound list — common when the user
+    // re-opens the dropdown after a previous batch.
+    const existingLower = new Set(
+      compounds
+        .map((c) => (c.name ?? "").trim().toLowerCase())
+        .filter((n) => n.length > 0),
+    );
+    const fresh = names.filter((n) => !existingLower.has(n.trim().toLowerCase()));
+    if (fresh.length === 0) return;
+    const results = await Promise.allSettled(fresh.map((n) => api.lookupCompound(n)));
+    const ok: { name: string; smiles: string }[] = [];
+    const failed: string[] = [];
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") ok.push({ name: r.value.name, smiles: r.value.smiles });
+      else failed.push(fresh[i]);
+    });
+    if (ok.length > 0) {
+      setCompounds((cs) => {
+        const next = [...cs];
+        for (const row of ok) {
+          // Reuse the same empty-row-first placement as runLookup so a
+          // freshly-empty row gets filled before pushing new ones.
+          const emptyIdx = next.findIndex((c) => !c.smiles.trim());
+          if (emptyIdx !== -1) next[emptyIdx] = row;
+          else next.push(row);
+        }
+        return next;
+      });
+    }
+    if (failed.length > 0) {
+      setLookupErr(`Couldn't find ${failed.length === 1 ? "this name" : "these names"} on PubChem: ${failed.join(", ")}`);
+    }
   }
 
   // SDF / SMI / CSV file upload — parse server-side via RDKit. By default we
@@ -1144,10 +1208,34 @@ export default function NewJobPage() {
                             if the residue exists in {t.pdb_id}/{t.chain || "A"}, the runner will build it.
                           </span>
                         }
-                        placeholder="Start typing a code — e.g. T790M, L858R, T790M+C797S"
+                        placeholder="Start typing — pick up to 5 mutations (or type a code directly)"
                         inputClassName="input font-mono"
                         openOnFocus
                         minChars={0}
+                        // Multi-select: chemists triaging a kinase often want
+                        // to grab 3–5 known variants in one open instead of
+                        // re-firing the dropdown for each. Cap at 5 — past
+                        // that the matrix gets unwieldy and the free-tier
+                        // mutation cap kicks in anyway.
+                        multi
+                        multiMax={5}
+                        onMultiCommit={(items) => {
+                          // Append the picked codes to the existing
+                          // comma-separated value, deduping case-insensitively
+                          // so picking the same code twice (or one already in
+                          // the list) is a no-op.
+                          const existing = customStr
+                            .split(",")
+                            .map((s) => s.trim())
+                            .filter((s) => s.length > 0);
+                          const existingLower = new Set(existing.map((s) => s.toLowerCase()));
+                          const fresh = items
+                            .map((it) => it.code)
+                            .filter((c) => !existingLower.has(c.toLowerCase()));
+                          if (fresh.length === 0) return;
+                          const next = [...existing, ...fresh].join(", ");
+                          setCustomMutationsFor(tid, next + ", ");
+                        }}
                       />
                     </div>
                     {/* Curated suggestions for this target — only those NOT
@@ -1291,10 +1379,28 @@ export default function NewJobPage() {
                             the runner verifies the residue exists in your PDB at the given chain+number.
                           </span>
                         }
-                        placeholder="Start typing a code — e.g. T315I, L858R, T790M+C797S"
+                        placeholder="Start typing — pick up to 5 mutations (or type a code directly)"
                         inputClassName="input font-mono"
                         openOnFocus
                         minChars={0}
+                        // Same multi-select treatment as the catalog-target
+                        // mutation field above. Caps at 5 — past that the
+                        // matrix gets unwieldy and free-tier kicks in.
+                        multi
+                        multiMax={5}
+                        onMultiCommit={(items) => {
+                          const existing = customStr
+                            .split(",")
+                            .map((s) => s.trim())
+                            .filter((s) => s.length > 0);
+                          const existingLower = new Set(existing.map((s) => s.toLowerCase()));
+                          const fresh = items
+                            .map((it) => it.code)
+                            .filter((c) => !existingLower.has(c.toLowerCase()));
+                          if (fresh.length === 0) return;
+                          const next = [...existing, ...fresh].join(", ");
+                          setCustomMutationsFor(CUSTOM_KEY, next + ", ");
+                        }}
                       />
                     </div>
                   </div>
@@ -1460,42 +1566,99 @@ export default function NewJobPage() {
               </button>
             </div>
 
-            {/* Custom dropdown — only mounts when there's something to show.
-                Padded items, hover/active highlight, subtle source tag. */}
+            {/* Custom dropdown with multi-select checkboxes + commit footer.
+                Click a row → toggles its checkbox (no auto-commit). Footer
+                "Add N selected" fires runMultiLookup which dispatches the
+                PubChem lookups in parallel and appends each hit to the
+                compound list. Single-click-and-go is still possible: just
+                tick one + click Add. Footer also shows the running tally
+                vs the cap. */}
             {lookupDropdownOpen && suggestions.length > 0 && (
               <div
                 className="absolute left-0 right-0 top-full mt-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg overflow-hidden z-20"
-                role="listbox"
               >
-                {suggestions.slice(0, 8).map((s, idx) => {
-                  const active = idx === lookupActiveIdx;
-                  return (
+                <div role="listbox">
+                  {suggestions.slice(0, 8).map((s, idx) => {
+                    const active = idx === lookupActiveIdx;
+                    const isPicked = lookupPicked.includes(s);
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        role="option"
+                        aria-selected={isPicked}
+                        onMouseEnter={() => setLookupActiveIdx(idx)}
+                        onClick={() => togglePubchemPick(s)}
+                        className={
+                          "w-full text-left flex items-center gap-3 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700 last:border-b-0 transition-colors " +
+                          (isPicked
+                            ? "bg-delta-50 dark:bg-delta-900/30"
+                            : active
+                              ? "bg-slate-50 dark:bg-slate-700/40"
+                              : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
+                        }
+                      >
+                        {/* Checkbox glyph — drawn as a square that fills
+                            with brand-blue + a check when picked. Same
+                            visual treatment as AutocompleteInput's multi
+                            mode for consistency across the page. */}
+                        <span
+                          aria-hidden="true"
+                          className={
+                            "shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors " +
+                            (isPicked
+                              ? "bg-delta-600 border-delta-600 text-white"
+                              : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
+                          }
+                        >
+                          {isPicked && (
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </span>
+                        <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
+                          <Beaker size={14} />
+                        </div>
+                        <span className="font-medium text-sm text-ink dark:text-slate-100 flex-1 truncate">{s}</span>
+                        <span className="text-[9px] uppercase tracking-wider font-semibold text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-900/30 px-1.5 py-0.5 rounded shrink-0">
+                          PubChem
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Sticky footer — selection counter + commit / clear buttons.
+                    Mirrors the AutocompleteInput multi footer so the page
+                    has one consistent multi-select pattern. */}
+                <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80">
+                  <span className="text-[11px] text-slate-600 dark:text-slate-400">
+                    {lookupPicked.length === 0
+                      ? `Pick up to ${PUBCHEM_MULTI_MAX} compounds`
+                      : lookupPicked.length >= PUBCHEM_MULTI_MAX
+                        ? `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} selected (max)`
+                        : `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} selected`}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {lookupPicked.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setLookupPicked([])}
+                        className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 px-2 py-1 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
                     <button
-                      key={s}
                       type="button"
-                      role="option"
-                      aria-selected={active}
-                      onMouseEnter={() => setLookupActiveIdx(idx)}
-                      onClick={() => { setLookupDropdownOpen(false); runLookup(s); }}
-                      className={
-                        "w-full text-left flex items-center gap-3 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700 last:border-b-0 transition-colors " +
-                        (active
-                          ? "bg-delta-50 dark:bg-delta-900/30"
-                          : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
-                      }
+                      disabled={lookupPicked.length === 0 || lookupMut.isPending}
+                      onClick={() => runMultiLookup(lookupPicked)}
+                      className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed transition-colors"
                     >
-                      {/* Tiny molecule glyph — same visual language as the
-                          rest of the site (Beaker on Stat pills etc.). */}
-                      <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
-                        <Beaker size={14} />
-                      </div>
-                      <span className="font-medium text-sm text-ink dark:text-slate-100 flex-1 truncate">{s}</span>
-                      <span className="text-[9px] uppercase tracking-wider font-semibold text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-900/30 px-1.5 py-0.5 rounded shrink-0">
-                        PubChem
-                      </span>
+                      Add {lookupPicked.length || ""} →
                     </button>
-                  );
-                })}
+                  </div>
+                </div>
               </div>
             )}
           </div>
