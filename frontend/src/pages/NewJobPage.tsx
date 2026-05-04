@@ -455,6 +455,12 @@ export default function NewJobPage() {
     // Re-parse the custom string and rebuild without the removed code.
     // We work off the canonical form (uppercased, ins/del normalized) so a
     // pill labelled "T790M" cleanly removes a typed "t790m" or stray spaces.
+    //
+    // Preserve a trailing ", " when at least one token remains — matches
+    // what the dropdown auto-commit path emits and keeps the cursor in
+    // a type-ready state. Earlier `kept.join(", ")` stripped the trailing
+    // comma+space because join only puts separators BETWEEN elements,
+    // which the user reported as "the comma before it gets removed."
     setCustomMutationsByTarget((prev) => {
       const raw = prev[targetId] ?? "";
       const tokens = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
@@ -462,7 +468,8 @@ export default function NewJobPage() {
         const norm = t.toUpperCase().replace(/DEL$/, "del").replace(/INS([A-Z]+)$/, "ins$1");
         return norm !== code;
       });
-      return { ...prev, [targetId]: kept.join(", ") };
+      const joined = kept.join(", ");
+      return { ...prev, [targetId]: joined ? joined + ", " : "" };
     });
   }
   function setCompound(i: number, patch: Partial<CompoundRow>) {
