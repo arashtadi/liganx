@@ -296,7 +296,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
 
   // Iframe focus management — undo/redo (Cmd+Z / Cmd+Y) only work when
   // the Ketcher iframe has keyboard focus. When the user clicks anywhere
-  // in the rail (chat box, chips, buttons) the iframe loses focus and
+  // in the rail (chips, buttons, action CTA) the iframe loses focus and
   // their next Cmd+Z does nothing. We refocus on mouse-enter into the
   // iframe area, AND intercept Cmd+Z / Cmd+Y at the document level to
   // route them to Ketcher unless the user is actively typing in a text
@@ -803,7 +803,10 @@ interface PropertiesResult {
 }
 
 function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote }: AiSidebarProps) {
-  const [instruction, setInstruction] = useState("");
+  // (Free-form chat input was removed 2026-05-04 — see the bottom-of-rail
+  // comment near the action button. The `instruction` state that powered
+  // the textbox is gone; runEdit() still accepts a `text` param so the
+  // Improve / Diagnose buttons can pass their own default instruction.)
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [result, setResult] = useState<AssistResult | null>(null);
@@ -924,7 +927,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // so we don't add a second timer to the modal.
   const [liveSmiles, setLiveSmiles] = useState<string>("");
   // Live SMILES validity — drives the green/yellow/red dot in the
-  // header AND gates dock + chat actions when the structure is invalid.
+  // header AND gates dock + AI actions when the structure is invalid.
   // Reuses the same /lookup/inspect-smiles endpoint that the New-job
   // form uses for its row-level validity tinting, so the cache is
   // shared and a SMILES inspected in one place is hot in the other.
@@ -1150,10 +1153,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  the sole AI-variants action now: 3 variants targeting missed
    *  residues, each auto-docked so the user sees real score deltas.
    *  The 5-analog flow returned 1 structured suggestion + 4 listed in
-   *  rationale text, none auto-docked, so it was strictly weaker. Power
-   *  users who specifically want 5 brainstorm ideas can type that into
-   *  Chat with AI directly — runEdit will route it through the same
-   *  /assist/compound endpoint with whatever dock context is live.) */
+   *  rationale text, none auto-docked, so it was strictly weaker.
+   *  Free-form chat textbox was also removed 2026-05-04, so analogs
+   *  via prose isn't reachable from the UI any more — Optimize covers
+   *  the brainstorm-3-and-validate-them use case strictly better.) */
 
   async function runProperties() {
     const smi = await readSmiles();
@@ -1823,8 +1826,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           Then always-visible compact stat cards (live properties · 3D
           thumbnail · Quick dock score) so the chemist can glance at
           MW/logP/score without clicking anything. Bottom half is the
-          AI chat — the dominant action. Each stat card is clickable:
-          3D card → fullscreen viewer; Dock card → fullscreen pose. */}
+          variants/history scroll area + a single Improve/Diagnose
+          action button at the very bottom. (Free-form chat textbox
+          lived here until 2026-05-04 — see the sticky-button comment
+          near the bottom of this aside for the rationale.) */}
       {/* Row 1 — title only. Single line, never wraps. The pocket-aware
           context moved to a smaller line below the status pills so the
           title stays clean and the pills get the visual weight they
@@ -2157,11 +2162,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         </div>
       )}
 
-      {/* ── AI chat scroll area ────────────────────────────────────────
+      {/* ── AI scroll area ─────────────────────────────────────────────
           This is the dominant region of the rail — it grows to fill
           remaining vertical space. Holds the result panel, optimized
-          variants list (when present), and history. The chat form
-          sticks to the very bottom (sibling, not inside this scroll). */}
+          variants list (when present), and the per-compound AI history
+          list. The single Improve/Diagnose action button sticks to
+          the very bottom (sibling, not inside this scroll). */}
       <div className="px-2 pt-1 pb-1 flex items-center justify-between text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400 shrink-0">
         <span>Liganx AI</span>
         {aiHistory.length > 0 && (
@@ -2189,12 +2195,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             structured suggestion + 4 listed in rationale text, none of
             them docked, so the user had no measured proof any were
             actually better. Optimize is the sole AI-variants action now.
-            Chemists who want unstructured brainstorm can type "suggest
-            5 analogs" directly into Chat with AI below.) */}
+            Free-form chat textbox was also removed 2026-05-04 — see the
+            sticky button comment at the bottom of this aside.) */}
         {status === "idle" && lastAction === "none" && (
           targetPdb ? (
             <div className="text-slate-400 dark:text-slate-500 text-[11px] leading-relaxed">
-              Run Quick dock above to see a draft score, then click Optimize for AI variants — or ask the AI for an edit below.
+              Run Quick dock above to see a draft score, then click Optimize for AI variants — or click Improve below for a single edit suggestion.
             </div>
           ) : (
             // No-target explainer card — surfaces WHY the dock features
@@ -2222,7 +2228,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 ⚡ Use in New Job →
               </button>
               <div className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-tight">
-                Or chat with the AI below for general medchem advice (no dock context).
+                Or click Improve below for general medchem advice (no dock context).
               </div>
             </div>
           )
@@ -2539,36 +2545,22 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </div>
 
-      {/* ── Sticky chat form (bottom of rail) ──────────────────────────
-          Always visible at the bottom regardless of scroll. Context
-          pill shows what info the AI will get (structure / target /
-          docking-aware). Below that: text input + Improve button. When
-          a target is picked but no fresh dock exists, the Dock+Improve
-          combo button appears so a single click runs both. */}
-      <form
-        className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0 bg-white dark:bg-slate-900"
-        onSubmit={(e) => {
-          e.preventDefault();
-          // Default-instruction selection by mode:
-          //   invalid SMILES  → ask for a diagnosis
-          //   fresh dock data → improve based on contacts
-          //   otherwise       → open-ended improve
-          // The backend auto-detects invalid SMILES and routes to its
-          // diagnose prompt, so this default just gives the AI something
-          // to work with when the user hits Send without typing.
-          const text = instruction.trim() || (
-            liveValidity === "invalid"
-              ? "What's wrong with this structure and how do I fix it in the editor?"
-              : liveValidity === "fragments"
-              ? "My structure has multiple disconnected fragments — explain why and tell me which one to keep."
-              : dockFreshForLive
-                ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
-                : "Suggest the most meaningful medchem improvement to this compound."
-          );
-          runEdit(text);
-          setInstruction("");
-        }}
-      >
+      {/* ── Sticky AI action button (bottom of rail) ───────────────────
+          The free-form chat textbox was removed 2026-05-04. Optimize
+          (in the Quick Dock card above) does the same job better:
+          scored, ranked, Vina-validated variants instead of a free-form
+          opinion. The diagnose-mode auto-fire still works — when RDKit
+          rejects the SMILES, this button morphs into "Diagnose" and
+          calls the same /assist/compound endpoint with a default
+          instruction, which the backend routes to the diagnose prompt.
+          For valid SMILES it morphs into "Improve" (binding-aware when
+          a fresh dock is on file, open-ended otherwise).
+          Why we removed chat: the post-Apply regression bug ("AI chat
+          after Apply makes it worse") was structurally caused by stale
+          dock context being sent to a new SMILES. The button-only path
+          can't trigger that — it always derives intent from the current
+          live state of the canvas. Less rope, fewer bugs. */}
+      <div className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0 bg-white dark:bg-slate-900">
         {/* Compact AI context pill — three states (green/amber/slate). */}
         <div
           className={
@@ -2596,41 +2588,30 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 : "Structure only"}
           </span>
         </div>
-        {/* Chat input + send. UN-gated on liveValidity === "invalid" —
-            the backend auto-detects an unparseable SMILES and switches
-            to DIAGNOSE MODE, which explains what's wrong instead of
-            trying to edit. So the chat is actually MORE valuable when
-            the structure is broken: the user can ask "what's wrong
-            with this?" and get a chemist-friendly diagnosis. The
-            placeholder + button label morph to advertise that. */}
-        <input
-          type="text"
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          placeholder={
-            liveValidity === "invalid"
-              ? "Ask what's wrong with the structure…"
-              : liveValidity === "fragments"
-              ? "Ask why the structure is split…"
-              : "Type here…"
-          }
-          className={
-            "w-full text-[11px] px-2 py-1.5 rounded-md border bg-white dark:bg-slate-900 placeholder-slate-400 focus:ring-1 outline-none disabled:opacity-60 disabled:cursor-not-allowed " +
-            (liveValidity === "invalid"
-              ? "border-rose-300 dark:border-rose-700/50 focus:border-rose-500 focus:ring-rose-500"
-              : "border-slate-300 dark:border-slate-700 focus:border-delta-500 focus:ring-delta-500")
-          }
-        />
+        {/* Single AI button — morphs by liveValidity + dock freshness.
+            Click derives the default instruction from the current state
+            and calls runEdit(); backend auto-detects invalid SMILES and
+            routes to DIAGNOSE MODE. */}
         <button
-          type="submit"
+          type="button"
+          onClick={() => {
+            const text =
+              liveValidity === "invalid"
+                ? "What's wrong with this structure and how do I fix it in the editor?"
+                : liveValidity === "fragments"
+                ? "My structure has multiple disconnected fragments — explain why and tell me which one to keep."
+                : dockFreshForLive
+                  ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
+                  : "Suggest the most meaningful medchem improvement to this compound.";
+            runEdit(text);
+          }}
           disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
           title={
             liveValidity === "invalid"
               ? "Ask the AI what's wrong with the structure and how to fix it."
-              : instruction.trim()
-              ? "Send your instruction to the AI."
-              : "Click without typing for an open-ended improvement; or type a specific edit."
+              : dockFreshForLive
+                ? "Get a docking-aware structural edit based on the contacts and score above."
+                : "Get an open-ended medchem improvement suggestion."
           }
           className={
             "w-full text-[11px] font-semibold px-2 py-1.5 rounded-md disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors " +
@@ -2640,18 +2621,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           }
         >
           {status === "running" && quickDockStatus !== "running"
-            ? "Sending…"
+            ? "Thinking…"
             : liveValidity === "invalid"
             ? "🩺 Diagnose with Liganx AI"
-            : "💬 Chat with Liganx AI"}
+            : dockFreshForLive
+            ? "✨ Improve binding"
+            : "✨ Improve compound"}
         </button>
-        {/* (Dock + Improve combo button removed 2026-05-02 — was a
-            second "dock" CTA below the prominent Quick Dock card,
-            confusing because it duplicated that card's job. The two-step
-            flow — click Run Quick dock above, then Suggest improvement
-            here once the context pill flips to docking-aware — is one
-            extra click but the intent at each step is now obvious.) */}
-      </form>
+      </div>
 
       {/* (Fullscreen 3D overlay block lived here. Removed 2026-05-02
           along with the inline 3D thumbnails — the JobPage 3D viewer
