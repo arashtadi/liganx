@@ -510,7 +510,7 @@ def _extract_json(raw: str) -> Optional[dict]:
 # of a wider design space, not the AI's first guess. See routers/assist.py
 # /optimize endpoint and services/optimize_loop.py for the orchestration.
 # ──────────────────────────────────────────────────────────────────────
-N_OPTIMIZE_CANDIDATES = 12
+N_OPTIMIZE_CANDIDATES = 18  # was 12 — bumped 2026-05-04 alongside parallel-AI sampling for better round-1 coverage
 # Lower bound — if we ask for 12 and only 4 survive RDKit + SA + pod
 # pre-flight, that's still enough to dock and pick the best 3 from.
 # Below 3 survivors we just return what we have.

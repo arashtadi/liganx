@@ -37,6 +37,7 @@ ranking them, not the LLM's prose intuition.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -196,7 +197,16 @@ async def generate_score_filter_optimize(
     except Exception:
         use_tools = False
 
-    raw_variants = await ai.call_anthropic_optimize(
+    # 2026-05-04 — Parallel-AI sampling. Fire TWO Anthropic calls in
+    # parallel (asyncio.gather), each asking for N_OPTIMIZE_CANDIDATES
+    # variants. The model is non-deterministic at temperature>0, so two
+    # calls give wider chemical-space coverage than one call asking for
+    # double. Net candidate count = 2 × 18 = 36 before SA filter and
+    # batch dock. Wall time identical to single-call (calls run in
+    # parallel); cost ~$0.04/round vs $0.02 baseline. After dedupe by
+    # canonical SMILES, this typically yields 25–32 unique survivors.
+    import asyncio
+    call_kwargs = dict(
         smiles=smiles,
         score=parent_score,
         hits=hits,
@@ -208,8 +218,36 @@ async def generate_score_filter_optimize(
         apply_self_prediction_gate=True,
         use_tools=use_tools,
     )
-
-    self_rejected = max(0, ai.N_OPTIMIZE_CANDIDATES - len(raw_variants))
+    parallel_results = await asyncio.gather(
+        ai.call_anthropic_optimize(**call_kwargs),
+        ai.call_anthropic_optimize(**call_kwargs),
+        return_exceptions=True,
+    )
+    raw_variants: list[dict] = []
+    for r in parallel_results:
+        if isinstance(r, Exception):
+            log.warning("optimize_loop: one of the parallel AI calls failed (non-fatal): %s", r)
+            continue
+        raw_variants.extend(r)
+    # Dedupe by canonical SMILES — the two calls will often propose the
+    # same low-hanging fluorine substitution. Keep first occurrence to
+    # preserve the model's order within each call.
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for v in raw_variants:
+        smi = (v.get("new_smiles") or "").strip()
+        if not smi or smi in seen:
+            continue
+        seen.add(smi)
+        deduped.append(v)
+    log.info(
+        "optimize_loop: parallel AI sampling produced %d raw variants, %d unique after dedupe",
+        len(raw_variants), len(deduped),
+    )
+    raw_variants = deduped
+    # Self-rejected accounting: each call could have lost up to
+    # N_OPTIMIZE_CANDIDATES candidates to the self-prediction gate.
+    self_rejected = max(0, 2 * ai.N_OPTIMIZE_CANDIDATES - len(raw_variants))
 
     # ── 1b. Top-up retry ─────────────────────────────────────────────
     # If the Hard-Constraint gate trimmed too many, ask the AI for more
