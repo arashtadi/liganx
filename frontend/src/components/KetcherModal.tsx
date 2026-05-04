@@ -1817,15 +1817,18 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </div>
 
-      {/* Row 2 — STATUS PILLS. Big, prominent, color-coded so the
-          chemist can read structural validity AND make-ability at a
-          glance. These are the headline features of the editor — the
-          old single-dot treatment buried them in a noisy header. */}
-      <div className="px-3 py-1.5 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 flex-wrap text-[11px] shrink-0">
+      {/* Row 2 — STATUS PILLS. Compact (px-3 py-1, 10.5px chips) so
+          they're glanceable without dominating the rail. The SA chip
+          is duplicated in the Properties strip below as a denser
+          glance — but having it here too means chemists see make-
+          ability before any properties land. 2026-05-04: tightened
+          from py-1.5 / 11px to py-1 / 10.5px per "make this section
+          more compact" feedback. */}
+      <div className="px-3 py-1 border-b border-slate-200 dark:border-slate-700 flex items-center gap-1.5 flex-wrap text-[10.5px] shrink-0">
         <ValidityPill validity={liveValidity} />
         {liveSa && <SaPill score={liveSa.score} label={liveSa.label} />}
         {!liveSa && liveValidity === "valid" && (
-          <span className="text-[10px] text-slate-400 dark:text-slate-500 italic">SA loading…</span>
+          <span className="text-[9.5px] text-slate-400 dark:text-slate-500 italic">SA…</span>
         )}
       </div>
 
@@ -1843,21 +1846,21 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           glance, not the headline content. Tap "Predict full" for the
           PropertiesPanel inline below. (3D thumbnail card removed
           2026-05-02 — JobPage's full viewer is much richer.) */}
-      <div className="px-3 pt-2 pb-1.5 shrink-0">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Properties</span>
+      <div className="px-3 pt-1.5 pb-1 shrink-0">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Properties</span>
           <button
             type="button"
             disabled={!ketcherReady || status === "running"}
             onClick={runProperties}
-            className="text-[10px] text-delta-700 dark:text-delta-300 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:no-underline"
+            className="text-[9px] text-delta-700 dark:text-delta-300 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:no-underline"
             title="Compute the full RDKit property panel (HBA/HBD, rotatable bonds, Veber, PAINS detail)"
           >
             {status === "running" && lastAction === "props" ? "Computing…" : "Predict full →"}
           </button>
         </div>
         {liveProps && liveProps.valid ? (
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-1 flex-wrap">
             {/* JobPage-idiom pill chips: each property gets its own
                 bordered chip with label + value inline. Matches the
                 "MW 180 / LogP 1.3 / QED 0.55 / Ro5 ✓" pattern from the
@@ -1869,7 +1872,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             {liveProps.lipinski_pass !== undefined && (
               <span
                 className={
-                  "px-2 py-0.5 rounded-md border text-[11px] font-medium " +
+                  "px-1.5 py-0.5 rounded border text-[10px] font-medium " +
                   (liveProps.lipinski_pass
                     ? "border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300"
                     : "border-rose-300 dark:border-rose-800/40 bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300")
@@ -1880,7 +1883,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               </span>
             )}
             {(liveProps.pains_hits?.length ?? 0) > 0 && (
-              <span className="px-2 py-0.5 rounded-md border border-amber-300 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 text-[11px] font-medium text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
+              <span className="px-1.5 py-0.5 rounded border border-amber-300 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 text-[10px] font-medium text-amber-700 dark:text-amber-300" title="PAINS substructure alert">
                 PAINS {liveProps.pains_hits!.length}
               </span>
             )}
@@ -1921,16 +1924,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           fold. */}
       {targetPdb && (
         <div
-          className="mx-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/20 px-2.5 py-2 shrink-0 space-y-1.5"
+          className="mx-3 mb-1.5 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/20 px-2 py-1.5 shrink-0 space-y-1"
           title="Quick dock is a draft estimate — fast Vina re-dock for iteration. For a publishable result with PoseBusters validation, ProLIF interactions, and a shareable URL, click Promote to Full Job."
         >
           {/* Compact header — DRAFT tag + dashed border together convey
               "this is a sketch, not a publishable result." Score sits on
               the same line when present (see dockResult branch below). */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">Quick dock</span>
-            <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">Draft</span>
-            <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">· {targetPdb}</span>
+          <div className="flex items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold">Quick dock</span>
+            <span className="px-1 py-px rounded text-[8.5px] uppercase tracking-wider font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">Draft</span>
+            <span className="font-mono text-[9px] text-slate-500 dark:text-slate-400">· {targetPdb}</span>
           </div>
           {quickDockGated ? (
             <>
@@ -1967,9 +1970,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               {/* Score on a single tight line. DRAFT tag in the header +
                   dashed border + tilde prefix already convey "estimate";
                   the previous explicit caveat line was redundant. */}
-              <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className="text-[15px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">kcal/mol</span>
+              <div className="flex items-baseline gap-1 flex-wrap">
+                <span className="text-[14px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
+                <span className="text-[9px] text-slate-500 dark:text-slate-400">kcal/mol</span>
                 {/* Mutation-aware-scoring badge (2026-05-04). Green
                     "vs mutant" when the dock used the PDBFixer-built
                     mutant receptor; amber "vs WT only" caveat when a
@@ -2106,7 +2109,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               <button
                 type="button"
                 onClick={promoteToFullJob}
-                className="w-full text-[12px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1.5"
+                className="w-full text-[11px] font-semibold px-2.5 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1"
                 title="Submit a full validated docking job: PoseBusters, ProLIF interactions, Vinardo refined score, shareable URL"
               >
                 ⚡ Promote to Full Job →
@@ -2758,8 +2761,8 @@ function ValidityPill({ validity }: { validity: SmilesValidity }) {
   // discoverability nudge for first-time users.
   if (validity === "empty") {
     return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 text-[11px] text-slate-500 dark:text-slate-400 italic">
-        <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-dashed border-slate-300 dark:border-slate-600 text-[10px] text-slate-500 dark:text-slate-400 italic">
+        <span className="inline-block w-2 h-2 rounded-full bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
         Sketch a molecule
       </span>
     );
@@ -2799,10 +2802,10 @@ function ValidityPill({ validity }: { validity: SmilesValidity }) {
   const p = palette[validity];
   return (
     <span
-      className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-semibold cursor-help " + p.bg}
+      className={"inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold cursor-help " + p.bg}
       title={p.tip}
     >
-      <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} aria-hidden="true" />
+      <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${p.dot}`} aria-hidden="true" />
       <span>{p.label}</span>
     </span>
   );
@@ -2841,10 +2844,10 @@ function SaPill({ score, label }: { score: number; label: string }) {
   })();
   return (
     <span
-      className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-semibold cursor-help " + styles.bg}
+      className={"inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold cursor-help " + styles.bg}
       title={tip}
     >
-      <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${styles.dot}`} aria-hidden="true" />
+      <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${styles.dot}`} aria-hidden="true" />
       <span>SA {score.toFixed(1)} · {label.toUpperCase()}</span>
     </span>
   );
@@ -2899,7 +2902,7 @@ function SaChip({ score, label }: { score: number; label: string }) {
 function PropChip({ label, value }: { label: string; value: number | undefined }) {
   if (value === undefined) return null;
   return (
-    <span className="px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/40 text-[11px]">
+    <span className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/40 text-[10px]">
       <span className="text-slate-500 dark:text-slate-400">{label}</span>{" "}
       <span className="font-medium text-slate-700 dark:text-slate-200">{value}</span>
     </span>
