@@ -1183,23 +1183,43 @@ export default function NewJobPage() {
                         }}
                         getValue={(item) => item.code}
                         renderItem={(item) => (
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
-                            <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                            <span className="text-[11px] text-slate-500 truncate flex-1">{item.note}</span>
-                            {item.source && item.source !== "curated" && (
-                              <span
-                                className={
-                                  "shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold " +
-                                  (item.source === "uniprot"
-                                    ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                                    : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300")
-                                }
-                                title={item.source === "uniprot" ? "From UniProt annotated variants" : "From cBioPortal cohorts"}
-                              >
-                                {item.source === "uniprot" ? "UniProt" : "cBioPortal"}
-                              </span>
-                            )}
+                          // Match the compound dropdown row structure:
+                          // icon square + bold label + secondary line +
+                          // right-side source pill. Same visual rhythm so
+                          // both Step 2 and Step 3 dropdowns read as one
+                          // consistent picker pattern.
+                          <div className="flex items-center gap-3 w-full min-w-0">
+                            <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
+                              <Beaker size={14} />
+                            </div>
+                            <div className="flex-1 min-w-0 flex flex-col">
+                              <div className="flex items-baseline gap-2">
+                                <span className="font-mono font-semibold text-sm text-delta-700 dark:text-delta-300">{item.code}</span>
+                                <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.gene}</span>
+                              </div>
+                              {item.note && (
+                                <span className="text-xs text-slate-500 dark:text-slate-400 truncate">{item.note}</span>
+                              )}
+                            </div>
+                            <span
+                              className={
+                                "shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded " +
+                                (item.source === "uniprot"
+                                  ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+                                  : item.source === "cbioportal"
+                                  ? "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+                                  : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300")
+                              }
+                              title={
+                                item.source === "uniprot" ? "From UniProt annotated variants"
+                                : item.source === "cbioportal" ? "From cBioPortal cohorts"
+                                : "From Liganx curated mutation library"
+                              }
+                            >
+                              {item.source === "uniprot" ? "UniProt"
+                                : item.source === "cbioportal" ? "cBioPortal"
+                                : "Curated"}
+                            </span>
                           </div>
                         )}
                         emptyState={
@@ -1367,10 +1387,31 @@ export default function NewJobPage() {
                         }}
                         getValue={(item) => item.code}
                         renderItem={(item) => (
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-mono font-semibold text-delta-700 shrink-0">{item.code}</span>
-                            <span className="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">{item.gene}</span>
-                            <span className="text-[11px] text-slate-500 truncate">{item.note}</span>
+                          // Same row pattern as the catalog-target mutation
+                          // dropdown above so the picker UX is consistent
+                          // across modes. Custom-PDB suggestions only ever
+                          // come from the curated library (no UniProt
+                          // accession to query), so the source pill is
+                          // always Curated here.
+                          <div className="flex items-center gap-3 w-full min-w-0">
+                            <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
+                              <Beaker size={14} />
+                            </div>
+                            <div className="flex-1 min-w-0 flex flex-col">
+                              <div className="flex items-baseline gap-2">
+                                <span className="font-mono font-semibold text-sm text-delta-700 dark:text-delta-300">{item.code}</span>
+                                <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.gene}</span>
+                              </div>
+                              {item.note && (
+                                <span className="text-xs text-slate-500 dark:text-slate-400 truncate">{item.note}</span>
+                              )}
+                            </div>
+                            <span
+                              className="shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                              title="From Liganx curated mutation library"
+                            >
+                              Curated
+                            </span>
                           </div>
                         )}
                         emptyState={

@@ -250,7 +250,9 @@ export default function AutocompleteInput<T>({
                     else pick(item);
                   }}
                   onMouseEnter={() => setActive(i)}
-                  className={`cursor-pointer px-3 py-1.5 text-sm transition-colors flex items-center gap-2 ${
+                  className={`cursor-pointer text-sm transition-colors flex items-center gap-3 border-b border-slate-100 dark:border-slate-700 last:border-b-0 ${
+                    multi ? "px-3.5 py-2.5" : "px-3 py-1.5"
+                  } ${
                     isPicked
                       ? "bg-delta-50 dark:bg-delta-900/30"
                       : i === active
