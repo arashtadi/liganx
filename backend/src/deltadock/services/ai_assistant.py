@@ -768,8 +768,17 @@ async def call_anthropic_optimize(
     # ship 0 variants — a high-cost-zero-output failure mode).
     if n_variants > 3:
         # 200 tokens per variant gives generous headroom for the 1-sentence
-        # rationale + SMILES; 12 × 200 = 2400, plus 600 for JSON scaffolding.
+        # rationale + SMILES + 3 prediction fields; 12 × 200 = 2400, plus
+        # 600 for JSON scaffolding.
         payload["max_tokens"] = max(int(payload.get("max_tokens", 1024)), 200 * n_variants + 600)
+        # 2026-05-03 hotfix: 20s default httpx timeout is too short for a
+        # 12-variant generation with the inline 5K-token medchem-phd skill
+        # content prepended. Observed: first prod call timed out at exactly
+        # 20s (05:54:31→05:54:51 in Fly logs), returned 502 Bad Gateway to
+        # the user. Scale to 60s for n>3 — same value used when the proper
+        # workspace-skill API is wired (ANTHROPIC_TIMEOUT_WITH_SKILL_S).
+        # Stays well inside Cloudflare's 100s edge timeout.
+        timeout = max(timeout, 60.0)
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1007,6 +1016,10 @@ async def call_anthropic_optimize_topup(
     )
     if n_needed > 3:
         payload["max_tokens"] = max(int(payload.get("max_tokens", 1024)), 200 * n_needed + 600)
+        # Same timeout reasoning as call_anthropic_optimize — see hotfix
+        # comment there. Top-up rarely asks for >5 in practice, but keep
+        # the bump consistent so the limit isn't surprising.
+        timeout = max(timeout, 60.0)
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
