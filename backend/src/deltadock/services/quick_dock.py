@@ -78,6 +78,47 @@ _NEAR_POCKET_RADIUS_A = 8.0
 # centroid offsets ≤ 4 Å in cross-docking sanity checks, while the
 # wandering KRAS poses we caught had offsets of 8-12 Å.
 _POSE_DRIFT_THRESHOLD_A = 6.0
+def _humanize_pod_error(raw: str) -> str:
+    """Translate a raw Pod/Vina error into a friendly user-facing message.
+
+    The Pod's stderr passthrough leaks ugly internals straight to the
+    UI: literal "\\n" escape sequences, the QuickVina author's email,
+    HTTP 500 wrappers, JSON-detail framing. Users have no idea what to
+    do with that. This pattern-matches the common cases and rewrites
+    them to a chemist-friendly action.
+
+    2026-05-04 user report: a MW=627.8 / logP=7.57 compound triggered
+    'vina-gpu rc=1: ... Jiansheng Wu <jiansen@njupt.edu> ...' raw in
+    the editor's error banner.
+    """
+    if not raw:
+        return "Docking failed."
+    s = str(raw)
+    low = s.lower()
+    # Compound-too-large for QuickVina2-GPU: rc=1 with the QuickVina
+    # author email is the canonical signature. Vina-GPU has a fixed
+    # ligand-flexibility cap and chokes on big peptide-like molecules.
+    if "vina-gpu" in low and ("rc=1" in low or "rc=255" in low):
+        return (
+            "Compound too large or flexible for the GPU docker. "
+            "Try a smaller scaffold (MW < 500), or use Promote to Full Job — "
+            "the CPU path has no flexibility cap."
+        )
+    # HTTP 502 / pod offline.
+    if "502" in s or "Bad Gateway" in s.lower():
+        return "GPU pod isn't responding right now. Try again in a few seconds."
+    # Generic HTTP 5xx: strip JSON detail framing.
+    if "HTTP 5" in s:
+        return "GPU pod returned an error. Try again in a few seconds."
+    # Last resort: take the first line, strip literal escape sequences,
+    # cap at 160 chars so the banner stays readable.
+    cleaned = s.replace("\\n", " ").replace("\\t", " ")
+    first = cleaned.split("\n")[0].strip()
+    if len(first) > 160:
+        first = first[:157] + "…"
+    return first or "Docking failed."
+
+
 # Up to N independent Vina re-rolls when the first pose is out of pocket.
 # Vina is non-deterministic; re-rolling samples a different starting
 # orientation. Cost: 1 dock = ~6s, 3 docks = ~18s. Cloudflare timeout
@@ -341,13 +382,13 @@ def quick_dock(
                     num_modes=3,         # only the top 3 — we only return best anyway
                 )
             except PodDockError as e:
-                last_error = f"Docking pod call failed: {e}"
+                last_error = _humanize_pod_error(str(e))
                 log.info("quick_dock: pod call failed (attempt %d): %s", attempt_idx + 1, e)
                 # Don't retry on pod errors — likely systemic
                 break
             except Exception as e:
                 log.exception("quick_dock: unexpected pod failure (attempt %d)", attempt_idx + 1)
-                last_error = f"Unexpected docking failure: {e}"
+                last_error = _humanize_pod_error(str(e))
                 break
 
             if not roll.modes:
@@ -371,11 +412,13 @@ def quick_dock(
                 break
 
         if not attempts:
-            return QuickDockResult(
-                ok=False,
-                error=(last_error or "Docking pod call failed.") +
-                ". Try again in a few seconds.",
-            )
+            # last_error already humanized via _humanize_pod_error above.
+            # Don't append ". Try again" when the message itself already
+            # includes guidance (compound-too-large message ends with a CTA).
+            msg = last_error or "Docking failed."
+            if "Try" not in msg:
+                msg = msg + ". Try again in a few seconds."
+            return QuickDockResult(ok=False, error=msg)
 
         # Pick the best pose: prefer in-pocket attempts (score-best of
         # those); fall back to score-best overall if all drifted. This
