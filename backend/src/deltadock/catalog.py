@@ -525,6 +525,13 @@ KIT = Target(
 
 CATALOG: list[Target] = [EGFR, KRAS, BRAF, IDH1, ABL, HER2, ALK, ROS1, MET, FLT3, BTK, PI3KA, KIT]
 TARGETS_BY_ID: dict[str, Target] = {t.id: t for t in CATALOG}
+# Reverse-lookup index by RCSB PDB ID. The Quick Dock and Optimize endpoints
+# get called with whatever the editor has on hand — sometimes the catalog id
+# ("kras"), sometimes the resolved PDB id ("4OBE") if NewJobPage's `target`
+# state was lost on re-render. Both should resolve to the same Target.
+# 2026-05-04: KRAS Q61H Quick Dock failed with "No pocket box on file for
+# 4OBE" because get_target("4OBE") missed — only the catalog id was indexed.
+TARGETS_BY_PDB_ID: dict[str, Target] = {t.pdb_id.upper(): t for t in CATALOG}
 
 
 def catalog_dict() -> list[dict]:
@@ -533,4 +540,11 @@ def catalog_dict() -> list[dict]:
 
 
 def get_target(target_id: str) -> Target | None:
-    return TARGETS_BY_ID.get(target_id.lower())
+    """Resolve a catalog Target by either catalog id ('kras') or PDB id ('4OBE')."""
+    if not target_id:
+        return None
+    key = target_id.strip()
+    hit = TARGETS_BY_ID.get(key.lower())
+    if hit is not None:
+        return hit
+    return TARGETS_BY_PDB_ID.get(key.upper())
