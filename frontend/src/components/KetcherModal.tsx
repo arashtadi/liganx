@@ -2211,6 +2211,69 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         {status === "ok" && lastAction === "edit" && result && (
           <ResultPanel result={result} onApply={applyResultToCanvas} />
         )}
+        {/* Big, prominent loading card during Optimize. The original
+            inline "variants…" spinner was too subtle (10px chip in the
+            button row) — user couldn't tell anything was happening and
+            walked away. This card animates with three skeleton variant
+            placeholders + an animated stage label so the wait feels
+            active. 30-60s typical for the 12-variant generate +
+            score-filter loop. 2026-05-04 user report. */}
+        {optimizeStatus === "running" && optimizedVariants.length === 0 && (
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-2 space-y-2">
+            <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Optimized variants
+            </div>
+            <div className="rounded-lg border border-delta-300 dark:border-delta-700/50 bg-gradient-to-br from-delta-50/60 via-white to-violet-50/40 dark:from-delta-900/15 dark:via-slate-900 dark:to-violet-900/10 px-3 py-3 space-y-2.5">
+              {/* Header row — animated icon + stage label */}
+              <div className="flex items-center gap-2">
+                <div className="relative w-7 h-7 shrink-0">
+                  {/* Outer pulsing ring */}
+                  <div className="absolute inset-0 rounded-full border-2 border-delta-300 dark:border-delta-600 animate-ping opacity-60" />
+                  {/* Inner spinning arc */}
+                  <svg
+                    className="absolute inset-0 m-auto animate-spin text-delta-600 dark:text-delta-400"
+                    width="22"
+                    height="22"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M21 12a9 9 0 1 1-6.2-8.55" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-semibold text-delta-800 dark:text-delta-200 leading-tight">
+                    AI is designing variants…
+                  </div>
+                  <div className="text-[10px] text-slate-600 dark:text-slate-400 leading-tight mt-0.5">
+                    Generate → score → filter → rank · 30–60s
+                  </div>
+                </div>
+              </div>
+              {/* Three skeleton placeholders so the user sees the shape
+                  of what's coming. Pulse animation tied to the same
+                  rhythm as the header ping. */}
+              <div className="space-y-1.5">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 bg-white/60 dark:bg-slate-800/30 animate-pulse"
+                    style={{ animationDelay: `${i * 200}ms` }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-12 rounded bg-slate-200 dark:bg-slate-700" />
+                      <div className="h-2.5 w-8 rounded bg-slate-200 dark:bg-slate-700" />
+                      <div className="h-2.5 w-10 rounded bg-slate-200 dark:bg-slate-700 ml-auto" />
+                    </div>
+                    <div className="h-2 w-3/4 rounded bg-slate-200 dark:bg-slate-700 mt-1.5" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         {/* Optimized variants list — collapsed compact card per variant.
             Sorted by score; pending docks at the end. Lives in the chat
             scroll area so it doesn't push the score card off-screen. */}
