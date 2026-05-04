@@ -94,12 +94,22 @@ export default function AutocompleteInput<T>({
   // its own state; that flows back as a fresh pickedValues for the next
   // render. No internal staging — what you see in the checkboxes is
   // what's committed in the parent right now.
-  const pickedKeys = pickedValues ?? new Set<string>();
-  const pickedCount = pickedKeys.size;
+  //
+  // Comparison is CASE-INSENSITIVE — the parent often lowercases its
+  // entries (mutation autocomplete) for dedup, but getValue(item)
+  // returns the canonical-case code from the API ('G12C'). Without a
+  // .toLowerCase() on both sides every row would render as unchecked
+  // even when picked, and the user couldn't see what they'd selected.
+  const pickedKeysLower = new Set(
+    Array.from(pickedValues ?? []).map((k) => k.toLowerCase()),
+  );
+  const pickedCount = pickedKeysLower.size;
+  function isItemPicked(item: T): boolean {
+    return pickedKeysLower.has(getValue(item).toLowerCase());
+  }
   function handlePick(item: T) {
     if (!multi) return;
-    const key = getValue(item);
-    const isCurrentlyPicked = pickedKeys.has(key);
+    const isCurrentlyPicked = isItemPicked(item);
     // Always allow UN-checking — even when at cap, that's how the user
     // frees a slot. HARD cap on adding past multiMax: ignore the click
     // (the row is also visually disabled in the render below).
@@ -290,7 +300,7 @@ export default function AutocompleteInput<T>({
             style={{ maxHeight: `${pos.listMaxPx}px` }}
           >
             {items.map((item, i) => {
-              const isPicked = multi && pickedKeys.has(getValue(item));
+              const isPicked = multi && isItemPicked(item);
               // At-cap unchecked rows are visually + interactively
               // disabled. Already-picked rows stay clickable so the
               // user can uncheck to free a slot.
