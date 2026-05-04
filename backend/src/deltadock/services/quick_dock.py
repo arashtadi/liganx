@@ -281,7 +281,16 @@ def quick_dock(
                 box=box,
                 work_dir=tmp,
                 cfg=cfg,
-                exhaustiveness=4,    # half the production default for speed
+                # 2026-05-04: bumped from 4 to 8 to match the production
+                # runner AND the optimize_loop batch dock. Was at 4 for
+                # speed, but the resulting ~0.7 kcal/mol noise meant
+                # users saw the Optimize-suggested score and the
+                # Re-dock score disagreeing by more than the threshold
+                # we tell the AI to target (≥0.5 kcal/mol improvement
+                # to be reproducible). Bumping closes that gap.
+                # Cost: ~3s → ~6s per Quick Dock click. Negligible vs
+                # the network round-trip.
+                exhaustiveness=8,
                 num_modes=3,         # only the top 3 — we only return best anyway
             )
         except PodDockError as e:

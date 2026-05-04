@@ -563,7 +563,17 @@ async def _batch_quick_dock(
                 box,
                 tmp,
                 cfg,
-                exhaustiveness=4,   # half production default; matches single-shot quick_dock
+                # 2026-05-04: bumped from 4 to 8 to match production runner.
+                # User-reported repro: Optimize said variant scored -9.20
+                # but re-docking the SAME variant gave -8.50 — 0.7 kcal/mol
+                # of variance, which is the typical Vina noise floor at
+                # exhaustiveness=4. Doubling exhaustiveness ~halves the
+                # noise envelope (Vina spec: noise ≈ 1/sqrt(exhaustiveness))
+                # so users now see ~±0.3 kcal/mol on re-dock instead of ±0.7.
+                # Cost: ~12s → ~24s for the 12-ligand batch dock; total
+                # /optimize wall time goes from ~50s to ~62s, still
+                # comfortably under the Cloudflare 100s edge timeout.
+                exhaustiveness=8,
                 num_modes=3,
             )
         except PodDockError as e:
