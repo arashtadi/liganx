@@ -45,6 +45,44 @@ function statusPill(s: Job["status"]) {
   }
 }
 
+/** Numeric Job ID pill — clickable, copies "#NNN" to the user's clipboard
+ *  (with a brief "Copied!" flash) so the user can paste it into a support
+ *  message without retyping. Stops link navigation since it lives inside
+ *  the Link wrapper that owns the row's main click target. Renders nothing
+ *  if the job's id is null/undefined (defensive — shouldn't happen since
+ *  Job.id is the auto-increment PK, but Pydantic types it Optional). */
+function JobIdPill({ jobId }: { jobId: number | null | undefined }) {
+  const [copied, setCopied] = useState(false);
+  if (jobId == null) return null;
+  const onClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void navigator.clipboard.writeText(`#${jobId}`).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }).catch(() => {
+      // Clipboard write can fail in non-secure contexts or when the
+      // permission is denied. Silent — the pill keeps showing the id
+      // so the user can read it manually.
+    });
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={copied ? "Copied!" : "Click to copy this job's ID — share it when reporting issues"}
+      className={
+        "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold ring-1 ring-inset transition-colors " +
+        (copied
+          ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-800/40"
+          : "bg-slate-100 text-slate-600 ring-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-slate-700")
+      }
+    >
+      {copied ? "Copied!" : `#${jobId}`}
+    </button>
+  );
+}
+
 function fmtDate(iso: string): string {
   // "2026-04-28T18:22:01Z" → "Apr 28, 6:22 PM" (in the viewer's tz)
   //
@@ -432,6 +470,15 @@ function HistoryRow({ job }: { job: Job }) {
               <span className="font-semibold text-ink dark:text-slate-100 truncate">
                 {job.title || defaultTitle(job)}
               </span>
+              {/* Numeric Job ID pill — present on every job (old AND new
+                  rows; backend Job.id is the auto-increment PK that's
+                  always populated). Click to copy so the user can paste
+                  it straight into a support message. Stops link
+                  navigation so the row's main click target still works
+                  for everything except the pill itself. 2026-05-04
+                  user request: "give me a job number for every job so
+                  I can reference it when reporting issues." */}
+              <JobIdPill jobId={job.id} />
               {statusPill(job.status)}
               <EnginePill engine={job.engine} />
             </div>

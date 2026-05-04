@@ -773,7 +773,11 @@ function Header({
           <Stat icon={<Target />} label="Compounds" value={job.compounds.length} />
           <Stat icon={<Beaker />} label="Variants" value={job.mutations.length + 1} hint={["WT", ...job.mutations].join(", ")} />
           <EnginePill engine={job.engine} />
-          <Stat icon={null} label="Job #" value={job.id} />
+          {/* Click-to-copy job ID pill. Replaces the previous Stat-only
+              "Job #N" label with an interactive version so the user can
+              copy the ID straight into a support message. Same component
+              used by HistoryPage so both surfaces match. 2026-05-04. */}
+          <JobIdCopyPill jobId={job.id} />
           <PdbQualityBadge quality={job.pdb_quality} />
         </div>
       </div>
@@ -902,6 +906,45 @@ function ShareButton({
             <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
           </svg>
           {label}
+        </>
+      )}
+    </button>
+  );
+}
+
+/** Click-to-copy job-ID pill. Same idea as HistoryPage's JobIdPill but
+ *  styled to fit the JobPage header's badge row. Click → "#NNN" copies to
+ *  clipboard, brief "Copied!" flash so the user knows it worked, idle
+ *  state shows the bare ID. The user can paste this number straight into
+ *  a support message ("issue with job #145") instead of reading it off
+ *  the URL. 2026-05-04 user request — same data already on every job
+ *  via the Job.id auto-increment PK, present on old AND new rows. */
+function JobIdCopyPill({ jobId }: { jobId: number | null | undefined }) {
+  const [copied, setCopied] = useState(false);
+  if (jobId == null) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard.writeText(`#${jobId}`).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1200);
+        }).catch(() => { /* clipboard unavailable — id is still readable */ });
+      }}
+      title={copied ? "Copied!" : `Job #${jobId} — click to copy. Share this when reporting an issue.`}
+      className={
+        "badge ring-1 ring-inset transition-colors cursor-pointer " +
+        (copied
+          ? "bg-emerald-100 text-emerald-800 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-800/40"
+          : "bg-slate-100 text-slate-700 ring-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-slate-700")
+      }
+    >
+      {copied ? (
+        <>Copied!</>
+      ) : (
+        <>
+          <span className="text-slate-500 dark:text-slate-400">Job</span>{" "}
+          <span className="font-mono font-semibold">#{jobId}</span>
         </>
       )}
     </button>
