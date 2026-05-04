@@ -136,6 +136,16 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
   // (because there's nothing to commit). When true, the accept button
   // appears alongside Cancel.
   const [hasChanges, setHasChanges] = useState(false);
+  // SMILES at the moment the latest error was set. Used by the polling
+  // loop to decide whether to auto-clear the error banner: only clear
+  // when the canvas SMILES differs from this snapshot (i.e. the user
+  // edited AFTER the error appeared). Without this guard the banner
+  // got wiped within ~700ms of every dockability rejection — the user
+  // couldn't read it before it vanished. Bug surfaced 2026-05-04 in
+  // the Optimize → Apply → Re-dock → Apply → Check & use flow:
+  // dockability rejected the second variant, error flashed, polling
+  // cleared it, modal looked "stuck".
+  const errorAtSmilesRef = useRef<string>("");
   // Ketcher's canonical re-emission of `initialSmiles` after setMolecule
   // has parsed and re-serialised it. Captured ONCE per modal mount (right
   // after the load) and compared against the live canvas state by the
@@ -229,11 +239,17 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
         // setState with the same value is cheap but the renders downstream
         // (button label, etc.) still cost a bit on every tick.
         setHasChanges((prev) => (prev === changed ? prev : changed));
-        // Clear any stale validation-error banner the moment the user
-        // starts editing — keeps the modal feeling responsive instead
-        // of leaving a stale "this can't be docked" message hanging
-        // there after they've already fixed the issue.
-        setError((prev) => (prev ? null : prev));
+        // Clear any stale validation-error banner — but ONLY when the
+        // user actually edited the canvas after the error appeared.
+        // Compare current SMILES vs the snapshot we took when setError
+        // last fired. Without this guard the polling cleared the error
+        // every 700ms unconditionally, which made the dockability
+        // rejection feel like a silent "stuck" — see errorAtSmilesRef
+        // comment for the bug history.
+        if (errorAtSmilesRef.current && trimmed !== errorAtSmilesRef.current) {
+          setError(null);
+          errorAtSmilesRef.current = "";
+        }
       } catch {
         // Polling errors are non-fatal — a transient hiccup just means
         // we keep showing the previous state for one tick.
@@ -339,6 +355,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       const smiles: string = await api.getSmiles();
       if (typeof smiles !== "string" || smiles.trim().length === 0) {
         setPending(false);
+        errorAtSmilesRef.current = ""; // empty canvas → polling will pick up any non-empty edit
         setError("The canvas is empty — draw a structure or paste a SMILES first.");
         return;
       }
@@ -372,6 +389,13 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
           setPending(false);
           const reason = dock.reason || "This structure can't be docked.";
           const suggestion = dock.suggestion ? ` ${dock.suggestion}` : "";
+          // Snapshot the SMILES at error time so the polling loop knows
+          // when the user has actually edited (and the error becomes
+          // stale). Without this, the rose error banner gets wiped
+          // within 700ms and the user sees the "Check & use" button
+          // un-disable with no explanation — the bug that made this
+          // path feel "stuck" after a chain of variant Applies.
+          errorAtSmilesRef.current = trimmed;
           setError(reason + suggestion);
           return;
         }
@@ -385,6 +409,12 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       onAccept(trimmed, unchanged);
     } catch (err) {
       setPending(false);
+      // Same snapshot rationale as the dockability-rejection path — keep
+      // the error visible until the user actually edits something.
+      try {
+        const live = await getKetcherApi(iframeRef.current)?.getSmiles?.();
+        errorAtSmilesRef.current = (live || "").trim();
+      } catch { /* if we can't read SMILES, leave the ref empty so polling clears on first non-blank edit */ }
       setError(
         `Couldn't read the structure from Ketcher: ${(err as Error)?.message ?? err}. ` +
         `Try File → Save As → SMILES to copy it manually.`,
