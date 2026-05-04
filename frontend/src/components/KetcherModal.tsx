@@ -123,6 +123,24 @@ function getKetcherApi(iframe: HTMLIFrameElement | null): any | null {
   }
 }
 
+/** Promise.race timeout wrapper. Ketcher's setMolecule and getSmiles
+ *  Promises sometimes hang forever in Indigo edge cases (back-to-back
+ *  Apply, weird canonical-SMILES no-op states). Without a hard timeout
+ *  every UI button that awaits Ketcher (Apply, Check & use, Promote to
+ *  Full Job) sticks with no recovery path. 2026-05-04 user reports
+ *  drove three rounds of bandaids; hoisting this helper module-level
+ *  so every call site uses the same timeout discipline.
+ *  Default budget: 12s — enough for 99th-percentile Indigo, short
+ *  enough that a hung call surfaces an error before the user gives up. */
+function withKetcherTimeout<T>(p: Promise<T>, label: string, ms: number = 12_000): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms),
+    ),
+  ]);
+}
+
 export default function KetcherModal({ initialSmiles, onClose, onAccept, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
@@ -362,7 +380,12 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       // Ketcher's getSmiles returns a Promise<string>. Empty string when the
       // canvas is empty, which we surface as a friendly error rather than
       // silently writing "" into the compound row.
-      const smiles: string = await api.getSmiles();
+      // Wrapped in a 12s timeout — after multiple Apply rounds Ketcher's
+      // getSmiles can hang silently, leaving the button stuck on
+      // "Checking structure…" forever. 2026-05-04 user report: "after
+      // applying the variant 2-3 times the Promote to Full Job and
+      // Check & use don't work."
+      const smiles: string = await withKetcherTimeout(api.getSmiles(), "Ketcher getSmiles");
       if (typeof smiles !== "string" || smiles.trim().length === 0) {
         setPending(false);
         errorAtSmilesRef.current = ""; // empty canvas → polling will pick up any non-empty edit
@@ -1294,14 +1317,33 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  by the new `catalog_target_id` reseed field on NewJobPage). */
   async function promoteToFullJob() {
     const apiObj = getApi();
-    if (!apiObj?.getSmiles) return;
-    let smi: string;
-    try {
-      smi = (await apiObj.getSmiles() || "").trim();
-    } catch {
+    if (!apiObj?.getSmiles) {
+      setQuickDockError("Ketcher hasn't finished loading. Wait a moment and retry.");
       return;
     }
-    if (!smi) return;
+    let smi: string;
+    try {
+      // Same 12s timeout as handleAccept + applyVariantToCanvas. After
+      // 2-3 Apply & Re-dock cycles, Ketcher's getSmiles starts hanging
+      // silently on canonical-SMILES no-ops. Without the race the
+      // Promote button looks dead (no error, just nothing happens).
+      // 2026-05-04 user report: "after 2-3 times the Promote to Full
+      // Job and Check & use don't work."
+      const raw = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles");
+      smi = (raw || "").trim();
+    } catch (e) {
+      const msg = (e as Error)?.message || "unknown";
+      setQuickDockError(
+        msg.includes("timed out")
+          ? `${msg}. Click Promote to Full Job again — usually works on retry.`
+          : `Couldn't read SMILES from Ketcher: ${msg}`,
+      );
+      return;
+    }
+    if (!smi) {
+      setQuickDockError("Canvas is empty — draw a structure first.");
+      return;
+    }
     // Apply to parent's compound list (idempotent — parent dedupes).
     onAccept(smi, false);
     onClose();
@@ -1584,15 +1626,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // canvas is already on a similar canonical SMILES). Without this,
     // the spinner sticks at "Applying to canvas…" forever and the user
     // has to refresh. 15s is generous — happy path is ~1-3s.
-    const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
-      Promise.race([
-        p,
-        new Promise<T>((_, reject) =>
-          setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms),
-        ),
-      ]);
+    // (Helper is the module-level withKetcherTimeout — also used by
+    // handleAccept + promoteToFullJob.)
     try {
-      await withTimeout(apiObj.setMolecule(smiles), 15_000, "Ketcher setMolecule");
+      await withKetcherTimeout(apiObj.setMolecule(smiles), "Ketcher setMolecule", 15_000);
       // Mark this variant as the currently-applied one so its row shows
       // "✓ Applied" instead of "Apply →". We store the EXACT string the
       // user clicked — the row-level comparison is `v.new_smiles ===
@@ -1613,7 +1650,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       let canonical = smiles;
       try {
         if (apiObj.getSmiles) {
-          const live: string = await withTimeout(apiObj.getSmiles(), 8_000, "Ketcher getSmiles");
+          const live: string = await withKetcherTimeout(apiObj.getSmiles(), "Ketcher getSmiles", 8_000);
           if (live && live.trim().length > 0) {
             canonical = live.trim();
           }
