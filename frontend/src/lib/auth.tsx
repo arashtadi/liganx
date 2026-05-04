@@ -158,7 +158,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async signInWithGoogle() {
         const { error } = await supabase.auth.signInWithOAuth({
           provider: "google",
-          options: { redirectTo: `${window.location.origin}/verify-email` },
+          options: {
+            redirectTo: `${window.location.origin}/verify-email`,
+            // Force Google's account chooser every time. Without
+            // prompt=select_account, Google silently re-uses the only
+            // signed-in browser session — meaning a user who signs out
+            // of Liganx and clicks "Sign in with Google" again gets
+            // sent right back into the same Google account with no way
+            // to switch. Most noticeable in Safari, where typically
+            // just one Google account is signed in (Chrome usually has
+            // multiple, in which case Google shows the chooser by
+            // default). 2026-05-04 user report. Trade-off is one
+            // extra chooser click when only one account is active —
+            // small price for the ability to switch accounts.
+            queryParams: { prompt: "select_account" },
+          },
         });
         return { error: error?.message ?? null };
       },
