@@ -1146,6 +1146,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     pdbId?: string;
     /** Resolved chain id (e.g. "A"). Same use as pdbId. */
     chain?: string;
+    /** Whether the dock used the PDBFixer-built mutant receptor or fell
+     *  back to WT (added 2026-05-04). Drives the "vs T315I" green badge
+     *  vs "WT only ⚠" amber caveat next to the score. */
+    receptorVariant?: "mutant" | "wt";
+    /** Populated only when a mutation was requested but the build
+     *  failed and we fell back. Shown in the badge tooltip. */
+    mutationCaveat?: string;
   } | null>(null);
   // (3D column mode state — ligand vs pose — was removed with the
   // inline 3D viewers on 2026-05-02.)
@@ -1322,6 +1329,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         posePdbqt: r.pose_pdbqt_b64 ? safeAtob(r.pose_pdbqt_b64) : "",
         pdbId: r.pdb_id,
         chain: r.chain,
+        // Mutation-aware-scoring transparency (2026-05-04). Backend tells
+        // us whether the mutant receptor was actually used or we fell
+        // back to WT. UI badge below the score reads it directly.
+        receptorVariant: r.receptor_variant,
+        mutationCaveat: r.mutation_caveat,
       });
       setQuickDockStatus("done");
     } catch (e) {
@@ -1668,9 +1680,31 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               {/* Score on a single tight line. DRAFT tag in the header +
                   dashed border + tilde prefix already convey "estimate";
                   the previous explicit caveat line was redundant. */}
-              <div className="flex items-baseline gap-1.5">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
                 <span className="text-[15px] font-medium italic text-slate-600 dark:text-slate-300 leading-none">~{dockResult.score.toFixed(2)}</span>
                 <span className="text-[10px] text-slate-500 dark:text-slate-400">kcal/mol</span>
+                {/* Mutation-aware-scoring badge (2026-05-04). Green
+                    "vs mutant" when the dock used the PDBFixer-built
+                    mutant receptor; amber "vs WT only" caveat when a
+                    mutation was requested but the build fell back. The
+                    no-mutation case (WT-vs-nothing) shows nothing — the
+                    DRAFT pill in the header is enough. */}
+                {dockResult.receptorVariant === "mutant" && mutations && (
+                  <span
+                    className="text-[8.5px] px-1 py-px rounded font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200"
+                    title={`Scored against the ${mutations} mutant receptor (built via PDBFixer).`}
+                  >
+                    vs {mutations}
+                  </span>
+                )}
+                {dockResult.receptorVariant === "wt" && mutations && (
+                  <span
+                    className="text-[8.5px] px-1 py-px rounded font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 cursor-help"
+                    title={dockResult.mutationCaveat || "Mutant build failed; fell back to WT receptor. The relative Δ vs WT-baseline is still informative but the absolute score isn't mutation-aware."}
+                  >
+                    WT only ⚠
+                  </span>
+                )}
               </div>
               {/* Hits/misses, compact: 3 residues, no A:CHAIN prefix
                   (assumed single-chain context for the editor's quick

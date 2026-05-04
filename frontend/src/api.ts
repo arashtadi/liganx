@@ -635,6 +635,13 @@ export const api = {
       /** Resolved chain id (e.g. "A"). Same use as pdb_id. */
       chain?: string;
       error?: string;
+      /** Mutation-aware-scoring transparency (2026-05-04). "mutant" when
+       *  the dock used the PDBFixer-built mutant receptor; "wt" when no
+       *  mutation was requested OR when the mutant build failed. */
+      receptor_variant?: "mutant" | "wt";
+      /** Populated only when a mutation was requested but the mutant
+       *  build failed and we fell back to WT. UI should warn the user. */
+      mutation_caveat?: string;
     }>("/assist/quick_dock", { method: "POST", body: JSON.stringify(payload) }),
   /** Optimize loop — given the score + contacts from a prior quick_dock,
    *  asks Claude for 3 variant SMILES designed to gain contacts at the
@@ -694,6 +701,16 @@ export const api = {
       /** Human-readable hint, present on fallback paths (no docking
        *  pipeline, all candidates unsynthesisable, etc). */
       note?: string;
+      /** Mutation-aware-scoring transparency (Tier 1 #5, 2026-05-04).
+       *  "mutant" when the variants were docked against the PDBFixer-built
+       *  mutant receptor; "wt" when no mutation was requested OR when the
+       *  mutant build failed and we fell back to WT. */
+      receptor_variant?: "mutant" | "wt";
+      /** Populated only when the user requested a mutation but we had to
+       *  fall back to WT (mutant build crashed, residue verify failed,
+       *  etc). Render as a soft amber caveat — the relative Δ is still
+       *  meaningful but the absolute score isn't mutation-aware. */
+      mutation_caveat?: string;
     }>("/assist/optimize", { method: "POST", body: JSON.stringify(payload) }),
   /** Report an issue on a job. Owner-only. Sends the user's free-form
    *  comment + job context to our Telegram bot so we can triage from a

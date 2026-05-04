@@ -303,4 +303,8 @@ async def optimize_endpoint(
         "candidates_self_rejected": result.get("candidates_self_rejected", 0),
         "candidates_top_up": result.get("candidates_top_up", 0),
         "note": result.get("note", ""),
+        # Mutation-aware-scoring transparency (added 2026-05-04). UI uses
+        # these to render "Mutant T315I" or "WT only — mutant build failed".
+        "receptor_variant": result.get("receptor_variant", "wt"),
+        "mutation_caveat": result.get("mutation_caveat", ""),
     }

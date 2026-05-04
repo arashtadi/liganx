@@ -41,6 +41,14 @@ class QuickDockResult(TypedDict, total=False):
     pdb_id: str                  # resolved RCSB PDB id (e.g. "4OBE") — frontend uses this to fetch receptor for the pose viewer
     chain: str                   # resolved chain id (e.g. "A") — same use as pdb_id
     error: str                   # human-readable error when ok=False
+    # Mutation-aware-scoring fields (added 2026-05-04 with the
+    # services/receptor_prep.py wiring). receptor_variant is "mutant" when
+    # the dock actually used a PDBFixer-built mutant; "wt" when no mutation
+    # was requested OR when the build fell back to WT. mutation_caveat is
+    # populated only on fallback so the UI can render an honest warning
+    # ("Mutant build failed; this score is WT").
+    receptor_variant: str        # "mutant" | "wt"
+    mutation_caveat: str         # populated only when fallback to WT happened despite a mutation request
 
 
 # Cap on how many residues we surface to the LLM so the prompt stays
@@ -153,42 +161,39 @@ def quick_dock(
     pdb_cache.mkdir(parents=True, exist_ok=True)
     receptor_cache.mkdir(parents=True, exist_ok=True)
 
-    # Receptor — WT path always; mutant-aware paths share the cache.
-    # If mutation is set, the runner's per-mutant cache key applies.
-    # All cache keys use the resolved RCSB pdb_id (not the catalog id),
-    # so a previously-run normal job's cleaned receptor + PDBQT are
-    # reused here for free.
-    variant_key = (mutation or "WT").strip() or "WT"
-    receptor_pdbqt = receptor_cache / f"{pdb_id}_{chain}_{variant_key}.pdbqt"
-    receptor_pdb = pdb_cache / f"{pdb_id}_{chain}.clean.pdb"
-
-    try:
-        if not receptor_pdb.exists():
-            raw_pdb = pdb_cache / f"{pdb_id}.pdb"
-            if not raw_pdb.exists():
-                fetch_pdb(pdb_id, raw_pdb)
-            fix_pdb(raw_pdb, receptor_pdb, chain=chain)
-        if not receptor_pdbqt.exists():
-            # WT prep — for mutant variants we'd need to call the
-            # mutant-build path (see runner._receptor_for_variant).
-            # Quick dock leaves mutation handling to a future iteration
-            # and just docks WT for now to keep this endpoint snappy.
-            # If the user picked a mutation they'll see "WT receptor used"
-            # noted in the response.
-            if variant_key != "WT":
-                log.info(
-                    "quick_dock: mutation %s requested but quick_dock currently"
-                    " uses WT receptor only — falling back",
-                    variant_key,
-                )
-                receptor_pdbqt = receptor_cache / f"{pdb_id}_{chain}_WT.pdbqt"
-                if not receptor_pdbqt.exists():
-                    prepare_receptor(receptor_pdb, receptor_pdbqt, chain=chain)
-            else:
-                prepare_receptor(receptor_pdb, receptor_pdbqt, chain=chain)
-    except Exception as e:
-        log.exception("quick_dock: receptor prep failed")
-        return QuickDockResult(ok=False, error=f"Receptor prep failed: {e}")
+    # Receptor — uses the shared services/receptor_prep.py helper which
+    # handles cache → PDBFixer build → verify → WT fallback. This is
+    # the SAME code path the production New Job runner uses, so:
+    #  - First click on a new mutation pays ~30-60s build cost
+    #  - Subsequent clicks hit cache
+    #  - A warm cache from a prior full job's mutant build is reused for free
+    # 2026-05-04: previously this endpoint silently docked WT regardless of
+    # the requested mutation. The user saw "Quick dock vs T315I" but was
+    # actually scoring against WT — meaningful for the relative Δ but not
+    # for the absolute mutation-aware affinity.
+    from .receptor_prep import prepare_receptor_for_target
+    rec = prepare_receptor_for_target(
+        pdb_id=pdb_id,
+        chain=chain,
+        mutation=mutation,
+        pdb_cache=pdb_cache,
+        receptor_cache=receptor_cache,
+        minimize_mutant=getattr(target, "minimize_mutant", True) if target else True,
+    )
+    receptor_pdbqt = rec.receptor_pdbqt
+    receptor_pdb = rec.receptor_pdb
+    if not receptor_pdbqt.exists() or receptor_pdbqt.stat().st_size == 0:
+        return QuickDockResult(
+            ok=False,
+            error=rec.fallback_reason or f"Receptor PDBQT missing for {pdb_id}_{chain}",
+        )
+    if rec.fallback_reason and not rec.is_mutant and mutation:
+        # Loud log but still proceed — user will see the score and we
+        # surface the caveat in the response (caller can render it).
+        log.warning(
+            "quick_dock: requested %s but fell back to WT (%s)",
+            mutation, rec.fallback_reason,
+        )
 
     # Ligand prep + dock — tempdir for both so we don't pollute caches
     # with one-off compounds users sketch in the editor.
@@ -330,7 +335,7 @@ def quick_dock(
         except Exception:
             pose_b64 = ""
 
-        return QuickDockResult(
+        out = QuickDockResult(
             ok=True,
             score=round(best_score, 2),
             hits=hits[:_MAX_HITS],
@@ -343,7 +348,15 @@ def quick_dock(
             # the same Fly volume the receptor came from.
             pdb_id=pdb_id,
             chain=chain,
+            # Mutation-aware-scoring transparency. UI can render a green
+            # "Mutant T315I" badge when receptor_variant=="mutant" or an
+            # amber "WT only — mutant build failed" caveat when "wt" but
+            # the user requested a mutation.
+            receptor_variant="mutant" if rec.is_mutant else "wt",
         )
+        if not rec.is_mutant and mutation and rec.fallback_reason:
+            out["mutation_caveat"] = rec.fallback_reason
+        return out
 
 
 def _extract_contacts(

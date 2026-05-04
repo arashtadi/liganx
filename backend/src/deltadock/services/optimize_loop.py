@@ -93,6 +93,12 @@ class OptimizeLoopResult(TypedDict, total=False):
     candidates_self_rejected: int  # how many failed the self-prediction gate
     candidates_top_up: int      # how many came from the top-up re-call
     note: str                   # human-readable diagnostic for the UI
+    # Mutation-aware-scoring transparency (added 2026-05-04 with the
+    # services/receptor_prep.py wiring). receptor_variant tells the UI
+    # whether scores reflect the mutant or just WT (some mutations fail
+    # to build cleanly via PDBFixer and we fall back to WT).
+    receptor_variant: str       # "mutant" | "wt"
+    mutation_caveat: str        # populated only when fallback to WT happened despite a mutation request
 
 
 def _parse_mutation_residue(mutations: Optional[str]) -> Optional[int]:
@@ -293,7 +299,7 @@ async def generate_score_filter_optimize(
     log.info("optimize_loop: %d survivors after SA filter", len(survivors))
 
     # ── 3. Batch-dock survivors ──────────────────────────────────────
-    docked_results = await _batch_quick_dock(
+    docked_results, dock_meta = await _batch_quick_dock(
         smiles_list=[s["new_smiles"] for s in survivors],
         target_pdb=target_pdb,
         chain=chain,
@@ -369,14 +375,21 @@ async def generate_score_filter_optimize(
         top[-1]["fitness"], top[0]["fitness"],
     )
 
-    return OptimizeLoopResult(
+    result = OptimizeLoopResult(
         variants=top,
         candidates_generated=len(raw_variants),
         candidates_filtered=len(survivors),
         candidates_docked=len(scored),
         candidates_self_rejected=self_rejected,
         candidates_top_up=top_up_count,
+        receptor_variant=dock_meta.get("receptor_variant", "wt"),
     )
+    if dock_meta.get("fallback_reason"):
+        # Surface the WT-fallback caveat so the UI can show "Mutant build
+        # failed; scores are wild-type only" — the user deserves to know
+        # whether the Δ they're seeing is mutation-aware or not.
+        result["mutation_caveat"] = dock_meta["fallback_reason"]
+    return result
 
 
 def _fallback_undocked(raw_variants: list, note: str) -> OptimizeLoopResult:
@@ -430,7 +443,7 @@ async def _batch_quick_dock(
     target_pdb: str,
     chain: str = "A",
     mutations: Optional[str] = None,
-) -> list[_BatchDockOut]:
+) -> tuple[list[_BatchDockOut], dict]:
     """Dock N SMILES against the same target+mutation in a single batch.
 
     Returns one dict per input SMILES (same order). Per-ligand failures
@@ -443,7 +456,7 @@ async def _batch_quick_dock(
     avoid blocking the event loop while a 30s GPU dispatch is in flight.
     """
     if not smiles_list:
-        return []
+        return [], {"receptor_variant": "wt", "fallback_reason": None}
 
     # Same imports as quick_dock — local to avoid heavy cold-start in the
     # common (non-optimize) path of the API process.
@@ -460,12 +473,12 @@ async def _batch_quick_dock(
         from ..config import get_settings
     except Exception as e:
         log.exception("optimize_loop: batch pipeline import failed")
-        return [_BatchDockOut(ok=False, error=f"Quick dock pipeline unavailable: {e}") for _ in smiles_list]
+        return [_BatchDockOut(ok=False, error=f"Quick dock pipeline unavailable: {e}") for _ in smiles_list], {"receptor_variant": "wt", "fallback_reason": str(e)}
 
     settings = get_settings()
     pod_url = settings.pod_dock_url
     if not pod_url:
-        return [_BatchDockOut(ok=False, error="Quick dock pod isn't configured (POD_DOCK_URL missing).") for _ in smiles_list]
+        return [_BatchDockOut(ok=False, error="Quick dock pod isn't configured (POD_DOCK_URL missing).") for _ in smiles_list], {"receptor_variant": "wt", "fallback_reason": "POD_DOCK_URL missing"}
 
     # Receptor + box from the catalog. Same lookup as quick_dock —
     # accepts catalog ids ('kras') OR RCSB pdb ids ('4OBE').
@@ -476,7 +489,7 @@ async def _batch_quick_dock(
         pass
     if target is None or target.pocket is None:
         msg = f"No pocket box on file for {target_pdb}. Run a normal job once to cache it."
-        return [_BatchDockOut(ok=False, error=msg) for _ in smiles_list]
+        return [_BatchDockOut(ok=False, error=msg) for _ in smiles_list], {"receptor_variant": "wt", "fallback_reason": msg}
 
     pdb_id = target.pdb_id
     chain = target.chain or chain
@@ -495,28 +508,32 @@ async def _batch_quick_dock(
     pdb_cache.mkdir(parents=True, exist_ok=True)
     receptor_cache.mkdir(parents=True, exist_ok=True)
 
-    # Receptor PDBQT — WT path only for now (matches quick_dock's
-    # current behaviour). Same cache key + filename layout so we share
-    # the warm cache with the production runner and the single-shot
-    # quick_dock endpoint. When a normal job for this target has run
-    # before, this is essentially instant.
-    variant_key = (mutations or "WT").strip().split(",")[0].strip() or "WT"
-    # Quick dock currently uses WT for any mutation — match that here so
-    # the cached PDBQT is the same blob for both endpoints.
-    receptor_pdbqt = receptor_cache / f"{pdb_id}_{chain}_WT.pdbqt"
-    receptor_pdb = pdb_cache / f"{pdb_id}_{chain}.clean.pdb"
-
-    try:
-        if not receptor_pdb.exists():
-            raw_pdb = pdb_cache / f"{pdb_id}.pdb"
-            if not raw_pdb.exists():
-                fetch_pdb(pdb_id, raw_pdb)
-            fix_pdb(raw_pdb, receptor_pdb, chain=chain)
-        if not receptor_pdbqt.exists():
-            prepare_receptor(receptor_pdb, receptor_pdbqt, chain=chain)
-    except Exception as e:
-        log.exception("optimize_loop: receptor prep failed")
-        return [_BatchDockOut(ok=False, error=f"Receptor prep failed: {e}") for _ in smiles_list]
+    # Receptor — uses the shared services/receptor_prep.py helper for
+    # mutant-aware build + cache + verify (matches the production runner).
+    # 2026-05-04: previously this hardcoded WT regardless of the requested
+    # mutation, which meant Optimize variants were scored against the
+    # WT pocket even when the user picked T315I / V600E / etc. Now the
+    # batch dock uses the same mutant receptor a full New Job would.
+    # First mutation pays ~30-60s PDBFixer build; cached after.
+    from .receptor_prep import prepare_receptor_for_target
+    rec = prepare_receptor_for_target(
+        pdb_id=pdb_id,
+        chain=chain,
+        mutation=mutations,
+        pdb_cache=pdb_cache,
+        receptor_cache=receptor_cache,
+        minimize_mutant=getattr(target, "minimize_mutant", True),
+    )
+    receptor_pdbqt = rec.receptor_pdbqt
+    receptor_pdb = rec.receptor_pdb
+    if not receptor_pdbqt.exists() or receptor_pdbqt.stat().st_size == 0:
+        msg = rec.fallback_reason or f"Receptor missing for {pdb_id}_{chain}"
+        return [_BatchDockOut(ok=False, error=msg) for _ in smiles_list], {"receptor_variant": "wt", "fallback_reason": msg}
+    if rec.fallback_reason and not rec.is_mutant and mutations:
+        log.warning(
+            "optimize_loop: requested %s but fell back to WT (%s)",
+            mutations, rec.fallback_reason,
+        )
 
     # Ligand prep — temp dir per call, one PDBQT per SMILES. Failures
     # (Meeko-rejected molecules) become per-ligand errors, not whole-
@@ -621,7 +638,10 @@ async def _batch_quick_dock(
                 misses=misses[:8],
             )
 
-    return out
+    return out, {
+        "receptor_variant": "mutant" if rec.is_mutant else "wt",
+        "fallback_reason": rec.fallback_reason if (rec.fallback_reason and not rec.is_mutant and mutations) else None,
+    }
 
 
 def _extract_contacts_for_pose(*, pose_pdbqt: Path, receptor_pdb: Path, box) -> tuple[list[str], list[str]]:
