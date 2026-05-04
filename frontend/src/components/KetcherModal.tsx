@@ -1193,6 +1193,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       /** AI's predicted SA Score; compared to actual saScore for the
        *  calibration tooltip. */
       predictedSaScore?: number;
+      /** Per-variant docked-pose contacts. Captured here so applyVariant
+       *  can hydrate dockResult on click — without this the chat AI runs
+       *  blind on the new compound (smiles staleness guard skips dock
+       *  context) and routinely "improves" away the gains from Optimize.
+       *  See applyVariantToCanvas + the runEdit dockFresh check. */
+      hits?: string[];
+      misses?: string[];
       status: "queued" | "docking" | "done" | "error";
       error?: string;
     }>
@@ -1412,6 +1419,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         mutationContact: typeof v.mutation_contact === "boolean" ? v.mutation_contact : undefined,
         predictedImprovementKcal: typeof v.predicted_improvement_kcal === "number" ? v.predicted_improvement_kcal : undefined,
         predictedSaScore: typeof v.predicted_sa_score === "number" ? v.predicted_sa_score : undefined,
+        // Carry hits/misses through so Apply can hydrate dockResult and
+        // chat-AI keeps full pocket context after iterating on a variant.
+        hits: Array.isArray(v.hits) ? v.hits : undefined,
+        misses: Array.isArray(v.misses) ? v.misses : undefined,
         error: undefined as string | undefined,
       }));
       setOptimizedVariants(initial);
@@ -1440,7 +1451,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             setOptimizedVariants((cur) => cur.map((cv, i) =>
               i === idx
                 ? r.ok
-                  ? { ...cv, status: "done", score: r.score }
+                  ? {
+                      ...cv,
+                      status: "done",
+                      score: r.score,
+                      // Capture hits/misses so applyVariant can hydrate
+                      // dockResult and the chat AI gets full pocket context
+                      // when the user iterates on this variant.
+                      hits: Array.isArray(r.hits) ? r.hits : cv.hits,
+                      misses: Array.isArray(r.misses) ? r.misses : cv.misses,
+                    }
                   : { ...cv, status: "error", error: r.error || "dock failed" }
                 : cv,
             ));
@@ -1460,7 +1480,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   }
 
   /** Apply a variant SMILES to the canvas — same setMolecule path as
-   *  applyResultToCanvas but for the optimized variants. */
+   *  applyResultToCanvas but for the optimized variants.
+   *
+   *  Hydrates `dockResult` with the variant's score/hits/misses so the
+   *  chat AI (which gates on `dockResult.smiles === liveSmiles`) keeps
+   *  pocket context after the user iterates on a variant. Without this
+   *  the AI runs blind on the new compound and routinely undoes the
+   *  gains from Optimize ("optimize makes it better but chat makes it
+   *  worse" — 2026-05-04 user report). */
   async function applyVariantToCanvas(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) return;
@@ -1474,6 +1501,33 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // round-trip. Ketcher's canonical form may differ from this stored
       // value, but that's fine because we never compare to liveSmiles.
       setAppliedVariantSmiles(smiles);
+      // Hydrate dockResult from the variant's stored docking data so the
+      // chat AI gets fresh dock context on the next runEdit() call.
+      // Look the variant up by its stored new_smiles (matches what we
+      // just passed to setMolecule). If the variant has a score we have
+      // enough to reuse the staleness guard; if not (e.g. it was a
+      // pre-Generate-Score-Filter fallback path), we skip the hydration
+      // and let the chat fall back to no-dock-context mode.
+      const variant = optimizedVariants.find((v) => v.new_smiles === smiles);
+      if (variant && typeof variant.score === "number") {
+        setDockResult({
+          smiles,                                // matches Ketcher's input
+          score: variant.score,
+          hits: Array.isArray(variant.hits) ? variant.hits : [],
+          misses: Array.isArray(variant.misses) ? variant.misses : [],
+          // No pose for this code path (variant docking happens server-
+          // side and we don't shuttle the PDBQT through). Pose viewer
+          // will show "no pose" until the user re-runs Quick Dock.
+          posePdbqt: "",
+          // Carry the receptor-variant flag forward so the badge stays
+          // consistent — the variant was scored against the SAME
+          // receptor (mutant or WT) as the parent dock.
+          receptorVariant: dockResult?.receptorVariant,
+          mutationCaveat: dockResult?.mutationCaveat,
+          pdbId: dockResult?.pdbId,
+          chain: dockResult?.chain,
+        });
+      }
     } catch (e) {
       setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`);
     }
