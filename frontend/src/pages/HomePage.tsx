@@ -277,6 +277,16 @@ function FeatureGrid() {
       body: "QuickVina2-GPU (fast Vina-family), GNINA (Vina + CNN pose rescoring trained on PDBbind), and Boltz-2 (full ML co-folding from sequence + SMILES — no docking box needed). Three genuinely different methods, side-by-side on the same job. Most free tools give you one.",
       isNew: true,
     },
+    // 2026-05-04: added after the Tier 1 AI Optimize loop shipped.
+    // Single card describing the whole AI design pipeline so the grid
+    // doesn't become 4 separate AI cards. The "Recently shipped" strip
+    // above gets the per-feature breakdown.
+    {
+      icon: <Sparkles />,
+      title: "AI medchem co-pilot",
+      body: "Optimize button proposes 12 variants tailored to your mutation, GPU-docks all 12 in one batch, returns the 3 with highest composite fitness (Δ-score × synthetic accessibility × mutation contact). Anchors on real literature precedents — Ponatinib, Osimertinib, Pirtobrutinib, Vemurafenib, Sotorasib — instead of inventing chemistry. Quick dock + AI chat live inside the Ketcher sketcher.",
+      isNew: true,
+    },
     {
       icon: <Library />,
       title: "Your compound library",
@@ -370,25 +380,29 @@ function FeatureGrid() {
  */
 function WhatsNew() {
   const items = [
+    // 2026-05-04: lead card swapped from "Custom compound library" to the
+    // AI Optimize loop ship (Tier 1 #1-4). The library + SMILES validation
+    // + re-run cards moved into the bigger feature grid below; this strip
+    // showcases what's NEWEST so returning users immediately see motion.
     {
       tag: "Just shipped",
-      title: "Custom compound library",
+      title: "AI compound design — actually scored",
       body:
-        "Name a compound on a job and it auto-saves to your personal library. Re-use it in one click on any future run, color-code with the same tag system as History, edit in Ketcher and choose save-changes vs save-as-new.",
+        "Click Optimize and the AI proposes 12 variants targeting your missed residues, then GPU-docks every one of them in a single batch. You get the 3 with the highest composite fitness — better binding × easier to make × actually touches the mutated residue. Catches its own typos via tool use; anchors on real literature precedents (Ponatinib for T315I, Pirtobrutinib for C481S, Vemurafenib for V600E…).",
       tone: "delta" as const,
     },
     {
       tag: "Just shipped",
-      title: "Live SMILES validation",
+      title: "Quick dock inside the sketcher",
       body:
-        "Inline 2D thumbnail on every compound row updates as you type. Catches broken SMILES, disconnected fragments, and 3D-embed failures BEFORE you click Run — one-click Keep-largest and Fix-in-sketcher buttons make repairs instant.",
+        "A 5-second draft Vina score against your selected target+mutation, run from the Ketcher edit modal. Hits and misses listed by residue. Edit the structure, dock again, watch the score move — interactive medchem cycle without ever leaving the editor.",
       tone: "accent" as const,
     },
     {
       tag: "Just shipped",
-      title: "Re-run any job in one click",
+      title: "Custom compound library",
       body:
-        "Every History row gets a Re-run button that pre-fills the New-job form with the same target, mutations, compounds, engine, and search depth. Tweak any field and resubmit without retyping.",
+        "Name a compound on a job and it auto-saves to your personal library. Re-use it in one click on any future run, color-code with tags, edit in Ketcher with save-as-new or overwrite. Live SMILES preview catches typos before submit.",
       tone: "emerald" as const,
     },
   ];
@@ -488,6 +502,13 @@ function Comparison() {
               // 2D depiction in its compound editor but doesn't pre-flight
               // 3D embedding before sending to Glide.
               ["Live SMILES preview + pre-flight", false,   true,      "partial"],
+              // AI-design row added 2026-05-04 after Tier 1 #1-4 shipped.
+              // No free server has AI variant generation tied to docking
+              // results. Schrödinger's recent generative-chemistry work
+              // (LiveDesign, AutoDesigner) lands as "partial" — it exists
+              // but is a separate paid module on a different workflow,
+              // not built into the same matrix UI as the docker.
+              ["AI compound design (mutation-aware)", false, true,     "partial"],
               // Row labels generalized so the Schrödinger ✓ doesn't
               // imply they use the same OSS tools we do (PoseBusters,
               // RDKit). Schrödinger has equivalent functionality via
