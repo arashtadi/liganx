@@ -1207,6 +1207,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  Bug surfaced 2026-05-04: clicking Apply changed the canvas but the
    *  row label stayed "Apply →" — no visual confirmation. */
   const [appliedVariantSmiles, setAppliedVariantSmiles] = useState<string | null>(null);
+  // SMILES of the variant currently mid-Apply. Set the moment the user
+  // clicks "Apply →"; cleared once setMolecule + canonical-readback
+  // finishes. Drives the row-level spinner so the user knows their
+  // click landed (Ketcher's setMolecule is async and can take 5-8s on
+  // complex molecules — the user reported clicking and seeing nothing
+  // happen, then accidentally clicking again). 2026-05-04.
+  const [applyingVariantSmiles, setApplyingVariantSmiles] = useState<string | null>(null);
   /** Soft, non-blocking informational message — present when the
    *  Generate-Score-Filter loop fell back to un-docked variants (pod
    *  down, no receptor cached, all candidates filtered by SA, etc).
@@ -1538,6 +1545,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   async function applyVariantToCanvas(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) return;
+    // Spinner ON immediately. Ketcher's setMolecule + getSmiles
+    // round-trip can take 5-8s on complex molecules (Indigo parses
+    // the SMILES, builds 2D coords, re-emits canonical form). Without
+    // this the user gets no feedback and either thinks the click
+    // didn't register OR clicks Apply again on a different variant.
+    setApplyingVariantSmiles(smiles);
     try {
       await apiObj.setMolecule(smiles);
       // Mark this variant as the currently-applied one so its row shows
@@ -1548,12 +1561,30 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // round-trip. Ketcher's canonical form may differ from this stored
       // value, but that's fine because we never compare to liveSmiles.
       setAppliedVariantSmiles(smiles);
+      // Read back Ketcher's canonical form of the SMILES we just set.
+      // This is what handleAccept's getSmiles() will return when the
+      // user clicks Check & use. Storing the BACKEND form in the
+      // aiApplied ref made the equality check fail (Ketcher's
+      // canonicalisation routinely reorders rings + chains), so the
+      // dockability skip didn't fire and Check & use still took 10s.
+      // 2026-05-04 user report: "after applied it took about 10 sec
+      // for the Check & use this structure to come up".
+      let canonical = smiles;
+      try {
+        if (apiObj.getSmiles) {
+          const live: string = await apiObj.getSmiles();
+          if (live && live.trim().length > 0) {
+            canonical = live.trim();
+          }
+        }
+      } catch {
+        // Fall back to the input form — better to over-validate one
+        // round-trip than to crash the apply path.
+      }
       // Mark this SMILES as "AI-applied" so the parent's handleAccept
       // skips the dockability backend round-trip on the next Check & use
-      // click. The variant was already server-validated AND server-docked
-      // successfully, so the check is redundant — and it was making the
-      // rename popup take 1-3s to appear. Reported by user 2026-05-04.
-      onAiApplied?.(smiles);
+      // click. We pass the CANONICAL form so the equality check matches.
+      onAiApplied?.(canonical);
       // Hydrate dockResult from the variant's stored docking data so the
       // chat AI gets fresh dock context on the next runEdit() call.
       // Look the variant up by its stored new_smiles (matches what we
@@ -1583,6 +1614,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       }
     } catch (e) {
       setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`);
+    } finally {
+      // Always clear the spinner — both happy path and error path.
+      setApplyingVariantSmiles(null);
     }
   }
 
@@ -2114,7 +2148,30 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                         </span>
                       )}
                     </div>
-                    {appliedVariantSmiles === v.new_smiles ? (
+                    {applyingVariantSmiles === v.new_smiles ? (
+                      // Mid-Apply spinner. Ketcher's setMolecule +
+                      // canonical readback can take 5-8s on complex
+                      // molecules. Without this the user thinks the
+                      // click didn't register and clicks again.
+                      <span
+                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 inline-flex items-center gap-1 shrink-0"
+                        title="Applying variant to canvas…"
+                      >
+                        <svg
+                          className="animate-spin"
+                          width="10"
+                          height="10"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          aria-hidden="true"
+                        >
+                          <path d="M21 12a9 9 0 1 1-6.2-8.55" strokeLinecap="round" />
+                        </svg>
+                        Applying…
+                      </span>
+                    ) : appliedVariantSmiles === v.new_smiles ? (
                       // ✓ Applied — this variant is currently on the
                       // canvas. Renders as a non-button so it doesn't
                       // invite a redundant click; the visual weight tells
@@ -2131,7 +2188,8 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                       <button
                         type="button"
                         onClick={() => applyVariantToCanvas(v.new_smiles)}
-                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0"
+                        disabled={applyingVariantSmiles !== null}
+                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Apply →
                       </button>
