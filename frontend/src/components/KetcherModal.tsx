@@ -242,6 +242,46 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [ketcherReady]);
 
+  // Iframe focus management — undo/redo (Cmd+Z / Cmd+Y) only work when
+  // the Ketcher iframe has keyboard focus. When the user clicks anywhere
+  // in the rail (chat box, chips, buttons) the iframe loses focus and
+  // their next Cmd+Z does nothing. We refocus on mouse-enter into the
+  // iframe area, AND intercept Cmd+Z / Cmd+Y at the document level to
+  // route them to Ketcher unless the user is actively typing in a text
+  // field (in which case the browser's native undo for that input wins).
+  useEffect(() => {
+    if (!ketcherReady) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    function refocusIframe() {
+      try { iframe?.contentWindow?.focus(); } catch { /* ignore */ }
+    }
+    function handleGlobalKey(e: KeyboardEvent) {
+      const isUndoRedo =
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "z" || e.key === "Z" || e.key === "y" || e.key === "Y");
+      if (!isUndoRedo) return;
+      // Don't steal undo from a text field the user is typing in —
+      // they probably want to undo their text edit, not the canvas.
+      const active = document.activeElement;
+      const tag = (active?.tagName || "").toLowerCase();
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        (active as HTMLElement | null)?.isContentEditable
+      ) {
+        return;
+      }
+      refocusIframe();
+    }
+    iframe.addEventListener("mouseenter", refocusIframe);
+    document.addEventListener("keydown", handleGlobalKey, true);
+    return () => {
+      iframe.removeEventListener("mouseenter", refocusIframe);
+      document.removeEventListener("keydown", handleGlobalKey, true);
+    };
+  }, [ketcherReady]);
+
   /** Close-with-guard. Used for the implicit dismiss paths — backdrop
    *  click and ESC keypress — which are easy to trigger accidentally
    *  while drawing. When the user has unsaved structural edits we
@@ -838,7 +878,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // PAINS. Heavier RDKit panel + actual rate-limit. Debounced against
   // unchanged SMILES so a stable canvas costs nothing.
   const lastQueriedSmilesRef = useRef<string>("");
-  // FAST tier — canvas snapshot, no network.
+  // FAST tier — push-based when Ketcher exposes a change event,
+  // poll-based as fallback. Ketcher 3.x has `editor.subscribe('change',
+  // cb)` (returns an unsubscribe function) on most builds; older builds
+  // exposed `editor.event.change.add(cb)`. We try both shapes and fall
+  // through to a 250ms poll if neither is available — cheaper than the
+  // earlier 350ms blind-poll-only approach because event-driven updates
+  // fire IMMEDIATELY on each canvas mutation (no 350ms blind window
+  // where the validity dot lags behind the user's pen). The poll
+  // backstop also catches edge cases where Ketcher mutates the canvas
+  // outside its own event system (e.g. setMolecule from our code).
   useEffect(() => {
     if (!ketcherReady) return;
     let cancelled = false;
@@ -850,16 +899,62 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         if (cancelled) return;
         const trimmed = (smi || "").trim();
         // Functional update — only triggers a re-render when the value
-        // actually changed, so a steady canvas at 350ms costs nothing.
+        // actually changed, so a steady canvas costs nothing.
         setLiveSmiles((prev) => (prev === trimmed ? prev : trimmed));
       } catch {
         // Best-effort.
       }
     };
+
+    // Try to subscribe to Ketcher's change event for instant updates.
+    // We grab the editor handle defensively because the API surface
+    // varies across Ketcher 3.x point releases.
+    let unsubscribe: (() => void) | null = null;
+    const apiObj = getApi();
+    const editor = apiObj?.editor;
+    try {
+      if (editor && typeof editor.subscribe === "function") {
+        // Ketcher 3.x style: subscribe('change', cb) returns a token; the
+        // unsubscribe call signature is editor.unsubscribe('change', token).
+        const token = editor.subscribe("change", () => snapshot());
+        unsubscribe = () => {
+          try {
+            if (typeof editor.unsubscribe === "function") {
+              editor.unsubscribe("change", token);
+            }
+          } catch { /* ignore */ }
+        };
+      } else if (editor?.event?.change?.add) {
+        // Older Ketcher builds expose a Pixi-style event hub.
+        const handler = () => snapshot();
+        editor.event.change.add(handler);
+        unsubscribe = () => {
+          try { editor.event.change.remove(handler); } catch { /* ignore */ }
+        };
+      }
+    } catch {
+      // If subscription fails for any reason, the poll backstop below
+      // still keeps the SMILES fresh — just at slightly higher latency.
+    }
+
+    // Always run an initial snapshot so the dot/SA chip have a value
+    // even if no edit happens.
     snapshot();
-    const interval = window.setInterval(snapshot, 350);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    // Poll backstop: 250ms if event-driven (catches setMolecule etc.),
+    // 200ms if pure-poll (no event handler attached). Both are faster
+    // than the previous 350ms.
+    const intervalMs = unsubscribe ? 250 : 200;
+    const interval = window.setInterval(snapshot, intervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      if (unsubscribe) unsubscribe();
+    };
   }, [ketcherReady, getApi]);
+
+  // (Iframe focus management was moved to the KetcherModal component
+  //  where iframeRef lives — this effect runs in AiSidebar which only
+  //  has getApi.)
 
   // SLOW tier — full RDKit property panel. Driven off liveSmiles so it
   // also feels responsive (panel updates as soon as the user pauses for

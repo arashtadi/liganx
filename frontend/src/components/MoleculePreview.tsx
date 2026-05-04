@@ -235,18 +235,24 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 export type SmilesValidity = "empty" | "loading" | "valid" | "invalid" | "fragments";
 
 export function useSmilesValidity(smiles: string): SmilesValidity {
-  // 150ms debounce — short enough that the dot feels live as the user
-  // sketches, long enough to coalesce the rapid Ketcher canvas-poll
-  // updates that arrive every ~350ms while drawing. inspect-smiles is
-  // cached (5 min staleTime) so re-fetches are nearly free.
-  const debounced = useDebouncedValue(smiles.trim(), 150);
+  // No debounce — the inspect-smiles endpoint is RDKit-only (~10 ms
+  // server-side) and React Query caches by SMILES (5min staleTime),
+  // so a rapid burst of edits hits the cache for repeats and only the
+  // current SMILES makes a fresh round-trip. The earlier 150ms debounce
+  // was the main reason the validity dot felt out of sync — it
+  // coalesced rapid sketches into stale snapshots. With Ketcher's
+  // change-event push (KetcherModal.tsx) feeding `smiles` in real time,
+  // removing the debounce gives the dot effectively zero latency on
+  // valid/invalid transitions.
+  const trimmed = smiles.trim();
   const { data, isFetching } = useQuery({
-    queryKey: ["inspect-smiles", debounced, 140, 88],
-    queryFn: () => api.inspectSmiles({ smiles: debounced, width: 140, height: 88 }),
-    enabled: debounced.length > 0,
+    queryKey: ["inspect-smiles", trimmed, 140, 88],
+    queryFn: () => api.inspectSmiles({ smiles: trimmed, width: 140, height: 88 }),
+    enabled: trimmed.length > 0,
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
+  const debounced = trimmed; // legacy var name kept below
   if (!debounced) return "empty";
   if (!data) return isFetching ? "loading" : "loading";
   if (!data.valid) return "invalid";
@@ -260,11 +266,14 @@ export function useSmilesValidity(smiles: string): SmilesValidity {
  *  cache key means calling both hooks in the same component costs one
  *  network round-trip total, not two. */
 export function useSmilesSaScore(smiles: string): { score: number; label: string } | null {
-  const debounced = useDebouncedValue(smiles.trim(), 150);
+  // Same no-debounce reasoning as useSmilesValidity — and intentionally
+  // SAME queryKey shape so calling both hooks for the same SMILES is a
+  // single network round-trip via React Query's cache.
+  const trimmed = smiles.trim();
   const { data } = useQuery({
-    queryKey: ["inspect-smiles", debounced, 140, 88],
-    queryFn: () => api.inspectSmiles({ smiles: debounced, width: 140, height: 88 }),
-    enabled: debounced.length > 0,
+    queryKey: ["inspect-smiles", trimmed, 140, 88],
+    queryFn: () => api.inspectSmiles({ smiles: trimmed, width: 140, height: 88 }),
+    enabled: trimmed.length > 0,
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
