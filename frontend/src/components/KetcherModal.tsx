@@ -1995,14 +1995,30 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 >
                   🎯 Re-dock
                 </button>
-                {dockResult.misses.length > 0 && optimizeStatus === "idle" && (
+                {dockResult.misses.length > 0 && (optimizeStatus === "idle" || optimizeStatus === "done" || optimizeStatus === "error") && (
+                  // Show Optimize in idle/done/error so the user can
+                  // iterate: Optimize → Apply & Re-dock variant →
+                  // Optimize the variant. Was hidden after first run
+                  // because the gate was `=== "idle"` only — user had
+                  // to manually click Re-dock to "reset" it, which was
+                  // confusing because the dock was already fresh.
+                  // 2026-05-04: relabel to "Optimize again" once a
+                  // round has finished so the button's behaviour is
+                  // obvious (clears old variants, generates fresh).
                   <button
                     type="button"
                     onClick={runOptimize}
-                    className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors"
-                    title="Ask AI for 3 variants targeting the missed residues, then dock each one"
+                    disabled={!!applyingVariantSmiles}
+                    className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={
+                      optimizeStatus === "done"
+                        ? "Generate a fresh round of variants from the current compound (clears the existing list)"
+                        : "Ask AI for 3 variants targeting the missed residues, then dock each one"
+                    }
                   >
-                    ✨ Optimize
+                    {optimizeStatus === "done" || optimizeStatus === "error"
+                      ? "✨ Optimize again"
+                      : "✨ Optimize"}
                   </button>
                 )}
                 {optimizeStatus === "running" && (
