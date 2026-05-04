@@ -1208,12 +1208,22 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  row label stayed "Apply →" — no visual confirmation. */
   const [appliedVariantSmiles, setAppliedVariantSmiles] = useState<string | null>(null);
   // SMILES of the variant currently mid-Apply. Set the moment the user
-  // clicks "Apply →"; cleared once setMolecule + canonical-readback
-  // finishes. Drives the row-level spinner so the user knows their
-  // click landed (Ketcher's setMolecule is async and can take 5-8s on
-  // complex molecules — the user reported clicking and seeing nothing
-  // happen, then accidentally clicking again). 2026-05-04.
+  // clicks "Apply & Re-dock"; cleared once the re-dock either confirms
+  // or fails. Drives the panel-wide overlay spinner. 2026-05-04 user
+  // report: original per-row spinner was too subtle and Ketcher
+  // setMolecule + auto re-dock can take 15-25s combined.
   const [applyingVariantSmiles, setApplyingVariantSmiles] = useState<string | null>(null);
+  // Stage of the Apply & Re-dock pipeline. Drives the overlay copy so
+  // the user always knows what's happening:
+  //   "applying"   — Ketcher setMolecule + canonical readback (~5-8s)
+  //   "redocking"  — fresh Quick Dock running on the new SMILES (~6-18s)
+  //   null         — idle (the spinner card is hidden)
+  const [applyStage, setApplyStage] = useState<"applying" | "redocking" | null>(null);
+  // Set to true on a fresh re-dock success, false when a re-dock fails.
+  // null means "no re-dock has happened since the last Optimize" — the
+  // dock card shows variant data without a Verified chip. Drives the
+  // green "Verified" chip + the amber "Re-dock failed — retry" CTA.
+  const [redockVerified, setRedockVerified] = useState<boolean | null>(null);
   /** Soft, non-blocking informational message — present when the
    *  Generate-Score-Filter loop fell back to un-docked variants (pod
    *  down, no receptor cached, all candidates filtered by SA, etc).
@@ -1362,6 +1372,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // Reset Applied marker — fresh dock means the user is iterating; old
     // variants are stale and shouldn't show the "✓ Applied" badge.
     setAppliedVariantSmiles(null);
+    // Also reset the Verified chip — fresh dock comes from this call,
+    // not a prior re-dock, so the chip should only re-light if the
+    // Apply & Re-dock pipeline confirms the score.
+    setRedockVerified(null);
     try {
       const r = await api.assistQuickDock({
         smiles: smi,
@@ -1533,24 +1547,31 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
   }
 
-  /** Apply a variant SMILES to the canvas — same setMolecule path as
-   *  applyResultToCanvas but for the optimized variants.
+  /** Apply a variant SMILES to the canvas + auto-trigger a fresh Quick
+   *  Dock so the score on screen comes from the same engine the Full
+   *  Job will use.
    *
-   *  Hydrates `dockResult` with the variant's score/hits/misses so the
-   *  chat AI (which gates on `dockResult.smiles === liveSmiles`) keeps
-   *  pocket context after the user iterates on a variant. Without this
-   *  the AI runs blind on the new compound and routinely undoes the
-   *  gains from Optimize ("optimize makes it better but chat makes it
-   *  worse" — 2026-05-04 user report). */
+   *  Stages (drive the panel-wide overlay):
+   *    1. "applying"  — Ketcher setMolecule + canonical SMILES readback
+   *    2. "redocking" — fresh Quick Dock on the new SMILES
+   *  On success, sets redockVerified=true so the dock card shows a
+   *  green "Verified" chip. On re-dock failure, leaves the variant's
+   *  stored score visible but sets redockVerified=false so the user
+   *  sees an amber "Re-dock failed — retry" CTA next to the score.
+   *
+   *  Also hydrates `dockResult` with the variant's score so the chat
+   *  AI keeps pocket context (smiles staleness guard) — see runEdit.
+   *
+   *  2026-05-04 user redesign: "after applying the variant it doesn't
+   *  re-dock. We have to optimize and re-think this section." */
   async function applyVariantToCanvas(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) return;
-    // Spinner ON immediately. Ketcher's setMolecule + getSmiles
-    // round-trip can take 5-8s on complex molecules (Indigo parses
-    // the SMILES, builds 2D coords, re-emits canonical form). Without
-    // this the user gets no feedback and either thinks the click
-    // didn't register OR clicks Apply again on a different variant.
+    // Stage 1: Applying. Big overlay shows "Applying to canvas…" while
+    // Ketcher's Indigo bundle parses the SMILES + builds 2D coords.
     setApplyingVariantSmiles(smiles);
+    setApplyStage("applying");
+    setRedockVerified(null);
     try {
       await apiObj.setMolecule(smiles);
       // Mark this variant as the currently-applied one so its row shows
@@ -1585,6 +1606,60 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // skips the dockability backend round-trip on the next Check & use
       // click. We pass the CANONICAL form so the equality check matches.
       onAiApplied?.(canonical);
+
+      // Stage 2: Re-docking. Auto-trigger a fresh Quick Dock so the
+      // user doesn't have to manually click Re-dock. Same engine +
+      // exhaustiveness as the Full Job, so the score they see here
+      // is what the Full Job will reproduce within Vina noise.
+      // Falls back gracefully on failure — variant's stored score
+      // stays visible and a retry CTA appears.
+      if (!targetPdb) {
+        // No target = no point re-docking. Leave variant's stored
+        // score visible without a Verified chip.
+        return;
+      }
+      setApplyStage("redocking");
+      try {
+        const r = await api.assistQuickDock({
+          smiles,
+          target_pdb: targetPdb,
+          mutation: mutations,
+        });
+        if (r.ok && typeof r.score === "number") {
+          // Fresh dock succeeded — overwrite dockResult with the live
+          // numbers, set the Verified flag, and we're done.
+          setDockResult({
+            smiles,
+            score: r.score,
+            hits: r.hits ?? [],
+            misses: r.misses ?? [],
+            posePdbqt: r.pose_pdbqt_b64 ? safeAtob(r.pose_pdbqt_b64) : "",
+            pdbId: r.pdb_id,
+            chain: r.chain,
+            receptorVariant: r.receptor_variant,
+            mutationCaveat: r.mutation_caveat,
+            poseOffsetA: r.pose_offset_a,
+            poseInPocket: r.pose_in_pocket,
+            dockAttempts: r.dock_attempts,
+          });
+          setRedockVerified(true);
+        } else {
+          // Pod returned ok=false (bad SMILES, no pocket, etc) —
+          // surface the message so the user knows why and can retry.
+          setRedockVerified(false);
+          setQuickDockError(`Re-dock failed: ${r.error || "unknown"}`);
+        }
+      } catch (e) {
+        // Network / 5xx / Cloudflare timeout. Variant's stored score
+        // stays visible (hydrated above by the smiles==variant check
+        // in the variant-store flow). User sees the retry CTA.
+        setRedockVerified(false);
+        setQuickDockError(
+          e instanceof ApiError
+            ? `Re-dock failed: ${e.message}`
+            : "Re-dock failed — try the Re-dock button above.",
+        );
+      }
       // Hydrate dockResult from the variant's stored docking data so the
       // chat AI gets fresh dock context on the next runEdit() call.
       // Look the variant up by its stored new_smiles (matches what we
@@ -1615,8 +1690,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     } catch (e) {
       setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`);
     } finally {
-      // Always clear the spinner — both happy path and error path.
+      // Always clear the overlay — both happy path and error path.
       setApplyingVariantSmiles(null);
+      setApplyStage(null);
     }
   }
 
@@ -1846,6 +1922,19 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                     WT only ⚠
                   </span>
                 )}
+                {/* Verified chip — only shows after a fresh re-dock
+                    confirmed the displayed score (set by the
+                    Apply & Re-dock pipeline). Tells the user the score
+                    on screen will match what they get when they
+                    Promote to a Full Job. 2026-05-04 redesign. */}
+                {redockVerified === true && (
+                  <span
+                    className="text-[8.5px] px-1 py-px rounded font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200 cursor-help"
+                    title="Score confirmed by a fresh Vina re-dock against this exact target+mutation."
+                  >
+                    ✓ Verified
+                  </span>
+                )}
                 {/* Pose-pocket honesty (2026-05-04). When pose drifted
                     off-pocket (centroid >6 Å from box center, or zero
                     contact residues), render an amber caveat so the
@@ -2063,24 +2152,71 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 return 0;
               })
               .map((v) => (
-                <div key={v.new_smiles} className="rounded border border-slate-200 dark:border-slate-700 px-2 py-1">
-                  <div className="flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1 flex-wrap min-w-0">
+                <div
+                  key={v.new_smiles}
+                  className={
+                    "relative rounded-lg border px-2.5 py-2 transition-colors " +
+                    (appliedVariantSmiles === v.new_smiles
+                      ? "border-emerald-300 dark:border-emerald-700/60 bg-emerald-50/40 dark:bg-emerald-900/10"
+                      : applyingVariantSmiles === v.new_smiles
+                        ? "border-delta-400 dark:border-delta-600 bg-delta-50/60 dark:bg-delta-900/15"
+                        : "border-slate-200 dark:border-slate-700")
+                  }
+                >
+                  {/* Card-overlay spinner when this variant is mid-Apply.
+                      Replaces the tiny per-row indicator with a clear,
+                      animated full-card cover so the user can't miss it.
+                      Stage label updates as we move from Applying →
+                      Re-docking. 2026-05-04 redesign. */}
+                  {applyingVariantSmiles === v.new_smiles && applyStage && (
+                    <div className="absolute inset-0 z-10 rounded-lg bg-white/85 dark:bg-slate-900/85 backdrop-blur-sm flex flex-col items-center justify-center gap-1.5 pointer-events-none">
+                      <svg
+                        className="animate-spin text-delta-600 dark:text-delta-400"
+                        width="22"
+                        height="22"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        aria-hidden="true"
+                      >
+                        <path d="M21 12a9 9 0 1 1-6.2-8.55" strokeLinecap="round" />
+                      </svg>
+                      <div className="text-[10.5px] font-semibold text-delta-700 dark:text-delta-300">
+                        {applyStage === "applying" ? "Applying to canvas…" : "Re-docking with Vina…"}
+                      </div>
+                      <div className="text-[9px] text-slate-500 dark:text-slate-400">
+                        {applyStage === "applying" ? "Step 1 of 2" : "Step 2 of 2 · ~6–18s"}
+                      </div>
+                    </div>
+                  )}
+                  {/* Top row: BIG score + Δ from parent + badges */}
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <div className="flex items-baseline gap-1.5 flex-wrap min-w-0">
                       {v.status === "docking" && (
-                        <span className="text-[9px] text-slate-400 flex items-center gap-1">
-                          <Spinner size={8} /> docking
+                        <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                          <Spinner size={10} /> docking
                         </span>
                       )}
                       {v.status === "done" && typeof v.score === "number" && (
                         <>
-                          <span className="text-[10px] font-semibold text-ink dark:text-slate-100">
+                          <span className="text-[15px] font-semibold text-ink dark:text-slate-100 leading-none">
                             {v.score.toFixed(2)}
-                            {dockResult && (
-                              <span className={"ml-1 text-[9px] " + (v.score < dockResult.score ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
-                                ({(v.score - dockResult.score).toFixed(2)})
-                              </span>
-                            )}
                           </span>
+                          <span className="text-[9px] text-slate-500 dark:text-slate-400 leading-none">kcal/mol</span>
+                          {dockResult && (
+                            <span
+                              className={
+                                "text-[10px] font-semibold leading-none px-1 py-0.5 rounded " +
+                                (v.score < dockResult.score
+                                  ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200"
+                                  : "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200")
+                              }
+                              title={`vs parent ${dockResult.score.toFixed(2)} kcal/mol`}
+                            >
+                              {v.score < dockResult.score ? "▾" : "▴"} {Math.abs(v.score - dockResult.score).toFixed(2)}
+                            </span>
+                          )}
                           {/* Mutation-contact badge — only shown when
                               the server's Generate-Score-Filter loop
                               detected the variant docked-pose actually
@@ -2148,56 +2284,58 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                         </span>
                       )}
                     </div>
-                    {applyingVariantSmiles === v.new_smiles ? (
-                      // Mid-Apply spinner. Ketcher's setMolecule +
-                      // canonical readback can take 5-8s on complex
-                      // molecules. Without this the user thinks the
-                      // click didn't register and clicks again.
+                    {/* Status pill on the right side of the top row.
+                        Just shows current state (Applied/Verified) — the
+                        primary CTA moved to a full-width button below. */}
+                    {appliedVariantSmiles === v.new_smiles && redockVerified === true && (
                       <span
-                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 inline-flex items-center gap-1 shrink-0"
-                        title="Applying variant to canvas…"
+                        className="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 shrink-0"
+                        title="Fresh re-dock confirmed this score against the same target+mutation."
                       >
-                        <svg
-                          className="animate-spin"
-                          width="10"
-                          height="10"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="3"
-                          aria-hidden="true"
-                        >
-                          <path d="M21 12a9 9 0 1 1-6.2-8.55" strokeLinecap="round" />
-                        </svg>
-                        Applying…
+                        ✓ Verified
                       </span>
-                    ) : appliedVariantSmiles === v.new_smiles ? (
-                      // ✓ Applied — this variant is currently on the
-                      // canvas. Renders as a non-button so it doesn't
-                      // invite a redundant click; the visual weight tells
-                      // the user "you already did this one." Re-clicking
-                      // is also pointless because setMolecule on the
-                      // same SMILES is a no-op.
-                      <span
-                        className="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-0.5 shrink-0"
-                        title="This variant is currently on the canvas"
-                      >
+                    )}
+                    {appliedVariantSmiles === v.new_smiles && redockVerified === null && (
+                      <span className="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">
                         ✓ Applied
                       </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => applyVariantToCanvas(v.new_smiles)}
-                        disabled={applyingVariantSmiles !== null}
-                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        Apply →
-                      </button>
                     )}
                   </div>
-                  <div className="text-[9px] text-slate-600 dark:text-slate-300 leading-tight mt-0.5 line-clamp-2" title={v.rationale}>
+                  {/* Rationale — wider, clamped to 2 lines, more padding */}
+                  <div
+                    className="text-[10.5px] text-slate-600 dark:text-slate-300 leading-snug mt-1 line-clamp-2"
+                    title={v.rationale}
+                  >
                     {v.rationale}
                   </div>
+                  {/* Primary CTA — full-width button. Combines Apply +
+                      auto re-dock so the user gets one click → one wait
+                      → confirmed score. Hidden on the currently-applied
+                      variant; replaced by a Re-dock-failed retry CTA
+                      when the auto re-dock fell over. */}
+                  {appliedVariantSmiles === v.new_smiles && redockVerified === false ? (
+                    <button
+                      type="button"
+                      onClick={() => applyVariantToCanvas(v.new_smiles)}
+                      disabled={applyingVariantSmiles !== null}
+                      className="mt-2 w-full text-[11px] font-semibold rounded-md bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-900/50 px-2 py-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="The auto re-dock failed. Click to retry."
+                    >
+                      ⟲ Re-dock failed — retry
+                    </button>
+                  ) : appliedVariantSmiles !== v.new_smiles && (
+                    <button
+                      type="button"
+                      onClick={() => applyVariantToCanvas(v.new_smiles)}
+                      disabled={applyingVariantSmiles !== null}
+                      className="mt-2 w-full text-[11px] font-semibold rounded-md bg-delta-600 hover:bg-delta-700 text-white px-2 py-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                      Apply &amp; Re-dock
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                        <path d="M5 12h14M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               ))}
           </div>
