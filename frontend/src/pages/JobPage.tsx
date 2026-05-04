@@ -6,6 +6,7 @@ import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
 import KetcherModal from "../components/KetcherModal";
+import RenamePrompt from "../components/RenamePrompt";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
@@ -48,13 +49,62 @@ export default function JobPage() {
   const [selectionReason, setSelectionReason] = useState<"auto" | "user">("auto");
   // Edit & re-dock modal — opens KetcherModal pre-loaded with the
   // chosen compound's SMILES + the job's target/mutations, so chemists
-  // can iterate on a structure without retyping anything. On accept the
-  // handler navigates to /new with a reseed payload that swaps in the
-  // modified compound; the user just clicks Submit on Step 4 to fire a
-  // fresh job. Closes the iterate-after-results loop without making the
-  // user reproduce the original setup.
+  // can iterate on a structure without retyping anything. After accept
+  // the user gets a RenamePrompt: if the original name exists in their
+  // library they can either Update it (overwrite the saved entry) or
+  // Save as new; otherwise just Save as new. Once they pick a path we
+  // persist to /me/compounds AND navigate to /new with a reseed payload
+  // that pre-fills target/mutations/engine so they only have to click
+  // Submit. Closes the iterate-after-results loop end-to-end without
+  // forcing the user to re-set anything.
   const [editingCompound, setEditingCompound] = useState<Compound | null>(null);
+  const [editRename, setEditRename] = useState<{
+    originalName: string;
+    newSmiles: string;
+  } | null>(null);
   const editNavigate = useNavigate();
+  // User's saved compound library — needed so we can show the
+  // "Update <name>" path in the rename prompt only when the original
+  // name actually corresponds to a library entry the user owns.
+  // For compounds typed inline in the original job (no library row),
+  // the rename prompt only offers Save-as-new.
+  const { data: editSavedCompounds } = useQuery({
+    queryKey: ["my-compounds"],
+    queryFn: () => api.getMyCompounds(),
+    staleTime: 30 * 1000,
+  });
+  const editQueryClient = useQueryClient();
+  const editSaveCompoundMut = useMutation({
+    mutationFn: (payload: { name: string; smiles: string }) => api.saveMyCompound(payload),
+    onSuccess: () => {
+      editQueryClient.invalidateQueries({ queryKey: ["my-compounds"] });
+    },
+    // No onError here — the navigation continues even if the library
+    // save hiccups (the user's primary intent is to re-dock, not to
+    // file the compound). NewJobPage will surface any save error if
+    // they hit the library manually.
+  });
+
+  /** Build the reseed payload + navigate to /new with one compound row.
+   *  Shared by both Overwrite and Save-as-new paths so the navigation
+   *  behaviour stays consistent. */
+  function navigateToReseed(name: string, smiles: string) {
+    if (!job) return;
+    const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
+    editNavigate("/new", {
+      state: {
+        reseed: {
+          pdb_id: job.pdb_id,
+          chain: job.chain,
+          mutations: job.mutations,
+          compounds: [{ name, smiles }],
+          engine: job.engine ?? "quickvina2_gpu",
+          exhaustiveness: j.exhaustiveness ?? 8,
+          include_wt: j.include_wt ?? true,
+        },
+      },
+    });
+  }
 
   // Ref on the hero banner so a matrix cell click can smooth-scroll the
   // banner into view. Without this, clicking a cell at the bottom of the
@@ -424,12 +474,9 @@ export default function JobPage() {
       </div>
       {/* Edit & re-dock modal — owned by JobPage so the iterate loop
           works without forcing the user back to /new just to swap one
-          atom. On accept we navigate to /new with a reseed payload that
-          carries forward the job's target/mutations/engine and replaces
-          ONLY this compound (the rest of the original compound list is
-          dropped — the workflow is "iterate on this one molecule",
-          not "re-run the whole job"). NewJobPage's existing reseed
-          handler picks it up unchanged. */}
+          atom. On accept we hand off to the RenamePrompt below (rather
+          than navigating immediately) so the user gets the same
+          Update-vs-Save-as-new choice as in NewJobPage Step 3. */}
       {editingCompound && (
         <KetcherModal
           initialSmiles={editingCompound.smiles}
@@ -437,35 +484,64 @@ export default function JobPage() {
           mutations={job.mutations.join(", ") || undefined}
           onClose={() => setEditingCompound(null)}
           onAccept={(newSmiles, unchanged) => {
+            const original = editingCompound;
             setEditingCompound(null);
-            if (unchanged) return;
-            // Re-use the same reseed shape as HistoryPage / JobErrorCard
-            // so the NewJobPage pre-fill works without changes. Only the
-            // edited compound is carried forward (single-row workflow);
-            // the rest of the original job's compound list is dropped
-            // intentionally — chemists iterating want a focused re-dock
-            // of one molecule, not a re-run of the whole batch.
-            const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
-            editNavigate("/new", {
-              state: {
-                reseed: {
-                  pdb_id: job.pdb_id,
-                  chain: job.chain,
-                  mutations: job.mutations,
-                  compounds: [
-                    {
-                      name: editingCompound.name
-                        ? `${editingCompound.name}_v2`
-                        : "edited",
-                      smiles: newSmiles,
-                    },
-                  ],
-                  engine: job.engine ?? "quickvina2_gpu",
-                  exhaustiveness: j.exhaustiveness ?? 8,
-                  include_wt: j.include_wt ?? true,
-                },
-              },
+            if (unchanged || !original) return;
+            // Hand off to the RenamePrompt to collect the user's
+            // intent (Update existing library entry vs Save as a new
+            // compound) before persisting + navigating.
+            setEditRename({
+              originalName: original.name ?? "",
+              newSmiles,
             });
+          }}
+        />
+      )}
+      {/* Rename + persist + navigate — shows a clear two-path choice:
+          1. Update <name> in your library  (only when the original name
+             matches a library entry; emerald primary button)
+          2. Save as a new compound          (collect a unique name)
+          Either way we save to /me/compounds and then navigate to /new
+          with the reseed payload, so the user only has to click Submit
+          on the new-job page. */}
+      {editRename && (
+        <RenamePrompt
+          initialName={(editRename.originalName || "edited") + "_v2"}
+          existingNames={(editSavedCompounds ?? []).map((c) => c.name)}
+          currentRowName={editRename.originalName}
+          title="Save your edit & re-dock"
+          subtitle={
+            <>
+              You modified <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{editRename.originalName || "this compound"}</span>.
+              Update the saved entry in your library, or save as a new compound. Either way the next page pre-fills the same target / mutations / engine — just click Submit.
+            </>
+          }
+          // Overwrite path — only offered when the original name is
+          // actually in the user's library. Updates the row in place
+          // and navigates with the same name carried forward.
+          onOverwrite={
+            editRename.originalName &&
+            (editSavedCompounds ?? []).some(
+              (c) => c.name.toLowerCase() === editRename.originalName.toLowerCase(),
+            )
+              ? () => {
+                  const name = editRename.originalName;
+                  editSaveCompoundMut.mutate({ name, smiles: editRename.newSmiles });
+                  setEditRename(null);
+                  navigateToReseed(name, editRename.newSmiles);
+                }
+              : undefined
+          }
+          onCancel={() => {
+            // Bailing drops the edit entirely — the user's canvas
+            // SMILES is gone but their original docking row is
+            // untouched. Deliberate: cancel = don't change anything.
+            setEditRename(null);
+          }}
+          onSave={(newName) => {
+            editSaveCompoundMut.mutate({ name: newName, smiles: editRename.newSmiles });
+            setEditRename(null);
+            navigateToReseed(newName, editRename.newSmiles);
           }}
         />
       )}
