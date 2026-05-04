@@ -5,6 +5,7 @@ import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound,
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
+import KetcherModal from "../components/KetcherModal";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
@@ -45,6 +46,15 @@ export default function JobPage() {
   // badge in the hero banner when the page just opened — clicked
   // selections shouldn't carry that label since they're user intent.
   const [selectionReason, setSelectionReason] = useState<"auto" | "user">("auto");
+  // Edit & re-dock modal — opens KetcherModal pre-loaded with the
+  // chosen compound's SMILES + the job's target/mutations, so chemists
+  // can iterate on a structure without retyping anything. On accept the
+  // handler navigates to /new with a reseed payload that swaps in the
+  // modified compound; the user just clicks Submit on Step 4 to fire a
+  // fresh job. Closes the iterate-after-results loop without making the
+  // user reproduce the original setup.
+  const [editingCompound, setEditingCompound] = useState<Compound | null>(null);
+  const editNavigate = useNavigate();
 
   // Ref on the hero banner so a matrix cell click can smooth-scroll the
   // banner into view. Without this, clicking a cell at the bottom of the
@@ -365,6 +375,11 @@ export default function JobPage() {
             onSelectAll={inSubsetView ? undefined : onSelectAll}
             onClearSelection={inSubsetView ? undefined : onClearSelection}
             currentPickKey={pick ? `${pick.compound.id}.${pick.variant}` : null}
+            // Hide Edit & re-dock in subset views (the share recipient
+            // doesn't own the original job state and shouldn't be encouraged
+            // to fork from a curated subset). Owners on the full view get
+            // the iterate loop.
+            onEditCompound={inSubsetView ? undefined : (c) => setEditingCompound(c)}
           />
 
           {/* Deeper drill-down — interpretation paragraph, ProLIF contacts,
@@ -407,6 +422,53 @@ export default function JobPage() {
           />
         </div>
       </div>
+      {/* Edit & re-dock modal — owned by JobPage so the iterate loop
+          works without forcing the user back to /new just to swap one
+          atom. On accept we navigate to /new with a reseed payload that
+          carries forward the job's target/mutations/engine and replaces
+          ONLY this compound (the rest of the original compound list is
+          dropped — the workflow is "iterate on this one molecule",
+          not "re-run the whole job"). NewJobPage's existing reseed
+          handler picks it up unchanged. */}
+      {editingCompound && (
+        <KetcherModal
+          initialSmiles={editingCompound.smiles}
+          targetPdb={job.pdb_id}
+          mutations={job.mutations.join(", ") || undefined}
+          onClose={() => setEditingCompound(null)}
+          onAccept={(newSmiles, unchanged) => {
+            setEditingCompound(null);
+            if (unchanged) return;
+            // Re-use the same reseed shape as HistoryPage / JobErrorCard
+            // so the NewJobPage pre-fill works without changes. Only the
+            // edited compound is carried forward (single-row workflow);
+            // the rest of the original job's compound list is dropped
+            // intentionally — chemists iterating want a focused re-dock
+            // of one molecule, not a re-run of the whole batch.
+            const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
+            editNavigate("/new", {
+              state: {
+                reseed: {
+                  pdb_id: job.pdb_id,
+                  chain: job.chain,
+                  mutations: job.mutations,
+                  compounds: [
+                    {
+                      name: editingCompound.name
+                        ? `${editingCompound.name}_v2`
+                        : "edited",
+                      smiles: newSmiles,
+                    },
+                  ],
+                  engine: job.engine ?? "quickvina2_gpu",
+                  exhaustiveness: j.exhaustiveness ?? 8,
+                  include_wt: j.include_wt ?? true,
+                },
+              },
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

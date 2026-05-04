@@ -38,6 +38,14 @@ interface Props {
    *  glance which docking the 3D image corresponds to. Without this, the
    *  visual link between the matrix and the viewer was invisible. */
   currentPickKey?: string | null;
+  /** "Edit & re-dock" button on each compound row — opens the parent's
+   *  KetcherModal pre-loaded with the compound's SMILES, then navigates
+   *  to /new with a reseed payload that swaps in the modified structure.
+   *  Closes the iterate-after-results loop without making the user retype
+   *  the target/mutations/engine. Optional — when omitted the button is
+   *  hidden (e.g. for shared subset views where the viewer doesn't own
+   *  a sketcher). */
+  onEditCompound?: (compound: Compound) => void;
 }
 
 type SortKey = "best-delta" | "best-mutant" | "wt" | "name";
@@ -54,6 +62,7 @@ type SortKey = "best-delta" | "best-mutant" | "wt" | "name";
 export default function SelectivityMatrix({
   compounds, mutations, results, isStreaming = false, mutationInfo, onPick,
   selected, onToggleSelect, onSelectAll, onClearSelection, currentPickKey,
+  onEditCompound,
 }: Props) {
   const variants = useMemo(() => ["WT", ...mutations], [mutations]);
   const [sortKey, setSortKey] = useState<SortKey>("best-delta");
@@ -321,6 +330,26 @@ export default function SelectivityMatrix({
                       Lets users triage compounds by chemistry quality (QED, Ro5)
                       without leaving the matrix. */}
                   <AdmetChips admet={compound.admet} layout="compact" />
+                  {/* Edit & re-dock — closes the iterate-after-results loop.
+                      Opens KetcherModal in the parent (JobPage owns it),
+                      then navigates to /new with a reseed payload so the
+                      target/mutations/engine are preserved and the user
+                      just clicks Submit. The button only renders when the
+                      parent provided onEditCompound (omitted on shared
+                      subset views that don't own a sketcher). */}
+                  {onEditCompound && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEditCompound(compound);
+                      }}
+                      className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border border-delta-300 dark:border-delta-700/50 bg-delta-50 dark:bg-delta-900/20 text-delta-700 dark:text-delta-300 hover:bg-delta-100 dark:hover:bg-delta-900/40 transition-colors"
+                      title="Open the structure editor with this SMILES — your edit submits a fresh job against the same target + mutations."
+                    >
+                      <span aria-hidden="true">✎</span> Edit &amp; re-dock
+                    </button>
+                  )}
                 </td>
                 {variants.map((v) => {
                   const cellId = `${compound.id}.${v}`;
