@@ -137,6 +137,17 @@ export default function NewJobPage() {
     rowIdx: number;
     newSmiles: string;
     originalName: string;
+    /** Set when the user clicked "Promote to Full Job" from the editor.
+     *  After the popup resolves (Save or Overwrite or Cancel), navigate
+     *  to /new with this reseed payload. Without this the editor's
+     *  inline navigate-after-onAccept blew the popup away before the
+     *  user could pick. 2026-05-04 fix. */
+    pendingPromote?: {
+      pdbId?: string;
+      chain?: string;
+      targetPdb?: string;
+      mutations?: string;
+    };
   } | null>(null);
 
   // Free-tier limit toast: a brief auto-dismissing message that pops
@@ -2252,6 +2263,50 @@ export default function NewJobPage() {
           setCompound(idx, { smiles });
           setSketcherRow(null);
         }}
+        onPromote={(smiles, reseed) => {
+          // 2026-05-04: Promote to Full Job from inside the editor.
+          // Used to call onAccept + onClose + navigate inline, which
+          // raced the rename popup state and the user lost the choice
+          // between "save as new" and "overwrite" the original
+          // compound. Now: if the row had a name and SMILES changed,
+          // fire the rename popup with a pendingPromote payload — the
+          // popup's onCancel/onSave/onOverwrite handlers will navigate
+          // after the user picks. If no name, navigate immediately.
+          const idx = sketcherRow;
+          if (idx === null) {
+            // Defensive — should never happen.
+            setSketcherRow(null);
+            return;
+          }
+          const row = compounds[idx];
+          const originalName = (row?.name ?? "").trim();
+          const reseedPayload: Record<string, unknown> = {
+            compounds: [{ name: originalName || "", smiles }],
+          };
+          if (reseed.pdbId) {
+            reseedPayload.pdb_id = reseed.pdbId;
+            if (reseed.chain) reseedPayload.chain = reseed.chain;
+          } else if (reseed.targetPdb) {
+            reseedPayload.catalog_target_id = reseed.targetPdb;
+          }
+          if (reseed.mutations) {
+            reseedPayload.mutations = reseed.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
+          }
+          if (originalName) {
+            // Defer navigate until the user picks save vs overwrite.
+            setRenamePrompt({
+              rowIdx: idx,
+              newSmiles: smiles,
+              originalName,
+              pendingPromote: reseed,
+            });
+            setSketcherRow(null);
+            return;
+          }
+          // Unnamed row → no popup needed, navigate straight to /new.
+          setSketcherRow(null);
+          navigate("/new", { state: { reseed: reseedPayload } });
+        }}
       />
     )}
     {renamePrompt && (
@@ -2262,7 +2317,9 @@ export default function NewJobPage() {
         onCancel={() => {
           // Bailing keeps the row as it was — the SMILES change is dropped.
           // We deliberately do NOT auto-commit on cancel because the user
-          // explicitly chose to back out.
+          // explicitly chose to back out. If a pendingPromote was queued
+          // (Promote to Full Job), the navigate is also dropped — they
+          // chose to back out of the whole flow.
           setRenamePrompt(null);
         }}
         // PRIMARY ACTION when the row was sourced from the user's
@@ -2285,7 +2342,28 @@ export default function NewJobPage() {
                   name: renamePrompt.originalName,
                   smiles: renamePrompt.newSmiles,
                 });
+                // If this rename was queued by Promote to Full Job,
+                // navigate to /new with the reseed payload now that
+                // the user picked overwrite. 2026-05-04 fix.
+                const promoteCtx = renamePrompt.pendingPromote;
+                const promoteName = renamePrompt.originalName;
+                const promoteSmi = renamePrompt.newSmiles;
                 setRenamePrompt(null);
+                if (promoteCtx) {
+                  const reseedPayload: Record<string, unknown> = {
+                    compounds: [{ name: promoteName, smiles: promoteSmi }],
+                  };
+                  if (promoteCtx.pdbId) {
+                    reseedPayload.pdb_id = promoteCtx.pdbId;
+                    if (promoteCtx.chain) reseedPayload.chain = promoteCtx.chain;
+                  } else if (promoteCtx.targetPdb) {
+                    reseedPayload.catalog_target_id = promoteCtx.targetPdb;
+                  }
+                  if (promoteCtx.mutations) {
+                    reseedPayload.mutations = promoteCtx.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
+                  }
+                  navigate("/new", { state: { reseed: reseedPayload } });
+                }
               }
             : undefined
         }
@@ -2302,7 +2380,25 @@ export default function NewJobPage() {
           // isn't blocked by a library-save hiccup.
           setCompound(renamePrompt.rowIdx, { smiles: renamePrompt.newSmiles, name: newName });
           saveCompoundMut.mutate({ name: newName, smiles: renamePrompt.newSmiles });
+          // If queued by Promote to Full Job, navigate now. 2026-05-04 fix.
+          const promoteCtx = renamePrompt.pendingPromote;
+          const promoteSmi = renamePrompt.newSmiles;
           setRenamePrompt(null);
+          if (promoteCtx) {
+            const reseedPayload: Record<string, unknown> = {
+              compounds: [{ name: newName, smiles: promoteSmi }],
+            };
+            if (promoteCtx.pdbId) {
+              reseedPayload.pdb_id = promoteCtx.pdbId;
+              if (promoteCtx.chain) reseedPayload.chain = promoteCtx.chain;
+            } else if (promoteCtx.targetPdb) {
+              reseedPayload.catalog_target_id = promoteCtx.targetPdb;
+            }
+            if (promoteCtx.mutations) {
+              reseedPayload.mutations = promoteCtx.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
+            }
+            navigate("/new", { state: { reseed: reseedPayload } });
+          }
         }}
       />
     )}

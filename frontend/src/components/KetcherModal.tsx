@@ -88,6 +88,14 @@ interface Props {
    * library entry, don't trigger any rename prompt.
    */
   onAccept: (smiles: string, unchanged: boolean) => void;
+  /** Called when the user clicks "Promote to Full Job" in the editor.
+   *  The parent should fire its rename popup if the row had a name and
+   *  the SMILES changed (so saved compounds aren't silently swapped
+   *  under the same label), then navigate to /new with the reseed
+   *  payload. Until 2026-05-04 the editor called onAccept + onClose +
+   *  navigate inline, which raced the parent's popup state and the
+   *  user lost the choice between "save as new" and "overwrite". */
+  onPromote?: (smiles: string, reseed: { pdbId?: string; chain?: string; targetPdb?: string; mutations?: string }) => void;
   /** Optional pocket context — when the user is mid-job-creation, pass
    *  the selected target + mutations so AI suggestions can be
    *  pocket-aware ("for V600E, fill the gain-of-function hydrophobic
@@ -141,7 +149,7 @@ function withKetcherTimeout<T>(p: Promise<T>, label: string, ms: number = 12_000
   ]);
 }
 
-export default function KetcherModal({ initialSmiles, onClose, onAccept, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
+export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromote, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
   // The bare `iframe.onLoad` event fires earlier — when the HTML is parsed,
@@ -531,6 +539,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
             onAccept={onAccept}
             onClose={onClose}
             onAiApplied={(smi) => { aiAppliedSmilesRef.current = smi; }}
+            onPromote={onPromote}
           />
         </div>
 
@@ -640,6 +649,11 @@ interface AiSidebarProps {
    *  validated AND server-side docked successfully) so the rename popup
    *  pops instantly. Cleared parent-side when the user manually edits. */
   onAiApplied?: (smiles: string) => void;
+  /** Forwarded from KetcherModal Props. Lets the parent fire its rename
+   *  popup before navigating to /new with the reseed payload — avoids
+   *  the race where the modal calls onAccept + onClose + navigate
+   *  inline and the popup gets blown away. 2026-05-04 user report. */
+  onPromote?: (smiles: string, reseed: { pdbId?: string; chain?: string; targetPdb?: string; mutations?: string }) => void;
 }
 
 // Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
@@ -788,7 +802,7 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote }: AiSidebarProps) {
   const [instruction, setInstruction] = useState("");
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -1344,12 +1358,24 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       setQuickDockError("Canvas is empty — draw a structure first.");
       return;
     }
-    // Apply to parent's compound list (idempotent — parent dedupes).
+    // Hand off to the parent. NewJobPage fires the rename popup if the
+    // edited row had a name (so the user picks "save as new" or
+    // "overwrite"), then navigates to /new with the reseed payload.
+    // Falls back to the legacy onAccept-then-navigate flow when no
+    // onPromote is wired (e.g. CompoundsPage). 2026-05-04 fix for the
+    // user-reported popup race after multiple Apply rounds.
+    if (onPromote) {
+      onPromote(smi, {
+        pdbId: dockResult?.pdbId,
+        chain: dockResult?.chain,
+        targetPdb,
+        mutations,
+      });
+      return;
+    }
+    // Legacy fallback — kept for callers that haven't wired onPromote.
     onAccept(smi, false);
     onClose();
-    // Reseed payload: pass the resolved PDB id when we have it (post-
-    // Quick-dock), else fall back to catalog_target_id so the
-    // NewJobPage reseed handler can map it back to a catalog target.
     const reseed: Record<string, unknown> = {
       compounds: [{ name: "", smiles: smi }],
     };
