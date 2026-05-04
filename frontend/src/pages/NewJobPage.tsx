@@ -496,31 +496,71 @@ export default function NewJobPage() {
   const [lookupDropdownOpen, setLookupDropdownOpen] = useState(false);
   const [lookupActiveIdx, setLookupActiveIdx] = useState(0);
   const lookupWrapRef = useRef<HTMLDivElement>(null);
-  // Multi-select for PubChem suggestions — chemists triaging a series often
-  // want to grab 3–5 related compounds in one search ("aspirin" + several
-  // ester/amide analogs surfaced by the suggester) instead of re-firing the
-  // dropdown for each. Cap at 5 so the per-job compound list stays
-  // manageable. Picks reset when the dropdown closes.
+  // Multi-select for PubChem suggestions with LIVE auto-commit. Each
+  // click fires a single PubChem lookup and appends the resolved
+  // compound to the list immediately — no separate Add step. Unchecking
+  // a row removes the matching compound from the list. Cap at 5 against
+  // the count of "currently being added" + "successfully added by this
+  // session." Names that are still in flight show a tiny spinner so the
+  // user knows their click did something while the network round-trip
+  // is in progress.
   const PUBCHEM_MULTI_MAX = 5;
-  const [lookupPicked, setLookupPicked] = useState<string[]>([]);
-  function togglePubchemPick(name: string) {
-    setLookupPicked((cur) => {
-      // Always allow uncheck — the way to make room when at cap.
-      if (cur.includes(name)) return cur.filter((n) => n !== name);
-      // HARD cap: ignore additional picks past PUBCHEM_MULTI_MAX. The
-      // dropdown row visibly disables (greyed + not-allowed cursor)
-      // when the cap is hit, so the click feels intentional rather than
-      // broken. Earlier code silently dropped the oldest pick, which
-      // confused users — they couldn't tell why their first selection
-      // disappeared.
-      if (cur.length >= PUBCHEM_MULTI_MAX) return cur;
-      return [...cur, name];
-    });
-  }
-  // Reset picks when the dropdown closes so reopening starts clean.
+  // Track names that this session has added (for cap-counting and
+  // checkbox-state derivation). Cleared when the dropdown closes.
+  const [pubchemAdded, setPubchemAdded] = useState<Set<string>>(new Set());
+  // Names with an in-flight lookup. Used for the spinner indicator
+  // and to prevent double-clicks while a lookup is mid-air.
+  const [pubchemPending, setPubchemPending] = useState<Set<string>>(new Set());
+  // Reset session tracking when the dropdown closes.
   useEffect(() => {
-    if (!lookupDropdownOpen) setLookupPicked([]);
+    if (!lookupDropdownOpen) {
+      setPubchemAdded(new Set());
+      setPubchemPending(new Set());
+    }
   }, [lookupDropdownOpen]);
+
+  /** Live toggle — adds (network call) or removes (local list filter)
+   *  the named compound. Cap-respect: ignore add clicks past MAX. */
+  async function togglePubchemPick(name: string) {
+    const isCurrentlyAdded = pubchemAdded.has(name);
+    if (isCurrentlyAdded) {
+      // Uncheck → remove the matching compound row (matched by name).
+      setCompounds((cs) => cs.filter((c) => (c.name ?? "").trim() !== name.trim()));
+      setPubchemAdded((cur) => {
+        const next = new Set(cur);
+        next.delete(name);
+        return next;
+      });
+      return;
+    }
+    // Add path — cap, dedup, then network.
+    if (pubchemAdded.size + pubchemPending.size >= PUBCHEM_MULTI_MAX) return;
+    if (pubchemPending.has(name)) return;
+    setLookupErr(null);
+    setPubchemPending((cur) => new Set(cur).add(name));
+    try {
+      const r = await api.lookupCompound(name);
+      setCompounds((cs) => {
+        const existing = new Set(cs.map((c) => (c.name ?? "").trim().toLowerCase()));
+        if (existing.has(r.name.trim().toLowerCase())) return cs; // dupe guard
+        const next = [...cs];
+        const emptyIdx = next.findIndex((c) => !c.smiles.trim());
+        const row = { name: r.name, smiles: r.smiles };
+        if (emptyIdx !== -1) next[emptyIdx] = row;
+        else next.push(row);
+        return next;
+      });
+      setPubchemAdded((cur) => new Set(cur).add(name));
+    } catch (e) {
+      setLookupErr(`Couldn't find "${name}" on PubChem: ${(e as Error).message}`);
+    } finally {
+      setPubchemPending((cur) => {
+        const next = new Set(cur);
+        next.delete(name);
+        return next;
+      });
+    }
+  }
   // Viewport-aware dropdown placement — mirrors the logic in
   // AutocompleteInput so the PubChem suggestions list never pushes the
   // sticky "Add N" footer below the visible viewport. Flips upward when
@@ -613,51 +653,9 @@ export default function NewJobPage() {
     lookupMut.mutate(name.trim());
   }
 
-  /** Multi-select commit — fire N PubChem lookups in parallel and append
-   *  every successful resolution to the compound list. Misses get
-   *  collected in a single error banner so the user knows which names
-   *  failed without seeing N separate toasts. Skips duplicates against
-   *  the current compound list (case-insensitive on name). */
-  async function runMultiLookup(names: string[]) {
-    if (names.length === 0) return;
-    setLookupErr(null);
-    setLookupQ("");
-    setSuggestions([]);
-    setLookupDropdownOpen(false);
-    setLookupPicked([]);
-    // Skip names already in the compound list — common when the user
-    // re-opens the dropdown after a previous batch.
-    const existingLower = new Set(
-      compounds
-        .map((c) => (c.name ?? "").trim().toLowerCase())
-        .filter((n) => n.length > 0),
-    );
-    const fresh = names.filter((n) => !existingLower.has(n.trim().toLowerCase()));
-    if (fresh.length === 0) return;
-    const results = await Promise.allSettled(fresh.map((n) => api.lookupCompound(n)));
-    const ok: { name: string; smiles: string }[] = [];
-    const failed: string[] = [];
-    results.forEach((r, i) => {
-      if (r.status === "fulfilled") ok.push({ name: r.value.name, smiles: r.value.smiles });
-      else failed.push(fresh[i]);
-    });
-    if (ok.length > 0) {
-      setCompounds((cs) => {
-        const next = [...cs];
-        for (const row of ok) {
-          // Reuse the same empty-row-first placement as runLookup so a
-          // freshly-empty row gets filled before pushing new ones.
-          const emptyIdx = next.findIndex((c) => !c.smiles.trim());
-          if (emptyIdx !== -1) next[emptyIdx] = row;
-          else next.push(row);
-        }
-        return next;
-      });
-    }
-    if (failed.length > 0) {
-      setLookupErr(`Couldn't find ${failed.length === 1 ? "this name" : "these names"} on PubChem: ${failed.join(", ")}`);
-    }
-  }
+  // (runMultiLookup removed — replaced by live togglePubchemPick.
+  //  Single Done button on the dropdown closes; each row click fires
+  //  its own lookup or local-remove without batching.)
 
   // SDF / SMI / CSV file upload — parse server-side via RDKit. By default we
   // REPLACE the existing list (mirrors the file the user just dropped in), but
@@ -1268,33 +1266,43 @@ export default function NewJobPage() {
                             if the residue exists in {t.pdb_id}/{t.chain || "A"}, the runner will build it.
                           </span>
                         }
-                        placeholder="Start typing — pick up to 5 mutations (or type a code directly)"
+                        placeholder="Start typing — clicks add instantly (max 5)"
                         inputClassName="input font-mono"
                         openOnFocus
                         minChars={0}
-                        // Multi-select: chemists triaging a kinase often want
-                        // to grab 3–5 known variants in one open instead of
-                        // re-firing the dropdown for each. Cap at 5 — past
-                        // that the matrix gets unwieldy and the free-tier
-                        // mutation cap kicks in anyway.
+                        // Multi-select with LIVE auto-commit. Each click
+                        // immediately updates the comma-separated mutation
+                        // string via onItemToggle; the checkbox state is
+                        // derived from the parsed string (pickedValues), so
+                        // the UI always reflects what's actually committed.
+                        // No separate Add step — just close with Done.
                         multi
                         multiMax={5}
-                        onMultiCommit={(items) => {
-                          // Append the picked codes to the existing
-                          // comma-separated value, deduping case-insensitively
-                          // so picking the same code twice (or one already in
-                          // the list) is a no-op.
+                        pickedValues={new Set(
+                          customStr
+                            .split(",")
+                            .map((s) => s.trim().toLowerCase())
+                            .filter((s) => s.length > 0),
+                        )}
+                        onItemToggle={(item, isAdding) => {
                           const existing = customStr
                             .split(",")
                             .map((s) => s.trim())
                             .filter((s) => s.length > 0);
-                          const existingLower = new Set(existing.map((s) => s.toLowerCase()));
-                          const fresh = items
-                            .map((it) => it.code)
-                            .filter((c) => !existingLower.has(c.toLowerCase()));
-                          if (fresh.length === 0) return;
-                          const next = [...existing, ...fresh].join(", ");
-                          setCustomMutationsFor(tid, next + ", ");
+                          const codeLower = item.code.toLowerCase();
+                          if (isAdding) {
+                            // Skip if somehow already present (shouldn't
+                            // happen — pickedValues drives the click — but
+                            // defensive against a parent state race).
+                            if (existing.some((c) => c.toLowerCase() === codeLower)) return;
+                            const next = [...existing, item.code].join(", ");
+                            setCustomMutationsFor(tid, next + ", ");
+                          } else {
+                            const next = existing
+                              .filter((c) => c.toLowerCase() !== codeLower)
+                              .join(", ");
+                            setCustomMutationsFor(tid, next ? next + ", " : "");
+                          }
                         }}
                       />
                     </div>
@@ -1459,27 +1467,37 @@ export default function NewJobPage() {
                             the runner verifies the residue exists in your PDB at the given chain+number.
                           </span>
                         }
-                        placeholder="Start typing — pick up to 5 mutations (or type a code directly)"
+                        placeholder="Start typing — clicks add instantly (max 5)"
                         inputClassName="input font-mono"
                         openOnFocus
                         minChars={0}
-                        // Same multi-select treatment as the catalog-target
-                        // mutation field above. Caps at 5 — past that the
-                        // matrix gets unwieldy and free-tier kicks in.
+                        // Same live auto-commit pattern as the catalog
+                        // mutation autocomplete above — see that block
+                        // for the rationale.
                         multi
                         multiMax={5}
-                        onMultiCommit={(items) => {
+                        pickedValues={new Set(
+                          customStr
+                            .split(",")
+                            .map((s) => s.trim().toLowerCase())
+                            .filter((s) => s.length > 0),
+                        )}
+                        onItemToggle={(item, isAdding) => {
                           const existing = customStr
                             .split(",")
                             .map((s) => s.trim())
                             .filter((s) => s.length > 0);
-                          const existingLower = new Set(existing.map((s) => s.toLowerCase()));
-                          const fresh = items
-                            .map((it) => it.code)
-                            .filter((c) => !existingLower.has(c.toLowerCase()));
-                          if (fresh.length === 0) return;
-                          const next = [...existing, ...fresh].join(", ");
-                          setCustomMutationsFor(CUSTOM_KEY, next + ", ");
+                          const codeLower = item.code.toLowerCase();
+                          if (isAdding) {
+                            if (existing.some((c) => c.toLowerCase() === codeLower)) return;
+                            const next = [...existing, item.code].join(", ");
+                            setCustomMutationsFor(CUSTOM_KEY, next + ", ");
+                          } else {
+                            const next = existing
+                              .filter((c) => c.toLowerCase() !== codeLower)
+                              .join(", ");
+                            setCustomMutationsFor(CUSTOM_KEY, next ? next + ", " : "");
+                          }
                         }}
                       />
                     </div>
@@ -1670,11 +1688,12 @@ export default function NewJobPage() {
                 >
                   {suggestions.slice(0, 8).map((s, idx) => {
                     const active = idx === lookupActiveIdx;
-                    const isPicked = lookupPicked.includes(s);
+                    const isPicked = pubchemAdded.has(s);
+                    const isPending = pubchemPending.has(s);
                     // At-cap unchecked rows are blocked. Already-picked
                     // rows stay clickable so the user can uncheck to swap.
                     const atCapAndUnchecked =
-                      !isPicked && lookupPicked.length >= PUBCHEM_MULTI_MAX;
+                      !isPicked && (pubchemAdded.size + pubchemPending.size) >= PUBCHEM_MULTI_MAX;
                     return (
                       <button
                         key={s}
@@ -1682,7 +1701,7 @@ export default function NewJobPage() {
                         role="option"
                         aria-selected={isPicked}
                         aria-disabled={atCapAndUnchecked || undefined}
-                        disabled={atCapAndUnchecked}
+                        disabled={atCapAndUnchecked || isPending}
                         title={atCapAndUnchecked ? `Maximum ${PUBCHEM_MULTI_MAX} selected — uncheck one to swap` : undefined}
                         onMouseEnter={() => setLookupActiveIdx(idx)}
                         onClick={() => togglePubchemPick(s)}
@@ -1698,10 +1717,10 @@ export default function NewJobPage() {
                                 : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
                         }
                       >
-                        {/* Checkbox glyph — drawn as a square that fills
-                            with brand-blue + a check when picked. Same
-                            visual treatment as AutocompleteInput's multi
-                            mode for consistency across the page. */}
+                        {/* Checkbox / spinner glyph. Spinner shows during
+                            the in-flight PubChem lookup so the user knows
+                            their click registered while the network call
+                            is mid-air. */}
                         <span
                           aria-hidden="true"
                           className={
@@ -1713,11 +1732,13 @@ export default function NewJobPage() {
                                 : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
                           }
                         >
-                          {isPicked && (
+                          {isPending ? (
+                            <Spinner size={10} />
+                          ) : isPicked ? (
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="20 6 9 17 4 12" />
                             </svg>
-                          )}
+                          ) : null}
                         </span>
                         <div className="w-7 h-7 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
                           <Beaker size={14} />
@@ -1730,43 +1751,34 @@ export default function NewJobPage() {
                     );
                   })}
                 </div>
-                {/* Sticky footer — selection counter + commit / clear buttons.
-                    Mirrors the AutocompleteInput multi footer so the page
-                    has one consistent multi-select pattern. */}
+                {/* Sticky footer — single Done button + live count. Picks
+                    are auto-committed on every checkbox click (each row
+                    fires its own PubChem lookup or local-remove via
+                    togglePubchemPick), so there's no separate Add step.
+                    Done just closes the dropdown — the picks have already
+                    landed in the compound list. */}
                 <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80">
                   <span
                     className={
                       "text-[11px] " +
-                      (lookupPicked.length >= PUBCHEM_MULTI_MAX
+                      ((pubchemAdded.size + pubchemPending.size) >= PUBCHEM_MULTI_MAX
                         ? "text-amber-700 dark:text-amber-400 font-semibold"
                         : "text-slate-600 dark:text-slate-400")
                     }
                   >
-                    {lookupPicked.length === 0
-                      ? `Pick up to ${PUBCHEM_MULTI_MAX} compounds`
-                      : lookupPicked.length >= PUBCHEM_MULTI_MAX
-                        ? `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} max — uncheck one to add more`
-                        : `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} selected`}
+                    {pubchemAdded.size + pubchemPending.size === 0
+                      ? `Pick up to ${PUBCHEM_MULTI_MAX} — clicks add instantly`
+                      : (pubchemAdded.size + pubchemPending.size) >= PUBCHEM_MULTI_MAX
+                        ? `${pubchemAdded.size + pubchemPending.size}/${PUBCHEM_MULTI_MAX} max — uncheck one to add more`
+                        : `${pubchemAdded.size + pubchemPending.size}/${PUBCHEM_MULTI_MAX} selected${pubchemPending.size > 0 ? ` (${pubchemPending.size} loading…)` : ""}`}
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    {lookupPicked.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setLookupPicked([])}
-                        className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 px-2 py-1 transition-colors"
-                      >
-                        Clear
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={lookupPicked.length === 0 || lookupMut.isPending}
-                      onClick={() => runMultiLookup(lookupPicked)}
-                      className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed transition-colors"
-                    >
-                      Add {lookupPicked.length || ""} →
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLookupDropdownOpen(false)}
+                    className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                  >
+                    Done
+                  </button>
                 </div>
               </div>
             )}

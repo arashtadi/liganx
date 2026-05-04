@@ -42,19 +42,25 @@ export interface AutocompleteInputProps<T> {
    *  match. The dropdown stays open so the hint is visible alongside the input. */
   emptyState?: React.ReactNode;
   /** When true, dropdown rows render with a checkbox and the user can pick
-   *  multiple items in one open. A footer button commits the batch via
-   *  onMultiCommit, which receives the selected items in pick order.
-   *  Cap with `multiMax` (default 5). Useful for token-mode fields where
-   *  the user often wants to add several at once (mutations, compound
-   *  names) instead of re-opening the dropdown for each. */
+   *  multiple items in one open WITHOUT a separate commit step — every
+   *  click immediately calls onItemToggle so the parent state updates
+   *  in lockstep with the checkboxes. The footer collapses to a single
+   *  "Done" button that just closes the dropdown. Cap with `multiMax`
+   *  (default 5). The parent owns the picked set as the source of truth
+   *  via `pickedValues`. */
   multi?: boolean;
   multiMax?: number;
-  /** Called when the user clicks the "Add N" footer button in multi mode.
-   *  Receives the items in the order they were checked. Caller is
-   *  responsible for inserting them into the value (we don't auto-update
-   *  via getValue/onChange in multi mode because the join semantics
-   *  vary — comma-list, separate rows, etc.). */
-  onMultiCommit?: (items: T[]) => void;
+  /** Set of `getValue(item)` strings the parent considers picked. Used to
+   *  drive the checkbox state and the cap-respect logic. Required when
+   *  `multi=true`. The parent should derive this from its own state
+   *  (e.g. a comma-separated string parsed into a Set) so the dropdown
+   *  always reflects what's actually committed. */
+  pickedValues?: Set<string>;
+  /** Called every time the user clicks a row in multi mode. The second
+   *  arg tells the parent whether the click is ADDING (true) or
+   *  REMOVING (false) the item. Parent updates its own state, which
+   *  flows back via pickedValues for the next render. */
+  onItemToggle?: (item: T, isAdding: boolean) => void;
 }
 
 export default function AutocompleteInput<T>({
@@ -74,7 +80,8 @@ export default function AutocompleteInput<T>({
   emptyState,
   multi = false,
   multiMax = 5,
-  onMultiCommit,
+  pickedValues,
+  onItemToggle,
 }: AutocompleteInputProps<T>) {
   const [items, setItems] = useState<T[]>([]);
   const [open, setOpen] = useState(false);
@@ -82,35 +89,23 @@ export default function AutocompleteInput<T>({
   const [loading, setLoading] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const listId = useId();
-  // Multi-select state — preserved across re-fetches so the user can
-  // refine their query and the existing checks survive (matched on the
-  // string returned by getValue, since the suggestion objects can be
-  // re-allocated by the fetcher between renders). Cleared when the
-  // dropdown closes, so opening it next time starts fresh.
-  const [picked, setPicked] = useState<T[]>([]);
-  const pickedKeys = new Set(picked.map((p) => getValue(p)));
-  function togglePick(item: T) {
+  // Multi-select source of truth = parent's pickedValues set. Every
+  // checkbox click fires onItemToggle which the parent uses to update
+  // its own state; that flows back as a fresh pickedValues for the next
+  // render. No internal staging — what you see in the checkboxes is
+  // what's committed in the parent right now.
+  const pickedKeys = pickedValues ?? new Set<string>();
+  const pickedCount = pickedKeys.size;
+  function handlePick(item: T) {
+    if (!multi) return;
     const key = getValue(item);
-    setPicked((cur) => {
-      // Always allow UN-checking — that's how the user makes room
-      // when they've hit the cap and want to swap a pick.
-      if (cur.some((c) => getValue(c) === key)) {
-        return cur.filter((c) => getValue(c) !== key);
-      }
-      // HARD cap: once N picks are checked, additional clicks are
-      // ignored. The dropdown row visually disables (greyed out,
-      // not-allowed cursor) so the click feels intentional rather
-      // than broken. Earlier behaviour silently dropped the oldest
-      // pick to make room — confusing because the user couldn't
-      // tell which entry got evicted.
-      if (cur.length >= multiMax) return cur;
-      return [...cur, item];
-    });
+    const isCurrentlyPicked = pickedKeys.has(key);
+    // Always allow UN-checking — even when at cap, that's how the user
+    // frees a slot. HARD cap on adding past multiMax: ignore the click
+    // (the row is also visually disabled in the render below).
+    if (!isCurrentlyPicked && pickedCount >= multiMax) return;
+    onItemToggle?.(item, !isCurrentlyPicked);
   }
-  // Reset picks when the dropdown closes so reopening starts clean.
-  useEffect(() => {
-    if (!open) setPicked([]);
-  }, [open]);
 
   // ── Viewport-aware sizing ─────────────────────────────────────────────
   // The dropdown was rendering with a fixed max-h-72 list AND a footer
@@ -123,7 +118,7 @@ export default function AutocompleteInput<T>({
   //   • Cap the LIST height at the available space minus the footer
   //     reserve, so the footer (when in multi mode) always lands inside
   //     the viewport regardless of how many suggestions matched.
-  const FOOTER_RESERVE_PX = multi ? 56 : 0; // height of the sticky footer
+  const FOOTER_RESERVE_PX = multi ? 48 : 0; // height of the sticky Done footer
   const VIEWPORT_MARGIN_PX = 16;             // breathing room from edges
   const [pos, setPos] = useState<{
     placement: "below" | "above";
@@ -299,7 +294,7 @@ export default function AutocompleteInput<T>({
               // At-cap unchecked rows are visually + interactively
               // disabled. Already-picked rows stay clickable so the
               // user can uncheck to free a slot.
-              const atCapAndUnchecked = multi && !isPicked && picked.length >= multiMax;
+              const atCapAndUnchecked = multi && !isPicked && pickedCount >= multiMax;
               return (
                 <li
                   key={i}
@@ -308,12 +303,14 @@ export default function AutocompleteInput<T>({
                   aria-disabled={atCapAndUnchecked || undefined}
                   title={atCapAndUnchecked ? `Maximum ${multiMax} selected — uncheck one to swap` : undefined}
                   onMouseDown={(e) => {
-                    // In multi mode a click toggles the checkbox without
-                    // closing the dropdown, so the user can pick several
-                    // in one open. In single mode it commits as before.
+                    // In multi mode a click toggles the row LIVE — the
+                    // parent gets onItemToggle and updates its state,
+                    // which flows back as the new pickedValues for the
+                    // next render. No staging, no separate commit step.
+                    // Dropdown stays open so the user can keep picking.
                     e.preventDefault();
                     if (atCapAndUnchecked) return; // hard cap: ignore
-                    if (multi) togglePick(item);
+                    if (multi) handlePick(item);
                     else pick(item);
                   }}
                   onMouseEnter={() => setActive(i)}
@@ -357,49 +354,37 @@ export default function AutocompleteInput<T>({
               );
             })}
           </ul>
-          {/* Multi-select footer — sticky bar with selected count + commit
-              button. Disabled state when no picks; cap warning when at max. */}
+          {/* Multi-select footer — single Done button + live count.
+              Picks are auto-committed on every checkbox click (the
+              parent owns the state via pickedValues + onItemToggle), so
+              there's no separate Add step. Done just closes the
+              dropdown — the picks have already been applied. */}
           {multi && (
             <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 rounded-b-lg">
               <span
                 className={
                   "text-[11px] " +
-                  (picked.length >= multiMax
+                  (pickedCount >= multiMax
                     ? "text-amber-700 dark:text-amber-400 font-semibold"
                     : "text-slate-600 dark:text-slate-400")
                 }
               >
-                {picked.length === 0
-                  ? `Pick up to ${multiMax}`
-                  : picked.length >= multiMax
-                    ? `${picked.length}/${multiMax} max — uncheck one to add more`
-                    : `${picked.length}/${multiMax} selected`}
+                {pickedCount === 0
+                  ? `Pick up to ${multiMax} — clicks add instantly`
+                  : pickedCount >= multiMax
+                    ? `${pickedCount}/${multiMax} max — uncheck one to add more`
+                    : `${pickedCount}/${multiMax} selected`}
               </span>
-              <div className="flex items-center gap-1.5">
-                {picked.length > 0 && (
-                  <button
-                    type="button"
-                    onMouseDown={(e) => { e.preventDefault(); setPicked([]); }}
-                    className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 px-2 py-1 transition-colors"
-                  >
-                    Clear
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={picked.length === 0}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    if (picked.length === 0) return;
-                    onMultiCommit?.(picked);
-                    setPicked([]);
-                    setOpen(false);
-                  }}
-                  className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed transition-colors"
-                >
-                  Add {picked.length || ""}
-                </button>
-              </div>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                }}
+                className="text-[11px] font-semibold px-3 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+              >
+                Done
+              </button>
             </div>
           )}
         </div>
