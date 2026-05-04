@@ -514,6 +514,40 @@ export default function NewJobPage() {
   useEffect(() => {
     if (!lookupDropdownOpen) setLookupPicked([]);
   }, [lookupDropdownOpen]);
+  // Viewport-aware dropdown placement — mirrors the logic in
+  // AutocompleteInput so the PubChem suggestions list never pushes the
+  // sticky "Add N" footer below the visible viewport. Flips upward when
+  // there's more headroom above the input than below, and caps the list
+  // height so the footer always lands on screen.
+  const PUBCHEM_FOOTER_RESERVE_PX = 56;
+  const [lookupPos, setLookupPos] = useState<{
+    placement: "below" | "above";
+    listMaxPx: number;
+  }>({ placement: "below", listMaxPx: 320 });
+  useEffect(() => {
+    if (!lookupDropdownOpen) return;
+    function recompute() {
+      const el = lookupWrapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const spaceBelow = vh - rect.bottom - 16;
+      const spaceAbove = rect.top - 16;
+      const flip = spaceAbove > spaceBelow + 50 && spaceBelow < 200;
+      const usable = Math.max(120, (flip ? spaceAbove : spaceBelow) - PUBCHEM_FOOTER_RESERVE_PX);
+      setLookupPos({
+        placement: flip ? "above" : "below",
+        listMaxPx: Math.min(420, usable),
+      });
+    }
+    recompute();
+    window.addEventListener("resize", recompute);
+    window.addEventListener("scroll", recompute, true);
+    return () => {
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("scroll", recompute, true);
+    };
+  }, [lookupDropdownOpen]);
   // Reset the highlighted row whenever the suggestion list changes so we
   // don't end up with activeIdx pointing past the new array's length.
   useEffect(() => { setLookupActiveIdx(0); }, [suggestions]);
@@ -1614,9 +1648,19 @@ export default function NewJobPage() {
                 vs the cap. */}
             {lookupDropdownOpen && suggestions.length > 0 && (
               <div
-                className="absolute left-0 right-0 top-full mt-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg overflow-hidden z-20"
+                className={
+                  "absolute left-0 right-0 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg overflow-hidden z-20 " +
+                  (lookupPos.placement === "above" ? "bottom-full mb-1.5" : "top-full mt-1.5")
+                }
               >
-                <div role="listbox">
+                <div
+                  role="listbox"
+                  className="overflow-y-auto"
+                  // Cap list height from the viewport calc so the sticky
+                  // footer with the "Add N →" button always stays
+                  // on-screen even with 8+ suggestions matched.
+                  style={{ maxHeight: `${lookupPos.listMaxPx}px` }}
+                >
                   {suggestions.slice(0, 8).map((s, idx) => {
                     const active = idx === lookupActiveIdx;
                     const isPicked = lookupPicked.includes(s);

@@ -109,6 +109,53 @@ export default function AutocompleteInput<T>({
     if (!open) setPicked([]);
   }, [open]);
 
+  // ── Viewport-aware sizing ─────────────────────────────────────────────
+  // The dropdown was rendering with a fixed max-h-72 list AND a footer
+  // beneath, so on a long suggestion list the "Add N" button could end
+  // up below the visible viewport — invisible until the user scrolled
+  // the page. We now measure the input on each render and:
+  //   • Compute the available pixels below it (and above it).
+  //   • If above-space > below-space AND the list would benefit, FLIP
+  //     the dropdown to open upward (anchored to the input top).
+  //   • Cap the LIST height at the available space minus the footer
+  //     reserve, so the footer (when in multi mode) always lands inside
+  //     the viewport regardless of how many suggestions matched.
+  const FOOTER_RESERVE_PX = multi ? 56 : 0; // height of the sticky footer
+  const VIEWPORT_MARGIN_PX = 16;             // breathing room from edges
+  const [pos, setPos] = useState<{
+    placement: "below" | "above";
+    listMaxPx: number;
+  }>({ placement: "below", listMaxPx: 288 });
+  useEffect(() => {
+    if (!open) return;
+    function recompute() {
+      const el = wrapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const spaceBelow = vh - rect.bottom - VIEWPORT_MARGIN_PX;
+      const spaceAbove = rect.top - VIEWPORT_MARGIN_PX;
+      // Prefer below by default — only flip when above has materially
+      // more room (>50px advantage) AND below is genuinely cramped
+      // (<200px). Avoids flicker on borderline cases.
+      const flip = spaceAbove > spaceBelow + 50 && spaceBelow < 200;
+      const usable = Math.max(120, (flip ? spaceAbove : spaceBelow) - FOOTER_RESERVE_PX);
+      setPos({
+        placement: flip ? "above" : "below",
+        listMaxPx: Math.min(420, usable), // cap at 420px so very tall
+                                          // viewports don't get a giant
+                                          // overwhelming list
+      });
+    }
+    recompute();
+    window.addEventListener("resize", recompute);
+    window.addEventListener("scroll", recompute, true); // capture nested scrollers
+    return () => {
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("scroll", recompute, true);
+    };
+  }, [open, FOOTER_RESERVE_PX]);
+
   // Compute the "current token" — what we actually feed to the suggester.
   // For tokens mode that's the slice after the last comma; for single mode it's
   // the whole value.
@@ -228,11 +275,21 @@ export default function AutocompleteInput<T>({
         aria-autocomplete="list"
       />
       {open && items.length > 0 && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl dark:bg-slate-800 dark:border-slate-700">
+        <div
+          className={
+            "absolute left-0 right-0 z-30 bg-white border border-slate-200 rounded-lg shadow-xl dark:bg-slate-800 dark:border-slate-700 " +
+            (pos.placement === "above" ? "bottom-full mb-1" : "top-full mt-1")
+          }
+        >
           <ul
             id={listId}
             role="listbox"
-            className="max-h-72 overflow-y-auto py-1"
+            className="overflow-y-auto py-1"
+            // Inline maxHeight from the viewport calculation — ensures
+            // the footer (when in multi mode) ALWAYS lands inside the
+            // visible viewport, even when there are 50+ suggestions.
+            // Without this the Add button could disappear below the fold.
+            style={{ maxHeight: `${pos.listMaxPx}px` }}
           >
             {items.map((item, i) => {
               const isPicked = multi && pickedKeys.has(getValue(item));
@@ -323,7 +380,12 @@ export default function AutocompleteInput<T>({
         </div>
       )}
       {open && loading && items.length === 0 && currentToken.length >= minChars && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">
+        <div
+          className={
+            "absolute left-0 right-0 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400 " +
+            (pos.placement === "above" ? "bottom-full mb-1" : "top-full mt-1")
+          }
+        >
           Searching…
         </div>
       )}
@@ -332,7 +394,12 @@ export default function AutocompleteInput<T>({
           inside the same dropdown shell so it visually replaces the list. */}
       {open && !loading && items.length === 0 && emptyState !== undefined &&
        (currentToken.length >= minChars || (openOnFocus && minChars === 0)) && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300">
+        <div
+          className={
+            "absolute left-0 right-0 z-30 bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 " +
+            (pos.placement === "above" ? "bottom-full mb-1" : "top-full mt-1")
+          }
+        >
           {emptyState}
         </div>
       )}
