@@ -154,6 +154,16 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
   // non-empty canvas counts as a change, which is the right default for
   // create-from-scratch flows.
   const baselineSmilesRef = useRef<string>("");
+  // SMILES of the most recent AI Apply (Optimize variant or chat suggestion).
+  // When the user clicks Check & use right after Apply, the dockability
+  // backend round-trip (1-3s) is redundant — the AI variant was already
+  // server-side validated AND server-side docked successfully. Skipping
+  // the check makes the rename popup pop instantly so the user doesn't
+  // think the modal hung. Cleared when the user manually edits the
+  // canvas (so hand-drawn edits still get the safety check). 2026-05-04
+  // user report: "after applying the Optimized variant it takes a long
+  // time for Check & use".
+  const aiAppliedSmilesRef = useRef<string>("");
 
   // Listen for Ketcher's init event. This is the signal that the iframe's
   // window.ketcher API is ready to call.
@@ -383,26 +393,37 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
       // let the user proceed (the runner has its own validation as a
       // safety net + the new FAILED → Telegram + Re-run UX) than to
       // false-block on a transient backend hiccup.
-      try {
-        const dock = await api.assistDockability(trimmed);
-        if (dock && dock.dockable === false) {
-          setPending(false);
-          const reason = dock.reason || "This structure can't be docked.";
-          const suggestion = dock.suggestion ? ` ${dock.suggestion}` : "";
-          // Snapshot the SMILES at error time so the polling loop knows
-          // when the user has actually edited (and the error becomes
-          // stale). Without this, the rose error banner gets wiped
-          // within 700ms and the user sees the "Check & use" button
-          // un-disable with no explanation — the bug that made this
-          // path feel "stuck" after a chain of variant Applies.
-          errorAtSmilesRef.current = trimmed;
-          setError(reason + suggestion);
-          return;
+      //
+      // SHORT-CIRCUIT: if this SMILES was just placed on the canvas by
+      // an AI Apply (Optimize variant or chat suggestion), skip the
+      // round-trip — the variant was already server-side validated AND
+      // server-side docked successfully. Saves 1-3s and pops the
+      // rename popup instantly so the user doesn't think the modal
+      // hung. Reported 2026-05-04: "after applying the Optimized
+      // variant it takes a long time for Check & use".
+      const isAiApplied = aiAppliedSmilesRef.current && trimmed === aiAppliedSmilesRef.current;
+      if (!isAiApplied) {
+        try {
+          const dock = await api.assistDockability(trimmed);
+          if (dock && dock.dockable === false) {
+            setPending(false);
+            const reason = dock.reason || "This structure can't be docked.";
+            const suggestion = dock.suggestion ? ` ${dock.suggestion}` : "";
+            // Snapshot the SMILES at error time so the polling loop knows
+            // when the user has actually edited (and the error becomes
+            // stale). Without this, the rose error banner gets wiped
+            // within 700ms and the user sees the "Check & use" button
+            // un-disable with no explanation — the bug that made this
+            // path feel "stuck" after a chain of variant Applies.
+            errorAtSmilesRef.current = trimmed;
+            setError(reason + suggestion);
+            return;
+          }
+          // dockable:true OR network/transport issue → proceed.
+        } catch {
+          // Validation request failed (network, auth). Proceed silently
+          // — better than blocking on a transient backend issue.
         }
-        // dockable:true OR network/transport issue → proceed.
-      } catch {
-        // Validation request failed (network, auth). Proceed silently
-        // — better than blocking on a transient backend issue.
       }
 
       setPending(false);
@@ -486,6 +507,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, targetP
             initialAIHistory={initialAIHistory}
             onAccept={onAccept}
             onClose={onClose}
+            onAiApplied={(smi) => { aiAppliedSmilesRef.current = smi; }}
           />
         </div>
 
@@ -589,6 +611,12 @@ interface AiSidebarProps {
    *  compound list and close the modal before navigating to /new. */
   onAccept: (smiles: string, unchanged: boolean) => void;
   onClose: () => void;
+  /** Notify the parent that the canvas was just populated by an AI Apply
+   *  (Optimize variant or chat suggestion). Lets handleAccept skip the
+   *  redundant dockability check (the AI variant was already server-side
+   *  validated AND server-side docked successfully) so the rename popup
+   *  pops instantly. Cleared parent-side when the user manually edits. */
+  onAiApplied?: (smiles: string) => void;
 }
 
 // Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
@@ -737,7 +765,7 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied }: AiSidebarProps) {
   const [instruction, setInstruction] = useState("");
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -1116,6 +1144,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
     try {
       await apiObj.setMolecule(result.new_smiles);
+      // Mark this SMILES as "AI-applied" so handleAccept skips the
+      // dockability backend round-trip — the AI suggestion was already
+      // server-validated. Same idea as the variant Apply path.
+      onAiApplied?.(result.new_smiles);
     } catch (e) {
       setErrorMsg(`Ketcher rejected the SMILES: ${(e as Error).message}`);
     }
@@ -1501,6 +1533,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // round-trip. Ketcher's canonical form may differ from this stored
       // value, but that's fine because we never compare to liveSmiles.
       setAppliedVariantSmiles(smiles);
+      // Mark this SMILES as "AI-applied" so the parent's handleAccept
+      // skips the dockability backend round-trip on the next Check & use
+      // click. The variant was already server-validated AND server-docked
+      // successfully, so the check is redundant — and it was making the
+      // rename popup take 1-3s to appear. Reported by user 2026-05-04.
+      onAiApplied?.(smiles);
       // Hydrate dockResult from the variant's stored docking data so the
       // chat AI gets fresh dock context on the next runEdit() call.
       // Look the variant up by its stored new_smiles (matches what we
