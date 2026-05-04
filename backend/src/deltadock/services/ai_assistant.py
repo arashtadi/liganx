@@ -517,15 +517,39 @@ N_OPTIMIZE_CANDIDATES = 12
 MIN_OPTIMIZE_CANDIDATES = 3
 
 
-def _build_optimize_system_prompt(n_variants: int) -> str:
+def _build_optimize_system_prompt(
+    n_variants: int,
+    mutations: Optional[str] = None,
+) -> str:
     """The optimize system prompt parameterised by how many variants to
     request. The Generate-Score-Filter loop asks for ~12 candidates;
     callers that want the legacy 3-variant behaviour pass n_variants=3.
 
+    When `mutations` is provided, the few-shot mutation library
+    (services/few_shot_mutations.py) classifies the mutation type and
+    appends 2 worked literature precedents to the prompt. This is
+    Tier 1 #3 (2026-05-04): the model gets concrete inspiration for
+    each mutation class instead of reasoning from first principles.
+
     Behaviour rules + output schema interpolate {n_variants} so the
     model isn't surprised by the count mismatch. Other rules (mutation
     targeting, residue-name guard, vina-gpu sanity) are unchanged."""
-    return _OPTIMIZE_SYSTEM_PROMPT_TEMPLATE.format(n_variants=n_variants)
+    base = _OPTIMIZE_SYSTEM_PROMPT_TEMPLATE.format(n_variants=n_variants)
+    if mutations:
+        try:
+            from .few_shot_mutations import select_few_shot_examples, format_few_shot_block
+            examples = select_few_shot_examples(mutations, n=2)
+            if examples:
+                base = base + "\n\n" + format_few_shot_block(examples)
+                log.info(
+                    "few-shot library: injected %d examples for mutation %r",
+                    len(examples), mutations,
+                )
+        except Exception as e:
+            # Defensive — a bug in the few-shot module shouldn't take
+            # down the whole Optimize endpoint. Falls back to no examples.
+            log.warning("few-shot injection skipped (non-fatal): %s", e)
+    return base
 
 
 _OPTIMIZE_SYSTEM_PROMPT_TEMPLATE = """You are a PhD-level medicinal-chemistry assistant inside Liganx. \
@@ -758,7 +782,7 @@ async def call_anthropic_optimize(
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
-        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_variants)),
+        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_variants, mutations=mutations)),
         user_prompt=user_prompt,
     )
     # The base max_tokens budget is sized for a single edit (~1024); 12
@@ -1011,7 +1035,7 @@ async def call_anthropic_optimize_topup(
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
-        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_needed)),
+        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_needed, mutations=mutations)),
         user_prompt=user_prompt,
     )
     if n_needed > 3:
