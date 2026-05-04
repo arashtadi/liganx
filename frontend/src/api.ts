@@ -675,11 +675,22 @@ export const api = {
         mutation_contact?: boolean;
         hits?: string[];
         misses?: string[];
+        /** AI's own predicted improvement (Hard-Constraint Reject Loop).
+         *  Used by the calibration badge to show "AI called it" when
+         *  predicted Δ matches actual Δ within ~0.5. */
+        predicted_improvement_kcal?: number;
+        /** AI's own predicted SA Score. Compared to server-computed
+         *  sa_score for calibration drift. */
+        predicted_sa_score?: number;
+        /** Residue label this variant was designed to engage, or null. */
+        mutation_target?: string | null;
       }[];
       /** Diagnostics — useful for debug, not currently surfaced in UI. */
       candidates_generated?: number;
       candidates_filtered?: number;
       candidates_docked?: number;
+      candidates_self_rejected?: number;
+      candidates_top_up?: number;
       /** Human-readable hint, present on fallback paths (no docking
        *  pipeline, all candidates unsynthesisable, etc). */
       note?: string;

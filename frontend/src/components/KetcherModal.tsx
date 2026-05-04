@@ -1141,6 +1141,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
        *  Renders a "🎯 mutation" badge that's stronger evidence of a
        *  meaningful improvement than score alone. */
       mutationContact?: boolean;
+      /** AI's own predicted improvement (Hard-Constraint Reject Loop).
+       *  Compared to actual delta — when they match within ~0.5 kcal/mol
+       *  we render a small "🧠 called it" badge. Useful trust signal. */
+      predictedImprovementKcal?: number;
+      /** AI's predicted SA Score; compared to actual saScore for the
+       *  calibration tooltip. */
+      predictedSaScore?: number;
       status: "queued" | "docking" | "done" | "error";
       error?: string;
     }>
@@ -1346,6 +1353,8 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         delta: typeof v.delta === "number" ? v.delta : undefined,
         saScore: typeof v.sa_score === "number" ? v.sa_score : undefined,
         mutationContact: typeof v.mutation_contact === "boolean" ? v.mutation_contact : undefined,
+        predictedImprovementKcal: typeof v.predicted_improvement_kcal === "number" ? v.predicted_improvement_kcal : undefined,
+        predictedSaScore: typeof v.predicted_sa_score === "number" ? v.predicted_sa_score : undefined,
         error: undefined as string | undefined,
       }));
       setOptimizedVariants(initial);
@@ -1849,9 +1858,28 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                                     ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200"
                                     : "bg-rose-100 dark:bg-rose-900/30 text-rose-800 dark:text-rose-200")
                               }
-                              title={`Synthetic Accessibility Score ${v.saScore.toFixed(1)} (1=easy, 10=impossible)`}
+                              title={
+                                typeof v.predictedSaScore === "number"
+                                  ? `Synthetic Accessibility Score ${v.saScore.toFixed(1)} actual / ${v.predictedSaScore.toFixed(1)} AI predicted (1=easy, 10=impossible)`
+                                  : `Synthetic Accessibility Score ${v.saScore.toFixed(1)} (1=easy, 10=impossible)`
+                              }
                             >
                               SA {v.saScore.toFixed(1)}
+                            </span>
+                          )}
+                          {/* "🧠 called it" calibration badge — when the
+                              AI's own predicted improvement matches the
+                              actual measured Δ within ±0.5 kcal/mol. A
+                              quiet trust signal: the AI didn't just get
+                              lucky, it knew what it was designing. */}
+                          {typeof v.delta === "number"
+                            && typeof v.predictedImprovementKcal === "number"
+                            && Math.abs(v.delta - v.predictedImprovementKcal) <= 0.5 && (
+                            <span
+                              className="text-[8.5px] px-1 py-px rounded font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-800 dark:text-violet-200"
+                              title={`AI predicted ${v.predictedImprovementKcal.toFixed(1)} kcal/mol; actually got ${v.delta.toFixed(1)}. The AI knew this was a good design.`}
+                            >
+                              🧠 called it
                             </span>
                           )}
                         </>

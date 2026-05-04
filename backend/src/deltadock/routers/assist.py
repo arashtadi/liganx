@@ -300,5 +300,7 @@ async def optimize_endpoint(
         "candidates_generated": result.get("candidates_generated", 0),
         "candidates_filtered": result.get("candidates_filtered", 0),
         "candidates_docked": result.get("candidates_docked", 0),
+        "candidates_self_rejected": result.get("candidates_self_rejected", 0),
+        "candidates_top_up": result.get("candidates_top_up", 0),
         "note": result.get("note", ""),
     }

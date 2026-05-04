@@ -555,10 +555,38 @@ So a successful candidate must:
      final 3).
 
 # Output format (STRICT — return ONLY this JSON, no preamble, no code fences)
-{{"variants":[{{"new_smiles":"<smiles>","rationale":"<sentence>"}}, ... {n_variants} entries]}}
+# Each variant carries TWO self-predictions the server uses to reject candidates
+# whose own author thinks they're bad:
+#   - predicted_improvement_kcal: your honest estimate of how much better this
+#     variant will dock vs the parent (positive number means MORE NEGATIVE Vina
+#     score, which is BETTER affinity). Be calibrated, not optimistic — the
+#     server REJECTS variants where this is < 0.5 (not even Vina noise floor).
+#   - predicted_sa_score: your honest estimate of synthetic accessibility on
+#     a 1 (trivial) to 10 (impossible) scale. Server REJECTS variants where
+#     this is > 6.0 (chemist won't try to make it).
+#   - mutation_target: the residue THIS variant is designed to engage (use
+#     the exact label from the hits/misses lists, e.g. "A:LYS790"), or null
+#     if the variant targets a non-residue improvement (e.g. "logP reduction").
+{{"variants":[
+  {{"new_smiles":"<smiles>",
+   "rationale":"<sentence>",
+   "predicted_improvement_kcal":<float>,
+   "predicted_sa_score":<float>,
+   "mutation_target":"<A:RES000>" or null}},
+  ... {n_variants} entries
+]}}
 
 # Behavior rules
 - Return EXACTLY {n_variants} variants. Each SMILES MUST parse with RDKit (canonical-style).
+- Be HONEST about predicted_improvement_kcal. It's a contract: variants whose own
+  author estimates < 0.5 kcal/mol improvement are auto-rejected (you'd be telling
+  the server "I don't believe in this design"). If you can't predict ≥ 0.5, design
+  a different variant; do NOT pad the prediction to slip a weak design through.
+- Be HONEST about predicted_sa_score. Same contract; > 6.0 is auto-rejected.
+- mutation_target MUST appear in the user's hits/misses lists OR be null.
+  Hallucinated residue names trigger a hard reject — do not invent labels
+  to look responsive. null is a perfectly valid answer for designs that
+  don't target a specific residue.
 - Keep edits minimal: change only what's needed to reach the missed residues. \
 Tiny edits (single-atom swaps, methyl→ethyl, F→Cl) often improve scores by \
 0.3-0.8 kcal/mol with low risk; prefer those over scaffold rewrites unless \
@@ -655,9 +683,29 @@ precedent for a move, write "general medchem principle, no specific \
 precedent" instead of fabricating one."""
 
 
+# Hard-constraint thresholds — match the prompt contract above. If these
+# move, update the prompt language too so the model knows what bar it's
+# being held to.
+MIN_PREDICTED_IMPROVEMENT_KCAL = 0.5  # below Vina noise floor → reject
+MAX_PREDICTED_SA_SCORE = 6.0          # "hard"+ per services/sa_score → reject
+
+
 class OptimizeVariant(TypedDict, total=False):
     new_smiles: str
     rationale: str
+    # Self-predictions — present when the model returned them (added in the
+    # Hard-Constraint Reject Loop, 2026-05-03). Used by the orchestrator to
+    # filter out variants whose own author doesn't believe in them BEFORE
+    # spending GPU time on a batch dock. Optional fields so legacy callers
+    # that don't ask for these (or older Haiku responses that pre-date the
+    # contract) still work.
+    predicted_improvement_kcal: float  # ≥ 0.5 to survive
+    predicted_sa_score: float          # ≤ 6.0 to survive
+    mutation_target: Optional[str]     # residue label or None
+    # Diagnostic — set when a variant survived but the actual SA Score
+    # (computed server-side) disagrees with predicted_sa_score by > 2.
+    # Exposed for the calibration-tracking work; not user-visible.
+    sa_calibration_delta: float
 
 
 async def call_anthropic_optimize(
@@ -670,6 +718,7 @@ async def call_anthropic_optimize(
     mutations: Optional[str] = None,
     n_variants: int = 3,
     apply_pod_pre_flight: bool = True,
+    apply_self_prediction_gate: bool = True,
 ) -> list[OptimizeVariant]:
     """Ask Claude for `n_variants` candidate SMILES designed to gain contacts
     at the `misses` residues. Returns RDKit-validated, canonical-form
@@ -687,9 +736,14 @@ async def call_anthropic_optimize(
        orchestrator batch-docks survivors and ranks by composite fitness
        before returning the top 3 to the user.
 
-    `apply_pod_pre_flight` is exposed so callers that have their own
-    filtering pipeline can short-circuit it (currently always True; future
-    ToolUse-style flow may set it False to keep the model's own choices)."""
+    `apply_pod_pre_flight` short-circuits the vina-gpu structural sanity
+    check; future ToolUse-style flow may set it False to keep model choices.
+
+    `apply_self_prediction_gate` enables the Hard-Constraint Reject Loop
+    (Tier 1 #2): variants whose own author predicts < 0.5 kcal/mol
+    improvement, > 6.0 SA Score, or hallucinates a residue label are
+    auto-rejected. Default True; set False only for legacy callers that
+    don't pass through the orchestrator's top-up retry path."""
     parts = [
         f"Current SMILES: {smiles}",
         f"Docked score: {score:.2f} kcal/mol",
@@ -750,12 +804,47 @@ async def call_anthropic_optimize(
     if not isinstance(raw_variants, list):
         return []
 
+    valid_residues = _valid_residue_set(hits, misses)
+    out = _validate_and_filter_variants(
+        raw_variants=raw_variants,
+        n_variants=n_variants,
+        apply_pod_pre_flight=apply_pod_pre_flight,
+        apply_self_prediction_gate=apply_self_prediction_gate,
+        valid_residues=valid_residues,
+    )
+    return out
+
+
+def _valid_residue_set(hits: list[str], misses: list[str]) -> set[str]:
+    """Set of residue labels the AI is allowed to claim it targeted.
+    Anything outside this set in `mutation_target` is a hallucination
+    and gets the variant hard-rejected. Comparison is exact-string —
+    if the model writes "A:LYS790" and our hit is "A:LYS790", match;
+    if the model invents "A:GLY800", reject."""
+    return set(hits) | set(misses)
+
+
+def _validate_and_filter_variants(
+    *,
+    raw_variants: list,
+    n_variants: int,
+    apply_pod_pre_flight: bool,
+    apply_self_prediction_gate: bool,
+    valid_residues: set[str],
+) -> list[OptimizeVariant]:
+    """Shared validation pipeline used by both the initial AI call and the
+    re-call (top-up) path. Pulls each raw variant through:
+      1. Schema gate (must have new_smiles)
+      2. RDKit canonical-validation
+      3. De-dup against canonical SMILES we've already accepted
+      4. Vina pod pre-flight (optional — caller chooses)
+      5. Self-prediction gate (optional — Hard-Constraint Reject Loop)
+         a. predicted_improvement_kcal >= MIN_PREDICTED_IMPROVEMENT_KCAL
+         b. predicted_sa_score <= MAX_PREDICTED_SA_SCORE
+         c. mutation_target in hits/misses set or is None
+    """
     from .properties import validate_smiles
     out: list[OptimizeVariant] = []
-    # Cap at n_variants × 1.5 so a model that overshoots the request (Haiku
-    # sometimes returns 14 when asked for 12) doesn't waste downstream
-    # GPU time on extras the orchestrator would just discard. Floor at 3
-    # so the legacy n=3 path keeps its old behaviour.
     cap = max(3, int(n_variants * 1.5))
     seen_canonical: set[str] = set()
     for raw in raw_variants[:cap]:
@@ -765,28 +854,197 @@ async def call_anthropic_optimize(
         rationale = str(raw.get("rationale") or "").strip()
         if not smi_raw:
             continue
+
         valid, canonical, _ = validate_smiles(smi_raw)
         if not valid or not canonical:
             log.info("optimize variant rejected (RDKit): %r", smi_raw)
             continue
-        # De-dupe — Haiku occasionally repeats the same SMILES across
-        # rationale variants when the parent has limited modification
-        # surface (e.g. tiny molecules). Save the docker round-trip.
         if canonical in seen_canonical:
             continue
         seen_canonical.add(canonical)
+
         if apply_pod_pre_flight:
-            # Pre-flight Vina/QuickVina-GPU sanity gate. The Pod crashes
-            # rc=255 on too-big/too-flexible/wrong-element molecules even
-            # when RDKit accepts them. Mirrors the gate in services/quick_dock.py
-            # — keeping the cutoffs in sync prevents the AI from emitting
-            # variants the user will only see fail in the UI.
             skip_reason = _vina_pod_pre_flight(canonical)
             if skip_reason:
                 log.info("optimize variant skipped (pod pre-flight): %s for %r", skip_reason, canonical)
                 continue
-        out.append(OptimizeVariant(new_smiles=canonical, rationale=rationale))
+
+        # ── Self-prediction gate ────────────────────────────────────
+        # The model contracted to predict its own delta + SA + mutation
+        # target. Reject anything where it admits the design is weak.
+        # This is the Hard-Constraint Reject Loop (Tier 1 #2).
+        pred_improve = _coerce_float(raw.get("predicted_improvement_kcal"))
+        pred_sa = _coerce_float(raw.get("predicted_sa_score"))
+        mut_target_raw = raw.get("mutation_target")
+        mut_target = (
+            None if mut_target_raw is None or str(mut_target_raw).strip().lower() == "null"
+            else str(mut_target_raw).strip()
+        )
+
+        if apply_self_prediction_gate:
+            # Missing predictions = silent contract violation. Don't reject
+            # the legacy-prompt path (older callers don't ask for them) —
+            # only enforce when both are present, which signals the model
+            # acknowledged the contract.
+            if pred_improve is not None and pred_improve < MIN_PREDICTED_IMPROVEMENT_KCAL:
+                log.info(
+                    "optimize variant self-rejected (predicted Δ=%.2f < %.2f): %r",
+                    pred_improve, MIN_PREDICTED_IMPROVEMENT_KCAL, canonical,
+                )
+                continue
+            if pred_sa is not None and pred_sa > MAX_PREDICTED_SA_SCORE:
+                log.info(
+                    "optimize variant self-rejected (predicted SA=%.2f > %.2f): %r",
+                    pred_sa, MAX_PREDICTED_SA_SCORE, canonical,
+                )
+                continue
+            # Hallucinated residue check — if the model claims to target a
+            # residue, that residue must appear in the hits/misses list we
+            # gave it. Tightens the existing prompt-only guard with an
+            # actual server-side reject.
+            if mut_target and valid_residues and mut_target not in valid_residues:
+                log.info(
+                    "optimize variant rejected (hallucinated mutation_target=%r not in hits/misses): %r",
+                    mut_target, canonical,
+                )
+                continue
+
+        variant: OptimizeVariant = OptimizeVariant(
+            new_smiles=canonical, rationale=rationale,
+        )
+        if pred_improve is not None:
+            variant["predicted_improvement_kcal"] = pred_improve
+        if pred_sa is not None:
+            variant["predicted_sa_score"] = pred_sa
+        variant["mutation_target"] = mut_target
+        out.append(variant)
     return out
+
+
+def _coerce_float(value) -> Optional[float]:
+    """Defensive float coerce. Haiku is good at JSON but occasionally
+    emits "0.7 kcal/mol" instead of 0.7. Returns None for non-numeric
+    strings rather than raising — the caller treats None as "no
+    prediction made" and skips the gate, which is the right fallback."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Strip trailing units the model sometimes appends.
+        m = re.match(r"-?\d+(\.\d+)?", s)
+        if m:
+            try:
+                return float(m.group(0))
+            except ValueError:
+                return None
+    return None
+
+
+async def call_anthropic_optimize_topup(
+    *,
+    smiles: str,
+    score: float,
+    hits: list[str],
+    misses: list[str],
+    target_pdb: Optional[str] = None,
+    mutations: Optional[str] = None,
+    n_needed: int,
+    already_have: list[str],
+) -> list[OptimizeVariant]:
+    """Re-call the AI to fill `n_needed` more variants when the first call's
+    Hard-Constraint Reject Loop trimmed too many. Tells the model exactly
+    how many it needs AND lists the SMILES it already submitted (so it
+    doesn't re-propose them).
+
+    Bounded retry: only called once per Optimize request, and only when
+    we got >0 valid variants from the first call (so we know the model
+    is responsive — otherwise re-calling is just burning tokens). Caller
+    decides whether to invoke."""
+    if n_needed <= 0:
+        return []
+
+    # Same context as the initial call, but with a top-up directive at the
+    # end — and the existing SMILES listed so the model doesn't repeat them.
+    parts = [
+        f"Current SMILES: {smiles}",
+        f"Docked score: {score:.2f} kcal/mol",
+        f"Contacts (hits): {', '.join(hits) if hits else '(none reported)'}",
+        f"Nearby residues NOT contacted (misses): {', '.join(misses) if misses else '(none reported)'}",
+    ]
+    if target_pdb:
+        ctx = f"Target context: PDB {target_pdb}"
+        if mutations:
+            ctx += f", mutations: {mutations}"
+        parts.append(ctx)
+    parts.append("")
+    parts.append(
+        f"TOP-UP REQUEST: your previous response was good but {n_needed} "
+        f"variants got auto-rejected (their predicted_improvement_kcal was "
+        f"< {MIN_PREDICTED_IMPROVEMENT_KCAL}, predicted_sa_score was > "
+        f"{MAX_PREDICTED_SA_SCORE}, or mutation_target wasn't in the "
+        f"hits/misses list)."
+    )
+    if already_have:
+        parts.append(
+            f"You ALREADY submitted these (don't repeat them): "
+            f"{'; '.join(already_have[:6])}"
+        )
+    parts.append(
+        f"Propose {n_needed} ADDITIONAL variants that pass the contract "
+        f"(predicted_improvement_kcal >= {MIN_PREDICTED_IMPROVEMENT_KCAL}, "
+        f"predicted_sa_score <= {MAX_PREDICTED_SA_SCORE}). Same JSON shape, "
+        f"same fields — return EXACTLY {n_needed} variants this time."
+    )
+    user_prompt = "\n".join(parts)
+
+    headers, payload, timeout = _build_request(
+        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_needed)),
+        user_prompt=user_prompt,
+    )
+    if n_needed > 3:
+        payload["max_tokens"] = max(int(payload.get("max_tokens", 1024)), 200 * n_needed + 600)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        log.warning("optimize top-up network error (non-fatal): %s", e)
+        return []
+
+    if r.status_code >= 400:
+        log.warning("optimize top-up HTTP %d (non-fatal): %s", r.status_code, r.text[:200])
+        return []
+
+    body = r.json()
+    raw_text = ""
+    try:
+        for block in body.get("content", []):
+            if block.get("type") == "text":
+                raw_text += block.get("text", "")
+    except (AttributeError, TypeError):
+        pass
+
+    parsed = _extract_json(raw_text)
+    if not parsed:
+        log.warning("optimize top-up returned non-JSON")
+        return []
+
+    raw_variants = parsed.get("variants") or []
+    if not isinstance(raw_variants, list):
+        return []
+
+    valid_residues = _valid_residue_set(hits, misses)
+    return _validate_and_filter_variants(
+        raw_variants=raw_variants,
+        n_variants=n_needed,
+        apply_pod_pre_flight=True,
+        apply_self_prediction_gate=True,
+        valid_residues=valid_residues,
+    )
 
 
 def _vina_pod_pre_flight(smiles: str) -> Optional[str]:

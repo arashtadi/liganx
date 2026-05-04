@@ -70,11 +70,18 @@ class ScoredVariant(TypedDict, total=False):
     rationale: str
     score: float            # Vina kcal/mol (lower = stronger binding)
     delta: float            # parent_score - score; positive = improvement
-    sa_score: float         # 1=easy, 10=impossible
+    sa_score: float         # 1=easy, 10=impossible (server-computed)
     fitness: float          # composite ranking value
     mutation_contact: bool  # True iff variant touches the mutated residue
     hits: list[str]         # docked-pose contacts (for UI context)
     misses: list[str]       # nearby-pocket residues NOT contacted
+    # Self-predictions from the AI (Hard-Constraint Reject Loop, Tier 1 #2).
+    # Carried through so the UI can render a calibration badge — useful
+    # signal of whether the AI knew it had a winner (predicted high Δ +
+    # actual high Δ) vs got lucky (predicted low Δ + actual high Δ).
+    predicted_improvement_kcal: float
+    predicted_sa_score: float
+    mutation_target: Optional[str]
 
 
 class OptimizeLoopResult(TypedDict, total=False):
@@ -83,6 +90,8 @@ class OptimizeLoopResult(TypedDict, total=False):
     candidates_generated: int   # how many Claude returned (post-RDKit)
     candidates_filtered: int    # survivors after SA + pod pre-flight
     candidates_docked: int      # how many actually got a Vina score
+    candidates_self_rejected: int  # how many failed the self-prediction gate
+    candidates_top_up: int      # how many came from the top-up re-call
     note: str                   # human-readable diagnostic for the UI
 
 
@@ -167,8 +176,11 @@ async def generate_score_filter_optimize(
     )
 
     # ── 1. Generate ──────────────────────────────────────────────────
-    # apply_pod_pre_flight=True is intentional: cheap, deterministic, and
-    # keeps molecules vina-gpu would crash on out of the docker queue.
+    # apply_pod_pre_flight=True: cheap, deterministic, keeps molecules
+    # vina-gpu would crash on out of the docker queue.
+    # apply_self_prediction_gate=True: enforce the Hard-Constraint Reject
+    # Loop — drop variants whose own author predicts < 0.5 kcal/mol Δ,
+    # > 6.0 SA, or hallucinates a residue label.
     raw_variants = await ai.call_anthropic_optimize(
         smiles=smiles,
         score=parent_score,
@@ -178,7 +190,39 @@ async def generate_score_filter_optimize(
         mutations=mutations,
         n_variants=ai.N_OPTIMIZE_CANDIDATES,
         apply_pod_pre_flight=True,
+        apply_self_prediction_gate=True,
     )
+
+    self_rejected = max(0, ai.N_OPTIMIZE_CANDIDATES - len(raw_variants))
+
+    # ── 1b. Top-up retry ─────────────────────────────────────────────
+    # If the Hard-Constraint gate trimmed too many, ask the AI for more
+    # — but ONLY if we have at least 1 valid variant (otherwise the model
+    # is clearly off-target and another call won't help). Bounded to one
+    # retry to keep cost predictable.
+    top_up_count = 0
+    if 0 < len(raw_variants) < ai.MIN_OPTIMIZE_CANDIDATES * 2:
+        n_needed = ai.N_OPTIMIZE_CANDIDATES - len(raw_variants)
+        log.info(
+            "optimize_loop: top-up triggered — got %d valid (after self-rejects), need %d more",
+            len(raw_variants), n_needed,
+        )
+        try:
+            extras = await ai.call_anthropic_optimize_topup(
+                smiles=smiles,
+                score=parent_score,
+                hits=hits,
+                misses=misses,
+                target_pdb=target_pdb,
+                mutations=mutations,
+                n_needed=n_needed,
+                already_have=[v["new_smiles"] for v in raw_variants],
+            )
+            top_up_count = len(extras)
+            log.info("optimize_loop: top-up returned %d additional variants", top_up_count)
+            raw_variants = raw_variants + extras
+        except Exception as e:
+            log.warning("optimize_loop: top-up failed (non-fatal): %s", e)
 
     if not raw_variants:
         log.info("optimize_loop: AI returned 0 valid variants")
@@ -187,13 +231,22 @@ async def generate_score_filter_optimize(
             candidates_generated=0,
             candidates_filtered=0,
             candidates_docked=0,
+            candidates_self_rejected=self_rejected,
+            candidates_top_up=top_up_count,
             note="AI didn't propose any valid variants. Try again, or refine the structure manually.",
         )
 
-    log.info("optimize_loop: AI returned %d valid variants (post-RDKit + pod pre-flight)", len(raw_variants))
+    log.info(
+        "optimize_loop: AI returned %d valid variants (post-RDKit + pod pre-flight + self-prediction gate, +%d top-up)",
+        len(raw_variants), top_up_count,
+    )
 
     # ── 2. Filter on SA Score ────────────────────────────────────────
     # Compute SA for every survivor; drop the unsynthesisable ones.
+    # The AI's self-predicted SA already gated > 6 in the prompt contract,
+    # but we re-compute server-side because the model can be optimistic
+    # (see calibration logs). Carry both through so the UI can warn when
+    # they disagree by a lot.
     survivors: list[dict] = []
     for v in raw_variants:
         sa = compute_sa_score(v["new_smiles"])
@@ -206,7 +259,22 @@ async def generate_score_filter_optimize(
                 sa, _MAX_SA_SCORE, v["new_smiles"],
             )
             continue
-        survivors.append({"new_smiles": v["new_smiles"], "rationale": v["rationale"], "sa_score": float(sa)})
+        # Calibration log — useful to spot when the AI consistently
+        # underestimates SA on certain scaffold classes.
+        pred_sa = v.get("predicted_sa_score")
+        if pred_sa is not None and abs(float(pred_sa) - sa) > 2.0:
+            log.info(
+                "optimize_loop: AI SA prediction off by %.1f (predicted=%.1f, actual=%.1f) for %r",
+                abs(float(pred_sa) - sa), pred_sa, sa, v["new_smiles"],
+            )
+        survivors.append({
+            "new_smiles": v["new_smiles"],
+            "rationale": v["rationale"],
+            "sa_score": float(sa),
+            "predicted_improvement_kcal": v.get("predicted_improvement_kcal"),
+            "predicted_sa_score": pred_sa,
+            "mutation_target": v.get("mutation_target"),
+        })
 
     if not survivors:
         log.info("optimize_loop: 0 survivors after SA filter — returning AI variants un-docked")
@@ -253,7 +321,7 @@ async def generate_score_filter_optimize(
             sa_score=cand["sa_score"],
             mutation_contact=mut_contact,
         )
-        scored.append(ScoredVariant(
+        sv = ScoredVariant(
             new_smiles=cand["new_smiles"],
             rationale=cand["rationale"],
             score=round(score, 2),
@@ -263,7 +331,16 @@ async def generate_score_filter_optimize(
             mutation_contact=bool(mut_contact),
             hits=list(dock.get("hits") or []),
             misses=list(dock.get("misses") or []),
-        ))
+        )
+        # Carry the AI's self-predictions through so the UI can show a
+        # calibration badge (predicted Δ vs actual Δ).
+        if cand.get("predicted_improvement_kcal") is not None:
+            sv["predicted_improvement_kcal"] = float(cand["predicted_improvement_kcal"])
+        if cand.get("predicted_sa_score") is not None:
+            sv["predicted_sa_score"] = float(cand["predicted_sa_score"])
+        if cand.get("mutation_target") is not None:
+            sv["mutation_target"] = cand["mutation_target"]
+        scored.append(sv)
 
     if not scored:
         log.info("optimize_loop: no successfully-docked variants — falling back")
@@ -287,18 +364,30 @@ async def generate_score_filter_optimize(
         candidates_generated=len(raw_variants),
         candidates_filtered=len(survivors),
         candidates_docked=len(scored),
+        candidates_self_rejected=self_rejected,
+        candidates_top_up=top_up_count,
     )
 
 
 def _fallback_undocked(raw_variants: list, note: str) -> OptimizeLoopResult:
     """When docking is unavailable, return the AI's variants without
     scores so the frontend can still surface them. The frontend's per-
-    variant fan-out (existing code path) will fill in scores later."""
+    variant fan-out (existing code path) will fill in scores later.
+
+    Carries the self-prediction fields when present so the UI can still
+    render the AI's confidence even when the docker is down."""
+    out_variants: list[ScoredVariant] = []
+    for v in raw_variants[:_TOP_N]:
+        sv = ScoredVariant(new_smiles=v["new_smiles"], rationale=v["rationale"])
+        if v.get("predicted_improvement_kcal") is not None:
+            sv["predicted_improvement_kcal"] = float(v["predicted_improvement_kcal"])
+        if v.get("predicted_sa_score") is not None:
+            sv["predicted_sa_score"] = float(v["predicted_sa_score"])
+        if v.get("mutation_target") is not None:
+            sv["mutation_target"] = v["mutation_target"]
+        out_variants.append(sv)
     return OptimizeLoopResult(
-        variants=[
-            ScoredVariant(new_smiles=v["new_smiles"], rationale=v["rationale"])
-            for v in raw_variants[:_TOP_N]
-        ],
+        variants=out_variants,
         candidates_generated=len(raw_variants),
         candidates_filtered=len(raw_variants),
         candidates_docked=0,
