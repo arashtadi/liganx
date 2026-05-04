@@ -1151,6 +1151,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // inline 3D viewers on 2026-05-02.)
   const [optimizeStatus, setOptimizeStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  /** SMILES of the variant currently sitting on the canvas (most-recent
+   *  Apply →). Used to render a "✓ Applied" badge on that variant's row
+   *  so the user gets unambiguous feedback that their click landed.
+   *  Cleared automatically when the user edits manually (the editor
+   *  change-detection effect resets it on every Optimize run too).
+   *  Bug surfaced 2026-05-04: clicking Apply changed the canvas but the
+   *  row label stayed "Apply →" — no visual confirmation. */
+  const [appliedVariantSmiles, setAppliedVariantSmiles] = useState<string | null>(null);
   /** Soft, non-blocking informational message — present when the
    *  Generate-Score-Filter loop fell back to un-docked variants (pod
    *  down, no receptor cached, all candidates filtered by SA, etc).
@@ -1289,6 +1297,9 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     setOptimizedVariants([]);
     setOptimizeStatus("idle");
     setOptimizeError(null);
+    // Reset Applied marker — fresh dock means the user is iterating; old
+    // variants are stale and shouldn't show the "✓ Applied" badge.
+    setAppliedVariantSmiles(null);
     try {
       const r = await api.assistQuickDock({
         smiles: smi,
@@ -1350,6 +1361,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     setOptimizeError(null);
     setOptimizeNote(null);
     setOptimizedVariants([]);
+    // New variants list incoming — clear the Applied marker from any
+    // previous Optimize round so old "✓ Applied" badges don't bleed
+    // through onto the fresh suggestions.
+    setAppliedVariantSmiles(null);
     try {
       const opt = await api.assistOptimize({
         smiles: dockResult.smiles,
@@ -1437,8 +1452,19 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   async function applyVariantToCanvas(smiles: string) {
     const apiObj = getApi();
     if (!apiObj?.setMolecule) return;
-    try { await apiObj.setMolecule(smiles); }
-    catch (e) { setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`); }
+    try {
+      await apiObj.setMolecule(smiles);
+      // Mark this variant as the currently-applied one so its row shows
+      // "✓ Applied" instead of "Apply →". We store the EXACT string the
+      // user clicked — the row-level comparison is `v.new_smiles ===
+      // appliedVariantSmiles`, both of which come from the same backend
+      // response so they're guaranteed to match without a canonical
+      // round-trip. Ketcher's canonical form may differ from this stored
+      // value, but that's fine because we never compare to liveSmiles.
+      setAppliedVariantSmiles(smiles);
+    } catch (e) {
+      setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`);
+    }
   }
 
   /** Open the Contact form pre-filled with a quick-dock-access request.
@@ -1927,13 +1953,28 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                         </span>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => applyVariantToCanvas(v.new_smiles)}
-                      className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0"
-                    >
-                      Apply →
-                    </button>
+                    {appliedVariantSmiles === v.new_smiles ? (
+                      // ✓ Applied — this variant is currently on the
+                      // canvas. Renders as a non-button so it doesn't
+                      // invite a redundant click; the visual weight tells
+                      // the user "you already did this one." Re-clicking
+                      // is also pointless because setMolecule on the
+                      // same SMILES is a no-op.
+                      <span
+                        className="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-0.5 shrink-0"
+                        title="This variant is currently on the canvas"
+                      >
+                        ✓ Applied
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => applyVariantToCanvas(v.new_smiles)}
+                        className="text-[9px] font-semibold text-delta-700 dark:text-delta-300 hover:underline shrink-0"
+                      >
+                        Apply →
+                      </button>
+                    )}
                   </div>
                   <div className="text-[9px] text-slate-600 dark:text-slate-300 leading-tight mt-0.5 line-clamp-2" title={v.rationale}>
                     {v.rationale}
