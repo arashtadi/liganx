@@ -25,17 +25,20 @@ import { ApiError, api, type AdminUserRow } from "../api";
 import { Spinner } from "../components/Icons";
 import { useAuth } from "../lib/auth";
 import { usePageMeta } from "../lib/usePageMeta";
+import { parseUtcDate } from "../lib/parseUtcDate";
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  // parseUtcDate ensures bare backend timestamps are treated as UTC
+  // and converted to the viewer's local zone (see lib/parseUtcDate.ts).
+  const d = parseUtcDate(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function fmtRelative(iso: string | null): string {
   if (!iso) return "never";
-  const d = new Date(iso);
+  const d = parseUtcDate(iso);
   if (isNaN(d.getTime())) return iso;
   const diffMs = Date.now() - d.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));

@@ -11,6 +11,7 @@ import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
 import { usePageMeta } from "../lib/usePageMeta";
+import { parseUtcDate } from "../lib/parseUtcDate";
 
 export type Pick = { compound: Compound; variant: string; score: number; deltaWt: number | null; extra?: string | null };
 
@@ -1158,7 +1159,10 @@ function StreamingBanner({ job }: { job: Job }) {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [job.status]);
-  const elapsedS = Math.max(0, (now - new Date(job.created_at).getTime()) / 1000);
+  // Backend timestamps are bare UTC ISO strings (no Z). parseUtcDate
+  // appends Z so the elapsed-time math doesn't get an offset error
+  // — without it the running-banner stage stepper drifts by hours.
+  const elapsedS = Math.max(0, (now - parseUtcDate(job.created_at).getTime()) / 1000);
 
   // ── Stage detection ────────────────────────────────────────────────
   // PREFER the backend-emitted stage slug when available — it's the

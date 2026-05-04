@@ -27,6 +27,7 @@ import {
   type JobTag,
 } from "../lib/jobTags";
 import { usePageMeta } from "../lib/usePageMeta";
+import { parseUtcDate } from "../lib/parseUtcDate";
 
 function statusPill(s: Job["status"]) {
   const base = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset";
@@ -45,17 +46,49 @@ function statusPill(s: Job["status"]) {
 }
 
 function fmtDate(iso: string): string {
-  // "2026-04-28T18:22:01" → "Apr 28, 6:22 PM"
-  const d = new Date(iso);
+  // "2026-04-28T18:22:01Z" → "Apr 28, 6:22 PM" (in the viewer's tz)
+  //
+  // Bug fixed 2026-05-04: the backend ships UTC timestamps as bare ISO
+  // strings WITHOUT a "Z" suffix or "+00:00" offset (psycopg2 strips
+  // the tz on serialisation when the column is `timestamp` rather than
+  // `timestamptz`). JavaScript's Date parser treats an unsuffixed ISO
+  // string as LOCAL time, not UTC, so the result was displayed as if
+  // the UTC value were already in the user's clock — every timestamp
+  // was off by their UTC offset. Detect the missing tz and append Z
+  // so the parse goes through UTC and toLocaleTimeString correctly
+  // converts to the viewer's local zone.
+  const d = parseUtcDate(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
     + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+/** Compact compound list — names if any are named, then a "+N more"
+ *  suffix when there are too many to fit. Falls back to "<count>
+ *  compound(s)" when no row is named so the row still says SOMETHING
+ *  intelligible. Used in row subtitles + default titles. */
+function fmtCompounds(compounds: { name?: string | null; smiles: string }[]): string {
+  const total = compounds.length;
+  if (total === 0) return "no compounds";
+  // Prefer named over unnamed; an unnamed compound's SMILES is too
+  // long for a list view and a SMILES head doesn't help most users
+  // identify the compound at a glance.
+  const named = compounds
+    .map((c) => (c.name ?? "").trim())
+    .filter((n) => n.length > 0);
+  if (named.length === 0) {
+    return `${total} compound${total === 1 ? "" : "s"}`;
+  }
+  // Show up to 2 names inline; everything past that becomes "+N more".
+  const head = named.slice(0, 2).join(", ");
+  const remaining = total - Math.min(2, named.length);
+  return remaining > 0 ? `${head} +${remaining} more` : head;
+}
+
 /** Synthesize a fallback title when the user didn't provide one. */
 function defaultTitle(j: Job): string {
   const muts = j.mutations.length ? ` · ${j.mutations.join(", ")}` : "";
-  return `${j.pdb_id}/${j.chain} · ${j.compounds.length} compound${j.compounds.length === 1 ? "" : "s"}${muts}`;
+  return `${j.pdb_id}/${j.chain} · ${fmtCompounds(j.compounds)}${muts}`;
 }
 
 /** Page size for the infinite-scroll list. Sized to one "Load more" click
@@ -412,7 +445,7 @@ function HistoryRow({ job }: { job: Job }) {
               {job.mutations.length > 0 && (
                 <span className="font-mono"> · {job.mutations.join(", ")}</span>
               )}
-              {` · ${job.compounds.length} compound${job.compounds.length === 1 ? "" : "s"}`}
+              {` · ${fmtCompounds(job.compounds)}`}
             </div>
             <TagStrip job={job} />
             {err && (

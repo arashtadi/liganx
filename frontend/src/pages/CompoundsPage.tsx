@@ -21,9 +21,13 @@ import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import { TAG_PRESETS, TAG_BY_VALUE, CUSTOM_TAG_CHIP, sortTags } from "../lib/jobTags";
 import { usePageMeta } from "../lib/usePageMeta";
+import { parseUtcDate } from "../lib/parseUtcDate";
 
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
+  // parseUtcDate handles bare backend timestamps correctly (the
+  // backend ships ISO without a Z suffix; raw `new Date(iso)`
+  // misreads them as local time and shows the UTC date instead).
+  const d = parseUtcDate(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }

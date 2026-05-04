@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "./MoleculePreview";
+import { parseUtcDate } from "../lib/parseUtcDate";
 import { api, ApiError, type AIHistoryEntry } from "../api";
 
 // 3D viewers (Mol3DPreview, DockedPoseViewer) used to live in this
@@ -2126,7 +2127,7 @@ function HistoryRow({
   // never trigger since we mint the ISO ourselves).
   let prettyTs = entry.ts;
   try {
-    const d = new Date(entry.ts);
+    const d = parseUtcDate(entry.ts);
     if (!isNaN(d.getTime())) {
       prettyTs = d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
         + " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
