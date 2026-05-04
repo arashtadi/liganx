@@ -92,15 +92,18 @@ export default function AutocompleteInput<T>({
   function togglePick(item: T) {
     const key = getValue(item);
     setPicked((cur) => {
+      // Always allow UN-checking — that's how the user makes room
+      // when they've hit the cap and want to swap a pick.
       if (cur.some((c) => getValue(c) === key)) {
         return cur.filter((c) => getValue(c) !== key);
       }
-      // Cap-respect: drop the oldest pick to make room for the new one
-      // rather than silently ignoring the click. This matches user
-      // expectation of "I just clicked, something should have changed."
-      if (cur.length >= multiMax) {
-        return [...cur.slice(1), item];
-      }
+      // HARD cap: once N picks are checked, additional clicks are
+      // ignored. The dropdown row visually disables (greyed out,
+      // not-allowed cursor) so the click feels intentional rather
+      // than broken. Earlier behaviour silently dropped the oldest
+      // pick to make room — confusing because the user couldn't
+      // tell which entry got evicted.
+      if (cur.length >= multiMax) return cur;
       return [...cur, item];
     });
   }
@@ -293,28 +296,41 @@ export default function AutocompleteInput<T>({
           >
             {items.map((item, i) => {
               const isPicked = multi && pickedKeys.has(getValue(item));
+              // At-cap unchecked rows are visually + interactively
+              // disabled. Already-picked rows stay clickable so the
+              // user can uncheck to free a slot.
+              const atCapAndUnchecked = multi && !isPicked && picked.length >= multiMax;
               return (
                 <li
                   key={i}
                   role="option"
                   aria-selected={multi ? isPicked : i === active}
+                  aria-disabled={atCapAndUnchecked || undefined}
+                  title={atCapAndUnchecked ? `Maximum ${multiMax} selected — uncheck one to swap` : undefined}
                   onMouseDown={(e) => {
                     // In multi mode a click toggles the checkbox without
                     // closing the dropdown, so the user can pick several
                     // in one open. In single mode it commits as before.
                     e.preventDefault();
+                    if (atCapAndUnchecked) return; // hard cap: ignore
                     if (multi) togglePick(item);
                     else pick(item);
                   }}
                   onMouseEnter={() => setActive(i)}
-                  className={`cursor-pointer text-sm transition-colors flex items-center gap-3 border-b border-slate-100 dark:border-slate-700 last:border-b-0 ${
+                  className={`text-sm transition-colors flex items-center gap-3 border-b border-slate-100 dark:border-slate-700 last:border-b-0 ${
                     multi ? "px-3.5 py-2.5" : "px-3 py-1.5"
+                  } ${
+                    atCapAndUnchecked
+                      ? "opacity-40 cursor-not-allowed"
+                      : "cursor-pointer"
                   } ${
                     isPicked
                       ? "bg-delta-50 dark:bg-delta-900/30"
-                      : i === active
-                        ? "bg-slate-50 dark:bg-slate-700/50"
-                        : "hover:bg-slate-50 dark:hover:bg-slate-700"
+                      : atCapAndUnchecked
+                        ? ""
+                        : i === active
+                          ? "bg-slate-50 dark:bg-slate-700/50"
+                          : "hover:bg-slate-50 dark:hover:bg-slate-700"
                   }`}
                 >
                   {multi && (
@@ -324,7 +340,9 @@ export default function AutocompleteInput<T>({
                         "shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors " +
                         (isPicked
                           ? "bg-delta-600 border-delta-600 text-white"
-                          : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
+                          : atCapAndUnchecked
+                            ? "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                            : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
                       }
                     >
                       {isPicked && (
@@ -343,11 +361,18 @@ export default function AutocompleteInput<T>({
               button. Disabled state when no picks; cap warning when at max. */}
           {multi && (
             <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 rounded-b-lg">
-              <span className="text-[11px] text-slate-600 dark:text-slate-400">
+              <span
+                className={
+                  "text-[11px] " +
+                  (picked.length >= multiMax
+                    ? "text-amber-700 dark:text-amber-400 font-semibold"
+                    : "text-slate-600 dark:text-slate-400")
+                }
+              >
                 {picked.length === 0
                   ? `Pick up to ${multiMax}`
                   : picked.length >= multiMax
-                    ? `${picked.length}/${multiMax} selected (max)`
+                    ? `${picked.length}/${multiMax} max — uncheck one to add more`
                     : `${picked.length}/${multiMax} selected`}
               </span>
               <div className="flex items-center gap-1.5">

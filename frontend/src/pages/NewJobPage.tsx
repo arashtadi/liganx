@@ -505,8 +505,15 @@ export default function NewJobPage() {
   const [lookupPicked, setLookupPicked] = useState<string[]>([]);
   function togglePubchemPick(name: string) {
     setLookupPicked((cur) => {
+      // Always allow uncheck — the way to make room when at cap.
       if (cur.includes(name)) return cur.filter((n) => n !== name);
-      if (cur.length >= PUBCHEM_MULTI_MAX) return [...cur.slice(1), name];
+      // HARD cap: ignore additional picks past PUBCHEM_MULTI_MAX. The
+      // dropdown row visibly disables (greyed + not-allowed cursor)
+      // when the cap is hit, so the click feels intentional rather than
+      // broken. Earlier code silently dropped the oldest pick, which
+      // confused users — they couldn't tell why their first selection
+      // disappeared.
+      if (cur.length >= PUBCHEM_MULTI_MAX) return cur;
       return [...cur, name];
     });
   }
@@ -1664,21 +1671,31 @@ export default function NewJobPage() {
                   {suggestions.slice(0, 8).map((s, idx) => {
                     const active = idx === lookupActiveIdx;
                     const isPicked = lookupPicked.includes(s);
+                    // At-cap unchecked rows are blocked. Already-picked
+                    // rows stay clickable so the user can uncheck to swap.
+                    const atCapAndUnchecked =
+                      !isPicked && lookupPicked.length >= PUBCHEM_MULTI_MAX;
                     return (
                       <button
                         key={s}
                         type="button"
                         role="option"
                         aria-selected={isPicked}
+                        aria-disabled={atCapAndUnchecked || undefined}
+                        disabled={atCapAndUnchecked}
+                        title={atCapAndUnchecked ? `Maximum ${PUBCHEM_MULTI_MAX} selected — uncheck one to swap` : undefined}
                         onMouseEnter={() => setLookupActiveIdx(idx)}
                         onClick={() => togglePubchemPick(s)}
                         className={
                           "w-full text-left flex items-center gap-3 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700 last:border-b-0 transition-colors " +
+                          (atCapAndUnchecked ? "opacity-40 cursor-not-allowed " : "") +
                           (isPicked
                             ? "bg-delta-50 dark:bg-delta-900/30"
-                            : active
-                              ? "bg-slate-50 dark:bg-slate-700/40"
-                              : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
+                            : atCapAndUnchecked
+                              ? ""
+                              : active
+                                ? "bg-slate-50 dark:bg-slate-700/40"
+                                : "hover:bg-slate-50 dark:hover:bg-slate-700/40")
                         }
                       >
                         {/* Checkbox glyph — drawn as a square that fills
@@ -1691,7 +1708,9 @@ export default function NewJobPage() {
                             "shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors " +
                             (isPicked
                               ? "bg-delta-600 border-delta-600 text-white"
-                              : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
+                              : atCapAndUnchecked
+                                ? "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                                : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900")
                           }
                         >
                           {isPicked && (
@@ -1715,11 +1734,18 @@ export default function NewJobPage() {
                     Mirrors the AutocompleteInput multi footer so the page
                     has one consistent multi-select pattern. */}
                 <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80">
-                  <span className="text-[11px] text-slate-600 dark:text-slate-400">
+                  <span
+                    className={
+                      "text-[11px] " +
+                      (lookupPicked.length >= PUBCHEM_MULTI_MAX
+                        ? "text-amber-700 dark:text-amber-400 font-semibold"
+                        : "text-slate-600 dark:text-slate-400")
+                    }
+                  >
                     {lookupPicked.length === 0
                       ? `Pick up to ${PUBCHEM_MULTI_MAX} compounds`
                       : lookupPicked.length >= PUBCHEM_MULTI_MAX
-                        ? `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} selected (max)`
+                        ? `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} max — uncheck one to add more`
                         : `${lookupPicked.length}/${PUBCHEM_MULTI_MAX} selected`}
                   </span>
                   <div className="flex items-center gap-1.5">
