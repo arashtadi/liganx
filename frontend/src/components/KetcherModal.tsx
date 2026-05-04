@@ -1565,15 +1565,34 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  2026-05-04 user redesign: "after applying the variant it doesn't
    *  re-dock. We have to optimize and re-think this section." */
   async function applyVariantToCanvas(smiles: string) {
+    // Re-grab the API on every call. The first apply works because the
+    // closure captured a fresh handle; on the second click that handle
+    // can become stale if Ketcher hot-reloaded its iframe context.
     const apiObj = getApi();
-    if (!apiObj?.setMolecule) return;
+    if (!apiObj?.setMolecule) {
+      setQuickDockError("Ketcher hasn't finished loading. Wait a moment and retry.");
+      return;
+    }
     // Stage 1: Applying. Big overlay shows "Applying to canvas…" while
     // Ketcher's Indigo bundle parses the SMILES + builds 2D coords.
     setApplyingVariantSmiles(smiles);
     setApplyStage("applying");
     setRedockVerified(null);
+    // Promise.race with a hard timeout. Reported 2026-05-04: on the
+    // second back-to-back Apply, setMolecule's Promise sometimes never
+    // resolves (Indigo state issue OR Ketcher silently no-ops when the
+    // canvas is already on a similar canonical SMILES). Without this,
+    // the spinner sticks at "Applying to canvas…" forever and the user
+    // has to refresh. 15s is generous — happy path is ~1-3s.
+    const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+      Promise.race([
+        p,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms),
+        ),
+      ]);
     try {
-      await apiObj.setMolecule(smiles);
+      await withTimeout(apiObj.setMolecule(smiles), 15_000, "Ketcher setMolecule");
       // Mark this variant as the currently-applied one so its row shows
       // "✓ Applied" instead of "Apply →". We store the EXACT string the
       // user clicked — the row-level comparison is `v.new_smiles ===
@@ -1590,10 +1609,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // dockability skip didn't fire and Check & use still took 10s.
       // 2026-05-04 user report: "after applied it took about 10 sec
       // for the Check & use this structure to come up".
+      // Same timeout applies — getSmiles can also hang on weird state.
       let canonical = smiles;
       try {
         if (apiObj.getSmiles) {
-          const live: string = await apiObj.getSmiles();
+          const live: string = await withTimeout(apiObj.getSmiles(), 8_000, "Ketcher getSmiles");
           if (live && live.trim().length > 0) {
             canonical = live.trim();
           }
@@ -1688,9 +1708,22 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         });
       }
     } catch (e) {
-      setQuickDockError(`Ketcher rejected the SMILES: ${(e as Error).message}`);
+      const msg = (e as Error)?.message || "unknown";
+      // Distinguish timeout (Ketcher hung) from rejection (bad SMILES).
+      // The hung case is a stuck Indigo state — retrying usually works.
+      if (msg.includes("timed out")) {
+        setQuickDockError(
+          `${msg}. Ketcher's editor got stuck — click Apply & Re-dock again to retry. ` +
+          `If it keeps happening, refresh the page.`,
+        );
+      } else {
+        setQuickDockError(`Ketcher rejected the SMILES: ${msg}`);
+      }
     } finally {
       // Always clear the overlay — both happy path and error path.
+      // Without this the spinner sticks forever on a hung setMolecule
+      // (the original bug — try block awaited a Promise that never
+      // resolved, finally never ran).
       setApplyingVariantSmiles(null);
       setApplyStage(null);
     }
