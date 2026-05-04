@@ -642,6 +642,15 @@ export const api = {
       /** Populated only when a mutation was requested but the mutant
        *  build failed and we fell back to WT. UI should warn the user. */
       mutation_caveat?: string;
+      /** Pose-pocket honesty (2026-05-04). Distance from docked-pose
+       *  centroid to pocket box center, in Å. */
+      pose_offset_a?: number;
+      /** False when the chosen pose drifted off-pocket (offset > 6 Å OR
+       *  zero contact residues). UI renders an amber "pose drifted"
+       *  caveat — score is real but pose isn't in the canonical site. */
+      pose_in_pocket?: boolean;
+      /** Number of independent Vina re-rolls (1=happy path, 3=all drifted). */
+      dock_attempts?: number;
     }>("/assist/quick_dock", { method: "POST", body: JSON.stringify(payload) }),
   /** Optimize loop — given the score + contacts from a prior quick_dock,
    *  asks Claude for 3 variant SMILES designed to gain contacts at the

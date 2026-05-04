@@ -49,6 +49,15 @@ class QuickDockResult(TypedDict, total=False):
     # ("Mutant build failed; this score is WT").
     receptor_variant: str        # "mutant" | "wt"
     mutation_caveat: str         # populated only when fallback to WT happened despite a mutation request
+    # Pose-pocket honesty fields (added 2026-05-04). Vina with a wide
+    # pocket box (~22.5 Å cube on catalog targets) regularly finds
+    # high-affinity poses on surface features that are NOT the canonical
+    # binding site — the score looks great but the pose isn't where you
+    # want it. These two fields let the UI render an honest "pose
+    # drifted off-center" badge before the user pays for a Full Job.
+    pose_offset_a: float         # Å — distance from docked pose centroid to pocket box center
+    pose_in_pocket: bool         # offset <= POSE_DRIFT_THRESHOLD_A AND len(hits) > 0
+    dock_attempts: int           # number of Vina re-rolls that ran (1 happy path, up to 3 if first was out of pocket)
 
 
 # Cap on how many residues we surface to the LLM so the prompt stays
@@ -61,6 +70,20 @@ _MAX_MISSES = 8
 # medchem convention; 8 Å = "near the pocket but not in contact".
 _HIT_RADIUS_A = 4.0
 _NEAR_POCKET_RADIUS_A = 8.0
+
+# Pose-drift threshold (Å). The catalog box is ~22.5 Å on a side, so a
+# pose centroid that's 6+ Å from the box center is sitting in a corner
+# of the search volume — usually a non-canonical surface site, not the
+# real binding pocket. Empirically tuned: the kinase ATP pocket has
+# centroid offsets ≤ 4 Å in cross-docking sanity checks, while the
+# wandering KRAS poses we caught had offsets of 8-12 Å.
+_POSE_DRIFT_THRESHOLD_A = 6.0
+# Up to N independent Vina re-rolls when the first pose is out of pocket.
+# Vina is non-deterministic; re-rolling samples a different starting
+# orientation. Cost: 1 dock = ~6s, 3 docks = ~18s. Cloudflare timeout
+# is 100s so we have headroom. Most happy-path calls hit pocket on the
+# first try and never trigger the retry.
+_MAX_POCKET_RETRIES = 3
 
 
 def quick_dock(
@@ -279,37 +302,92 @@ def quick_dock(
             base_url=pod_url,
             timeout_s=min(settings.pod_dock_timeout_s, 60),
         )
-        try:
-            result = dock_one_pod(
-                receptor_pdbqt=receptor_pdbqt,
-                ligand_pdbqt=ligand_pdbqt,
-                box=box,
-                work_dir=tmp,
-                cfg=cfg,
-                # 2026-05-04: bumped from 4 to 8 to match the production
-                # runner AND the optimize_loop batch dock. Was at 4 for
-                # speed, but the resulting ~0.7 kcal/mol noise meant
-                # users saw the Optimize-suggested score and the
-                # Re-dock score disagreeing by more than the threshold
-                # we tell the AI to target (≥0.5 kcal/mol improvement
-                # to be reproducible). Bumping closes that gap.
-                # Cost: ~3s → ~6s per Quick Dock click. Negligible vs
-                # the network round-trip.
-                exhaustiveness=8,
-                num_modes=3,         # only the top 3 — we only return best anyway
+        # Pocket-best pose selection (2026-05-04). Vina with a wide
+        # search box regularly finds high-affinity poses on non-canonical
+        # surface sites that LOOK great by score but aren't actually in
+        # the binding pocket. The Full Job runner re-rolls Vina and
+        # often picks a different pose, so the Quick Dock score doesn't
+        # match the Full Job result — user feedback: "after the full
+        # docking job it's always mostly out of pocket".
+        #
+        # Strategy: dock once. If the pose centroid is within 6 Å of
+        # the box center → return immediately (happy path, ~6s).
+        # Otherwise, re-roll Vina up to 2 more times (different random
+        # seeds each call) and pick the score-best pose whose centroid
+        # is in pocket. If all rolls drift, return the score-best
+        # overall but mark pose_in_pocket=False so the UI shows an
+        # honest amber caveat. Worst case ~18s.
+        box_center = (box.center_x, box.center_y, box.center_z)
+        attempts: list[tuple[float, "DockingResult"]] = []
+        last_error: Optional[str] = None
+        for attempt_idx in range(_MAX_POCKET_RETRIES):
+            try:
+                roll = dock_one_pod(
+                    receptor_pdbqt=receptor_pdbqt,
+                    ligand_pdbqt=ligand_pdbqt,
+                    box=box,
+                    work_dir=tmp,
+                    cfg=cfg,
+                    # 2026-05-04: bumped from 4 to 8 to match the production
+                    # runner AND the optimize_loop batch dock. Was at 4 for
+                    # speed, but the resulting ~0.7 kcal/mol noise meant
+                    # users saw the Optimize-suggested score and the
+                    # Re-dock score disagreeing by more than the threshold
+                    # we tell the AI to target (≥0.5 kcal/mol improvement
+                    # to be reproducible). Bumping closes that gap.
+                    # Cost: ~3s → ~6s per Quick Dock click. Negligible vs
+                    # the network round-trip.
+                    exhaustiveness=8,
+                    num_modes=3,         # only the top 3 — we only return best anyway
+                )
+            except PodDockError as e:
+                last_error = f"Docking pod call failed: {e}"
+                log.info("quick_dock: pod call failed (attempt %d): %s", attempt_idx + 1, e)
+                # Don't retry on pod errors — likely systemic
+                break
+            except Exception as e:
+                log.exception("quick_dock: unexpected pod failure (attempt %d)", attempt_idx + 1)
+                last_error = f"Unexpected docking failure: {e}"
+                break
+
+            if not roll.modes:
+                last_error = "Pod returned 0 docking modes"
+                break
+
+            offset = compute_pose_offset_a(
+                pose_pdbqt=roll.pose_pdbqt,
+                box_center=box_center,
             )
-        except PodDockError as e:
-            log.info("quick_dock: pod call failed: %s", e)
+            attempts.append((offset, roll))
+            log.info(
+                "quick_dock attempt %d: score=%.2f offset=%.1f Å (threshold=%.1f)",
+                attempt_idx + 1,
+                roll.modes[0].affinity_kcal_mol,
+                offset,
+                _POSE_DRIFT_THRESHOLD_A,
+            )
+            # Happy path: first pose is in pocket → done. No retry.
+            if offset <= _POSE_DRIFT_THRESHOLD_A:
+                break
+
+        if not attempts:
             return QuickDockResult(
                 ok=False,
-                error=f"Docking pod call failed: {e}. Try again in a few seconds.",
+                error=(last_error or "Docking pod call failed.") +
+                ". Try again in a few seconds.",
             )
-        except Exception as e:
-            log.exception("quick_dock: unexpected pod failure")
-            return QuickDockResult(ok=False, error=f"Unexpected docking failure: {e}")
 
-        if not result.modes:
-            return QuickDockResult(ok=False, error="Pod returned 0 docking modes.")
+        # Pick the best pose: prefer in-pocket attempts (score-best of
+        # those); fall back to score-best overall if all drifted. This
+        # matches user intent — "show me the best pose that's actually
+        # in the pocket". Score is more-negative-is-better.
+        in_pocket_attempts = [a for a in attempts if a[0] <= _POSE_DRIFT_THRESHOLD_A]
+        candidate_pool = in_pocket_attempts if in_pocket_attempts else attempts
+        best_offset, result = min(
+            candidate_pool, key=lambda a: a[1].modes[0].affinity_kcal_mol,
+        )
+        dock_attempts_used = len(attempts)
+        pose_in_pocket = bool(in_pocket_attempts) and best_offset <= _POSE_DRIFT_THRESHOLD_A
 
         best_score = float(result.modes[0].affinity_kcal_mol)
 
@@ -335,6 +413,11 @@ def quick_dock(
         except Exception:
             pose_b64 = ""
 
+        # In-pocket flag also requires at least one hit residue. A pose
+        # with offset within 6 Å but zero hits is sitting in empty space
+        # near the box center (rare but possible after an OpenMM
+        # minimisation pulled the pocket sidechains away).
+        pose_in_pocket_final = pose_in_pocket and len(hits) > 0
         out = QuickDockResult(
             ok=True,
             score=round(best_score, 2),
@@ -353,6 +436,13 @@ def quick_dock(
             # amber "WT only — mutant build failed" caveat when "wt" but
             # the user requested a mutation.
             receptor_variant="mutant" if rec.is_mutant else "wt",
+            # Pose-pocket honesty. UI renders an amber "Pose drifted
+            # off-center" badge when pose_in_pocket=False so the user
+            # knows the score isn't reliable for the canonical site
+            # before paying for a Full Job.
+            pose_offset_a=round(best_offset, 1),
+            pose_in_pocket=pose_in_pocket_final,
+            dock_attempts=dock_attempts_used,
         )
         if not rec.is_mutant and mutation and rec.fallback_reason:
             out["mutation_caveat"] = rec.fallback_reason
@@ -465,3 +555,40 @@ def _extract_contacts(
     hits = sorted(hits_set)
     misses = sorted(nearby_set - hits_set)
     return hits, misses
+
+
+def compute_pose_offset_a(
+    *,
+    pose_pdbqt: Path,
+    box_center: tuple[float, float, float],
+) -> float:
+    """Distance (Å) from the docked-pose heavy-atom centroid to the
+    pocket box center. Used by the pose-drift badge in the editor and
+    by the pocket-best-pose retry loop.
+
+    Returns 0.0 if the PDBQT can't be parsed (treated as "no drift" so
+    we don't false-alarm; the caller can treat 0.0 as "unknown" via
+    the pose_in_pocket bool which goes False when len(hits)==0).
+    """
+    sx = sy = sz = 0.0
+    n = 0
+    try:
+        for line in pose_pdbqt.read_text().splitlines():
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+            try:
+                x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+                elem = line[76:78].strip().upper() if len(line) >= 78 else ""
+                if elem == "H":
+                    continue
+                sx += x; sy += y; sz += z; n += 1
+            except ValueError:
+                continue
+    except Exception:
+        return 0.0
+    if n == 0:
+        return 0.0
+    cx, cy, cz = sx / n, sy / n, sz / n
+    bx, by, bz = box_center
+    import math
+    return math.sqrt((cx - bx) ** 2 + (cy - by) ** 2 + (cz - bz) ** 2)

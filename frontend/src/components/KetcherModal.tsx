@@ -1185,6 +1185,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     /** Populated only when a mutation was requested but the build
      *  failed and we fell back. Shown in the badge tooltip. */
     mutationCaveat?: string;
+    /** Pose-pocket honesty (2026-05-04). Distance from pose centroid
+     *  to pocket box center in Å. Drives the drift badge. */
+    poseOffsetA?: number;
+    /** False when the chosen pose drifted off-pocket. When false the
+     *  UI shows an amber "Pose drifted off-center" caveat so the user
+     *  doesn't trust the score for the canonical site. */
+    poseInPocket?: boolean;
+    /** Number of Vina re-rolls (1=happy path, 3=all drifted). */
+    dockAttempts?: number;
   } | null>(null);
   // (3D column mode state — ligand vs pose — was removed with the
   // inline 3D viewers on 2026-05-02.)
@@ -1373,6 +1382,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         // back to WT. UI badge below the score reads it directly.
         receptorVariant: r.receptor_variant,
         mutationCaveat: r.mutation_caveat,
+        // Pose-pocket honesty (2026-05-04). Backend retried up to 3
+        // times to land in pocket; we surface the result so the user
+        // knows whether the score reflects the canonical site.
+        poseOffsetA: r.pose_offset_a,
+        poseInPocket: r.pose_in_pocket,
+        dockAttempts: r.dock_attempts,
       });
       setQuickDockStatus("done");
     } catch (e) {
@@ -1795,6 +1810,26 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                     title={dockResult.mutationCaveat || "Mutant build failed; fell back to WT receptor. The relative Δ vs WT-baseline is still informative but the absolute score isn't mutation-aware."}
                   >
                     WT only ⚠
+                  </span>
+                )}
+                {/* Pose-pocket honesty (2026-05-04). When pose drifted
+                    off-pocket (centroid >6 Å from box center, or zero
+                    contact residues), render an amber caveat so the
+                    user knows the score is from a non-canonical site
+                    BEFORE paying for a Full Job. The Full Job often
+                    re-rolls Vina to a different out-of-pocket pose,
+                    creating the "Quick Dock said -12 but Full Job is
+                    out of pocket" complaint that prompted this fix. */}
+                {dockResult.poseInPocket === false && (
+                  <span
+                    className="text-[8.5px] px-1 py-px rounded font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 cursor-help"
+                    title={`Pose centroid is ${dockResult.poseOffsetA?.toFixed(1) ?? "?"} Å from the pocket center${
+                      dockResult.dockAttempts && dockResult.dockAttempts > 1
+                        ? ` (re-rolled Vina ${dockResult.dockAttempts}× — none landed in pocket)`
+                        : ""
+                    }. The score is real but the binding site isn't the canonical pocket — Full Job results may differ.`}
+                  >
+                    drifted off-pocket ⚠
                   </span>
                 )}
               </div>
