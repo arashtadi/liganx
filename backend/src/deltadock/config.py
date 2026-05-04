@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # flipped server-side.
     quick_dock_enabled: bool = False
     boltz2_enabled: bool = False
+    # When enabled, the Optimize loop uses Anthropic native tool use so the
+    # AI can self-validate SMILES candidates mid-generation (RDKit parse
+    # check + property compute) before committing them. Adds ~5-10s per
+    # call worst case (1-3 tool round-trips) but catches the model's own
+    # parse mistakes BEFORE they hit the docker. Default off — flip per
+    # tester until the loop is proven stable, then default on.
+    # Tier 1 #4 (2026-05-04). See services/ai_assistant_tools.py.
+    optimize_use_tools: bool = False
     # 600s — generous cold-start window. The first prediction after a pod
     # restart downloads ~5 GB of model weights from HuggingFace into
     # /workspace/boltz2_cache; that pull alone can take 5–10 minutes.

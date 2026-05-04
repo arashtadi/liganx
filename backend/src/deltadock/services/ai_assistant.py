@@ -743,6 +743,7 @@ async def call_anthropic_optimize(
     n_variants: int = 3,
     apply_pod_pre_flight: bool = True,
     apply_self_prediction_gate: bool = True,
+    use_tools: bool = False,
 ) -> list[OptimizeVariant]:
     """Ask Claude for `n_variants` candidate SMILES designed to gain contacts
     at the `misses` residues. Returns RDKit-validated, canonical-form
@@ -767,7 +768,14 @@ async def call_anthropic_optimize(
     (Tier 1 #2): variants whose own author predicts < 0.5 kcal/mol
     improvement, > 6.0 SA Score, or hallucinates a residue label are
     auto-rejected. Default True; set False only for legacy callers that
-    don't pass through the orchestrator's top-up retry path."""
+    don't pass through the orchestrator's top-up retry path.
+
+    `use_tools` enables Anthropic native tool use (Tier 1 #4): the AI
+    can call validate_smiles() / compute_properties() mid-generation to
+    self-check candidates BEFORE committing them. Adds 5-15s of latency
+    in the worst case but catches the model's own RDKit / drug-likeness
+    misses upstream. Gated server-side via Settings.optimize_use_tools
+    so the orchestrator can flip it per-request."""
     parts = [
         f"Current SMILES: {smiles}",
         f"Docked score: {score:.2f} kcal/mol",
@@ -804,29 +812,55 @@ async def call_anthropic_optimize(
         # Stays well inside Cloudflare's 100s edge timeout.
         timeout = max(timeout, 60.0)
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
-    except (httpx.TimeoutException, httpx.RequestError) as e:
-        log.error("Anthropic optimize network error: %s", e)
-        raise RuntimeError(f"AI service unreachable: {e}") from e
+    if use_tools:
+        # Tier 1 #4: tool-use loop. The AI can call validate_smiles() /
+        # compute_properties() mid-generation to self-check candidates
+        # before committing them. Bumps timeout to absorb 1-3 extra
+        # round-trips (each ~3-5s).
+        from .ai_assistant_tools import call_with_tool_loop
+        try:
+            raw_text, telemetry = await call_with_tool_loop(
+                api_url=ANTHROPIC_API_URL,
+                headers=headers,
+                payload_base=payload,
+                timeout_s=max(timeout, 60.0),
+            )
+            log.info(
+                "optimize tool-loop telemetry: turns=%d tool_calls=%d tools=%s",
+                telemetry.get("turns"), telemetry.get("tool_calls"),
+                telemetry.get("tools_used"),
+            )
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            log.error("Anthropic optimize tool-loop network error: %s", e)
+            raise RuntimeError(f"AI service unreachable: {e}") from e
+        except RuntimeError as e:
+            # call_with_tool_loop raises RuntimeError on HTTP errors —
+            # let it propagate so the outer router can map it to 502.
+            raise
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            log.error("Anthropic optimize network error: %s", e)
+            raise RuntimeError(f"AI service unreachable: {e}") from e
 
-    if r.status_code == 401:
-        raise RuntimeError("AI service authentication failed (bad API key)")
-    if r.status_code == 429:
-        raise RuntimeError("AI service rate-limited; please try again in a few seconds")
-    if r.status_code >= 400:
-        log.error("Anthropic optimize HTTP %d: %s", r.status_code, r.text[:300])
-        raise RuntimeError(f"AI service error (HTTP {r.status_code})")
+        if r.status_code == 401:
+            raise RuntimeError("AI service authentication failed (bad API key)")
+        if r.status_code == 429:
+            raise RuntimeError("AI service rate-limited; please try again in a few seconds")
+        if r.status_code >= 400:
+            log.error("Anthropic optimize HTTP %d: %s", r.status_code, r.text[:300])
+            raise RuntimeError(f"AI service error (HTTP {r.status_code})")
 
-    body = r.json()
-    raw_text = ""
-    try:
-        for block in body.get("content", []):
-            if block.get("type") == "text":
-                raw_text += block.get("text", "")
-    except (AttributeError, TypeError):
-        pass
+        body = r.json()
+        raw_text = ""
+        try:
+            for block in body.get("content", []):
+                if block.get("type") == "text":
+                    raw_text += block.get("text", "")
+        except (AttributeError, TypeError):
+            pass
 
     parsed = _extract_json(raw_text)
     if not parsed:

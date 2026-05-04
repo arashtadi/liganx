@@ -181,6 +181,15 @@ async def generate_score_filter_optimize(
     # apply_self_prediction_gate=True: enforce the Hard-Constraint Reject
     # Loop — drop variants whose own author predicts < 0.5 kcal/mol Δ,
     # > 6.0 SA, or hallucinates a residue label.
+    # use_tools: read from Settings — when ON the AI can self-validate
+    # candidates mid-generation via validate_smiles / compute_properties
+    # tool calls. Tier 1 #4 (2026-05-04).
+    try:
+        from ..config import get_settings
+        use_tools = bool(get_settings().optimize_use_tools)
+    except Exception:
+        use_tools = False
+
     raw_variants = await ai.call_anthropic_optimize(
         smiles=smiles,
         score=parent_score,
@@ -191,6 +200,7 @@ async def generate_score_filter_optimize(
         n_variants=ai.N_OPTIMIZE_CANDIDATES,
         apply_pod_pre_flight=True,
         apply_self_prediction_gate=True,
+        use_tools=use_tools,
     )
 
     self_rejected = max(0, ai.N_OPTIMIZE_CANDIDATES - len(raw_variants))
