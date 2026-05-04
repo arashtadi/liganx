@@ -272,3 +272,88 @@ def delete_user(
     session.commit()
     log.info("Admin %s deleted user %s", admin.email, user_id)
     return None
+
+
+# ── /admin/optimize_attempts ───────────────────────────────────────────
+# Durable view of every /assist/optimize call (success and failure).
+# Added 2026-05-04 alongside migration 010 — see optimize_attempt.sql
+# for column rationale. Powers "why did Optimize fail earlier today?"
+# investigations that previously required Fly's 15-min log buffer to
+# still hold the relevant lines.
+
+class OptimizeAttemptRow(BaseModel):
+    """One optimize_attempt row, JSON-shaped for the admin UI / curl."""
+    id: int
+    created_at: str
+    user_email: Optional[str]
+    target_pdb: Optional[str]
+    mutations: Optional[str]
+    parent_smiles: str
+    parent_score: Optional[float]
+    status: str
+    elapsed_ms: int
+    n_raw_variants: Optional[int]
+    n_unique_variants: Optional[int]
+    n_survivors_sa: Optional[int]
+    n_docked: Optional[int]
+    n_returned: Optional[int]
+    error_message: Optional[str]
+    request_id: Optional[str]
+
+
+@router.get("/optimize_attempts", response_model=list[OptimizeAttemptRow])
+def list_optimize_attempts(
+    _admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 100,
+    only_failures: bool = False,
+    user_email: Optional[str] = None,
+) -> list[OptimizeAttemptRow]:
+    """List recent /assist/optimize attempts, newest-first.
+
+    Query params:
+      limit         — max rows (default 100, capped 1000)
+      only_failures — filter to status != 'ok' (uses the partial index)
+      user_email    — filter to a specific user's attempts
+
+    Typical use: support reports like "Optimize failed for me 2x then
+    worked" → curl /admin/optimize_attempts?user_email=arashtadi@gmail.com
+    and read off the 3 rows."""
+    capped = max(1, min(limit, 1000))
+
+    sql = "SELECT id, created_at, user_email, target_pdb, mutations, " \
+          "parent_smiles, parent_score, status, elapsed_ms, " \
+          "n_raw_variants, n_unique_variants, n_survivors_sa, " \
+          "n_docked, n_returned, error_message, request_id " \
+          "FROM public.optimize_attempt WHERE 1=1"
+    params: dict = {}
+    if only_failures:
+        sql += " AND status != 'ok'"
+    if user_email:
+        sql += " AND user_email = :email"
+        params["email"] = user_email
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+    params["limit"] = capped
+
+    rows = session.execute(text(sql), params).mappings().all()
+    return [
+        OptimizeAttemptRow(
+            id=r["id"],
+            created_at=r["created_at"].isoformat() if r["created_at"] else "",
+            user_email=r["user_email"],
+            target_pdb=r["target_pdb"],
+            mutations=r["mutations"],
+            parent_smiles=r["parent_smiles"],
+            parent_score=r["parent_score"],
+            status=r["status"],
+            elapsed_ms=r["elapsed_ms"],
+            n_raw_variants=r["n_raw_variants"],
+            n_unique_variants=r["n_unique_variants"],
+            n_survivors_sa=r["n_survivors_sa"],
+            n_docked=r["n_docked"],
+            n_returned=r["n_returned"],
+            error_message=r["error_message"],
+            request_id=str(r["request_id"]) if r["request_id"] else None,
+        )
+        for r in rows
+    ]

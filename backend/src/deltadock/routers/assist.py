@@ -24,14 +24,20 @@ all they want but actually submitting a docking job needs the profile.)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+import uuid
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlmodel import Session
 
 from ..auth import CurrentUser, current_user
 from ..config import get_settings
+from ..db import engine as db_engine
+from ..models import OptimizeAttempt
 from ..services.ai_assistant import call_anthropic
 from ..services.optimize_loop import generate_score_filter_optimize
 from ..services.properties import check_dockability, compute_properties
@@ -277,8 +283,26 @@ async def optimize_endpoint(
     the docker; in the degraded path they're ranked by the LLM.
 
     Same auth + AI rate limit (30/hr) as /assist/compound. Same gate as
-    /assist/quick_dock — feature-flagged off by default."""
+    /assist/quick_dock — feature-flagged off by default.
+
+    Durable logging (added 2026-05-04 alongside this docstring): every
+    call writes a row to optimize_attempt with the request shape, the
+    outcome, and the elapsed time, so "why did Optimize fail earlier
+    today" reports survive Fly's 15-minute log-buffer rollover. See
+    _record_optimize_attempt() below."""
     _check_quick_dock_enabled()
+    request_id = uuid.uuid4()
+    started_at = time.monotonic()
+    log.info(
+        "optimize_attempt: starting request_id=%s user=%s target=%s mutations=%s",
+        request_id, user.email, payload.target_pdb, payload.mutations,
+    )
+
+    result: Optional[dict] = None
+    status = "ok"
+    error_message: Optional[str] = None
+    http_exc: Optional[HTTPException] = None
+
     try:
         result = await generate_score_filter_optimize(
             smiles=payload.smiles.strip(),
@@ -288,13 +312,65 @@ async def optimize_endpoint(
             target_pdb=payload.target_pdb or "",
             mutations=payload.mutations,
         )
+        # 200 OK with no variants is its own outcome — the loop fell back
+        # to an undocked response or every candidate was filtered out.
+        # Logged distinctly from "ok" so we can spot zero-variant
+        # patterns in aggregate without false-positive 5xx alerts.
+        if not result or not result.get("variants"):
+            status = "no_variants"
+            error_message = (result or {}).get("note") or ""
+    except asyncio.TimeoutError as e:
+        status = "timeout"
+        error_message = f"asyncio TimeoutError: {e}"
+        http_exc = HTTPException(status_code=504, detail="Optimize timed out — try again.")
     except RuntimeError as e:
         msg = str(e)
+        # Same RuntimeError → HTTP-status mapping as before, but now
+        # with attempt-table classification too. Anthropic-side issues
+        # surface as 503/429; pod-side and unknown as 502.
         if "API key" in msg or "authentication" in msg:
-            raise HTTPException(status_code=503, detail=msg)
-        if "rate-limited" in msg:
-            raise HTTPException(status_code=429, detail=msg)
-        raise HTTPException(status_code=502, detail=msg)
+            status = "anthropic_error"
+            http_exc = HTTPException(status_code=503, detail=msg)
+        elif "rate-limited" in msg:
+            status = "anthropic_error"
+            http_exc = HTTPException(status_code=429, detail=msg)
+        else:
+            # The optimize pipeline raises RuntimeError for both
+            # Anthropic 5xx and pod 5xx — best-effort classify by the
+            # message text. A pod failure usually mentions vina, gpu,
+            # or pod; an Anthropic failure usually mentions anthropic
+            # or claude.
+            lower = msg.lower()
+            if "anthropic" in lower or "claude" in lower:
+                status = "anthropic_error"
+            elif "vina" in lower or "pod" in lower or "gpu" in lower or "dock" in lower:
+                status = "pod_error"
+            else:
+                status = "unknown_error"
+            http_exc = HTTPException(status_code=502, detail=msg)
+        error_message = msg
+    except Exception as e:  # noqa: BLE001 — broad on purpose; we want every failure logged
+        status = "unknown_error"
+        error_message = f"{type(e).__name__}: {e}"
+        http_exc = HTTPException(status_code=500, detail="Optimize failed — please try again.")
+
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    _record_optimize_attempt(
+        request_id=str(request_id),
+        user=user,
+        payload=payload,
+        result=result,
+        status=status,
+        elapsed_ms=elapsed_ms,
+        error_message=error_message,
+    )
+
+    if http_exc is not None:
+        raise http_exc
+
+    # `result` is non-None on the happy path AND on no_variants (the
+    # optimize_loop fallback returns a result dict with empty variants).
+    assert result is not None
     return {
         "variants": [dict(v) for v in result.get("variants", [])],
         "candidates_generated": result.get("candidates_generated", 0),
@@ -308,3 +384,56 @@ async def optimize_endpoint(
         "receptor_variant": result.get("receptor_variant", "wt"),
         "mutation_caveat": result.get("mutation_caveat", ""),
     }
+
+
+def _record_optimize_attempt(
+    *,
+    request_id: str,
+    user: CurrentUser,
+    payload: "OptimizeRequest",
+    result: Optional[dict],
+    status: str,
+    elapsed_ms: int,
+    error_message: Optional[str],
+) -> None:
+    """Write one row to optimize_attempt. Best-effort — never raises.
+
+    The /assist/optimize handler must not fail because logging failed,
+    so we swallow exceptions here (and emit a warning so they're at
+    least visible in Fly logs while they're fresh)."""
+    # Truncate error_message to 2000 chars to bound row size when an
+    # upstream traceback or large JSON blob comes through.
+    if error_message and len(error_message) > 2000:
+        error_message = error_message[:1997] + "..."
+
+    counts = result or {}
+    try:
+        with Session(db_engine) as session:
+            attempt = OptimizeAttempt(
+                user_id=user.id,
+                user_email=user.email,
+                target_pdb=payload.target_pdb,
+                mutations=payload.mutations,
+                parent_smiles=(payload.smiles or "").strip()[:2000],
+                parent_score=payload.score,
+                status=status,
+                elapsed_ms=elapsed_ms,
+                # candidates_generated is the post-dedupe count from
+                # the parallel-AI sampling path; n_raw_variants here
+                # mirrors that. The other count fields come straight
+                # from optimize_loop's diagnostics dict.
+                n_raw_variants=counts.get("candidates_generated"),
+                n_unique_variants=counts.get("candidates_generated"),
+                n_survivors_sa=counts.get("candidates_filtered"),
+                n_docked=counts.get("candidates_docked"),
+                n_returned=len(counts.get("variants", [])) if counts else 0,
+                error_message=error_message,
+                request_id=request_id,
+            )
+            session.add(attempt)
+            session.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "optimize_attempt: failed to persist row (request_id=%s status=%s): %s",
+            request_id, status, e,
+        )

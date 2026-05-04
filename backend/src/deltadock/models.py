@@ -156,3 +156,63 @@ class DockingResult(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     job: Optional[Job] = Relationship(back_populates="results")
+
+
+class OptimizeAttempt(SQLModel, table=True):
+    """Durable per-call log of /assist/optimize.
+
+    Every Optimize click, success or failure, writes one row here. The
+    Fly free log buffer rolls over too fast to debug "Optimize failed
+    earlier today" reports, so we persist the request shape, the
+    outcome, and the elapsed time in Postgres instead. See
+    migrations/010_optimize_attempt.sql for the column rationale and
+    status taxonomy.
+
+    Volume is bounded by the /assist rate limit (30/hr/IP) plus the
+    QUICK_DOCK_ENABLED feature flag, so growth is manageable in v1
+    without a TTL job.
+    """
+
+    __tablename__ = "optimize_attempt"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    # Auth context. UUID nullable so anonymous fallbacks (if we ever
+    # drop auth) still log; we capture both id + email for support
+    # workflows ("which user hit this?").
+    user_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), nullable=True, index=True),
+    )
+    user_email: Optional[str] = None
+
+    # Request shape — what the user asked Optimize to do.
+    target_pdb: Optional[str] = None
+    mutations: Optional[str] = None
+    parent_smiles: str
+    parent_score: Optional[float] = None
+
+    # Outcome. status is one of:
+    #   "ok" | "no_variants" | "anthropic_error" | "pod_error"
+    #   | "timeout" | "unknown_error"
+    status: str = Field(index=True)
+    elapsed_ms: int
+
+    # Diagnostic counts — populated when the loop got far enough.
+    n_raw_variants: Optional[int] = None
+    n_unique_variants: Optional[int] = None
+    n_survivors_sa: Optional[int] = None
+    n_docked: Optional[int] = None
+    n_returned: Optional[int] = None
+
+    # Truncated to 2000 chars on insert to bound row size.
+    error_message: Optional[str] = None
+
+    # Same UUID written to the start-of-attempt log line so a row in
+    # this table can be cross-referenced with Fly logs (while they're
+    # still in the buffer).
+    request_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), nullable=True),
+    )
