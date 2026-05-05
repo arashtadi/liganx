@@ -88,8 +88,27 @@ export default function RenamePrompt({
     if (canSave) onSave(trimmed);
   }
 
-  const headerTitle = title ?? (onOverwrite ? "Save your edit" : "Name your modified structure");
-  const defaultSubtitle = onOverwrite ? (
+  // currentRowName is empty when the popup is fired from an unnamed row
+  // — i.e. a brand-new compound the user just drew, not an edit of a
+  // saved compound. The "you changed the structure of X" copy doesn't
+  // make sense in that case, so we swap to a "name your new compound"
+  // header + subtitle. NewJobPage now always fires the popup on
+  // Promote/Check&Use (per 2026-05-05 user request) so this branch
+  // matters: the unnamed-row case is now common, not exceptional.
+  const isUnnamed = currentRowName.length === 0;
+  const headerTitle = title ?? (
+    isUnnamed
+      ? "Save your new compound"
+      : onOverwrite
+        ? "Save your edit"
+        : "Name your modified structure"
+  );
+  const defaultSubtitle = isUnnamed ? (
+    <>
+      Give your new structure a name to save it to your library and use it
+      in the job below.
+    </>
+  ) : onOverwrite ? (
     <>
       You changed the structure of <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{currentRowName}</span>.
       Update it in your library, or save the modified molecule under a new name.

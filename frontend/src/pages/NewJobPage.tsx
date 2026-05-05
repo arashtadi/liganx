@@ -24,6 +24,29 @@ const MAX_COMPOUNDS = 5;
 const MAX_MUTATIONS_PER_TARGET = 5;
 const MAX_TARGETS = 2;
 
+/** Auto-fill a default name for an unnamed compound row when the
+ *  save/overwrite popup fires. Per 2026-05-05 user request: every
+ *  Promote/Check&Use click should pop the save dialog, even on
+ *  unnamed rows — but the dialog needs SOMETHING in the name field
+ *  to be useful, otherwise the user types from scratch every time.
+ *
+ *  Strategy: try `Compound_<rowIdx+1>` first (chemists naturally
+ *  index by row position), then bump the suffix until we miss the
+ *  user's existing library names. Falls back to a timestamp-suffixed
+ *  name if 100 candidates collide (pathological — never seen in
+ *  practice). Case-insensitive compare matches the backend's
+ *  upsert key (user_id, name) which is also case-insensitive. */
+function suggestUnnamedCompoundName(rowIdx: number, existingNames: string[]): string {
+  const taken = new Set(existingNames.map((n) => n.toLowerCase()));
+  for (let n = rowIdx + 1; n < rowIdx + 100; n++) {
+    const candidate = `Compound_${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  // 100 collisions is implausible — emit a timestamped fallback so we
+  // still produce a valid suggestion and don't lock the popup.
+  return `Compound_${Date.now()}`;
+}
+
 /** Standard pencil icon for the "Sketch" action. The earlier pencil-on-
  *  hexagon design was illegible at 16px (read as a faint circle on screen).
  *  Lucide-style pencil with a clear diagonal body, eraser end, and tip — at
@@ -2245,33 +2268,28 @@ export default function NewJobPage() {
             setSketcherRow(null);
             return;
           }
-          // Intercept: if the row had a NAME and the user CHANGED the
-          // SMILES, the resulting molecule is no longer "the named
-          // compound" — fire the rename prompt before committing so
-          // the library doesn't silently swap one structure for another
-          // under the same label.
+          // 2026-05-05: ALWAYS fire the save/overwrite popup on Check
+          // & Use, even for unnamed rows. Previously we accepted unnamed
+          // rows silently into the form (and only saved-named rows
+          // triggered the popup), but the user reported that the popup
+          // not appearing made it unclear whether anything had been
+          // committed. Now: named rows still get the overwrite-vs-rename
+          // choice, and unnamed rows get a "name your new compound"
+          // dialog with an auto-suggested name pre-filled.
           const row = compounds[idx];
           const originalName = (row?.name ?? "").trim();
-          if (originalName) {
-            setRenamePrompt({ rowIdx: idx, newSmiles: smiles, originalName });
-            setSketcherRow(null);
-            return;
-          }
-          // No name yet — accept straight through. Saving to the user's
-          // library now requires an explicit Save action elsewhere
-          // (the auto-save was removed in task #334).
-          setCompound(idx, { smiles });
+          setRenamePrompt({ rowIdx: idx, newSmiles: smiles, originalName });
           setSketcherRow(null);
         }}
         onPromote={(smiles, reseed) => {
-          // 2026-05-04: Promote to Full Job from inside the editor.
-          // Used to call onAccept + onClose + navigate inline, which
-          // raced the rename popup state and the user lost the choice
-          // between "save as new" and "overwrite" the original
-          // compound. Now: if the row had a name and SMILES changed,
-          // fire the rename popup with a pendingPromote payload — the
-          // popup's onCancel/onSave/onOverwrite handlers will navigate
-          // after the user picks. If no name, navigate immediately.
+          // 2026-05-04 / 2026-05-05: Promote to Full Job from inside the
+          // editor. ALWAYS fires the save/overwrite popup so the user
+          // explicitly chooses how to commit the structure before we
+          // navigate. Named rows get overwrite-or-rename; unnamed rows
+          // get a "name your new compound" dialog with an auto-suggested
+          // name pre-filled. The popup's onSave/onOverwrite handlers
+          // build the reseed payload and navigate to /new from there —
+          // we don't navigate inline anymore (that races the popup).
           const idx = sketcherRow;
           if (idx === null) {
             // Defensive — should never happen.
@@ -2280,38 +2298,28 @@ export default function NewJobPage() {
           }
           const row = compounds[idx];
           const originalName = (row?.name ?? "").trim();
-          const reseedPayload: Record<string, unknown> = {
-            compounds: [{ name: originalName || "", smiles }],
-          };
-          if (reseed.pdbId) {
-            reseedPayload.pdb_id = reseed.pdbId;
-            if (reseed.chain) reseedPayload.chain = reseed.chain;
-          } else if (reseed.targetPdb) {
-            reseedPayload.catalog_target_id = reseed.targetPdb;
-          }
-          if (reseed.mutations) {
-            reseedPayload.mutations = reseed.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
-          }
-          if (originalName) {
-            // Defer navigate until the user picks save vs overwrite.
-            setRenamePrompt({
-              rowIdx: idx,
-              newSmiles: smiles,
-              originalName,
-              pendingPromote: reseed,
-            });
-            setSketcherRow(null);
-            return;
-          }
-          // Unnamed row → no popup needed, navigate straight to /new.
+          setRenamePrompt({
+            rowIdx: idx,
+            newSmiles: smiles,
+            originalName,
+            pendingPromote: reseed,
+          });
           setSketcherRow(null);
-          navigate("/new", { state: { reseed: reseedPayload } });
         }}
       />
     )}
     {renamePrompt && (
       <RenamePrompt
-        initialName={renamePrompt.originalName + "_"}
+        // For named rows pre-fill with "OldName_" so the user can
+        // append a suffix. For unnamed rows (the popup now ALWAYS
+        // fires per 2026-05-05) pre-fill with an auto-suggested
+        // Compound_<rowIdx+1> that's guaranteed not to collide
+        // with anything in the user's library.
+        initialName={
+          renamePrompt.originalName
+            ? renamePrompt.originalName + "_"
+            : suggestUnnamedCompoundName(renamePrompt.rowIdx, savedCompounds.map((c) => c.name))
+        }
         existingNames={savedCompounds.map((c) => c.name)}
         currentRowName={renamePrompt.originalName}
         onCancel={() => {
