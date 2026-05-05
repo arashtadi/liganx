@@ -1019,16 +1019,26 @@ def _validate_and_filter_variants(
                     pred_sa, MAX_PREDICTED_SA_SCORE, canonical,
                 )
                 continue
-            # Hallucinated residue check — if the model claims to target a
-            # residue, that residue must appear in the hits/misses list we
-            # gave it. Tightens the existing prompt-only guard with an
-            # actual server-side reject.
+            # Mislabeled mutation_target check — if the model's self-reported
+            # target isn't in our hits/misses list, that's just noisy metadata,
+            # not a chemistry problem. The SMILES is what matters; the label
+            # is annotation. Log it so we can monitor prompt drift, but DO NOT
+            # drop the variant.
+            #
+            # 2026-05-05: this used to be a hard reject. In production it
+            # rejected ~90% of variants because the AI was naturally writing
+            # the protein-level mutation (e.g. "A:GLN61→HIS" — the residue
+            # we asked it to engage in the prompt's `mutation_target_label`)
+            # while the validator expected a *contact* residue from
+            # hits/misses (e.g. "A:GLY13"). Two different concepts, same
+            # field name. Result: a /optimize call returned only 1 valid
+            # variant out of 30+, so the user saw a "best" variant that was
+            # the only one — often worse than the parent.
             if mut_target and valid_residues and mut_target not in valid_residues:
                 log.info(
-                    "optimize variant rejected (hallucinated mutation_target=%r not in hits/misses): %r",
+                    "optimize variant kept despite unrecognized mutation_target=%r (not in hits/misses): %r",
                     mut_target, canonical,
                 )
-                continue
 
         variant: OptimizeVariant = OptimizeVariant(
             new_smiles=canonical, rationale=rationale,
