@@ -127,3 +127,43 @@ def health() -> dict:
         "env": settings.app_env,
         "git_sha": GIT_SHA,
     }
+
+
+@app.get("/health/full", tags=["meta"])
+async def health_full() -> dict:
+    """Full infrastructure health probe. Checks pod connectivity and essential config.
+    Used by monitoring/smoke tests to verify the entire stack is operational."""
+    import httpx
+
+    pod_dock_status = "not_configured"
+    pod_dock_url_val = settings.pod_dock_url
+
+    if pod_dock_url_val:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{pod_dock_url_val}/health")
+                pod_dock_status = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
+        except Exception as e:
+            pod_dock_status = "down"
+
+    # Boltz-2 pod URL (may be same as pod_dock_url or separate)
+    boltz2_pod_url_val = settings.boltz2_pod_url or settings.pod_dock_url
+    boltz2_status = "not_configured"
+
+    if boltz2_pod_url_val and settings.boltz2_enabled:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{boltz2_pod_url_val}/health")
+                boltz2_status = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
+        except Exception as e:
+            boltz2_status = "down"
+
+    return {
+        "ok": True,
+        "git_sha": GIT_SHA,
+        "pod_dock_url": pod_dock_url_val or "not_set",
+        "pod_dock_status": pod_dock_status,
+        "runpod_api_key": "configured" if settings.runpod_api_key else "missing",
+        "boltz2_enabled": settings.boltz2_enabled,
+        "boltz2_status": boltz2_status,
+    }
