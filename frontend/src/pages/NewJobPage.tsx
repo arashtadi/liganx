@@ -2241,6 +2241,15 @@ export default function NewJobPage() {
         so the cost is paid lazily when the user actually clicks Sketch. */}
     {sketcherRow !== null && (
       <KetcherModal
+        // Use the row index as the draft key so each compound row in the
+        // wizard gets its own sessionStorage slot. Without this, every
+        // row shared `liganx_draft:new:<pdb>:<muts>`, so editing row 0,
+        // closing without saving, then editing row 1 would resurrect
+        // row 0's draft. (Reordering rows mid-session can still cross
+        // streams — acceptable trade-off; rows rarely get reordered in
+        // the wizard. The cleanest long-term fix would be a synthetic
+        // per-row UUID, but row index unblocks the common bug class.)
+        compoundId={sketcherRow}
         initialSmiles={compounds[sketcherRow]?.smiles || undefined}
         // Pocket context for the AI sidebar — pull whichever target is
         // currently active (single-target mode) and its mutations, or

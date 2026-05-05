@@ -480,6 +480,15 @@ export default function JobPage() {
           Update-vs-Save-as-new choice as in NewJobPage Step 3. */}
       {editingCompound && (
         <KetcherModal
+          // Pass the compound's database id so KetcherModal's draft-recovery
+          // key is unique per compound (`liganx_draft:<id>:<pdb>:<muts>`).
+          // Without this, compoundId fell back to "new" and collided with
+          // the slot the user wrote when they originally drew the parent
+          // in NewJobPage — so clicking "Edit & re-dock" on a variant
+          // restored the parent's draft instead of loading the variant's
+          // SMILES. (2026-05-05 user-reported bug: variant
+          // Aspirin_v2_may5_126 opened with plain aspirin in the canvas.)
+          compoundId={editingCompound.id}
           initialSmiles={editingCompound.smiles}
           targetPdb={job.pdb_id}
           mutations={job.mutations.join(", ") || undefined}
