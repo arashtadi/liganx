@@ -106,6 +106,16 @@ def _humanize_pod_error(raw: str) -> str:
             "This is on us — try Promote to Full Job to use the CPU path "
             "while we fix the pod."
         )
+    # CL_PLATFORM_NOT_FOUND_KHR (-1001): OpenCL loader can't find the NVIDIA
+    # ICD. Happens on a fresh container without /etc/OpenCL/vendors/nvidia.icd
+    # registered. install_deps.sh on the pod self-heals at next boot, but if
+    # we see it mid-session we surface a clear message instead of "too large".
+    if "cl_platform_not_found" in low or "err-1001" in low:
+        return (
+            "GPU docker can't reach the NVIDIA OpenCL driver. "
+            "This is on us — try Promote to Full Job to use the CPU path "
+            "while we re-register the driver on the pod."
+        )
     # Compound-too-large for QuickVina2-GPU: rc=1 with the QuickVina
     # author email is the canonical signature. Vina-GPU has a fixed
     # ligand-flexibility cap and chokes on big peptide-like molecules.
