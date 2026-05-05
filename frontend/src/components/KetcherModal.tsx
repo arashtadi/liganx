@@ -1451,7 +1451,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       const r = await api.assistQuickDock({
         smiles: smi,
         target_pdb: targetPdb,
-        mutation: mutations,
+        mutation: firstMutation,
       });
       if (!r.ok) {
         setQuickDockStatus("error");
@@ -1584,7 +1584,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         api.assistQuickDock({
           smiles: v.new_smiles,
           target_pdb: targetPdb,
-          mutation: mutations,
+          mutation: firstMutation,
         })
           .then((r) => {
             setOptimizedVariants((cur) => cur.map((cv, i) =>
@@ -1709,7 +1709,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         const r = await api.assistQuickDock({
           smiles,
           target_pdb: targetPdb,
-          mutation: mutations,
+          mutation: firstMutation,
         });
         if (r.ok && typeof r.score === "number") {
           // Fresh dock succeeded — overwrite dockResult with the live
@@ -1818,6 +1818,20 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // variants in MUTATION_HINTS. Domain-grounded starting point so
   // the user has direction even before clicking anything.
   const mutationHint = resolveMutationHint(mutations);
+
+  // Quick Dock + Optimize endpoints expect a SINGLE mutation token (e.g.
+  // "Q61H"), but `mutations` here is a comma-separated string from the
+  // job header (e.g. "G12R, G12V" when the parent job had two mutations
+  // selected). Sending the whole string as `mutation` makes PDBFixer
+  // crash because it tries to parse it as one residue swap. Pick the
+  // first non-empty token; if the user wants to dock against the OTHER
+  // mutation they can re-open the editor from a different cell.
+  // 2026-05-04 user report: editor on G12R/G12V job → Quick dock failed
+  // (worker crash). Bug surfaced after multi-mutation jobs went live.
+  const firstMutation = (mutations || "")
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || undefined;
 
   return (
     <aside className="w-[380px] shrink-0 border-l border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden relative">

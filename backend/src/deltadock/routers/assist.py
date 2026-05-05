@@ -234,11 +234,27 @@ def quick_dock_endpoint(
     message inline rather than treating it as an exception.
     """
     _check_quick_dock_enabled()
+    # Belt-and-braces: if the caller passed a comma-separated multi-mutation
+    # string (e.g. "G12R, G12V" — frontend's editor opens with the whole
+    # job's mutation context, sometimes more than one), pick the first
+    # token. PDBFixer expects ONE residue swap per build_mutant call and
+    # crashes the worker on a comma. Frontend was patched to send only
+    # the first mutation 2026-05-04, but defending here too costs nothing
+    # and protects against any future caller that sends the raw string.
+    safe_mutation: Optional[str] = payload.mutation
+    if safe_mutation and ("," in safe_mutation or ";" in safe_mutation):
+        tokens = [t.strip() for t in safe_mutation.replace(";", ",").split(",")]
+        tokens = [t for t in tokens if t]
+        safe_mutation = tokens[0] if tokens else None
+        log.info(
+            "quick_dock: split multi-mutation %r → %r",
+            payload.mutation, safe_mutation,
+        )
     result = quick_dock(
         smiles=payload.smiles,
         target_pdb=payload.target_pdb,
         chain=payload.chain,
-        mutation=payload.mutation,
+        mutation=safe_mutation,
     )
     return dict(result)
 
