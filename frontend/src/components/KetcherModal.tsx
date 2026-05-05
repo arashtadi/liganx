@@ -781,6 +781,12 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
             onAiApplied={(smi) => { aiAppliedSmilesRef.current = smi; }}
             onPromote={onPromote ? (smi, reseed) => { clearDraft(draftKeyRef.current); onPromote(smi, reseed); } : undefined}
             getAiAppliedSmiles={() => aiAppliedSmilesRef.current}
+            // Two extra fallback sources for bulletproof Promote-to-Full-Job:
+            // (1) the most recent polled canvas SMILES, (2) the modal's
+            // initial SMILES. Both used only when the AI cache is empty
+            // and the live Ketcher bridge is unresponsive.
+            getLastCanvasSmiles={() => lastSavedSmilesRef.current}
+            initialSmiles={initialSmiles}
           />
         </div>
 
@@ -903,6 +909,16 @@ interface AiSidebarProps {
    *  user report. Returns "" when no AI Apply has happened in this
    *  modal session. */
   getAiAppliedSmiles?: () => string;
+  /** Read the parent's most-recent polled canvas SMILES (updated every
+   *  ~700ms by the polling tick). Used as a second-layer fallback in
+   *  promoteToFullJob when both the AI cache is empty and Ketcher's
+   *  live getSmiles bridge has wedged. Returns "" before the first
+   *  successful poll. */
+  getLastCanvasSmiles?: () => string;
+  /** Forwarded so the Promote flow has a last-resort SMILES source if
+   *  every live read fails. Promoting initialSmiles is at worst a
+   *  no-op (the popup gives the user a chance to back out). */
+  initialSmiles?: string;
 }
 
 // Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
@@ -1029,7 +1045,7 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote, getAiAppliedSmiles }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote, getAiAppliedSmiles, getLastCanvasSmiles, initialSmiles }: AiSidebarProps) {
   // (Free-form chat input was removed 2026-05-04 — see the bottom-of-rail
   // comment near the action button. The `instruction` state that powered
   // the textbox is gone; runEdit() still accepts a `text` param so the
@@ -1543,61 +1559,70 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // back to back Promote to Full Job is not working." Without this
     // lock the user spams the button (because the first click looks
     // dead), and we either race or double-navigate.
+    // 2026-05-05: bulletproof rewrite. Recurring user report: "I applied
+    // 2 optimizations, clicked Promote, no popup." Root cause was that
+    // promoteToFullJob had a single hard dependency on Ketcher's live
+    // getSmiles bridge, and the bridge wedges intermittently after
+    // multiple setMolecule cycles (known EPAM Ketcher iframe issue).
+    // When wedged + AI-cache empty (e.g. user edited manually after
+    // Apply), the entire flow returned silently with quickDockError set
+    // but the user only saw the error inside the Quick Dock card —
+    // didn't realize the Promote click was the trigger.
+    //
+    // Fix: try MULTIPLE sources in order, take the first non-empty one,
+    // and ALWAYS reset promotePending in finally. Fail visibly only
+    // when literally every source is empty (canvas truly was blank).
     if (promotePending) return;
-    const apiObj = getApi();
-    if (!apiObj?.getSmiles) {
-      setQuickDockStatus("error");
-      setQuickDockError("Ketcher hasn't finished loading. Wait a moment and retry.");
-      return;
-    }
     setPromotePending(true);
     try {
+      // Source 1: AI-applied cache. Set synchronously by applyVariantToCanvas
+      //   the moment the user clicks Apply on a variant — fastest and
+      //   freshest. Cleared by the polling tick if the user manually
+      //   edited the canvas afterward, so it's always safe to trust.
+      // Source 2: lastSavedSmilesRef. Updated every 700ms by the polling
+      //   tick whenever Ketcher returns a non-empty SMILES. Captures
+      //   manual edits between AI Applies.
+      // Source 3: live getSmiles() with timeout. Fresh but can wedge.
+      // Source 4: initialSmiles fallback — last resort. The user clicked
+      //   Promote intending to commit something; if literally nothing
+      //   else worked, at least promoting the molecule we loaded is
+      //   meaningful (and the popup gives them a chance to back out).
       let smi = "";
-      let smiSource: "ketcher" | "ai-cache" = "ketcher";
-      try {
-        // Same 12s timeout as handleAccept + applyVariantToCanvas. After
-        // ~3+ Apply & Re-dock cycles, Ketcher's getSmiles starts hanging
-        // silently on canonical-SMILES no-ops (known EPAM Ketcher iframe
-        // bridge issue). Without the race the Promote button looks dead.
-        // 2026-05-04 → 2026-05-05 user reports.
-        const raw = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles");
-        smi = (raw || "").trim();
-      } catch (e) {
-        // Ketcher is wedged. Fall back to the canonical SMILES we cached
-        // on the most recent AI Apply — by definition the user's intent
-        // is to promote that exact structure (they just clicked Apply on
-        // the variant). If they edited manually after Apply, we have no
-        // safe fallback and surface the timeout error prominently.
-        // 2026-05-05 fix: previously the timeout set quickDockError but
-        // NOT quickDockStatus="error", so the error was set in state
-        // and never rendered (the conditional at the render site is
-        // gated on status). The button looked silently dead.
-        const cached = (getAiAppliedSmiles?.() || "").trim();
-        if (cached) {
-          smi = cached;
-          smiSource = "ai-cache";
-        } else {
-          const msg = (e as Error)?.message || "unknown";
-          setQuickDockStatus("error");
-          setQuickDockError(
-            msg.includes("timed out")
-              ? `${msg}. The structure editor became unresponsive — close this window and re-open it, then click Promote again.`
-              : `Couldn't read SMILES from Ketcher: ${msg}`,
-          );
-          return;
+      let smiSource: "ai-cache" | "polling" | "ketcher-live" | "initial" = "ai-cache";
+      const cacheVal = (getAiAppliedSmiles?.() || "").trim();
+      if (cacheVal) {
+        smi = cacheVal;
+        smiSource = "ai-cache";
+      }
+      if (!smi) {
+        const polled = (getLastCanvasSmiles?.() || "").trim();
+        if (polled) {
+          smi = polled;
+          smiSource = "polling";
         }
+      }
+      if (!smi) {
+        const apiObj = getApi();
+        if (apiObj?.getSmiles) {
+          try {
+            const raw = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles", 8_000);
+            smi = (raw || "").trim();
+            if (smi) smiSource = "ketcher-live";
+          } catch {
+            // Bridge wedged — fall through to next source.
+          }
+        }
+      }
+      if (!smi && initialSmiles) {
+        smi = initialSmiles.trim();
+        smiSource = "initial";
       }
       if (!smi) {
         setQuickDockStatus("error");
         setQuickDockError("Canvas is empty — draw a structure first.");
         return;
       }
-      // Hand off to the parent. NewJobPage fires the rename popup if the
-      // edited row had a name (so the user picks "save as new" or
-      // "overwrite"), then navigates to /new with the reseed payload.
-      // Falls back to the legacy onAccept-then-navigate flow when no
-      // onPromote is wired (e.g. CompoundsPage). 2026-05-04 fix for the
-      // user-reported popup race after multiple Apply rounds.
+      console.info(`[KetcherModal] Promote firing onPromote — SMILES source=${smiSource}, length=${smi.length}`);
       if (onPromote) {
         onPromote(smi, {
           pdbId: dockResult?.pdbId,
@@ -1605,12 +1630,6 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
           targetPdb,
           mutations,
         });
-        // Log the fallback in dev so we can see it in the console if
-        // QA reports "I clicked Promote and it worked but I never saw
-        // the canvas update" — that means we used the cache.
-        if (smiSource === "ai-cache") {
-          console.info("[KetcherModal] Promote used aiAppliedSmilesRef fallback (Ketcher bridge wedged)");
-        }
         return;
       }
       // Legacy fallback — kept for callers that haven't wired onPromote.

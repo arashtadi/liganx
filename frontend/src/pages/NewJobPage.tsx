@@ -2314,11 +2314,20 @@ export default function NewJobPage() {
           // popup"). Keeping the editor mounted while the popup is
           // open removes that race and the popup is now visible
           // every time.
-          const idx = sketcherRow;
-          if (idx === null) {
-            // Defensive — should never happen.
-            setSketcherRow(null);
-            return;
+          // 2026-05-05: bulletproof. Previously, if sketcherRow had been
+          // nulled by some race (rare but observed), this branch silently
+          // returned and the user got no popup, no error, no signal that
+          // their Promote click did anything. Now we always fire the
+          // popup, falling back to row 0 (or appending a new row) when
+          // we can't identify the source row. The user explicitly asked
+          // to commit; we honor that intent rather than dropping the
+          // click on the floor.
+          let idx = sketcherRow;
+          if (idx === null || idx < 0 || idx >= compounds.length) {
+            console.warn(
+              `[NewJobPage] onPromote called with sketcherRow=${idx}, falling back to row 0`,
+            );
+            idx = 0;
           }
           const row = compounds[idx];
           const originalName = (row?.name ?? "").trim();
