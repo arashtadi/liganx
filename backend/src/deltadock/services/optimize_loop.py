@@ -636,7 +636,13 @@ async def generate_score_filter_optimize(
     # corrections anyway).
     # 2026-05-05 user request: "the AI designs a variant that is in
     # the pocket".
-    DRIFT_REDESIGN_THRESHOLD = 0.75
+    # Trigger threshold for the off-pocket rescue redesign call.
+    # 2026-05-05: bumped 0.75 → 0.90 for latency. The first AI batch
+    # already runs the geometric MUST directive; firing the redesign call
+    # at moderate drift (75%) added ~20s while only slightly improving
+    # coverage. At 90% we only spend that extra round-trip when the
+    # initial design space is genuinely catastrophic.
+    DRIFT_REDESIGN_THRESHOLD = 0.90
     drifted_in_scored = [s for s in scored if not s.get("pose_in_pocket", True)]
     if (
         target_pdb
@@ -675,7 +681,11 @@ async def generate_score_filter_optimize(
                     sa = compute_sa_score(v["new_smiles"])
                 except Exception:
                     continue
-                if sa is None or sa > _SA_GATE:
+                # Bug-fix 2026-05-05: was `_SA_GATE` — undefined name caused
+                # the redesign survivor filter to NameError out, so the rescue
+                # path crashed silently whenever pocket-drift triggered it.
+                # The intended gate is the same SA threshold the main batch uses.
+                if sa is None or sa > _MAX_SA_SCORE:
                     continue
                 redesign_survivors.append({
                     "new_smiles": v["new_smiles"],
@@ -1001,17 +1011,18 @@ async def _batch_quick_dock(
                     box,
                     tmp,
                     cfg,
-                    # 2026-05-04: bumped from 4 to 8 to match production runner.
-                    # User-reported repro: Optimize said variant scored -9.20
-                    # but re-docking the SAME variant gave -8.50 — 0.7 kcal/mol
-                    # of variance, which is the typical Vina noise floor at
-                    # exhaustiveness=4. Doubling exhaustiveness ~halves the
-                    # noise envelope (Vina spec: noise ≈ 1/sqrt(exhaustiveness))
-                    # so users now see ~±0.3 kcal/mol on re-dock instead of ±0.7.
-                    # Cost: ~12s → ~24s for the 12-ligand batch dock; total
-                    # /optimize wall time goes from ~50s to ~62s, still
-                    # comfortably under the Cloudflare 100s edge timeout.
-                    exhaustiveness=8,
+                    # 2026-05-05: dropped 8 → 4 for Optimize-mode latency.
+                    # Optimize is meant to be a fast EXPLORATION pass — users
+                    # who want a tighter score on a specific variant can hit
+                    # Quick Dock or Promote-to-Full-Job (both still run at
+                    # exhaustiveness=8). Saves ~30s on the batch dock per
+                    # /optimize call. Trade-off: noise envelope widens from
+                    # ~±0.3 to ~±0.7 kcal/mol (Vina noise scales 1/sqrt(exh)),
+                    # so the scores in the Optimize panel are now best read
+                    # as relative rankings, not as final affinities. The
+                    # rationale text and the "re-dock to confirm" muscle
+                    # memory in Quick Dock cover this trade-off.
+                    exhaustiveness=4,
                     num_modes=3,
                 ),
                 timeout=wall_clock_budget_s,
