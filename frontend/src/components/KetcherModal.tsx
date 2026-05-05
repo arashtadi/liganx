@@ -232,6 +232,14 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
   // The bare `iframe.onLoad` event fires earlier — when the HTML is parsed,
   // before the WASM Indigo bundle has finished booting — so it's not enough.
   const [ketcherReady, setKetcherReady] = useState(false);
+  // Bump this counter to force React to unmount + remount the iframe.
+  // Used by the "Reload editor" button when Ketcher's internal state
+  // wedges (the 3D button stops responding, getSmiles hangs after many
+  // setMolecule cycles, etc.). The draft-recovery system preserves the
+  // user's current SMILES across the remount, so the only thing they
+  // lose is the wedged state. 2026-05-05 user report: "the 3D viewer
+  // works sometimes but not all the time".
+  const [iframeReloadKey, setIframeReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   // hasChanges drives the "Use this structure" button visibility — see
@@ -687,6 +695,52 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
               Draw, paste a SMILES, or load from CDX/MOL — the result becomes a SMILES string in your compound list.
             </p>
           </div>
+          <div className="flex items-center gap-1">
+            {/* Reload editor — pragmatic escape hatch for Ketcher iframe
+                state wedges (3D button stuck, getSmiles hanging, AI
+                Apply not painting). Bumps the iframe key, which
+                unmounts + remounts a fresh Ketcher iframe. The
+                sessionStorage draft preserves the canvas SMILES across
+                the remount so users only lose the wedged state, not
+                their structure. Before clicking, capture the current
+                canvas SMILES into the draft synchronously so even if
+                the polling tick hasn't fired in the last ~700ms the
+                reload is non-destructive. */}
+            <button
+              onClick={async () => {
+                try {
+                  const apiObj = getKetcherApi(iframeRef.current);
+                  if (apiObj?.getSmiles) {
+                    try {
+                      const raw = await withKetcherTimeout<string>(
+                        apiObj.getSmiles(), "Ketcher getSmiles (pre-reload)", 4_000,
+                      );
+                      const trimmed = (raw || "").trim();
+                      if (trimmed) {
+                        saveDraft(draftKeyRef.current, trimmed);
+                        lastSavedSmilesRef.current = trimmed;
+                      }
+                    } catch {
+                      // Bridge wedged is exactly why we're reloading; fall
+                      // through and let the existing draft (last polled
+                      // SMILES) survive the remount.
+                    }
+                  }
+                } finally {
+                  setKetcherReady(false);
+                  setIframeReloadKey((k) => k + 1);
+                }
+              }}
+              className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors text-xs"
+              aria-label="Reload editor"
+              title="Reload the editor — use this if 3D, AI Apply, or buttons stop responding. Your current structure is preserved."
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+            </button>
           <button
             onClick={onClose}
             className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -694,6 +748,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
           >
             <Close size={18} />
           </button>
+          </div>
         </header>
 
         {/* Refresh-recovery banner. Shown when we hydrated the canvas
@@ -752,6 +807,15 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
               </div>
             )}
             <iframe
+              // `key` bound to iframeReloadKey: bumping the key unmounts +
+              // remounts the iframe, which is the only reliable way to
+              // recover from a wedged Ketcher state (3D button frozen,
+              // getSmiles hanging, AI Apply not painting). The new
+              // mount re-runs the load effect which calls setMolecule
+              // with effectiveInitialSmiles — and effectiveInitialSmiles
+              // prefers the saved sessionStorage draft, so the user's
+              // current canvas survives the reload.
+              key={iframeReloadKey}
               ref={iframeRef}
               src={KETCHER_SRC}
               title="Ketcher 2D structure editor"
