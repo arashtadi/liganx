@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Close, Spinner } from "./Icons";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "./MoleculePreview";
@@ -149,6 +149,77 @@ function withKetcherTimeout<T>(p: Promise<T>, label: string, ms: number = 12_000
   ]);
 }
 
+// ── Editor draft persistence (sessionStorage) ─────────────────────────
+// Refresh-recovery for the canvas. Without this, an accidental refresh
+// or browser back-button mid-edit blows away 4-5 Optimize+Apply cycles
+// of work — the user has to redo every step. 2026-05-05 user report:
+// "if the user refreshes the page all gets lost without saving!".
+//
+// Scope: SMILES only (the irreplaceable artefact). Dock results and
+// Optimize variants are NOT persisted — they're regenerable by re-running
+// Quick Dock + Optimize, which is fast (~5-30s combined). Persisting
+// them would require lifting AiSidebar state into the parent + careful
+// JSON serialisation of pose PDBQT blobs.
+//
+// Storage: sessionStorage (cleared when tab closes, survives refresh).
+// localStorage would be wrong here — we don't want last week's draft
+// resurrecting when the user happens to open the same compound.
+//
+// Key shape: liganx:editor-draft:<compoundId|"new">:<targetPdb|"-">:<mutations|"-">
+// Different (target, mutation) contexts get separate drafts so a user
+// editing the same compound for KRAS-G12C and KRAS-G12V doesn't have
+// the two drafts overwrite each other.
+//
+// TTL: 24h. After that we silently discard — a day-old draft is more
+// likely to confuse than help.
+const DRAFT_PREFIX = "liganx:editor-draft:";
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface DraftPayload {
+  smiles: string;
+  savedAt: number;
+}
+
+function makeDraftKey(compoundId: number | undefined, targetPdb: string | undefined, mutations: string | undefined): string {
+  const cid = compoundId == null ? "new" : String(compoundId);
+  const tgt = targetPdb || "-";
+  const mut = mutations || "-";
+  return `${DRAFT_PREFIX}${cid}:${tgt}:${mut}`;
+}
+
+function saveDraft(key: string, smiles: string): void {
+  try {
+    const payload: DraftPayload = { smiles, savedAt: Date.now() };
+    sessionStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // sessionStorage can throw in private mode or when the quota is
+    // exceeded. Failing to save a draft isn't worth interrupting the
+    // user — the consequence is just losing the refresh-recovery.
+  }
+}
+
+function loadDraft(key: string): DraftPayload | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DraftPayload;
+    if (!parsed || typeof parsed.smiles !== "string" || typeof parsed.savedAt !== "number") {
+      return null;
+    }
+    if (Date.now() - parsed.savedAt > DRAFT_TTL_MS) {
+      try { sessionStorage.removeItem(key); } catch { /* ignore */ }
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearDraft(key: string): void {
+  try { sessionStorage.removeItem(key); } catch { /* ignore */ }
+}
+
 export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromote, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
@@ -191,6 +262,34 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
   // time for Check & use".
   const aiAppliedSmilesRef = useRef<string>("");
 
+  // Refresh-recovery draft. Stable key per (compound, target, mutations)
+  // tuple so different docking contexts get isolated drafts.
+  const draftKeyRef = useRef(makeDraftKey(compoundId, targetPdb, mutations));
+  // Last SMILES we wrote to sessionStorage. Avoids hammering storage
+  // every 700ms polling tick when the canvas hasn't actually changed.
+  const lastSavedSmilesRef = useRef<string>("");
+  // Banner state — shown when we hydrated from a saved draft instead of
+  // initialSmiles, so the user understands why the canvas isn't blank
+  // (or isn't the original compound they expected).
+  const [restoredFromDraft, setRestoredFromDraft] = useState<{ savedAt: number } | null>(null);
+  // Effective initial SMILES: prefer the saved draft over initialSmiles
+  // when one exists for this context. Computed once on mount via useMemo
+  // so the load/setMolecule effect doesn't keep firing if the user
+  // toggles state. The useMemo dep array intentionally omits draftKeyRef
+  // (refs don't trigger re-renders); the key is stable for the modal's
+  // lifetime since props don't change after open.
+  const effectiveInitialSmiles = useMemo(() => {
+    const draft = loadDraft(draftKeyRef.current);
+    if (draft && draft.smiles && draft.smiles !== (initialSmiles || "")) {
+      // Defer the setRestoredFromDraft to a microtask so we don't call
+      // setState during render. The banner appears on the next tick.
+      Promise.resolve().then(() => setRestoredFromDraft({ savedAt: draft.savedAt }));
+      return draft.smiles;
+    }
+    return initialSmiles;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Listen for Ketcher's init event. This is the signal that the iframe's
   // window.ketcher API is ready to call.
   useEffect(() => {
@@ -207,8 +306,10 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
 
   // Once Ketcher signals ready, push the initial SMILES in (if any) and
   // capture the post-load canonical form as the change-detection baseline.
+  // Note: we load `effectiveInitialSmiles` (which prefers a saved draft
+  // over the prop), so refresh-recovery happens here automatically.
   useEffect(() => {
-    if (!ketcherReady || !initialSmiles) return;
+    if (!ketcherReady || !effectiveInitialSmiles) return;
     const api = getKetcherApi(iframeRef.current);
     if (!api?.setMolecule) {
       console.warn("Ketcher API ready event fired but setMolecule unavailable");
@@ -217,7 +318,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
     try {
       (async () => {
         try {
-          await api.setMolecule(initialSmiles);
+          await api.setMolecule(effectiveInitialSmiles);
           // Read back the post-parse, post-canonicalise SMILES Ketcher
           // would emit if the user changed nothing. This is what
           // handleAccept compares against — string equality on this
@@ -241,7 +342,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
     } catch (err) {
       console.warn("Ketcher setMolecule threw:", err);
     }
-  }, [ketcherReady, initialSmiles]);
+  }, [ketcherReady, effectiveInitialSmiles]);
 
   // Change-detection poll. Every 700ms while Ketcher is ready, read the
   // live canvas SMILES and compare against the captured baseline. When
@@ -285,6 +386,31 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
         if (errorAtSmilesRef.current && trimmed !== errorAtSmilesRef.current) {
           setError(null);
           errorAtSmilesRef.current = "";
+        }
+        // Clear the AI-applied cache when the user manually edits the
+        // canvas after an Apply. Without this, the dockability skip in
+        // handleAccept (line ~447) would wrongly fire on the user's
+        // modified structure, bypassing safety validation. The cache
+        // is only valid as long as the canvas matches the AI's output.
+        // 2026-05-05 fix from editor audit.
+        if (
+          aiAppliedSmilesRef.current &&
+          trimmed.length > 0 &&
+          trimmed !== aiAppliedSmilesRef.current
+        ) {
+          aiAppliedSmilesRef.current = "";
+        }
+        // Persist a draft of the current canvas so an accidental
+        // refresh (or browser back, or process crash) doesn't blow
+        // away the user's work. Only save when the SMILES has
+        // actually changed since the last save — sessionStorage
+        // writes are cheap but not free, and this fires every 700ms.
+        // Don't save the empty canvas — there's nothing to recover
+        // and an empty string would override any prior draft on
+        // reload, which is the wrong default.
+        if (trimmed.length > 0 && trimmed !== lastSavedSmilesRef.current) {
+          saveDraft(draftKeyRef.current, trimmed);
+          lastSavedSmilesRef.current = trimmed;
         }
       } catch {
         // Polling errors are non-fatal — a transient hiccup just means
@@ -390,10 +516,25 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
       // silently writing "" into the compound row.
       // Wrapped in a 12s timeout — after multiple Apply rounds Ketcher's
       // getSmiles can hang silently, leaving the button stuck on
-      // "Checking structure…" forever. 2026-05-04 user report: "after
-      // applying the variant 2-3 times the Promote to Full Job and
-      // Check & use don't work."
-      const smiles: string = await withKetcherTimeout(api.getSmiles(), "Ketcher getSmiles");
+      // "Checking structure…" forever. 2026-05-04 user report.
+      // Fallback: if the timeout fires AND we have a recent AI-applied
+      // canonical SMILES cached, use that — by definition the user
+      // intends to commit the variant they just clicked Apply on, and
+      // it's the same string Ketcher would have returned. 2026-05-05
+      // user report: "after optimizing and applying 4-5 times back to
+      // back ... Check & use this structure is not working."
+      let smiles: string;
+      try {
+        smiles = await withKetcherTimeout(api.getSmiles(), "Ketcher getSmiles");
+      } catch (timeoutErr) {
+        const cached = (aiAppliedSmilesRef.current || "").trim();
+        if (cached) {
+          smiles = cached;
+          console.info("[KetcherModal] Check&Use used aiAppliedSmilesRef fallback (Ketcher bridge wedged)");
+        } else {
+          throw timeoutErr;
+        }
+      }
       if (typeof smiles !== "string" || smiles.trim().length === 0) {
         setPending(false);
         errorAtSmilesRef.current = ""; // empty canvas → polling will pick up any non-empty edit
@@ -458,18 +599,46 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
       }
 
       setPending(false);
+      // Refresh-recovery draft is no longer needed — the user committed
+      // the structure, parent is taking over (save to library, navigate
+      // to /new, etc.). Clearing prevents the next modal-open for this
+      // (compound, target, mutations) tuple from silently restoring an
+      // already-committed SMILES.
+      clearDraft(draftKeyRef.current);
       onAccept(trimmed, unchanged);
     } catch (err) {
       setPending(false);
       // Same snapshot rationale as the dockability-rejection path — keep
       // the error visible until the user actually edits something.
+      // CRITICAL: this getSmiles MUST be wrapped in withKetcherTimeout.
+      // The original code (pre 2026-05-05) had a bare await here, so
+      // when Ketcher's bridge was wedged (the very condition that
+      // landed us in this catch in the first place) this call hung
+      // indefinitely and the setError() below it never executed —
+      // the button label flipped back to "Check & use this structure"
+      // with NO visible error, indistinguishable from a silent no-op.
+      // Use the cached AI-applied SMILES if available; otherwise let
+      // the snapshot stay empty so the polling loop clears the error
+      // on the first canvas edit.
       try {
-        const live = await getKetcherApi(iframeRef.current)?.getSmiles?.();
-        errorAtSmilesRef.current = (live || "").trim();
-      } catch { /* if we can't read SMILES, leave the ref empty so polling clears on first non-blank edit */ }
+        const cached = (aiAppliedSmilesRef.current || "").trim();
+        if (cached) {
+          errorAtSmilesRef.current = cached;
+        } else {
+          const live = await withKetcherTimeout<string>(
+            getKetcherApi(iframeRef.current)?.getSmiles?.() ?? Promise.resolve(""),
+            "Ketcher getSmiles (error-snapshot)",
+            3_000, // shorter — we're already in an error path, don't wait long
+          );
+          errorAtSmilesRef.current = (live || "").trim();
+        }
+      } catch { /* swallow — empty ref is fine, polling clears on first edit */ }
+      const errMsg = (err as Error)?.message ?? String(err);
+      const isTimeout = errMsg.includes("timed out");
       setError(
-        `Couldn't read the structure from Ketcher: ${(err as Error)?.message ?? err}. ` +
-        `Try File → Save As → SMILES to copy it manually.`,
+        isTimeout
+          ? `The structure editor became unresponsive (${errMsg}). Close this window and re-open the editor — your last applied variant will reload.`
+          : `Couldn't read the structure from Ketcher: ${errMsg}. Try File → Save As → SMILES to copy it manually.`,
       );
     }
   }
@@ -500,6 +669,46 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
             <Close size={18} />
           </button>
         </header>
+
+        {/* Refresh-recovery banner. Shown when we hydrated the canvas
+            from a sessionStorage draft instead of the prop's initialSmiles.
+            Without this the user sees their structure on canvas after a
+            refresh and might assume nothing was lost (good — that's the
+            point) OR might wonder why the canvas isn't blank when they
+            opened the editor for a new compound (bad — confusing). The
+            banner closes the loop. "Discard" deletes the draft AND
+            reloads the original initialSmiles (or empty), so the user
+            has a one-click escape hatch. 2026-05-05. */}
+        {restoredFromDraft && (
+          <div className="px-5 py-2 border-b border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-100 shrink-0 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span aria-hidden>↻</span>
+              <span className="truncate">
+                Restored your unsaved structure from earlier in this tab.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                clearDraft(draftKeyRef.current);
+                lastSavedSmilesRef.current = "";
+                setRestoredFromDraft(null);
+                // Re-load the original initialSmiles (or clear the
+                // canvas if there wasn't one). Failures are non-fatal
+                // — the draft is already cleared.
+                const apiObj = getKetcherApi(iframeRef.current);
+                if (apiObj?.setMolecule) {
+                  try {
+                    await withKetcherTimeout(apiObj.setMolecule(initialSmiles || ""), "Ketcher setMolecule (discard)", 8_000);
+                  } catch { /* ignore */ }
+                }
+              }}
+              className="text-[11px] underline hover:no-underline shrink-0"
+            >
+              Discard recovery
+            </button>
+          </div>
+        )}
 
         {/* Body — Option E right rail (2026-05-02 redesign). Ketcher
             fills the left ~70% of the modal; AI rail is a 380px column
@@ -536,10 +745,16 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
             mutations={mutations}
             compoundId={compoundId}
             initialAIHistory={initialAIHistory}
-            onAccept={onAccept}
+            // Wrap onAccept + onPromote to clear the refresh-recovery
+            // draft on commit. AiSidebar's own buttons (the Quick-Dock-
+            // card "Use this structure" and the Promote-to-Full-Job CTA)
+            // bypass the footer's handleAccept, so the clear-on-accept
+            // there doesn't cover them. 2026-05-05.
+            onAccept={(smi, unchanged) => { clearDraft(draftKeyRef.current); onAccept(smi, unchanged); }}
             onClose={onClose}
             onAiApplied={(smi) => { aiAppliedSmilesRef.current = smi; }}
-            onPromote={onPromote}
+            onPromote={onPromote ? (smi, reseed) => { clearDraft(draftKeyRef.current); onPromote(smi, reseed); } : undefined}
+            getAiAppliedSmiles={() => aiAppliedSmilesRef.current}
           />
         </div>
 
@@ -654,6 +869,14 @@ interface AiSidebarProps {
    *  the race where the modal calls onAccept + onClose + navigate
    *  inline and the popup gets blown away. 2026-05-04 user report. */
   onPromote?: (smiles: string, reseed: { pdbId?: string; chain?: string; targetPdb?: string; mutations?: string }) => void;
+  /** Read the parent's most-recently-AI-applied canonical SMILES. Used
+   *  as a fallback in promoteToFullJob and (indirectly via the parent)
+   *  handleAccept when Ketcher's getSmiles() hangs after multiple
+   *  setMolecule cycles. Without this, the wedged-bridge state surfaces
+   *  as a silent no-op on Promote and Check & Use — see 2026-05-05
+   *  user report. Returns "" when no AI Apply has happened in this
+   *  modal session. */
+  getAiAppliedSmiles?: () => string;
 }
 
 // Cap matches the server's MAX_AI_HISTORY_PER_COMPOUND constant. The
@@ -802,7 +1025,7 @@ interface PropertiesResult {
   error?: string;
 }
 
-function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote }: AiSidebarProps) {
+function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, initialAIHistory, onAccept, onClose, onAiApplied, onPromote, getAiAppliedSmiles }: AiSidebarProps) {
   // (Free-form chat input was removed 2026-05-04 — see the bottom-of-rail
   // comment near the action button. The `instruction` state that powered
   // the textbox is gone; runEdit() still accepts a `text` param so the
@@ -1204,6 +1427,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   const [quickDockStatus, setQuickDockStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [quickDockError, setQuickDockError] = useState<string | null>(null);
   const [quickDockGated, setQuickDockGated] = useState(false);
+  // In-flight lock for promoteToFullJob. Without this, rapid clicks (very
+  // likely when the first click feels like a no-op) fire concurrent
+  // getSmiles() promises against an already-wedged Ketcher bridge AND
+  // call onPromote() twice when both resolve, which double-fires the
+  // parent's rename popup. 2026-05-05 user report: "after optimizing
+  // and applying 4-5 times back to back Promote to Full Job and Check
+  // & use are not working". Disables the button + flips the label to
+  // a spinner so the click visibly registers.
+  const [promotePending, setPromotePending] = useState(false);
   const [dockResult, setDockResult] = useState<{
     smiles: string;
     score: number;
@@ -1333,65 +1565,101 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  in `targetPdb` (which may be a catalog id like "kras" — handled
    *  by the new `catalog_target_id` reseed field on NewJobPage). */
   async function promoteToFullJob() {
+    // In-flight guard. Rapid clicks would fire concurrent getSmiles()
+    // promises AND call onPromote() multiple times if they all resolved.
+    // 2026-05-05 user report: "after optimizing and applying 4-5 times
+    // back to back Promote to Full Job is not working." Without this
+    // lock the user spams the button (because the first click looks
+    // dead), and we either race or double-navigate.
+    if (promotePending) return;
     const apiObj = getApi();
     if (!apiObj?.getSmiles) {
+      setQuickDockStatus("error");
       setQuickDockError("Ketcher hasn't finished loading. Wait a moment and retry.");
       return;
     }
-    let smi: string;
+    setPromotePending(true);
     try {
-      // Same 12s timeout as handleAccept + applyVariantToCanvas. After
-      // 2-3 Apply & Re-dock cycles, Ketcher's getSmiles starts hanging
-      // silently on canonical-SMILES no-ops. Without the race the
-      // Promote button looks dead (no error, just nothing happens).
-      // 2026-05-04 user report: "after 2-3 times the Promote to Full
-      // Job and Check & use don't work."
-      const raw = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles");
-      smi = (raw || "").trim();
-    } catch (e) {
-      const msg = (e as Error)?.message || "unknown";
-      setQuickDockError(
-        msg.includes("timed out")
-          ? `${msg}. Click Promote to Full Job again — usually works on retry.`
-          : `Couldn't read SMILES from Ketcher: ${msg}`,
-      );
-      return;
+      let smi = "";
+      let smiSource: "ketcher" | "ai-cache" = "ketcher";
+      try {
+        // Same 12s timeout as handleAccept + applyVariantToCanvas. After
+        // ~3+ Apply & Re-dock cycles, Ketcher's getSmiles starts hanging
+        // silently on canonical-SMILES no-ops (known EPAM Ketcher iframe
+        // bridge issue). Without the race the Promote button looks dead.
+        // 2026-05-04 → 2026-05-05 user reports.
+        const raw = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles");
+        smi = (raw || "").trim();
+      } catch (e) {
+        // Ketcher is wedged. Fall back to the canonical SMILES we cached
+        // on the most recent AI Apply — by definition the user's intent
+        // is to promote that exact structure (they just clicked Apply on
+        // the variant). If they edited manually after Apply, we have no
+        // safe fallback and surface the timeout error prominently.
+        // 2026-05-05 fix: previously the timeout set quickDockError but
+        // NOT quickDockStatus="error", so the error was set in state
+        // and never rendered (the conditional at the render site is
+        // gated on status). The button looked silently dead.
+        const cached = (getAiAppliedSmiles?.() || "").trim();
+        if (cached) {
+          smi = cached;
+          smiSource = "ai-cache";
+        } else {
+          const msg = (e as Error)?.message || "unknown";
+          setQuickDockStatus("error");
+          setQuickDockError(
+            msg.includes("timed out")
+              ? `${msg}. The structure editor became unresponsive — close this window and re-open it, then click Promote again.`
+              : `Couldn't read SMILES from Ketcher: ${msg}`,
+          );
+          return;
+        }
+      }
+      if (!smi) {
+        setQuickDockStatus("error");
+        setQuickDockError("Canvas is empty — draw a structure first.");
+        return;
+      }
+      // Hand off to the parent. NewJobPage fires the rename popup if the
+      // edited row had a name (so the user picks "save as new" or
+      // "overwrite"), then navigates to /new with the reseed payload.
+      // Falls back to the legacy onAccept-then-navigate flow when no
+      // onPromote is wired (e.g. CompoundsPage). 2026-05-04 fix for the
+      // user-reported popup race after multiple Apply rounds.
+      if (onPromote) {
+        onPromote(smi, {
+          pdbId: dockResult?.pdbId,
+          chain: dockResult?.chain,
+          targetPdb,
+          mutations,
+        });
+        // Log the fallback in dev so we can see it in the console if
+        // QA reports "I clicked Promote and it worked but I never saw
+        // the canvas update" — that means we used the cache.
+        if (smiSource === "ai-cache") {
+          console.info("[KetcherModal] Promote used aiAppliedSmilesRef fallback (Ketcher bridge wedged)");
+        }
+        return;
+      }
+      // Legacy fallback — kept for callers that haven't wired onPromote.
+      onAccept(smi, false);
+      onClose();
+      const reseed: Record<string, unknown> = {
+        compounds: [{ name: "", smiles: smi }],
+      };
+      if (dockResult?.pdbId) {
+        reseed.pdb_id = dockResult.pdbId;
+        if (dockResult.chain) reseed.chain = dockResult.chain;
+      } else if (targetPdb) {
+        reseed.catalog_target_id = targetPdb;
+      }
+      if (mutations) {
+        reseed.mutations = mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
+      }
+      navigate("/new", { state: { reseed } });
+    } finally {
+      setPromotePending(false);
     }
-    if (!smi) {
-      setQuickDockError("Canvas is empty — draw a structure first.");
-      return;
-    }
-    // Hand off to the parent. NewJobPage fires the rename popup if the
-    // edited row had a name (so the user picks "save as new" or
-    // "overwrite"), then navigates to /new with the reseed payload.
-    // Falls back to the legacy onAccept-then-navigate flow when no
-    // onPromote is wired (e.g. CompoundsPage). 2026-05-04 fix for the
-    // user-reported popup race after multiple Apply rounds.
-    if (onPromote) {
-      onPromote(smi, {
-        pdbId: dockResult?.pdbId,
-        chain: dockResult?.chain,
-        targetPdb,
-        mutations,
-      });
-      return;
-    }
-    // Legacy fallback — kept for callers that haven't wired onPromote.
-    onAccept(smi, false);
-    onClose();
-    const reseed: Record<string, unknown> = {
-      compounds: [{ name: "", smiles: smi }],
-    };
-    if (dockResult?.pdbId) {
-      reseed.pdb_id = dockResult.pdbId;
-      if (dockResult.chain) reseed.chain = dockResult.chain;
-    } else if (targetPdb) {
-      reseed.catalog_target_id = targetPdb;
-    }
-    if (mutations) {
-      reseed.mutations = mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
-    }
-    navigate("/new", { state: { reseed } });
   }
 
   /** (runDockAndImprove — the single-click "dock then immediately
@@ -1422,10 +1690,19 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
     let smi: string;
     try {
-      const raw: string = await apiObj.getSmiles();
+      // Same wedged-bridge defense as handleAccept + promoteToFullJob.
+      // Quick Dock by definition tests "what's on the canvas right now",
+      // so we don't fall back to the AI cache here — a stale cache would
+      // mislead. We just surface the timeout error visibly.
+      const raw: string = await withKetcherTimeout<string>(apiObj.getSmiles(), "Ketcher getSmiles");
       smi = (raw || "").trim();
     } catch (e) {
-      setQuickDockError(`Couldn't read SMILES: ${(e as Error).message}`);
+      const msg = (e as Error)?.message || "unknown";
+      setQuickDockError(
+        msg.includes("timed out")
+          ? `${msg}. Close this window and re-open the editor — your last applied variant will reload.`
+          : `Couldn't read SMILES: ${msg}`,
+      );
       setQuickDockStatus("error");
       return;
     }
@@ -1675,6 +1952,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // round-trip. Ketcher's canonical form may differ from this stored
       // value, but that's fine because we never compare to liveSmiles.
       setAppliedVariantSmiles(smiles);
+      // Set the AI-applied cache IMMEDIATELY with the input form, then
+      // try to upgrade to Ketcher's canonical form below. This ordering
+      // matters: handleAccept and promoteToFullJob both fall back to
+      // this cache when Ketcher's getSmiles wedges. If we wait for the
+      // canonical readback (which itself can hang for 8s), the user
+      // can click Check & Use before the cache is set, and the
+      // wedged-bridge fallback fires with an empty cache — back to
+      // silent-no-op territory. 2026-05-05.
+      onAiApplied?.(smiles);
       // Read back Ketcher's canonical form of the SMILES we just set.
       // This is what handleAccept's getSmiles() will return when the
       // user clicks Check & use. Storing the BACKEND form in the
@@ -1684,22 +1970,21 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       // 2026-05-04 user report: "after applied it took about 10 sec
       // for the Check & use this structure to come up".
       // Same timeout applies — getSmiles can also hang on weird state.
-      let canonical = smiles;
       try {
         if (apiObj.getSmiles) {
           const live: string = await withKetcherTimeout(apiObj.getSmiles(), "Ketcher getSmiles", 8_000);
           if (live && live.trim().length > 0) {
-            canonical = live.trim();
+            // Upgrade the cache to canonical form so handleAccept's
+            // equality check (line ~447) hits and skips the dockability
+            // round-trip. If readback fails we keep the input-form
+            // cache from above — slightly slower Check & Use (one
+            // extra dockability call) but never silently dead.
+            onAiApplied?.(live.trim());
           }
         }
       } catch {
-        // Fall back to the input form — better to over-validate one
-        // round-trip than to crash the apply path.
+        // Fall back to the input-form cache set above.
       }
-      // Mark this SMILES as "AI-applied" so the parent's handleAccept
-      // skips the dockability backend round-trip on the next Check & use
-      // click. We pass the CANONICAL form so the equality check matches.
-      onAiApplied?.(canonical);
 
       // Stage 2: Re-docking. Auto-trigger a fresh Quick Dock so the
       // user doesn't have to manually click Re-dock. Same engine +
@@ -2158,14 +2443,21 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               )}
               {/* Promote — solid delta-blue. Tooltip carries the "what
                   Full Job adds" copy that used to live as a subtitle
-                  below the button (cut for vertical density). */}
+                  below the button (cut for vertical density).
+                  Disabled + spinner label during in-flight so a slow
+                  Ketcher getSmiles never feels like a silent no-op. */}
               <button
                 type="button"
                 onClick={promoteToFullJob}
-                className="w-full text-[11px] font-semibold px-2.5 py-1 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors flex items-center justify-center gap-1"
+                disabled={promotePending}
+                className="w-full text-[11px] font-semibold px-2.5 py-1 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-delta-400 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center gap-1"
                 title="Submit a full validated docking job: PoseBusters, ProLIF interactions, Vinardo refined score, shareable URL"
               >
-                ⚡ Promote to Full Job →
+                {promotePending ? (
+                  <><Spinner size={11} /> Reading structure…</>
+                ) : (
+                  <>⚡ Promote to Full Job →</>
+                )}
               </button>
             </>
           ) : (
@@ -2244,10 +2536,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               <button
                 type="button"
                 onClick={promoteToFullJob}
-                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white transition-colors"
+                disabled={promotePending}
+                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md bg-delta-600 hover:bg-delta-700 disabled:bg-delta-400 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center gap-1"
                 title="Close the editor, navigate to New Job with this compound pre-filled, then pick a target there"
               >
-                ⚡ Use in New Job →
+                {promotePending ? (
+                  <><Spinner size={11} /> Reading structure…</>
+                ) : (
+                  <>⚡ Use in New Job →</>
+                )}
               </button>
               <div className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-tight">
                 Or click Improve below for general medchem advice (no dock context).

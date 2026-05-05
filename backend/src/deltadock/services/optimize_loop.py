@@ -600,8 +600,21 @@ async def _batch_quick_dock(
                 continue
             batch_in.append(BatchLigand(id=lig_id, pdbqt_path=ligand_pdbqt))
 
+        # Build the meta dict ONCE up here so all return paths can reuse
+        # it. The function signature is `tuple[list, dict]`, so every
+        # exit must return both — three early-return paths in this
+        # block previously returned just `out` (no meta), which would
+        # have raised "too many values to unpack" at the caller's
+        # destructuring (assist.py:340 `docked_results, dock_meta = ...`).
+        # Latent bug — never hit in production because the prep-failure
+        # and pod-failure paths are rare. 2026-05-05.
+        meta = {
+            "receptor_variant": "mutant" if rec.is_mutant else "wt",
+            "fallback_reason": rec.fallback_reason if (rec.fallback_reason and not rec.is_mutant and mutations) else None,
+        }
+
         if not batch_in:
-            return out
+            return out, meta
 
         cfg = PodDockConfig(
             base_url=pod_url,
@@ -609,40 +622,67 @@ async def _batch_quick_dock(
         )
 
         # Run the (sync, urllib-based) batch call off the event loop.
+        # Wrapped in asyncio.wait_for with a hard wall-clock budget that
+        # SUPERSEDES the underlying urllib timeout. Reason: PodDockConfig
+        # timeout_s is per-request; if the pod accepts the connection
+        # but the GPU dispatch hangs (we've seen this when a previous
+        # pod job leaked GPU memory), urllib's read-timeout doesn't
+        # always fire promptly. The async-level timeout guarantees we
+        # surface an error to the frontend within the budget regardless
+        # of socket weirdness — beats Cloudflare's 100s edge timeout
+        # eating the request and the user seeing a generic 524.
         import asyncio
+        # Budget = 1.5x the per-request timeout to allow for one retry
+        # inside the pod client, capped at 90s to stay under Cloudflare.
+        wall_clock_budget_s = min(int(cfg.timeout_s * 1.5), 90)
         try:
-            results = await asyncio.to_thread(
-                dock_batch_pod,
-                receptor_pdbqt,
-                batch_in,
-                box,
-                tmp,
-                cfg,
-                # 2026-05-04: bumped from 4 to 8 to match production runner.
-                # User-reported repro: Optimize said variant scored -9.20
-                # but re-docking the SAME variant gave -8.50 — 0.7 kcal/mol
-                # of variance, which is the typical Vina noise floor at
-                # exhaustiveness=4. Doubling exhaustiveness ~halves the
-                # noise envelope (Vina spec: noise ≈ 1/sqrt(exhaustiveness))
-                # so users now see ~±0.3 kcal/mol on re-dock instead of ±0.7.
-                # Cost: ~12s → ~24s for the 12-ligand batch dock; total
-                # /optimize wall time goes from ~50s to ~62s, still
-                # comfortably under the Cloudflare 100s edge timeout.
-                exhaustiveness=8,
-                num_modes=3,
+            results = await asyncio.wait_for(
+                asyncio.to_thread(
+                    dock_batch_pod,
+                    receptor_pdbqt,
+                    batch_in,
+                    box,
+                    tmp,
+                    cfg,
+                    # 2026-05-04: bumped from 4 to 8 to match production runner.
+                    # User-reported repro: Optimize said variant scored -9.20
+                    # but re-docking the SAME variant gave -8.50 — 0.7 kcal/mol
+                    # of variance, which is the typical Vina noise floor at
+                    # exhaustiveness=4. Doubling exhaustiveness ~halves the
+                    # noise envelope (Vina spec: noise ≈ 1/sqrt(exhaustiveness))
+                    # so users now see ~±0.3 kcal/mol on re-dock instead of ±0.7.
+                    # Cost: ~12s → ~24s for the 12-ligand batch dock; total
+                    # /optimize wall time goes from ~50s to ~62s, still
+                    # comfortably under the Cloudflare 100s edge timeout.
+                    exhaustiveness=8,
+                    num_modes=3,
+                ),
+                timeout=wall_clock_budget_s,
             )
+        except asyncio.TimeoutError:
+            log.warning(
+                "optimize_loop: batch dock wall-clock timeout (%ds) — pod likely wedged",
+                wall_clock_budget_s,
+            )
+            for lig in batch_in:
+                idx = id_to_index[lig.id]
+                out[idx] = _BatchDockOut(
+                    ok=False,
+                    error=f"Docking pod didn't respond in {wall_clock_budget_s}s — try Optimize again in a moment.",
+                )
+            return out, meta
         except PodDockError as e:
             log.info("optimize_loop: batch dock pod failure: %s", e)
             for lig in batch_in:
                 idx = id_to_index[lig.id]
                 out[idx] = _BatchDockOut(ok=False, error=f"Pod call failed: {e}")
-            return out
+            return out, meta
         except Exception as e:
             log.exception("optimize_loop: unexpected batch dock failure")
             for lig in batch_in:
                 idx = id_to_index[lig.id]
                 out[idx] = _BatchDockOut(ok=False, error=f"Unexpected docking failure: {e}")
-            return out
+            return out, meta
 
         # Map results back. Each result has either .result (DockingResult)
         # or .error. Successful results go through contact extraction.
@@ -676,10 +716,9 @@ async def _batch_quick_dock(
                 misses=misses[:8],
             )
 
-    return out, {
-        "receptor_variant": "mutant" if rec.is_mutant else "wt",
-        "fallback_reason": rec.fallback_reason if (rec.fallback_reason and not rec.is_mutant and mutations) else None,
-    }
+    # `meta` was built once above (just after the receptor-prep success
+    # gate) so all return paths use the same value. Don't recompute.
+    return out, meta
 
 
 def _extract_contacts_for_pose(*, pose_pdbqt: Path, receptor_pdb: Path, box) -> tuple[list[str], list[str]]:
