@@ -496,6 +496,25 @@ export default function JobPage() {
               newSmiles,
             });
           }}
+          // Promote-to-Full-Job: navigate to /new with the current
+          // canvas SMILES and the job's target / mutations / engine
+          // pre-filled. Without this, KetcherModal falls into its
+          // legacy fallback (onAccept + onClose + navigate inline)
+          // which silently fails when the parent page's onAccept
+          // opens its own RenamePrompt — the rename-popup state
+          // races React's batched unmount and the navigate gets
+          // swallowed. 2026-05-04 user report: "I am unable to click
+          // promote to full job. nothing happens." Fix: bypass the
+          // rename popup entirely (promote is a navigate intent, not
+          // a save-to-library intent — Step 3 on NewJobPage already
+          // lets the user rename the row before submit) and call
+          // navigateToReseed directly with the original compound's
+          // name carried forward.
+          onPromote={(newSmiles) => {
+            const original = editingCompound;
+            setEditingCompound(null);
+            navigateToReseed(original?.name ?? "", newSmiles);
+          }}
         />
       )}
       {/* Rename + persist + navigate — shows a clear two-path choice:
