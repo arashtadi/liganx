@@ -192,6 +192,14 @@ class QuickDockRequest(BaseModel):
     # path on off-pocket cells. Clamped server-side to [0.4, 1.0].
     # 2026-05-05 user request.
     box_scale: Optional[float] = Field(default=None, ge=0.4, le=1.0)
+    # Optional dock engine override. Default (None / "vina") uses
+    # QuickVina2-GPU, the standard Quick Dock path. "gnina" routes to
+    # the GNINA pod (CNN-rescored Vina) — used by the "Validate with
+    # GNINA" cross-check on off-pocket cells, which often promotes a
+    # buried in-pocket pose that Vina's affinity scoring undervalued.
+    # Server-side validates the value and falls back to Vina if GNINA
+    # isn't enabled (gnina_enabled flag) on this deploy. 2026-05-05.
+    engine: Optional[str] = Field(default=None, max_length=20)
 
 
 class OptimizeRequest(BaseModel):
@@ -275,6 +283,7 @@ def quick_dock_endpoint(
         chain=payload.chain,
         mutation=safe_mutation,
         box_scale=payload.box_scale,
+        engine=payload.engine,
     )
     return dict(result)
 

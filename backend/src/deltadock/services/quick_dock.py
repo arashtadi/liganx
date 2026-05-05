@@ -137,6 +137,7 @@ def quick_dock(
     chain: str = "A",
     mutation: Optional[str] = None,
     box_scale: Optional[float] = None,
+    engine: Optional[str] = None,
 ) -> QuickDockResult:
     """Run a fast Vina dock + extract contacts. Returns a flat dict
     safe to JSON-serialise straight to the client. Never raises; on
@@ -355,10 +356,42 @@ def quick_dock(
             # the dock than block on a bad import.
             log.warning("quick_dock sanity gate skipped (error: %s)", e)
 
-        cfg = PodDockConfig(
-            base_url=pod_url,
-            timeout_s=min(settings.pod_dock_timeout_s, 60),
+        # Engine selection — default Vina (QuickVina2-GPU via the Pod)
+        # but optionally route to GNINA when the caller requests it
+        # AND the deploy has GNINA enabled. Used by the "Validate with
+        # GNINA" cross-check button on off-pocket cells: GNINA's CNN
+        # rescoring orthogonally re-ranks Vina's pose pool, and often
+        # promotes a buried in-pocket pose that pure-Vina affinity
+        # scoring undervalued. Fallback path: if engine="gnina" but
+        # the deploy doesn't have it, transparently fall back to Vina
+        # — better than failing the request. 2026-05-05.
+        use_gnina = (
+            (engine or "").lower() == "gnina"
+            and bool(getattr(settings, "gnina_enabled", False))
         )
+        if (engine or "").lower() == "gnina" and not use_gnina:
+            log.info(
+                "quick_dock: engine=gnina requested but gnina_enabled=False — falling back to Vina"
+            )
+        if use_gnina:
+            from deltadock_pipeline.gnina_dock import (
+                dock_one_gnina, GninaDockConfig, GninaDockError,
+            )
+            cfg = GninaDockConfig(
+                base_url=pod_url,
+                timeout_s=min(getattr(settings, "gnina_timeout_s", 120), 90),
+                cnn_mode=getattr(settings, "gnina_cnn_mode", "rescore"),
+            )
+            _dock_one = dock_one_gnina
+            _DockError = GninaDockError
+            log.info("quick_dock: GNINA mode active (cnn=%s)", cfg.cnn_mode)
+        else:
+            cfg = PodDockConfig(
+                base_url=pod_url,
+                timeout_s=min(settings.pod_dock_timeout_s, 60),
+            )
+            _dock_one = dock_one_pod
+            _DockError = PodDockError
         # Pocket-best pose selection (2026-05-04). Vina with a wide
         # search box regularly finds high-affinity poses on non-canonical
         # surface sites that LOOK great by score but aren't actually in
@@ -379,7 +412,10 @@ def quick_dock(
         last_error: Optional[str] = None
         for attempt_idx in range(_MAX_POCKET_RETRIES):
             try:
-                roll = dock_one_pod(
+                # _dock_one is dock_one_pod (Vina) or dock_one_gnina, bound
+                # above by the engine selector. Both have identical
+                # signatures so the retry loop doesn't need to branch.
+                roll = _dock_one(
                     receptor_pdbqt=receptor_pdbqt,
                     ligand_pdbqt=ligand_pdbqt,
                     box=box,
@@ -397,9 +433,9 @@ def quick_dock(
                     exhaustiveness=8,
                     num_modes=3,         # only the top 3 — we only return best anyway
                 )
-            except PodDockError as e:
+            except _DockError as e:
                 last_error = _humanize_pod_error(str(e))
-                log.info("quick_dock: pod call failed (attempt %d): %s", attempt_idx + 1, e)
+                log.info("quick_dock: dock call failed (attempt %d): %s", attempt_idx + 1, e)
                 # Don't retry on pod errors — likely systemic
                 break
             except Exception as e:

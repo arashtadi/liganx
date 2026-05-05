@@ -627,6 +627,14 @@ export const api = {
      *  box" salvage button on off-pocket Quick Dock results.
      *  Server-side clamped to [0.4, 1.0]. 2026-05-05. */
     box_scale?: number;
+    /** Optional engine override. Default ("vina" / undefined) uses
+     *  QuickVina2-GPU. "gnina" routes to the GNINA pod, which adds a
+     *  CNN-based pose rescoring pass on top of Vina — often promotes
+     *  buried in-pocket poses that Vina's affinity-only scoring under-
+     *  ranked. Used by the "Validate with GNINA" cross-check button
+     *  on off-pocket cells. Server falls back to Vina if GNINA isn't
+     *  enabled on this deploy. 2026-05-05. */
+    engine?: "vina" | "gnina";
   }) =>
     request<{
       ok: boolean;
