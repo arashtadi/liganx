@@ -31,6 +31,13 @@ from ..catalog import get_target
 from ..config import get_settings
 from ..db import engine
 from ..models import Compound, DockingResult, Job, JobStatus
+# Pocket-best wrapper — added 2026-05-04 to bring the full-job docking
+# paths up to Quick Dock parity. Each per-cell dock_one_pod / _gnina /
+# _runpod call now goes through dock_one_with_pocket_best, which docks
+# once happy-path then re-rolls up to 2 more times only when the first
+# pose drifted off-pocket. See pocket_filter.py for the full rationale
+# and cost analysis.
+from .pocket_filter import dock_one_with_pocket_best, engine_label_with_attempts
 
 log = logging.getLogger(__name__)
 settings = get_settings()
@@ -1577,7 +1584,14 @@ def _run_real(session: Session, job: Job) -> None:
                         cell_dir = work / f"compound_{c.id}_{variant}"
                         cell_dir.mkdir(exist_ok=True)
                         try:
-                            result = dock_one_pod(
+                            # Pocket-best wraps the per-cell fallback path
+                            # too. When the whole batch failed and we're
+                            # going per-cell, every dock here is already a
+                            # second attempt at this ligand — but we still
+                            # want the 3× pocket filter so the FINAL pose
+                            # is in-pocket regardless.
+                            result, _pb_meta = dock_one_with_pocket_best(
+                                dock_one_pod,
                                 receptor_pdbqt=receptor,
                                 ligand_pdbqt=prepped[c.id],
                                 box=box,
@@ -1586,7 +1600,10 @@ def _run_real(session: Session, job: Job) -> None:
                                 exhaustiveness=exhaustiveness,
                                 num_modes=9,
                             )
-                            _finalize_cell(c, variant, receptor, receptor_pdb, cell_dir, result, "pod_gpu_after_batch_fail")
+                            _finalize_cell(
+                                c, variant, receptor, receptor_pdb, cell_dir, result,
+                                engine_label_with_attempts("pod_gpu_after_batch_fail", _pb_meta),
+                            )
                         except Exception as e:
                             # Per-cell Pod retry failed too. Burst overflow:
                             # try RunPod serverless if configured before
@@ -1595,7 +1612,12 @@ def _run_real(session: Session, job: Job) -> None:
                                 log.warning("Per-cell Pod fallback failed for c%s × %s: %s — overflowing to RunPod",
                                             c.id, variant, e)
                                 try:
-                                    result = dock_one_runpod(
+                                    # Pocket-best wraps the RunPod-serverless
+                                    # fallback in the batch-fail path too —
+                                    # consistency with the legacy per-cell
+                                    # branches above.
+                                    result, _pb_meta = dock_one_with_pocket_best(
+                                        dock_one_runpod,
                                         receptor_pdbqt=receptor,
                                         ligand_pdbqt=prepped[c.id],
                                         box=box,
@@ -1604,7 +1626,10 @@ def _run_real(session: Session, job: Job) -> None:
                                         exhaustiveness=exhaustiveness,
                                         num_modes=9,
                                     )
-                                    _finalize_cell(c, variant, receptor, receptor_pdb, cell_dir, result, "runpod_after_batch_fail")
+                                    _finalize_cell(
+                                        c, variant, receptor, receptor_pdb, cell_dir, result,
+                                        engine_label_with_attempts("runpod_after_batch_fail", _pb_meta),
+                                    )
                                 except Exception as e2:
                                     log.warning("RunPod also failed for c%s × %s: %s", c.id, variant, e2)
                                     session.add(DockingResult(
@@ -1620,7 +1645,22 @@ def _run_real(session: Session, job: Job) -> None:
                     session.commit()
                     continue
 
-                # Per-cell post-processing on batch results.
+                # Per-cell post-processing on batch results. The batch call
+                # gave us one pose per ligand — most will be in-pocket, but
+                # a few may have drifted to the protein surface. For those,
+                # we re-roll just that ligand via dock_one_pod (with a
+                # different seed) up to 2 more times to find an in-pocket
+                # pose. The batch throughput win is preserved for the in-
+                # pocket cells; we only pay extra GPU time on the outliers.
+                # Pocket-best parity with quick_dock — added 2026-05-04.
+                # See services/pocket_filter.py for the full rationale.
+                from .pocket_filter import (  # local import keeps the hot path's import graph small
+                    _POSE_DRIFT_THRESHOLD_A,
+                    _BASE_SEED,
+                    _MAX_POCKET_RETRIES,
+                    compute_pose_offset_a,
+                )
+                _box_center = (box.center_x, box.center_y, box.center_z)
                 for c in compounds:
                     if c.id not in prepped:
                         continue
@@ -1630,7 +1670,60 @@ def _run_real(session: Session, job: Job) -> None:
                             raise RuntimeError("missing from batch response")
                         if br.error or not br.result:
                             raise RuntimeError(f"batch err: {br.error or 'no result'}")
-                        _finalize_cell(c, variant, receptor, receptor_pdb, run_dir, br.result, engine_label)
+                        # Check this cell's pose offset. If it drifted, try
+                        # to find an in-pocket pose by re-rolling via per-
+                        # ligand dock_one_pod with different seeds.
+                        chosen = br.result
+                        chosen_offset = compute_pose_offset_a(
+                            pose_pdbqt=chosen.pose_pdbqt, box_center=_box_center,
+                        )
+                        cell_engine_label = engine_label
+                        if chosen_offset > _POSE_DRIFT_THRESHOLD_A:
+                            log.info(
+                                "pocket_best (batched): c%s × %s drifted (%.2f Å) — re-rolling",
+                                c.id, variant, chosen_offset,
+                            )
+                            cell_dir = work / f"compound_{c.id}_{variant}_reroll"
+                            cell_dir.mkdir(exist_ok=True)
+                            attempts: list = [(chosen, chosen_offset)]
+                            for retry_idx in range(1, _MAX_POCKET_RETRIES):
+                                try:
+                                    retry_result = dock_one_pod(
+                                        receptor_pdbqt=receptor,
+                                        ligand_pdbqt=prepped[c.id],
+                                        box=box,
+                                        work_dir=cell_dir / f"attempt_{retry_idx + 1}",
+                                        cfg=pod_cfg,
+                                        exhaustiveness=exhaustiveness,
+                                        num_modes=9,
+                                        seed=_BASE_SEED + retry_idx,
+                                    )
+                                except Exception as re:  # noqa: BLE001
+                                    log.info(
+                                        "pocket_best (batched): retry %d errored — %s",
+                                        retry_idx + 1, re,
+                                    )
+                                    continue
+                                retry_offset = compute_pose_offset_a(
+                                    pose_pdbqt=retry_result.pose_pdbqt, box_center=_box_center,
+                                )
+                                attempts.append((retry_result, retry_offset))
+                                if retry_offset <= _POSE_DRIFT_THRESHOLD_A:
+                                    break
+                            attempts.sort(
+                                key=lambda pair: (pair[0].modes[0].affinity_kcal_mol, pair[1]),
+                            )
+                            chosen, chosen_offset = attempts[0]
+                            in_pocket = chosen_offset <= _POSE_DRIFT_THRESHOLD_A
+                            cell_engine_label = engine_label + (
+                                f"_retried_{len(attempts)}"
+                                + ("" if in_pocket else "_off_pocket")
+                            )
+                            log.info(
+                                "pocket_best (batched): c%s × %s final offset=%.2f Å, attempts=%d",
+                                c.id, variant, chosen_offset, len(attempts),
+                            )
+                        _finalize_cell(c, variant, receptor, receptor_pdb, run_dir, chosen, cell_engine_label)
                     except Exception as e:
                         log.warning("Docking failed for c%s × %s: %s", c.id, variant, e)
                         session.add(DockingResult(
@@ -1707,7 +1800,12 @@ def _run_real(session: Session, job: Job) -> None:
                     # Pod path does for RunPod overflow.
                     if gnina_requested:
                         try:
-                            result = dock_one_gnina(
+                            # Pocket-best wrapper applies to GNINA too — same
+                            # off-pocket failure mode (Vina-family search
+                            # under the hood) so the 3× re-roll buys the
+                            # same parity gain. See pocket_filter.py.
+                            result, _pb_meta = dock_one_with_pocket_best(
+                                dock_one_gnina,
                                 receptor_pdbqt=receptor,
                                 ligand_pdbqt=lig_pdbqt,
                                 box=box,
@@ -1716,7 +1814,9 @@ def _run_real(session: Session, job: Job) -> None:
                                 exhaustiveness=exhaustiveness,
                                 num_modes=9,
                             )
-                            engine_used = f"gnina_{settings.gnina_cnn_mode}"
+                            engine_used = engine_label_with_attempts(
+                                f"gnina_{settings.gnina_cnn_mode}", _pb_meta,
+                            )
                         except GninaDockError as gde:
                             log.warning("GNINA failed for c%s × %s: %s — falling back to QuickVina2-GPU",
                                         compound.id, variant, gde)
@@ -1724,7 +1824,13 @@ def _run_real(session: Session, job: Job) -> None:
                             # below run and overwrite engine_used appropriately.
                     if result is None and pod_on:
                         try:
-                            result = dock_one_pod(
+                            # Pocket-best wrapper: dock_one_pod runs once,
+                            # then up to 2 more times if the first pose
+                            # drifted off-pocket. Median cost overhead is
+                            # ~33% (most cells in-pocket on attempt 1).
+                            # See services/pocket_filter.py.
+                            result, _pb_meta = dock_one_with_pocket_best(
+                                dock_one_pod,
                                 receptor_pdbqt=receptor,
                                 ligand_pdbqt=lig_pdbqt,
                                 box=box,
@@ -1733,7 +1839,7 @@ def _run_real(session: Session, job: Job) -> None:
                                 exhaustiveness=exhaustiveness,
                                 num_modes=9,
                             )
-                            engine_used = "pod_gpu"
+                            engine_used = engine_label_with_attempts("pod_gpu", _pb_meta)
                         except PodDockError as pde:
                             # Burst overflow: Pod busy / down → try RunPod
                             # serverless before falling to local CPU. This
@@ -1742,7 +1848,12 @@ def _run_real(session: Session, job: Job) -> None:
                                 log.warning("Pod GPU failed for c%s × %s: %s — overflowing to RunPod serverless",
                                             compound.id, variant, pde)
                                 try:
-                                    result = dock_one_runpod(
+                                    # Pocket-best applies to RunPod serverless
+                                    # too — same Vina, same off-pocket failure
+                                    # mode. Each retry uses a different seed
+                                    # which the worker forwards to vina --seed.
+                                    result, _pb_meta = dock_one_with_pocket_best(
+                                        dock_one_runpod,
                                         receptor_pdbqt=receptor,
                                         ligand_pdbqt=lig_pdbqt,
                                         box=box,
@@ -1751,7 +1862,9 @@ def _run_real(session: Session, job: Job) -> None:
                                         exhaustiveness=exhaustiveness,
                                         num_modes=9,
                                     )
-                                    engine_used = "runpod_after_pod_busy"
+                                    engine_used = engine_label_with_attempts(
+                                        "runpod_after_pod_busy", _pb_meta,
+                                    )
                                 except RunPodError as rpe:
                                     log.warning("RunPod also failed for c%s × %s: %s — falling back to local",
                                                 compound.id, variant, rpe)
@@ -1767,7 +1880,11 @@ def _run_real(session: Session, job: Job) -> None:
                     # at all so RunPod is the *primary* remote engine.
                     if result is None and runpod_on and not pod_on:
                         try:
-                            result = dock_one_runpod(
+                            # Pocket-best wraps RunPod-serverless calls just
+                            # like the Pod path above — keeps full-job pose
+                            # quality on parity with Quick Dock.
+                            result, _pb_meta = dock_one_with_pocket_best(
+                                dock_one_runpod,
                                 receptor_pdbqt=receptor,
                                 ligand_pdbqt=lig_pdbqt,
                                 box=box,
@@ -1776,7 +1893,7 @@ def _run_real(session: Session, job: Job) -> None:
                                 exhaustiveness=exhaustiveness,
                                 num_modes=9,
                             )
-                            engine_used = "runpod"
+                            engine_used = engine_label_with_attempts("runpod", _pb_meta)
                         except RunPodError as rpe:
                             log.warning("RunPod failed for c%s × %s: %s — falling back to local",
                                         compound.id, variant, rpe)
