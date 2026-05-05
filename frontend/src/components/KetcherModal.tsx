@@ -2409,24 +2409,28 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                     🎯 Tight box
                   </button>
                 )}
-                {/* Validate-with-GNINA — orthogonal cross-check using
-                    GNINA's CNN pose rescoring instead of Vina's affinity
-                    score. Often promotes a buried in-pocket pose that
-                    Vina under-ranked when its affinity-greedy search
-                    found a better-scoring pose on the surface. Same
-                    button gating as Tight box (only shown on off-pocket
-                    cells); backend transparently falls back to Vina if
-                    GNINA isn't enabled on this deploy. 2026-05-05 user
-                    request. */}
+                {/* Validate-with-GNINA — second-engine cross-check using
+                    the GNINA fork (smina-flavor scoring on the same Vina
+                    backend). Often disagrees with QuickVina2-GPU on
+                    drifted poses because the scoring function weights
+                    contacts differently — useful as an independent
+                    "is this score real?" check. 2026-05-05 user request.
+                    NOTE: CNN rescoring is currently disabled at the pod
+                    level (GNINA_CNN_MODE=none) because the production
+                    pod's RTX PRO 4500 Blackwell GPU isn't compatible
+                    with GNINA v1.3's prebuilt TVM kernels. Tooltip
+                    reflects this honestly so users don't expect CNN
+                    behaviour they won't get. Re-enable CNN rescoring
+                    once the pod has sm_120-compatible GNINA. */}
                 {dockResult.poseInPocket === false && !dockFreshForLive && (
                   <button
                     type="button"
                     disabled={!ketcherReady || liveValidity === "invalid"}
                     onClick={() => runQuickDock({ engine: "gnina" })}
-                    title="Re-rank the docked pose pool with GNINA's CNN scoring (Vina's affinity score is replaced by a learned pose-quality model). Often surfaces a buried in-pocket pose that Vina under-ranked. Independent of Tight box — try both."
+                    title="Re-dock with GNINA (Vina-fork with smina-style scoring) for an independent affinity number. Useful as a second-source check on drifted poses — if GNINA agrees with QuickVina the score is more trustworthy. CNN re-ranking is currently off at the pod level (Blackwell GPU compatibility), so this is a scoring-function cross-check, not a learned-model check."
                     className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-violet-300 dark:border-violet-700/50 bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-800 dark:text-violet-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    🧠 GNINA
+                    🧠 GNINA-fork
                   </button>
                 )}
                 {dockResult.misses.length > 0 && (optimizeStatus === "idle" || optimizeStatus === "done" || optimizeStatus === "error") && (

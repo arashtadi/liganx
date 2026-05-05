@@ -102,9 +102,19 @@ class Settings(BaseSettings):
     gnina_timeout_s: int = 120
     # Default GNINA CNN scoring mode for jobs that pick `engine=gnina`.
     # "rescore" is fast (~10-30 s/cell), "refine" is slower (~30-90 s) but
-    # uses the CNN gradient to refine the pose itself. Most users want
-    # rescore for matrix screens.
-    gnina_cnn_mode: str = "rescore"
+    # uses the CNN gradient to refine the pose itself.
+    # 2026-05-05: changed default from "rescore" → "none" because the
+    # production pod migrated to NVIDIA RTX PRO 4500 Blackwell (sm_120),
+    # and GNINA v1.3's prebuilt TVM CNN kernels SIGABRT on that arch
+    # (verified via direct subprocess run — every bundled CNN model
+    # crashes with rc=134 / Aborted, while cnn_scoring=none works
+    # fine). cnn_mode=none uses gnina's hand-written CUDA Vina kernels
+    # — produces a Vina-fork affinity score (slightly different scoring
+    # function from QuickVina2-GPU, no CNN re-rank). Restore "rescore"
+    # once GNINA upstream ships sm_120-compatible TVM kernels OR the
+    # pod's GNINA is rebuilt from source with CMAKE_CUDA_ARCHITECTURES=120.
+    # Override per-deploy via the GNINA_CNN_MODE env var / Fly secret.
+    gnina_cnn_mode: str = "none"
 
     # Boltz-2 ML pose+affinity engine — third engine option (#104). Defaults
     # off so the engine picker stays inert until the Pod-side
