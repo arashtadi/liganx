@@ -1530,6 +1530,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
        *  See applyVariantToCanvas + the runEdit dockFresh check. */
       hits?: string[];
       misses?: string[];
+      /** Pose-pocket honesty (added 2026-05-05). False when the docked
+       *  pose centroid drifted outside the search box; renders a small
+       *  amber "drifted" chip on the variant card. Backend already
+       *  applies a -0.6 fitness penalty so off-pocket variants rank
+       *  below cleanly-docked ones — this field is for user
+       *  transparency, not for re-ranking client-side. */
+      poseInPocket?: boolean;
+      poseOffsetA?: number;
       status: "queued" | "docking" | "done" | "error";
       error?: string;
     }>
@@ -1847,6 +1855,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         // chat-AI keeps full pocket context after iterating on a variant.
         hits: Array.isArray(v.hits) ? v.hits : undefined,
         misses: Array.isArray(v.misses) ? v.misses : undefined,
+        // Pose-pocket honesty (added 2026-05-05). pose_in_pocket=false
+        // triggers a small "drifted off-pocket" warning chip on the
+        // variant card. The backend already applies a -0.6 fitness
+        // penalty in this case so the variant ranks below cleanly-
+        // docked alternatives. Defaulting to true preserves prior
+        // behaviour for the per-variant fan-out fallback that doesn't
+        // populate this field.
+        poseInPocket: typeof v.pose_in_pocket === "boolean" ? v.pose_in_pocket : undefined,
+        poseOffsetA: typeof v.pose_offset_a === "number" ? v.pose_offset_a : undefined,
         error: undefined as string | undefined,
       }));
       setOptimizedVariants(initial);
@@ -2731,6 +2748,26 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                               title="This variant's docked pose contacts the mutated residue — exactly what we asked the AI to design for."
                             >
                               🎯 mutation
+                            </span>
+                          )}
+                          {/* Off-pocket warning — shown when the
+                              variant's best docked pose centroid drifted
+                              outside the search box. Backend already
+                              applied a -0.6 fitness penalty so it ranks
+                              below in-pocket alternatives; this chip
+                              just makes the why visible to the chemist
+                              so they don't trust the score at face
+                              value. 2026-05-05. */}
+                          {v.poseInPocket === false && (
+                            <span
+                              className="text-[8.5px] px-1 py-px rounded bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 font-semibold"
+                              title={
+                                typeof v.poseOffsetA === "number"
+                                  ? `Best pose drifted ${v.poseOffsetA.toFixed(1)} Å outside the pocket box — score may not reflect real binding. Fitness penalised.`
+                                  : "Best pose drifted outside the pocket box — score may not reflect real binding. Fitness penalised."
+                              }
+                            >
+                              ⚠️ drifted
                             </span>
                           )}
                           {/* SA Score chip — only shown when the

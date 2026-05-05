@@ -732,6 +732,32 @@ class OptimizeVariant(TypedDict, total=False):
     sa_calibration_delta: float
 
 
+def _format_pocket_geometry_line(pocket_size_a: Optional[tuple[float, float, float]]) -> Optional[str]:
+    """Format the pocket box dimensions into a single AI-prompt line, with
+    a soft MW guideline derived from box volume. Returns None when no
+    pocket size is supplied (so the prompt-builder can drop the line
+    cleanly without dangling labels).
+
+    Sizing heuristic: max recommended MW ≈ pocket_volume_a3 / 12. Maps a
+    typical 22×18×15 = 5940 Å³ kinase ATP pocket to ~495 Da, which lines
+    up well with empirical inhibitor distributions (Imatinib 493, Gefitinib
+    446, Vemurafenib 489). Twice that for a "stretching" upper bound.
+    Guideline only — the model will use its own chemistry judgement; the
+    point is to anchor the size scale, not to be a hard cap. 2026-05-05."""
+    if not pocket_size_a:
+        return None
+    sx, sy, sz = pocket_size_a
+    vol = sx * sy * sz
+    mw_typical = int(round(vol / 12.0))
+    mw_stretch = int(round(vol / 6.0))
+    return (
+        f"- Pocket geometry: search box {sx:.1f}×{sy:.1f}×{sz:.1f} Å "
+        f"(volume ≈ {vol:.0f} Å³). Designs around {mw_typical} Da typically "
+        f"fit cleanly; > {mw_stretch} Da are likely too large to dock without "
+        f"drifting outside the box."
+    )
+
+
 async def call_anthropic_optimize(
     *,
     smiles: str,
@@ -740,6 +766,8 @@ async def call_anthropic_optimize(
     misses: list[str],
     target_pdb: Optional[str] = None,
     mutations: Optional[str] = None,
+    pocket_size_a: Optional[tuple[float, float, float]] = None,
+    mutation_target_label: Optional[str] = None,
     n_variants: int = 3,
     apply_pod_pre_flight: bool = True,
     apply_self_prediction_gate: bool = True,
@@ -787,6 +815,22 @@ async def call_anthropic_optimize(
         if mutations:
             ctx += f", mutations: {mutations}"
         parts.append(ctx)
+    # Explicit mutation-residue label — replaces the model's mental
+    # expansion of "T315I" with the canonical "A:THR315→ILE (residue 315)"
+    # so it can match against the 3-letter hits list directly. 2026-05-05.
+    if mutation_target_label:
+        parts.append(
+            f"Mutation target: {mutation_target_label} — at least one "
+            f"variant in your batch must be designed to engage this "
+            f"residue directly. Cite the residue by name in that variant's "
+            f"rationale."
+        )
+    # Pocket-geometry hint — gives the AI explicit dimensions + a soft MW
+    # guideline so it doesn't propose 800 Da macrocycles for a kinase ATP
+    # pocket. 2026-05-05.
+    pocket_line = _format_pocket_geometry_line(pocket_size_a)
+    if pocket_line:
+        parts.append(pocket_line)
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
@@ -1019,6 +1063,8 @@ async def call_anthropic_optimize_topup(
     misses: list[str],
     target_pdb: Optional[str] = None,
     mutations: Optional[str] = None,
+    pocket_size_a: Optional[tuple[float, float, float]] = None,
+    mutation_target_label: Optional[str] = None,
     n_needed: int,
     already_have: list[str],
 ) -> list[OptimizeVariant]:
@@ -1047,6 +1093,14 @@ async def call_anthropic_optimize_topup(
         if mutations:
             ctx += f", mutations: {mutations}"
         parts.append(ctx)
+    if mutation_target_label:
+        parts.append(
+            f"Mutation target: {mutation_target_label} — at least one of "
+            f"the {n_needed} new variants should engage this residue."
+        )
+    pocket_line = _format_pocket_geometry_line(pocket_size_a)
+    if pocket_line:
+        parts.append(pocket_line)
     parts.append("")
     parts.append(
         f"TOP-UP REQUEST: your previous response was good but {n_needed} "
@@ -1102,6 +1156,120 @@ async def call_anthropic_optimize_topup(
     parsed = _extract_json(raw_text)
     if not parsed:
         log.warning("optimize top-up returned non-JSON")
+        return []
+
+    raw_variants = parsed.get("variants") or []
+    if not isinstance(raw_variants, list):
+        return []
+
+    valid_residues = _valid_residue_set(hits, misses)
+    return _validate_and_filter_variants(
+        raw_variants=raw_variants,
+        n_variants=n_needed,
+        apply_pod_pre_flight=True,
+        apply_self_prediction_gate=True,
+        valid_residues=valid_residues,
+    )
+
+
+async def call_anthropic_optimize_pocket_redesign(
+    *,
+    smiles: str,
+    score: float,
+    hits: list[str],
+    misses: list[str],
+    target_pdb: Optional[str] = None,
+    mutations: Optional[str] = None,
+    pocket_size_a: Optional[tuple[float, float, float]] = None,
+    mutation_target_label: Optional[str] = None,
+    drifted_smiles: list[str],
+    n_needed: int = 5,
+) -> list[OptimizeVariant]:
+    """Re-call the AI when the FIRST batch of variants all docked outside
+    the pocket. Sends a corrective preface explaining the failure mode and
+    asks for smaller / better-anchored alternatives.
+
+    Triggered by the orchestrator when ≥75% of scored variants drifted off
+    the pocket box. Bounded to one call per Optimize request — even bad
+    redesigns cost real GPU time on the re-dock + we want to stay under
+    the Cloudflare 100s edge timeout.
+
+    Same JSON contract as call_anthropic_optimize_topup. 2026-05-05 user
+    request: 'the AI designs a variant that is in the pocket'."""
+    if n_needed <= 0 or not drifted_smiles:
+        return []
+
+    parts = [
+        f"Current SMILES: {smiles}",
+        f"Docked score: {score:.2f} kcal/mol",
+        f"Contacts (hits): {', '.join(hits) if hits else '(none reported)'}",
+        f"Nearby residues NOT contacted (misses): {', '.join(misses) if misses else '(none reported)'}",
+    ]
+    if target_pdb:
+        ctx = f"Target context: PDB {target_pdb}"
+        if mutations:
+            ctx += f", mutations: {mutations}"
+        parts.append(ctx)
+    if mutation_target_label:
+        parts.append(f"Mutation target: {mutation_target_label}")
+    pocket_line = _format_pocket_geometry_line(pocket_size_a)
+    if pocket_line:
+        parts.append(pocket_line)
+    parts.append("")
+    parts.append(
+        "POCKET-REDESIGN REQUEST: your previous batch of variants was docked "
+        "BUT the chosen poses ALL drifted outside the pocket box. This "
+        "almost always means the variants were too large or had no anchoring "
+        "interaction at the pocket centre. Examples that drifted:"
+    )
+    for s in drifted_smiles[:5]:
+        parts.append(f"  - {s}")
+    parts.append("")
+    parts.append(
+        f"Propose {n_needed} CORRECTED variants that are more likely to dock "
+        f"INSIDE the pocket. Apply at least two of these corrections relative "
+        f"to the drifted set:\n"
+        f"  1. Reduce molecular weight by 50-150 Da (smaller scaffolds fit better).\n"
+        f"  2. Add an explicit anchoring H-bond donor/acceptor within reach of a HIT residue.\n"
+        f"  3. Favor more rigid scaffolds (lower rotatable-bond count) — flexible "
+        f"     ligands have more conformational freedom to drift.\n"
+        f"  4. Avoid bulky terminal groups that push the centroid off-axis.\n"
+        f"Same JSON shape as the original request — return EXACTLY {n_needed} "
+        f"variants."
+    )
+    user_prompt = "\n".join(parts)
+
+    headers, payload, timeout = _build_request(
+        system_prompt=_augment_with_skill(_build_optimize_system_prompt(n_needed, mutations=mutations)),
+        user_prompt=user_prompt,
+    )
+    if n_needed > 3:
+        payload["max_tokens"] = max(int(payload.get("max_tokens", 1024)), 200 * n_needed + 600)
+        timeout = max(timeout, 60.0)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        log.warning("optimize pocket-redesign network error (non-fatal): %s", e)
+        return []
+
+    if r.status_code >= 400:
+        log.warning("optimize pocket-redesign HTTP %d (non-fatal): %s", r.status_code, r.text[:200])
+        return []
+
+    body = r.json()
+    raw_text = ""
+    try:
+        for block in body.get("content", []):
+            if block.get("type") == "text":
+                raw_text += block.get("text", "")
+    except (AttributeError, TypeError):
+        pass
+
+    parsed = _extract_json(raw_text)
+    if not parsed:
+        log.warning("optimize pocket-redesign returned non-JSON")
         return []
 
     raw_variants = parsed.get("variants") or []

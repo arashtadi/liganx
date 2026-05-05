@@ -700,6 +700,15 @@ export const api = {
         predicted_sa_score?: number;
         /** Residue label this variant was designed to engage, or null. */
         mutation_target?: string | null;
+        /** Pose-pocket honesty (added 2026-05-05). True when the docked
+         *  pose centroid is inside the search box; False when it drifted.
+         *  Drives the small "drifted off-pocket" warning chip on the
+         *  variant card AND is fed into the composite fitness function
+         *  server-side (off-pocket variants get a -0.6 fitness penalty
+         *  so they rank below cleanly-docked alternatives). */
+        pose_in_pocket?: boolean;
+        /** Centroid-to-pocket-center distance for the chosen pose, Å. */
+        pose_offset_a?: number;
       }[];
       /** Diagnostics — useful for debug, not currently surfaced in UI. */
       candidates_generated?: number;

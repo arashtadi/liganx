@@ -52,6 +52,15 @@ log = logging.getLogger(__name__)
 _FITNESS_W_DELTA = 1.0
 _FITNESS_W_SA = 0.3
 _FITNESS_W_MUTATION = 0.5
+# Off-pocket penalty (subtracted from fitness when the docked pose
+# drifted outside the search box). Calibrated to feel like ~half a
+# kcal/mol score loss — large enough to push a drift-affected -9.0
+# variant below a clean -8.7, but small enough that a clearly better
+# -10.0 with drift still ranks above a mediocre clean -8.5. Set to 0
+# to disable the penalty (preserves pre-2026-05-05 behaviour).
+# 2026-05-05 user request: "the AI designs a variant that is in the
+# pocket" — penalty makes off-pocket variants visibly less competitive.
+_FITNESS_W_POCKET_DRIFT = 0.6
 
 # SA Score gate — drop anything above 6 ("hard" or "very hard" per
 # services/sa_score.sa_label). Calibrated against ChEMBL drug-like space:
@@ -76,6 +85,14 @@ class ScoredVariant(TypedDict, total=False):
     mutation_contact: bool  # True iff variant touches the mutated residue
     hits: list[str]         # docked-pose contacts (for UI context)
     misses: list[str]       # nearby-pocket residues NOT contacted
+    # Pose-pocket honesty (added 2026-05-05). Drives a small "drifted
+    # off-pocket" warning chip on the variant card AND is fed into
+    # _composite_fitness so that off-pocket variants rank lower even
+    # when their nominal Vina score looks good. Without this, a -9.2
+    # variant with the pose 8 Å outside the box would beat a -8.7 with
+    # a clean centered pose — clearly the wrong call.
+    pose_offset_a: float
+    pose_in_pocket: bool
     # Self-predictions from the AI (Hard-Constraint Reject Loop, Tier 1 #2).
     # Carried through so the UI can render a calibration badge — useful
     # signal of whether the AI knew it had a winner (predicted high Δ +
@@ -127,6 +144,47 @@ def _parse_mutation_residue(mutations: Optional[str]) -> Optional[int]:
         return None
 
 
+# 1-letter → 3-letter amino-acid code. Used by _build_mutation_target_label
+# to produce IUPAC-flavoured residue labels like THR315→ILE for the AI
+# prompt — much more precise than passing the bare "T315I" string, which
+# the model has to mentally expand.
+_AA_3LETTER: dict[str, str] = {
+    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
+    "Q": "GLN", "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE",
+    "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
+    "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+}
+
+
+def _build_mutation_target_label(mutations: Optional[str], chain: str = "A") -> Optional[str]:
+    """Build an explicit AI-prompt label for the mutated residue.
+
+    "T315I" → "A:THR315→ILE (residue 315)"
+    "T790M, C797S" → label for the FIRST mutation only (matches
+                     _parse_mutation_residue's first-token convention).
+
+    The bare mutation code "T315I" appears in the prompt as a "Target
+    context" suffix, but the AI has to mentally expand the 1-letter codes
+    AND match them against the hits list which uses 3-letter (LYS790,
+    THR315). Spelling it out reduces ambiguity, especially for novel
+    mutations not in the few-shot library.
+
+    Returns None when the mutation string doesn't match the canonical
+    1-letter-residue-1-letter pattern (e.g. user typed "AurA-T490I" or
+    something atypical) — in that case we don't append a misleading
+    label and the prompt falls back to the existing free-form context."""
+    if not mutations:
+        return None
+    first = re.split(r"[,;+\s]+", mutations.strip(), maxsplit=1)[0]
+    m = re.match(r"([A-Za-z])(\d{1,4})([A-Za-z])$", first)
+    if not m:
+        return None
+    from_aa, num, to_aa = m.group(1).upper(), m.group(2), m.group(3).upper()
+    from_three = _AA_3LETTER.get(from_aa, from_aa)
+    to_three = _AA_3LETTER.get(to_aa, to_aa)
+    return f"{chain}:{from_three}{num}→{to_three} (residue {num})"
+
+
 def _hit_touches_mutation(hits: list[str], residue_number: Optional[int]) -> bool:
     """True iff any hit residue label has the same residue number as the
     mutation. Hit format from quick_dock._extract_contacts: 'A:LYS790'."""
@@ -146,12 +204,24 @@ def _hit_touches_mutation(hits: list[str], residue_number: Optional[int]) -> boo
     return False
 
 
-def _composite_fitness(*, delta: float, sa_score: float, mutation_contact: bool) -> float:
+def _composite_fitness(
+    *,
+    delta: float,
+    sa_score: float,
+    mutation_contact: bool,
+    pose_in_pocket: bool = True,
+) -> float:
     """Weighted sum used to rank variants. See module docstring for the
-    rationale on the 1.0 / 0.3 / 0.5 weights."""
+    rationale on the 1.0 / 0.3 / 0.5 weights and module-level
+    _FITNESS_W_POCKET_DRIFT for the off-pocket penalty.
+
+    The pose_in_pocket=True default preserves backward compatibility for
+    callers that don't track pose location yet; set False to apply the
+    off-pocket penalty. 2026-05-05."""
     sa_term = max(0.0, (4.0 - sa_score)) * _FITNESS_W_SA  # only reward EASY designs
     mut_term = (1.0 if mutation_contact else 0.0) * _FITNESS_W_MUTATION
-    return delta * _FITNESS_W_DELTA + sa_term + mut_term
+    drift_penalty = 0.0 if pose_in_pocket else _FITNESS_W_POCKET_DRIFT
+    return delta * _FITNESS_W_DELTA + sa_term + mut_term - drift_penalty
 
 
 async def generate_score_filter_optimize(
@@ -205,6 +275,31 @@ async def generate_score_filter_optimize(
     # batch dock. Wall time identical to single-call (calls run in
     # parallel); cost ~$0.04/round vs $0.02 baseline. After dedupe by
     # canonical SMILES, this typically yields 25–32 unique survivors.
+    # Pocket geometry — pulled from the catalog target so the AI can size
+    # its variants to the actual binding cavity instead of producing
+    # 800 Da molecules that drift outside a 250 Å³ kinase ATP pocket.
+    # 2026-05-05 user request: "the AI designs a variant that is in the
+    # pocket". Lookup is best-effort — falls back to None if the target
+    # isn't in the catalog OR has no pocket box (legacy entries).
+    pocket_size_a: Optional[tuple[float, float, float]] = None
+    try:
+        from ..catalog import get_target as _get_target
+        _t = _get_target(target_pdb) if target_pdb else None
+        if _t and _t.pocket and _t.pocket.size:
+            pocket_size_a = tuple(_t.pocket.size)
+    except Exception:
+        # Catalog miss / import error → continue without geometry hint.
+        # Better to lose the hint than fail the whole optimize call.
+        pocket_size_a = None
+
+    # Explicit mutation-residue label (e.g. "A:THR315→ILE (residue 315)").
+    # The bare mutation string ("T315I") is already in the prompt as
+    # "Target context: ..., mutations: ..." but the model has to mentally
+    # expand the 1-letter codes AND match them against the 3-letter
+    # residues in the hits list. Spelling it out reduces ambiguity for
+    # novel mutations not in the few-shot library.
+    mutation_target_label = _build_mutation_target_label(mutations, chain=chain)
+
     import asyncio
     call_kwargs = dict(
         smiles=smiles,
@@ -213,6 +308,8 @@ async def generate_score_filter_optimize(
         misses=misses,
         target_pdb=target_pdb,
         mutations=mutations,
+        pocket_size_a=pocket_size_a,
+        mutation_target_label=mutation_target_label,
         n_variants=ai.N_OPTIMIZE_CANDIDATES,
         apply_pod_pre_flight=True,
         apply_self_prediction_gate=True,
@@ -269,6 +366,8 @@ async def generate_score_filter_optimize(
                 misses=misses,
                 target_pdb=target_pdb,
                 mutations=mutations,
+                pocket_size_a=pocket_size_a,
+                mutation_target_label=mutation_target_label,
                 n_needed=n_needed,
                 already_have=[v["new_smiles"] for v in raw_variants],
             )
@@ -336,6 +435,67 @@ async def generate_score_filter_optimize(
 
     log.info("optimize_loop: %d survivors after SA filter", len(survivors))
 
+    # ── 2b. Pocket-geometry pre-flight ───────────────────────────────
+    # Reject candidates whose estimated molecular volume exceeds 60% of
+    # the pocket box volume — these will dock with significant clash
+    # penalty or drift outside the box, wasting GPU time. The AI gets
+    # the pocket size hint in its prompt (#1 above) but still proposes
+    # oversized molecules occasionally — this is the safety net.
+    # 2026-05-05 user request.
+    #
+    # Estimate uses MW × 1.3 Å³/Da (water-adjusted organic density),
+    # which is a fast proxy for the slow RDKit ComputeMolVolume that
+    # needs a 3D conformer per molecule. Calibrated against PDB
+    # ligand stats: Imatinib (MW 493) ≈ 640 Å³, in good agreement
+    # with the experimental ATP-pocket occupancy.
+    if pocket_size_a:
+        sx, sy, sz = pocket_size_a
+        pocket_volume = sx * sy * sz
+        max_mol_volume = pocket_volume * 0.6
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import Descriptors as _Desc
+            kept: list[dict] = []
+            rejected_count = 0
+            for s in survivors:
+                try:
+                    mol = Chem.MolFromSmiles(s["new_smiles"])
+                    if mol is None:
+                        # Couldn't parse — let the dock pipeline reject it
+                        # with a clearer error than ours.
+                        kept.append(s)
+                        continue
+                    mol_volume = float(_Desc.MolWt(mol)) * 1.3
+                    if mol_volume > max_mol_volume:
+                        log.info(
+                            "optimize_loop: rejecting oversized variant: vol=%.0f Å³ > 60%% of pocket %.0f Å³ (MW=%.0f) %r",
+                            mol_volume, pocket_volume, mol_volume / 1.3, s["new_smiles"][:40],
+                        )
+                        rejected_count += 1
+                        continue
+                    kept.append(s)
+                except Exception as e:
+                    # Any RDKit failure → benefit-of-the-doubt, keep it.
+                    log.debug("optimize_loop: geometry filter skipped %r: %s", s["new_smiles"][:40], e)
+                    kept.append(s)
+            if rejected_count > 0:
+                log.info(
+                    "optimize_loop: pocket-geometry filter rejected %d/%d oversized candidates (pocket vol=%.0f Å³, max ligand vol=%.0f Å³)",
+                    rejected_count, len(survivors), pocket_volume, max_mol_volume,
+                )
+            survivors = kept
+        except ImportError:
+            # RDKit unavailable in this environment — skip the filter,
+            # batch dock will still run on all survivors.
+            log.warning("optimize_loop: RDKit not available, skipping pocket-geometry filter")
+
+    if not survivors:
+        log.info("optimize_loop: 0 survivors after pocket-geometry filter — falling back")
+        return _fallback_undocked(
+            raw_variants,
+            "All AI candidates were too large for this pocket. Try the Improve button for a more conservative edit, or pick a target with a larger binding site.",
+        )
+
     # ── 3. Batch-dock survivors ──────────────────────────────────────
     docked_results, dock_meta = await _batch_quick_dock(
         smiles_list=[s["new_smiles"] for s in survivors],
@@ -370,10 +530,17 @@ async def generate_score_filter_optimize(
         score = float(dock["score"])
         delta = parent_score - score
         mut_contact = _hit_touches_mutation(dock.get("hits") or [], mutation_residue)
+        # Pose-pocket fields: default to "in pocket" (True, 0.0) when the
+        # batch dock didn't compute them — preserves prior behaviour for
+        # unexpected codepaths and means the drift penalty doesn't fire
+        # spuriously. _batch_quick_dock populates both on the happy path.
+        pose_in_pocket = bool(dock.get("pose_in_pocket", True))
+        pose_offset_a = float(dock.get("pose_offset_a", 0.0))
         fitness = _composite_fitness(
             delta=delta,
             sa_score=cand["sa_score"],
             mutation_contact=mut_contact,
+            pose_in_pocket=pose_in_pocket,
         )
         sv = ScoredVariant(
             new_smiles=cand["new_smiles"],
@@ -385,6 +552,8 @@ async def generate_score_filter_optimize(
             mutation_contact=bool(mut_contact),
             hits=list(dock.get("hits") or []),
             misses=list(dock.get("misses") or []),
+            pose_in_pocket=pose_in_pocket,
+            pose_offset_a=round(pose_offset_a, 1),
         )
         # Carry the AI's self-predictions through so the UI can show a
         # calibration badge (predicted Δ vs actual Δ).
@@ -402,6 +571,131 @@ async def generate_score_filter_optimize(
             raw_variants,
             "All AI candidates failed to dock. Try the Improve button for a more conservative edit.",
         )
+
+    # ── 4b. Pocket-correction redesign ───────────────────────────────
+    # When ≥75% of scored variants drifted off the pocket box, fire ONE
+    # corrective AI redesign call asking for smaller / better-anchored
+    # alternatives. Bounded retry — even bad redesigns cost real GPU
+    # time on the re-dock + we want to stay under Cloudflare's 100s
+    # edge timeout. Skip when target_pdb is empty (can't dock the
+    # corrections anyway).
+    # 2026-05-05 user request: "the AI designs a variant that is in
+    # the pocket".
+    DRIFT_REDESIGN_THRESHOLD = 0.75
+    drifted_in_scored = [s for s in scored if not s.get("pose_in_pocket", True)]
+    if (
+        target_pdb
+        and len(scored) >= 2
+        and len(drifted_in_scored) / len(scored) >= DRIFT_REDESIGN_THRESHOLD
+    ):
+        log.info(
+            "optimize_loop: %d/%d variants drifted off-pocket (≥%.0f%% threshold), firing pocket-redesign call",
+            len(drifted_in_scored), len(scored), DRIFT_REDESIGN_THRESHOLD * 100,
+        )
+        try:
+            redesign_extras = await ai.call_anthropic_optimize_pocket_redesign(
+                smiles=smiles,
+                score=parent_score,
+                hits=hits,
+                misses=misses,
+                target_pdb=target_pdb,
+                mutations=mutations,
+                pocket_size_a=pocket_size_a,
+                mutation_target_label=mutation_target_label,
+                drifted_smiles=[s["new_smiles"] for s in drifted_in_scored],
+                n_needed=5,
+            )
+        except Exception as e:
+            log.warning("optimize_loop: pocket-redesign call failed (non-fatal): %s", e)
+            redesign_extras = []
+
+        if redesign_extras:
+            # Run the same SA + geometry filter pipeline as the main
+            # batch — keeps the contracts identical so a redesign variant
+            # doesn't sneak in on a looser gate than the original survivors.
+            redesign_survivors: list[dict] = []
+            for v in redesign_extras:
+                try:
+                    sa = compute_sa_score(v["new_smiles"])
+                except Exception:
+                    continue
+                if sa is None or sa > _SA_GATE:
+                    continue
+                redesign_survivors.append({
+                    "new_smiles": v["new_smiles"],
+                    "rationale": v["rationale"],
+                    "sa_score": float(sa),
+                    "predicted_improvement_kcal": v.get("predicted_improvement_kcal"),
+                    "predicted_sa_score": v.get("predicted_sa_score"),
+                    "mutation_target": v.get("mutation_target"),
+                })
+            # Pocket-geometry filter — same 60% threshold as the main batch.
+            if pocket_size_a and redesign_survivors:
+                sx, sy, sz = pocket_size_a
+                max_mol_volume = sx * sy * sz * 0.6
+                try:
+                    from rdkit import Chem
+                    from rdkit.Chem import Descriptors as _Desc
+                    kept = []
+                    for s in redesign_survivors:
+                        try:
+                            mol = Chem.MolFromSmiles(s["new_smiles"])
+                            if mol is None:
+                                kept.append(s)
+                                continue
+                            if float(_Desc.MolWt(mol)) * 1.3 > max_mol_volume:
+                                continue
+                            kept.append(s)
+                        except Exception:
+                            kept.append(s)
+                    redesign_survivors = kept
+                except ImportError:
+                    pass
+
+            if redesign_survivors:
+                redesign_dock_results, _ = await _batch_quick_dock(
+                    smiles_list=[s["new_smiles"] for s in redesign_survivors],
+                    target_pdb=target_pdb,
+                    chain=chain,
+                    mutations=mutations,
+                )
+                added = 0
+                for cand, dock in zip(redesign_survivors, redesign_dock_results):
+                    if not dock.get("ok"):
+                        continue
+                    score_v = float(dock["score"])
+                    delta = parent_score - score_v
+                    mut_contact = _hit_touches_mutation(dock.get("hits") or [], mutation_residue)
+                    pose_in_pocket = bool(dock.get("pose_in_pocket", True))
+                    pose_offset_a = float(dock.get("pose_offset_a", 0.0))
+                    fitness = _composite_fitness(
+                        delta=delta,
+                        sa_score=cand["sa_score"],
+                        mutation_contact=mut_contact,
+                        pose_in_pocket=pose_in_pocket,
+                    )
+                    sv = ScoredVariant(
+                        new_smiles=cand["new_smiles"],
+                        rationale=cand["rationale"],
+                        score=round(score_v, 2),
+                        delta=round(delta, 2),
+                        sa_score=round(cand["sa_score"], 1),
+                        fitness=round(fitness, 2),
+                        mutation_contact=bool(mut_contact),
+                        hits=list(dock.get("hits") or []),
+                        misses=list(dock.get("misses") or []),
+                        pose_in_pocket=pose_in_pocket,
+                        pose_offset_a=round(pose_offset_a, 1),
+                    )
+                    if cand.get("predicted_improvement_kcal") is not None:
+                        sv["predicted_improvement_kcal"] = float(cand["predicted_improvement_kcal"])
+                    if cand.get("predicted_sa_score") is not None:
+                        sv["predicted_sa_score"] = float(cand["predicted_sa_score"])
+                    if cand.get("mutation_target") is not None:
+                        sv["mutation_target"] = cand["mutation_target"]
+                    scored.append(sv)
+                    added += 1
+                log.info("optimize_loop: pocket-redesign added %d new scored variants", added)
 
     # ── 5. Sort + truncate to top _TOP_N ─────────────────────────────
     scored.sort(key=lambda v: v["fitness"], reverse=True)
@@ -472,6 +766,13 @@ class _BatchDockOut(TypedDict, total=False):
     score: float
     hits: list[str]
     misses: list[str]
+    # Pose-pocket telemetry. pose_offset_a is the centroid-to-box-center
+    # distance in Å for the chosen pose; pose_in_pocket flips False when
+    # offset > _POSE_DRIFT_THRESHOLD_A from quick_dock.py. Used by the
+    # composite fitness function to penalize variants that score well
+    # but whose poses drifted outside the pocket box. 2026-05-05.
+    pose_offset_a: float
+    pose_in_pocket: bool
     error: str
 
 
@@ -709,11 +1010,33 @@ async def _batch_quick_dock(
                 # if hit/miss extraction failed.
                 log.warning("optimize_loop: contact extraction failed (non-fatal): %s", e)
                 hits, misses = [], []
+            # Pose-pocket honesty (2026-05-05). Re-uses the same helper
+            # quick_dock + pocket_filter use, so the threshold + offset
+            # math match the per-variant Quick Dock badge in the editor.
+            # Best-effort — failures here just leave pose_in_pocket
+            # defaulting to True (no penalty), preserving prior behaviour
+            # when the pose file is unreadable.
+            try:
+                from .quick_dock import compute_pose_offset_a, _POSE_DRIFT_THRESHOLD_A
+                pose_offset = compute_pose_offset_a(
+                    pose_pdbqt=r.result.pose_pdbqt,
+                    box_center=(box.center_x, box.center_y, box.center_z),
+                )
+                # pose_in_pocket also requires len(hits) > 0 (a pose with
+                # zero contacts isn't really IN the pocket even if its
+                # centroid is close to the box center).
+                in_pocket = pose_offset <= _POSE_DRIFT_THRESHOLD_A and len(hits) > 0
+            except Exception as e:
+                log.warning("optimize_loop: pose-offset compute failed (non-fatal): %s", e)
+                pose_offset = 0.0
+                in_pocket = True  # benefit-of-the-doubt — no penalty
             out[idx] = _BatchDockOut(
                 ok=True,
                 score=round(best_score, 2),
                 hits=hits[:12],
                 misses=misses[:8],
+                pose_offset_a=round(pose_offset, 1),
+                pose_in_pocket=bool(in_pocket),
             )
 
     # `meta` was built once above (just after the receptor-prep success
