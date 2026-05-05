@@ -1530,7 +1530,15 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         hits: dockResult.hits,
         misses: dockResult.misses,
         target_pdb: targetPdb,
-        mutations: mutations,
+        // Multi-mutation jobs (e.g. KRAS "G12R, G12V") send the full
+        // string here; the backend defends with the same split, but
+        // sending the canonical first mutation up front keeps the AI
+        // prompt clean and matches what Quick Dock / Apply use as the
+        // dock context. Without this, the optimize_loop would dock
+        // variants against PDBFixer with both swaps simultaneously and
+        // segfault. See backend assist.py optimize_endpoint for the
+        // matching defensive split.
+        mutations: firstMutation,
       });
       if (!opt.variants || opt.variants.length === 0) {
         setOptimizeStatus("error");

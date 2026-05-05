@@ -309,9 +309,31 @@ async def optimize_endpoint(
     _check_quick_dock_enabled()
     request_id = uuid.uuid4()
     started_at = time.monotonic()
+
+    # Defend against multi-mutation strings like "G12R, G12V". The Quick
+    # Dock front-end already extracts firstMutation, but the editor's
+    # Optimize button sends the full job context — so a job opened from
+    # KRAS G12R+G12V multi-mutation arrives here as "G12R, G12V" and
+    # crashes PDBFixer downstream (it segfaults on `applyMutations(
+    # ['GLY-12-ARG', 'GLY-12-VAL'])` — you can't mutate the same residue
+    # to two things at once). Symptom: worker exits with code 139, Fly
+    # returns "hyper error: connection closed before message completed",
+    # UI shows "Optimize failed". Fix: split and use the first mutation,
+    # matching what Quick Dock does — keeps Optimize aligned with the
+    # parent dock context the user already saw.
+    safe_mutations: Optional[str] = payload.mutations
+    if safe_mutations and ("," in safe_mutations or ";" in safe_mutations):
+        tokens = [t.strip() for t in safe_mutations.replace(";", ",").split(",")]
+        tokens = [t for t in tokens if t]
+        safe_mutations = tokens[0] if tokens else None
+        log.info(
+            "optimize_attempt: split multi-mutation %r → %r (Optimize uses single mutation)",
+            payload.mutations, safe_mutations,
+        )
+
     log.info(
         "optimize_attempt: starting request_id=%s user=%s target=%s mutations=%s",
-        request_id, user.email, payload.target_pdb, payload.mutations,
+        request_id, user.email, payload.target_pdb, safe_mutations,
     )
 
     result: Optional[dict] = None
@@ -326,7 +348,7 @@ async def optimize_endpoint(
             hits=payload.hits or [],
             misses=payload.misses or [],
             target_pdb=payload.target_pdb or "",
-            mutations=payload.mutations,
+            mutations=safe_mutations,
         )
         # 200 OK with no variants is its own outcome — the loop fell back
         # to an undocked response or every candidate was filtered out.
