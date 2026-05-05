@@ -892,33 +892,11 @@ const MAX_AI_HISTORY = 10;
 // still saves before the user navigates away.
 const AI_HISTORY_PERSIST_DELAY_MS = 1200;
 
-/** Generate a stable-ish id for a new history entry. crypto.randomUUID
- *  exists in every browser we support; the timestamp fallback keeps the
- *  app from crashing in vintage WebViews where it doesn't. */
-function newEntryId(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-  } catch { /* fall through */ }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/** Apply the same star-protection prune the server uses. Keep all
- *  starred entries plus the most-recent unstarred entries up to the
- *  cap. Order in the input is assumed newest-first; output preserves
- *  that ordering with starred floating to the top. */
-function pruneHistory(entries: AIHistoryEntry[]): AIHistoryEntry[] {
-  if (entries.length <= MAX_AI_HISTORY) return entries;
-  const starred = entries.filter((e) => e.flag === "star");
-  const unstarred = entries.filter((e) => e.flag !== "star");
-  if (starred.length >= MAX_AI_HISTORY) {
-    // More starred than the cap — keep all of them (chemists' bookmarks
-    // shouldn't disappear silently). Server will do the same.
-    return starred;
-  }
-  return [...starred, ...unstarred.slice(0, MAX_AI_HISTORY - starred.length)];
-}
+// (newEntryId + pruneHistory module helpers were used by addToHistory
+//  to add new AI entries with id generation + cap enforcement. Removed
+//  2026-05-05 alongside addToHistory + runEdit. The MAX_AI_HISTORY +
+//  AI_HISTORY_PERSIST_DELAY_MS constants stay because the persistence
+//  effect below still references them when PATCHing the history list.)
 
 // Curated medchem hints for well-known oncogenic mutations. When the
 // sidebar opens with one of these in the user's mutation context, we
@@ -1032,7 +1010,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
   // Improve / Diagnose buttons can pass their own default instruction.)
   const [status, setStatus] = useState<ActionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [result, setResult] = useState<AssistResult | null>(null);
+  // setResult is unused since runEdit was removed (2026-05-05). The
+  // `result` state is still read by the JSX result panel — that branch
+  // is now unreachable since no caller sets the value, but keeping the
+  // declaration intact makes restoring the Improve flow a one-line
+  // change. Underscore prefix satisfies TS noUnusedLocals.
+  const [result, _setResult] = useState<AssistResult | null>(null);
   const [properties, setProperties] = useState<PropertiesResult | null>(null);
 
   // ── AI conversation history ─────────────────────────────────────────
@@ -1082,23 +1065,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiHistory]);
 
-  /** Prepend a new history entry. Used by runEdit after
-   *  a successful AI response. No-op when the result is empty (no SMILES
-   *  to record). pruneHistory keeps the list at MAX_AI_HISTORY entries
-   *  with star-protection. */
-  function addToHistory(instructionText: string, r: AssistResult) {
-    if (!r?.new_smiles) return;  // nothing useful to log
-    const entry: AIHistoryEntry = {
-      id: newEntryId(),
-      ts: new Date().toISOString(),
-      instruction: instructionText,
-      smiles: r.new_smiles,
-      rationale: r.rationale || "",
-      warnings: r.warnings || [],
-      flag: null,
-    };
-    setAiHistory((prev) => pruneHistory([entry, ...prev]));
-  }
+  // (addToHistory was the only producer of new AI history entries —
+  //  called by runEdit after a successful Improve/Diagnose response.
+  //  Removed 2026-05-05 with runEdit. Existing history entries can
+  //  still be deleted/starred/rejected via the helpers below; the
+  //  history list just won't grow until a new producer is wired.)
 
   /** Remove a history entry by id. Triggers a debounced PATCH if
    *  compoundId is set. */
@@ -1330,46 +1301,13 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     }
   }
 
-  async function runEdit(text: string) {
-    if (!text.trim()) return;
-    const smi = await readSmiles();
-    if (!smi) return;
-    setStatus("running");
-    setErrorMsg(null);
-    setResult(null);
-    setLastAction("edit");
-    try {
-      // Docking-aware mode: pass the current dock result through to the
-      // AI ONLY when its smiles matches what's on the canvas right now.
-      // After the user clicks Apply on an AI suggestion, the canvas
-      // changes but `dockResult` still holds the OLD compound's data.
-      // Sending stale dock info to a new compound would actively mislead
-      // the AI into reasoning about residue contacts that no longer
-      // apply. The smiles-equality check is the staleness guard.
-      const dockFresh = dockResult && dockResult.smiles === smi;
-      const r = await api.assistCompound({
-        smiles: smi,
-        instruction: text.trim(),
-        target_pdb: targetPdb,
-        mutations: mutations,
-        // Only spread dock context when fresh. The backend treats all
-        // three optional fields as a unit — score-with-no-hits would
-        // be ambiguous, so we either send everything or nothing.
-        ...(dockFresh ? {
-          score: dockResult!.score,
-          hits: dockResult!.hits,
-          misses: dockResult!.misses,
-        } : {}),
-      });
-      setResult(r);
-      setStatus("ok");
-      // Log to history so re-opening the compound restores this turn.
-      addToHistory(text.trim(), r);
-    } catch (e) {
-      setStatus("error");
-      setErrorMsg(e instanceof ApiError ? e.message : "AI request failed");
-    }
-  }
+  // (runEdit — the open-ended "Improve compound" / "Improve binding" /
+  //  "Diagnose" handler — was removed 2026-05-05 along with the bottom-
+  //  of-rail button that called it. Per user request: Optimize already
+  //  covers the docking-aware improvement path with scored, ranked,
+  //  Vina-validated variants, so the open-ended single-suggestion flow
+  //  was redundant. If you want it back, restore both the function
+  //  body and the bottom-of-rail button JSX.)
 
   /** (runAnalogs — fixed-instruction "give me 5 medchem analogs"
    *  helper — was removed 2026-05-02 along with its button. Optimize is
@@ -2901,90 +2839,18 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         )}
       </div>
 
-      {/* ── Sticky AI action button (bottom of rail) ───────────────────
-          The free-form chat textbox was removed 2026-05-04. Optimize
-          (in the Quick Dock card above) does the same job better:
-          scored, ranked, Vina-validated variants instead of a free-form
-          opinion. The diagnose-mode auto-fire still works — when RDKit
-          rejects the SMILES, this button morphs into "Diagnose" and
-          calls the same /assist/compound endpoint with a default
-          instruction, which the backend routes to the diagnose prompt.
-          For valid SMILES it morphs into "Improve" (binding-aware when
-          a fresh dock is on file, open-ended otherwise).
-          Why we removed chat: the post-Apply regression bug ("AI chat
-          after Apply makes it worse") was structurally caused by stale
-          dock context being sent to a new SMILES. The button-only path
-          can't trigger that — it always derives intent from the current
-          live state of the canvas. Less rope, fewer bugs. */}
-      <div className="p-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5 shrink-0 bg-white dark:bg-slate-900">
-        {/* Compact AI context pill — three states (green/amber/slate). */}
-        <div
-          className={
-            "flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded border " +
-            (dockFreshForLive
-              ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-200"
-              : targetPdb
-                ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-200"
-                : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300")
-          }
-          title={
-            dockFreshForLive
-              ? `Docking-aware: ${dockResult!.score.toFixed(2)} kcal/mol, ${dockResult!.hits.length} hits, ${dockResult!.misses.length} misses`
-              : targetPdb
-                ? `Target ${targetPdb}${mutations ? ` · ${mutations}` : ""}; no fresh dock yet`
-                : "Structure only — no target context"
-          }
-        >
-          <span aria-hidden="true">{dockFreshForLive ? "🟢" : targetPdb ? "🟡" : "⚪"}</span>
-          <span className="truncate">
-            {dockFreshForLive
-              ? `Docking-aware · ${dockResult!.score.toFixed(2)} · ${dockResult!.hits.length}h/${dockResult!.misses.length}m`
-              : targetPdb
-                ? "Structure + target hints"
-                : "Structure only"}
-          </span>
-        </div>
-        {/* Single AI button — morphs by liveValidity + dock freshness.
-            Click derives the default instruction from the current state
-            and calls runEdit(); backend auto-detects invalid SMILES and
-            routes to DIAGNOSE MODE. */}
-        <button
-          type="button"
-          onClick={() => {
-            const text =
-              liveValidity === "invalid"
-                ? "What's wrong with this structure and how do I fix it in the editor?"
-                : liveValidity === "fragments"
-                ? "My structure has multiple disconnected fragments — explain why and tell me which one to keep."
-                : dockFreshForLive
-                  ? "Based on the docking results, suggest the highest-impact structural edit to improve binding."
-                  : "Suggest the most meaningful medchem improvement to this compound.";
-            runEdit(text);
-          }}
-          disabled={!ketcherReady || status === "running" || quickDockStatus === "running"}
-          title={
-            liveValidity === "invalid"
-              ? "Ask the AI what's wrong with the structure and how to fix it."
-              : dockFreshForLive
-                ? "Get a docking-aware structural edit based on the contacts and score above."
-                : "Get an open-ended medchem improvement suggestion."
-          }
-          className={
-            "w-full text-[11px] font-semibold px-2 py-1.5 rounded-md disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white transition-colors " +
-            (liveValidity === "invalid"
-              ? "bg-rose-600 hover:bg-rose-700"
-              : "bg-delta-600 hover:bg-delta-700")
-          }
-        >
-          {status === "running" && quickDockStatus !== "running"
-            ? "Thinking…"
-            : liveValidity === "invalid"
-            ? "🩺 Diagnose with Liganx AI"
-            : dockFreshForLive
-            ? "✨ Improve binding"
-            : "✨ Improve compound"}
-        </button>
-      </div>
+      {/* (Bottom-of-rail "Improve compound" / "Improve binding" / "Diagnose"
+          button removed 2026-05-05 per user request. The Optimize CTA in
+          the Quick Dock card above already covers the docking-aware
+          improvement path with scored, ranked, Vina-validated variants —
+          a strict superset of what the Improve button offered. The
+          diagnose-mode auto-fire is preserved by the rest of the rail
+          (the AI sidebar still surfaces RDKit-validity errors via the
+          stat card up top). The runEdit() function is left in place
+          but unused; revive a button here if you want the open-ended
+          single-suggestion flow back. The compact dock-context pill
+          that lived above the button was removed with it — same
+          information is shown next to the score in the Quick Dock card. */}
 
       {/* (Fullscreen 3D overlay block lived here. Removed 2026-05-02
           along with the inline 3D thumbnails — the JobPage 3D viewer

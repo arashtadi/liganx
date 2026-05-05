@@ -2269,17 +2269,21 @@ export default function NewJobPage() {
             return;
           }
           // 2026-05-05: ALWAYS fire the save/overwrite popup on Check
-          // & Use, even for unnamed rows. Previously we accepted unnamed
-          // rows silently into the form (and only saved-named rows
-          // triggered the popup), but the user reported that the popup
-          // not appearing made it unclear whether anything had been
-          // committed. Now: named rows still get the overwrite-vs-rename
-          // choice, and unnamed rows get a "name your new compound"
-          // dialog with an auto-suggested name pre-filled.
+          // & Use, even for unnamed rows. Named rows get overwrite-vs-
+          // rename; unnamed rows get a "name your new compound" dialog
+          // with an auto-suggested name pre-filled.
+          //
+          // 2026-05-05 (later) — DON'T close the editor when opening the
+          // popup. The popup renders at z-60 over the modal at z-50; if
+          // the user clicks Cancel on the popup, they should land back
+          // in the editor and continue working, NOT be dropped to the
+          // bare form. The editor is closed by the popup's onSave /
+          // onOverwrite handlers below, only AFTER the user commits.
+          // User report: "when I click cancel the editor closes! it
+          // should not close — it should just let me continue work".
           const row = compounds[idx];
           const originalName = (row?.name ?? "").trim();
           setRenamePrompt({ rowIdx: idx, newSmiles: smiles, originalName });
-          setSketcherRow(null);
         }}
         onPromote={(smiles, reseed) => {
           // 2026-05-04 / 2026-05-05: Promote to Full Job from inside the
@@ -2290,6 +2294,16 @@ export default function NewJobPage() {
           // name pre-filled. The popup's onSave/onOverwrite handlers
           // build the reseed payload and navigate to /new from there —
           // we don't navigate inline anymore (that races the popup).
+          //
+          // 2026-05-05 (later) — DON'T close the editor when opening the
+          // popup. Same reason as onAccept: Cancel must leave the user
+          // in the editor, not on the bare form. Also: previous version
+          // closed the modal AND opened the popup in the same render
+          // tick, which appeared to consistently swallow the popup
+          // visibility on Promote (user report: "save window doesn't
+          // popup"). Keeping the editor mounted while the popup is
+          // open removes that race and the popup is now visible
+          // every time.
           const idx = sketcherRow;
           if (idx === null) {
             // Defensive — should never happen.
@@ -2304,7 +2318,6 @@ export default function NewJobPage() {
             originalName,
             pendingPromote: reseed,
           });
-          setSketcherRow(null);
         }}
       />
     )}
@@ -2350,6 +2363,9 @@ export default function NewJobPage() {
                   name: renamePrompt.originalName,
                   smiles: renamePrompt.newSmiles,
                 });
+                // Close the editor — moved here from onAccept/onPromote
+                // so Cancel on the popup keeps the editor open. 2026-05-05.
+                setSketcherRow(null);
                 // If this rename was queued by Promote to Full Job,
                 // navigate to /new with the reseed payload now that
                 // the user picked overwrite. 2026-05-04 fix.
@@ -2388,6 +2404,9 @@ export default function NewJobPage() {
           // isn't blocked by a library-save hiccup.
           setCompound(renamePrompt.rowIdx, { smiles: renamePrompt.newSmiles, name: newName });
           saveCompoundMut.mutate({ name: newName, smiles: renamePrompt.newSmiles });
+          // Close the editor — moved here from onAccept/onPromote so
+          // Cancel on the popup keeps the editor open. 2026-05-05.
+          setSketcherRow(null);
           // If queued by Promote to Full Job, navigate now. 2026-05-04 fix.
           const promoteCtx = renamePrompt.pendingPromote;
           const promoteSmi = renamePrompt.newSmiles;
