@@ -95,6 +95,17 @@ def _humanize_pod_error(raw: str) -> str:
         return "Docking failed."
     s = str(raw)
     low = s.lower()
+    # rc=127 = command/library not found. Distinguish from "too large" because
+    # this is an OPERATIONS issue (missing .so on the pod after a migration,
+    # binary deleted, PATH broken), not a chemistry issue. The 2026-05-05 pod
+    # migration left libboost_program_options.so.1.74.0 missing on the new
+    # host and Quick Dock fell through to the misleading "too large" branch.
+    if "rc=127" in low or "shared libraries" in low or "cannot open shared object" in low:
+        return (
+            "GPU docker is misconfigured (missing system library). "
+            "This is on us — try Promote to Full Job to use the CPU path "
+            "while we fix the pod."
+        )
     # Compound-too-large for QuickVina2-GPU: rc=1 with the QuickVina
     # author email is the canonical signature. Vina-GPU has a fixed
     # ligand-flexibility cap and chokes on big peptide-like molecules.
