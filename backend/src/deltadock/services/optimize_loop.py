@@ -1235,28 +1235,42 @@ def _compute_pocket_geometry_hint(
         dominant_axis = axes[0][0]
         direction_str = f"primarily {dominant_axis} (vector {ux:+.2f}, {uy:+.2f}, {uz:+.2f})"
 
-    # Format the final guidance line. Tuned to be concrete enough that
-    # the AI can act on it without 3D modelling, but short enough that
-    # it doesn't bloat the prompt.
-    parts = [
-        f"Pocket geometry guidance: the mutation residue {mut_resname}{mutation_residue} "
-        f"sits {min_atom_dist:.1f} Å from your nearest ligand atom"
-    ]
+    # Format the final guidance as a HARD DIRECTIVE. The previous
+    # descriptive flavour ("To engage residue X, extend...") got the
+    # geometry into the prompt but the AI consistently downweighted it
+    # against its other instructions — observed 2026-05-05 prod test:
+    # KRAS Q61H ran with HIS61 11.5 Å away, hint sent, all 3 variants
+    # came back with generic medchem rationales (fluorine walk, ring-
+    # closure, stereogenic center) and zero reference to the
+    # mutation residue or the closest-hit anchor. Switching to an
+    # explicit MUST/REQUIRED clause + a rationale-citation rule
+    # forces the AI to acknowledge the geometry in at least one
+    # variant's reasoning.
     if closest_hit_label is not None and closest_hit_dist < math.inf:
-        parts.append(
-            f"; among your contacted residues, {closest_hit_label} is closest "
-            f"to {mut_resname}{mutation_residue} (Cα–Cα distance {closest_hit_dist:.1f} Å)"
+        return (
+            f"Pocket geometry — REQUIRED ACTION FOR AT LEAST ONE VARIANT: "
+            f"the mutation residue {mut_resname}{mutation_residue} sits "
+            f"{min_atom_dist:.1f} Å from your nearest ligand atom. Of your "
+            f"contacted residues, {closest_hit_label} is closest to the "
+            f"mutation (Cα–Cα distance {closest_hit_dist:.1f} Å). AT LEAST "
+            f"ONE variant in your batch MUST extend the scaffold from its "
+            f"contact with {closest_hit_label} toward residue "
+            f"{mutation_residue}, in the {direction_str} direction. State "
+            f"'extends from {closest_hit_label} toward "
+            f"{mut_resname}{mutation_residue}' (or equivalent residue-named "
+            f"language) explicitly in that variant's rationale — generic "
+            f"medchem moves like 'fluorine walk' or 'ring-closure' that "
+            f"don't name the anchor residue or the mutation residue do "
+            f"NOT satisfy this requirement."
         )
-    parts.append(
-        f". To engage residue {mutation_residue}, extend the ligand "
-        f"{direction_str} from "
+    # No suitable anchor hit — fall back to a softer geometry note.
+    return (
+        f"Pocket geometry: the mutation residue {mut_resname}{mutation_residue} "
+        f"sits {min_atom_dist:.1f} Å from your nearest ligand atom, "
+        f"{direction_str}. Variants extending the scaffold in this "
+        f"direction will be ranked higher; cite {mut_resname}{mutation_residue} "
+        f"by name in any variant rationale that targets it."
     )
-    if closest_hit_label is not None:
-        parts.append(f"its contact with {closest_hit_label}.")
-    else:
-        parts.append("the side of the scaffold facing this direction.")
-
-    return "".join(parts)
 
 
 def _extract_contacts_for_pose(*, pose_pdbqt: Path, receptor_pdb: Path, box) -> tuple[list[str], list[str]]:
