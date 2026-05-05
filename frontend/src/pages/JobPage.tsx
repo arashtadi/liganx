@@ -489,6 +489,7 @@ export default function JobPage() {
           // SMILES. (2026-05-05 user-reported bug: variant
           // Aspirin_v2_may5_126 opened with plain aspirin in the canvas.)
           compoundId={editingCompound.id}
+          compoundName={editingCompound.name}
           initialSmiles={editingCompound.smiles}
           targetPdb={job.pdb_id}
           mutations={job.mutations.join(", ") || undefined}

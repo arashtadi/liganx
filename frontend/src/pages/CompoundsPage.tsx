@@ -386,6 +386,7 @@ export default function CompoundsPage() {
           // dropping them when the modal closes. Hydration is one-shot
           // on mount inside AiSidebar.
           compoundId={sketcherFor.id}
+          compoundName={sketcherFor.name}
           initialAIHistory={sketcherFor.ai_history}
           onClose={() => setSketcherFor(null)}
           onAccept={(newSmiles, unchanged) => {

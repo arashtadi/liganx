@@ -113,6 +113,12 @@ interface Props {
    *  with this compound's prior AI history so re-opening days later
    *  restores the conversation. Empty / undefined = start fresh. */
   initialAIHistory?: AIHistoryEntry[];
+  /** Display name of the compound being edited — surfaced in the header
+   *  so the user can tell which row/variant the canvas is for. Without
+   *  this, the editor showed only "Sketch a molecule" and a user
+   *  iterating across several variants couldn't tell at a glance which
+   *  one they had open. (2026-05-05 user feedback.) */
+  compoundName?: string | null;
 }
 
 const KETCHER_SRC = "/ketcher/index.html";
@@ -220,7 +226,7 @@ function clearDraft(key: string): void {
   try { sessionStorage.removeItem(key); } catch { /* ignore */ }
 }
 
-export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromote, targetPdb, mutations, compoundId, initialAIHistory }: Props) {
+export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromote, targetPdb, mutations, compoundId, initialAIHistory, compoundName }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // `ketcherReady` flips true when Ketcher's internal init event fires.
   // The bare `iframe.onLoad` event fires earlier — when the HTML is parsed,
@@ -655,8 +661,28 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
       >
         {/* Header */}
         <header className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-700 shrink-0">
-          <div>
-            <h2 className="text-base font-semibold text-ink dark:text-slate-100">Sketch a molecule</h2>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-semibold text-ink dark:text-slate-100">Sketch a molecule</h2>
+              {/* Compound-name pill — shows which row/variant the canvas
+                  is for. Critical when the user iterates across several
+                  variants and would otherwise have no visual cue. Empty /
+                  null name means "new (unnamed)" — render a faded chip
+                  so the field is still discoverable. */}
+              {compoundName ? (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 dark:bg-delta-900/30 dark:text-delta-200 dark:ring-delta-700/40 truncate max-w-[40ch]"
+                  title={`Editing: ${compoundName}`}
+                >
+                  <span aria-hidden>✎</span>
+                  <span className="truncate">{compoundName}</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs italic text-slate-400 dark:text-slate-500 ring-1 ring-inset ring-slate-200 dark:ring-slate-700">
+                  unnamed
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Draw, paste a SMILES, or load from CDX/MOL — the result becomes a SMILES string in your compound list.
             </p>

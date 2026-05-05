@@ -2250,6 +2250,7 @@ export default function NewJobPage() {
         // the wizard. The cleanest long-term fix would be a synthetic
         // per-row UUID, but row index unblocks the common bug class.)
         compoundId={sketcherRow}
+        compoundName={compounds[sketcherRow]?.name || undefined}
         initialSmiles={compounds[sketcherRow]?.smiles || undefined}
         // Pocket context for the AI sidebar — pull whichever target is
         // currently active (single-target mode) and its mutations, or
