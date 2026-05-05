@@ -742,7 +742,7 @@ export default function KetcherModal({ initialSmiles, onClose, onAccept, onPromo
               </svg>
             </button>
           <button
-            onClick={onClose}
+            onClick={attemptClose}
             className="text-slate-400 hover:text-ink dark:hover:text-slate-100 p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
             aria-label="Close"
           >
@@ -1546,6 +1546,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
    *  Distinct from optimizeError so a happy-path "done" status doesn't
    *  swallow it via the rose error pill. */
   const [optimizeNote, setOptimizeNote] = useState<string | null>(null);
+  const [optimizeCounts, setOptimizeCounts] = useState<{ generated?: number; docked?: number } | null>(null);
   const [optimizedVariants, setOptimizedVariants] = useState<
     Array<{
       new_smiles: string;
@@ -1858,6 +1859,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     setOptimizeStatus("running");
     setOptimizeError(null);
     setOptimizeNote(null);
+    setOptimizeCounts(null);
     setOptimizedVariants([]);
     // New variants list incoming — clear the Applied marker from any
     // previous Optimize round so old "✓ Applied" badges don't bleed
@@ -1942,6 +1944,11 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       }));
       setOptimizedVariants(initial);
       setOptimizeStatus("done");
+      // Store generation/filtering counts for the UI indicator
+      setOptimizeCounts({
+        generated: opt.candidates_generated,
+        docked: opt.candidates_docked,
+      });
       // Surface the fallback note (if any) as a soft non-blocking
       // informational pill above the variants. Doesn't trigger the
       // rose error rendering — the variants still render normally,
@@ -2219,6 +2226,14 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
 
   return (
     <aside className="w-[380px] shrink-0 border-l border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden relative">
+      {/* Global error banner for Quick Dock failures — visible above all
+          other content so errors aren't missed when triggered from
+          distant buttons. Surfaces immediately when status="error". */}
+      {quickDockStatus === "error" && quickDockError && (
+        <div className="bg-rose-50 dark:bg-rose-900/20 border-b border-rose-200 dark:border-rose-800/40 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300 leading-tight shrink-0">
+          {quickDockError}
+        </div>
+      )}
       {/* ── Option E right rail (2026-05-02 redesign) ──────────────────
           Vertical 380px rail. Top: thin AI-assistant context strip.
           Then always-visible compact stat cards (live properties · 3D
@@ -2555,6 +2570,12 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                   <button
                     type="button"
                     onClick={runOptimize}
+                    // The wrapping conditional at line ~2560 only renders
+                    // this button when status is idle/done/error, so the
+                    // "running" state is visualized separately below
+                    // (the spinner span). Disabling here is just for the
+                    // brief moment between Apply & Re-dock starting and
+                    // optimizeStatus flipping to "running".
                     disabled={!!applyingVariantSmiles}
                     className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-delta-300 dark:border-delta-700/50 bg-white dark:bg-slate-800/40 hover:bg-delta-50 dark:hover:bg-delta-900/20 text-delta-700 dark:text-delta-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title={
@@ -2769,8 +2790,17 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             scroll area so it doesn't push the score card off-screen. */}
         {optimizedVariants.length > 0 && (
           <div className="border-t border-slate-200 dark:border-slate-700 pt-2 space-y-1">
-            <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-              Optimized variants
+            <div className="space-y-0.5">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Optimized variants
+              </div>
+              {optimizeCounts && (optimizeCounts.generated != null || optimizeCounts.docked != null) && (
+                <div className="text-[9px] text-slate-500 dark:text-slate-400 italic">
+                  {optimizeCounts.generated != null && `${optimizeCounts.generated} generated`}
+                  {optimizeCounts.generated != null && optimizeCounts.docked != null && " · "}
+                  {optimizeCounts.docked != null && `${optimizeCounts.docked} survived filters`} · top {optimizedVariants.length} shown
+                </div>
+              )}
             </div>
             {optimizeNote && (
               // Soft amber pill when the backend fell back to un-docked
