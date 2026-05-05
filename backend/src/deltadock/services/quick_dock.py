@@ -136,6 +136,7 @@ def quick_dock(
     target_pdb: str,
     chain: str = "A",
     mutation: Optional[str] = None,
+    box_scale: Optional[float] = None,
 ) -> QuickDockResult:
     """Run a fast Vina dock + extract contacts. Returns a flat dict
     safe to JSON-serialise straight to the client. Never raises; on
@@ -207,14 +208,26 @@ def quick_dock(
     pdb_id = target.pdb_id
     chain = target.chain or chain  # respect the catalog's chain when set
 
+    # Pocket box from catalog, optionally scaled. box_scale=0.7 shrinks
+    # a 22Å cube to ~15.4Å — used by the "Re-dock with tight box" path
+    # to force off-pocket-drifted ligands to stay near the canonical
+    # site. Soft-clamped to [0.4, 1.0] so a malformed input can't blow
+    # the box up beyond the catalog default. 2026-05-05 user request:
+    # tighter-box re-dock to salvage off-pocket scores.
+    _scale = max(0.4, min(1.0, box_scale)) if box_scale and box_scale != 1.0 else 1.0
     box = PocketBox(
         center_x=target.pocket.center[0],
         center_y=target.pocket.center[1],
         center_z=target.pocket.center[2],
-        size_x=target.pocket.size[0],
-        size_y=target.pocket.size[1],
-        size_z=target.pocket.size[2],
+        size_x=target.pocket.size[0] * _scale,
+        size_y=target.pocket.size[1] * _scale,
+        size_z=target.pocket.size[2] * _scale,
     )
+    if _scale != 1.0:
+        log.info(
+            "quick_dock: tight-box mode active, scale=%.2f → box=%.1f×%.1f×%.1f Å",
+            _scale, box.size_x, box.size_y, box.size_z,
+        )
 
     # Cache directories — same volume as the production runner so we
     # share receptor preps across paths. The attribute name is

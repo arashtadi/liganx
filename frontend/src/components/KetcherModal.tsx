@@ -1617,7 +1617,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
 
   /** Quick dock the current canvas SMILES. Requires a target+mutation
    *  context (not available on standalone CompoundsPage). */
-  async function runQuickDock() {
+  async function runQuickDock(opts?: { boxScale?: number }) {
     if (!targetPdb) {
       setQuickDockError("Quick dock needs a target. Open the editor from the New job page after picking a target.");
       setQuickDockStatus("error");
@@ -1675,6 +1675,10 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         smiles: smi,
         target_pdb: targetPdb,
         mutation: firstMutation,
+        // Optional pocket-box scaling. 1.0 (or omitted) = catalog default.
+        // 0.7 ≈ 16Å cube, used by the "Re-dock tight" salvage button on
+        // off-pocket cells. 2026-05-05.
+        box_scale: opts?.boxScale,
       });
       if (!r.ok) {
         setQuickDockStatus("error");
@@ -2270,7 +2274,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
               <button
                 type="button"
                 disabled={!ketcherReady || liveValidity === "invalid"}
-                onClick={runQuickDock}
+                onClick={() => runQuickDock()}
                 title={liveValidity === "invalid" ? "Fix the SMILES first — RDKit can't parse the current structure" : undefined}
                 className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
@@ -2368,7 +2372,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 <button
                   type="button"
                   disabled={!ketcherReady || dockFreshForLive || liveValidity === "invalid"}
-                  onClick={runQuickDock}
+                  onClick={() => runQuickDock()}
                   title={
                     liveValidity === "invalid"
                       ? "Fix the SMILES first — RDKit can't parse the current structure"
@@ -2380,6 +2384,27 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
                 >
                   🎯 Re-dock
                 </button>
+                {/* Tight-box re-dock — only shown when the current pose
+                    drifted outside the pocket box. Shrinks the search
+                    region from the catalog default (~22Å) to ~70% (~16Å)
+                    around the pocket center, forcing Vina to keep the
+                    ligand near the canonical site. The new score is
+                    usually WORSE than the drifted score (because the
+                    drifted pose was measuring a different binding mode),
+                    but it's the score that actually answers "does this
+                    compound bind the pocket I care about?". 2026-05-05
+                    user request. */}
+                {dockResult.poseInPocket === false && !dockFreshForLive && (
+                  <button
+                    type="button"
+                    disabled={!ketcherReady || liveValidity === "invalid"}
+                    onClick={() => runQuickDock({ boxScale: 0.7 })}
+                    title="Re-run Vina with a tighter pocket box (~16 Å instead of ~22 Å) so the ligand is forced to stay near the canonical pocket center. Use this when the current pose drifted outside the box — the new score will tell you the canonical-site affinity even if it's worse than the drifted score."
+                    className="flex-1 text-[11px] font-medium px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-amber-800 dark:text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    🎯 Tight box
+                  </button>
+                )}
                 {dockResult.misses.length > 0 && (optimizeStatus === "idle" || optimizeStatus === "done" || optimizeStatus === "error") && (
                   // Show Optimize in idle/done/error so the user can
                   // iterate: Optimize → Apply & Re-dock variant →
@@ -2438,7 +2463,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
             <button
               type="button"
               disabled={!ketcherReady || liveValidity === "invalid"}
-              onClick={runQuickDock}
+              onClick={() => runQuickDock()}
               title={liveValidity === "invalid"
                 ? "Fix the SMILES first — RDKit can't parse the current structure"
                 : "5-second draft Vina re-dock — estimated score for fast iteration. Promote to Full Job for validated results."}

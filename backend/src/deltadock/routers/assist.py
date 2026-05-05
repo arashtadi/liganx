@@ -185,6 +185,13 @@ class QuickDockRequest(BaseModel):
     target_pdb: str = Field(..., min_length=1, max_length=20)
     chain: str = Field(default="A", max_length=4)
     mutation: Optional[str] = Field(default=None, max_length=64)
+    # Optional pocket-box scaling factor applied to the catalog default.
+    # 1.0 = no change (default behaviour). 0.7 ≈ 16Å cube from the
+    # standard 22Å, forcing the ligand to stay near the canonical
+    # pocket center — used by the "Re-dock with tight box" salvage
+    # path on off-pocket cells. Clamped server-side to [0.4, 1.0].
+    # 2026-05-05 user request.
+    box_scale: Optional[float] = Field(default=None, ge=0.4, le=1.0)
 
 
 class OptimizeRequest(BaseModel):
@@ -267,6 +274,7 @@ def quick_dock_endpoint(
         target_pdb=payload.target_pdb,
         chain=payload.chain,
         mutation=safe_mutation,
+        box_scale=payload.box_scale,
     )
     return dict(result)
 

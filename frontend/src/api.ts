@@ -621,6 +621,12 @@ export const api = {
     target_pdb: string;
     chain?: string;
     mutation?: string;
+    /** Optional pocket-box scaling factor. 1.0 = no change. 0.7 ≈ 16Å
+     *  cube from the standard 22Å, forcing off-pocket-drifted ligands
+     *  to stay near the canonical site. Used by the "Re-dock with tight
+     *  box" salvage button on off-pocket Quick Dock results.
+     *  Server-side clamped to [0.4, 1.0]. 2026-05-05. */
+    box_scale?: number;
   }) =>
     request<{
       ok: boolean;
