@@ -662,6 +662,15 @@ export const api = {
     misses: string[];
     target_pdb?: string;
     mutations?: string;
+    /** Base64-encoded PDBQT text of the parent ligand pose. Optional but
+     *  strongly recommended: when sent, the backend computes geometric
+     *  guidance (where the mutation residue sits relative to the parent
+     *  pose, which contacted residue is closest to it, which direction
+     *  to extend) and threads it into the AI prompt. Without this the
+     *  AI gets "engage residue 315" but no directional context.
+     *  2026-05-05 user question: "can the AI calculate where the mutation
+     *  is and modify the structure to bring it close?" */
+    parent_pose_pdbqt_b64?: string;
   }) =>
     /** Generate-Score-Filter loop response. The backend asks Claude for ~12
      *  candidate variants, drops the synthetically-implausible ones, batch-

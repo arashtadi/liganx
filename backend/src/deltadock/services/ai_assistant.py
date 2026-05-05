@@ -768,6 +768,7 @@ async def call_anthropic_optimize(
     mutations: Optional[str] = None,
     pocket_size_a: Optional[tuple[float, float, float]] = None,
     mutation_target_label: Optional[str] = None,
+    pocket_geometry_hint: Optional[str] = None,
     n_variants: int = 3,
     apply_pod_pre_flight: bool = True,
     apply_self_prediction_gate: bool = True,
@@ -831,6 +832,15 @@ async def call_anthropic_optimize(
     pocket_line = _format_pocket_geometry_line(pocket_size_a)
     if pocket_line:
         parts.append(pocket_line)
+    # Directional medchem hint — computed server-side from the parent
+    # ligand pose + receptor 3D structure. Tells the AI which contacted
+    # residue is closest to the mutation residue and which direction
+    # to extend the variant. Turns "engage residue 315" from a vague
+    # residue-name instruction into a concrete medchem direction.
+    # 2026-05-05 user question: "can the AI calculate where the
+    # mutation is and modify the structure to bring it close?"
+    if pocket_geometry_hint:
+        parts.append(pocket_geometry_hint)
     user_prompt = "\n".join(parts)
 
     headers, payload, timeout = _build_request(
@@ -1065,6 +1075,7 @@ async def call_anthropic_optimize_topup(
     mutations: Optional[str] = None,
     pocket_size_a: Optional[tuple[float, float, float]] = None,
     mutation_target_label: Optional[str] = None,
+    pocket_geometry_hint: Optional[str] = None,
     n_needed: int,
     already_have: list[str],
 ) -> list[OptimizeVariant]:
@@ -1101,6 +1112,8 @@ async def call_anthropic_optimize_topup(
     pocket_line = _format_pocket_geometry_line(pocket_size_a)
     if pocket_line:
         parts.append(pocket_line)
+    if pocket_geometry_hint:
+        parts.append(pocket_geometry_hint)
     parts.append("")
     parts.append(
         f"TOP-UP REQUEST: your previous response was good but {n_needed} "
@@ -1182,6 +1195,7 @@ async def call_anthropic_optimize_pocket_redesign(
     mutations: Optional[str] = None,
     pocket_size_a: Optional[tuple[float, float, float]] = None,
     mutation_target_label: Optional[str] = None,
+    pocket_geometry_hint: Optional[str] = None,
     drifted_smiles: list[str],
     n_needed: int = 5,
 ) -> list[OptimizeVariant]:
@@ -1215,6 +1229,8 @@ async def call_anthropic_optimize_pocket_redesign(
     pocket_line = _format_pocket_geometry_line(pocket_size_a)
     if pocket_line:
         parts.append(pocket_line)
+    if pocket_geometry_hint:
+        parts.append(pocket_geometry_hint)
     parts.append("")
     parts.append(
         "POCKET-REDESIGN REQUEST: your previous batch of variants was docked "

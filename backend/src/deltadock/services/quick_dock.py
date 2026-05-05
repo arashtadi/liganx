@@ -121,10 +121,13 @@ def _humanize_pod_error(raw: str) -> str:
 
 # Up to N independent Vina re-rolls when the first pose is out of pocket.
 # Vina is non-deterministic; re-rolling samples a different starting
-# orientation. Cost: 1 dock = ~6s, 3 docks = ~18s. Cloudflare timeout
+# orientation. Cost: 1 dock = ~6s, 5 docks = ~30s. Cloudflare timeout
 # is 100s so we have headroom. Most happy-path calls hit pocket on the
 # first try and never trigger the retry.
-_MAX_POCKET_RETRIES = 3
+# Bumped 3 → 5 on 2026-05-05 — see pocket_filter.py for rationale (KRAS
+# switch-II ligands sometimes need more stochastic seeds to land in the
+# canonical site than the original kinase-tuned budget allowed for).
+_MAX_POCKET_RETRIES = 5
 
 
 def quick_dock(

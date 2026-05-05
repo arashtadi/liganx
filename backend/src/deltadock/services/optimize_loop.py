@@ -233,6 +233,7 @@ async def generate_score_filter_optimize(
     target_pdb: str,
     mutations: Optional[str] = None,
     chain: str = "A",
+    parent_pose_pdbqt_b64: Optional[str] = None,
 ) -> OptimizeLoopResult:
     """Run the full Generate-Score-Filter pipeline.
 
@@ -300,6 +301,58 @@ async def generate_score_filter_optimize(
     # novel mutations not in the few-shot library.
     mutation_target_label = _build_mutation_target_label(mutations, chain=chain)
 
+    # Pocket geometry guidance — directional medchem hint computed from
+    # the parent ligand pose + receptor 3D structure. Tells the AI WHICH
+    # contacted residue is closest to the mutation residue and HOW FAR
+    # it has to extend the variant to engage. Only computed when:
+    #   - the user gave us a parent pose (post Quick Dock),
+    #   - we can parse a mutation residue number from `mutations`,
+    #   - the catalog target resolves to a receptor PDB on disk.
+    # Best-effort — None on any failure, prompt falls back to the
+    # residue-name-only flavour. 2026-05-05 user question.
+    pocket_geometry_hint: Optional[str] = None
+    if parent_pose_pdbqt_b64 and target_pdb:
+        try:
+            mut_num = _parse_mutation_residue(mutations)
+            if mut_num is not None:
+                # Resolve receptor PDB path the same way _batch_quick_dock
+                # does, so the geometry compute uses the SAME mutant
+                # build the variants will be docked against. Best-effort:
+                # if the receptor isn't cached yet (first call for this
+                # target+mutation), skip — we'll get it on the next call.
+                from ..catalog import get_target as _get_target_for_geo
+                from ..config import get_settings as _get_settings_for_geo
+                from .receptor_prep import prepare_receptor_for_target as _prep_for_geo
+                _t = _get_target_for_geo(target_pdb)
+                if _t and _t.pocket:
+                    _settings = _get_settings_for_geo()
+                    _cache_root = Path(_settings.cache_root or "/var/lib/liganx/poses/cache")
+                    _rec = _prep_for_geo(
+                        pdb_id=_t.pdb_id,
+                        chain=_t.chain or chain,
+                        mutation=mutations,
+                        pdb_cache=_cache_root / "pdb",
+                        receptor_cache=_cache_root / "receptors",
+                        minimize_mutant=getattr(_t, "minimize_mutant", True),
+                    )
+                    import base64 as _b64
+                    pose_text = _b64.b64decode(parent_pose_pdbqt_b64).decode("utf-8", errors="replace")
+                    pocket_geometry_hint = _compute_pocket_geometry_hint(
+                        pose_pdbqt_text=pose_text,
+                        receptor_pdb=_rec.receptor_pdb,
+                        hits=hits,
+                        mutation_residue=mut_num,
+                    )
+                    if pocket_geometry_hint:
+                        log.info(
+                            "optimize_loop: geometry hint computed: %s",
+                            pocket_geometry_hint[:200],
+                        )
+        except Exception as e:
+            # Logged but non-fatal — the AI still gets the residue-name
+            # context, just without the directional hint.
+            log.warning("optimize_loop: pocket-geometry hint compute failed (non-fatal): %s", e)
+
     import asyncio
     call_kwargs = dict(
         smiles=smiles,
@@ -310,6 +363,7 @@ async def generate_score_filter_optimize(
         mutations=mutations,
         pocket_size_a=pocket_size_a,
         mutation_target_label=mutation_target_label,
+        pocket_geometry_hint=pocket_geometry_hint,
         n_variants=ai.N_OPTIMIZE_CANDIDATES,
         apply_pod_pre_flight=True,
         apply_self_prediction_gate=True,
@@ -368,6 +422,7 @@ async def generate_score_filter_optimize(
                 mutations=mutations,
                 pocket_size_a=pocket_size_a,
                 mutation_target_label=mutation_target_label,
+                pocket_geometry_hint=pocket_geometry_hint,
                 n_needed=n_needed,
                 already_have=[v["new_smiles"] for v in raw_variants],
             )
@@ -602,6 +657,7 @@ async def generate_score_filter_optimize(
                 mutations=mutations,
                 pocket_size_a=pocket_size_a,
                 mutation_target_label=mutation_target_label,
+                pocket_geometry_hint=pocket_geometry_hint,
                 drifted_smiles=[s["new_smiles"] for s in drifted_in_scored],
                 n_needed=5,
             )
@@ -1042,6 +1098,165 @@ async def _batch_quick_dock(
     # `meta` was built once above (just after the receptor-prep success
     # gate) so all return paths use the same value. Don't recompute.
     return out, meta
+
+
+def _compute_pocket_geometry_hint(
+    *,
+    pose_pdbqt_text: str,
+    receptor_pdb: Path,
+    hits: list[str],
+    mutation_residue: int,
+) -> Optional[str]:
+    """Build a directional medchem hint for the AI optimize prompt by
+    measuring the geometric relationship between the parent ligand pose
+    and the mutation residue.
+
+    Without this hint the AI is told 'engage residue 315' but doesn't
+    know in which direction residue 315 sits relative to the current
+    scaffold. With it, the prompt becomes "extend from your contact
+    with GLY60 toward residue 315 (4.2 Å away in the −X direction)" —
+    a concrete medchem instruction the model can act on.
+
+    2026-05-05 user question: "can the AI be smarter and after Quick
+    Dock calculate where the mutation is and modify the structure to
+    bring it close and not outside?"
+
+    Returns None when:
+      - no mutation residue (mutation string didn't parse),
+      - receptor PDB or pose can't be parsed,
+      - mutation residue isn't found in the receptor structure.
+    Best-effort throughout — failures fall back to the existing
+    residue-name-only prompt.
+    """
+    if mutation_residue is None or not pose_pdbqt_text or not receptor_pdb.exists():
+        return None
+
+    # Parse pose PDBQT for ligand atom coords. Same parsing as
+    # _extract_contacts_for_pose but accepts a string (the optimize
+    # endpoint receives base64-decoded pose text from the frontend
+    # rather than a temp file path).
+    pose_atoms: list[tuple[float, float, float]] = []
+    for line in pose_pdbqt_text.splitlines():
+        if not (line.startswith("ATOM") or line.startswith("HETATM")):
+            continue
+        try:
+            x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+            elem = line[76:78].strip().upper() if len(line) >= 78 else ""
+            if elem == "H":
+                continue
+            pose_atoms.append((x, y, z))
+        except ValueError:
+            continue
+    if not pose_atoms:
+        return None
+
+    # Pose centroid for the "ligand is X Å from mutation" headline.
+    cx = sum(a[0] for a in pose_atoms) / len(pose_atoms)
+    cy = sum(a[1] for a in pose_atoms) / len(pose_atoms)
+    cz = sum(a[2] for a in pose_atoms) / len(pose_atoms)
+
+    # Receptor — find the mutation residue's Cα + collect Cα for every
+    # hit residue so we can pick which contact is closest to the mutation.
+    try:
+        from Bio.PDB import PDBParser
+    except ImportError:
+        return None
+    try:
+        structure = PDBParser(QUIET=True).get_structure("rec", str(receptor_pdb))
+    except Exception:
+        return None
+
+    # Build a dict: residue number → (resname, Cα coords) for all standard
+    # residues in chain A (we only deal with single-chain receptors).
+    res_ca: dict[int, tuple[str, tuple[float, float, float]]] = {}
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                if residue.get_id()[0].strip():  # skip HETATM/water
+                    continue
+                resnum = residue.get_id()[1]
+                try:
+                    ca = residue["CA"]
+                    res_ca[resnum] = (residue.get_resname(), tuple(ca.coord))
+                except KeyError:
+                    continue
+            break  # chain A only — first chain in first model
+        break
+
+    if mutation_residue not in res_ca:
+        return None
+    mut_resname, (mx, my, mz) = res_ca[mutation_residue]
+
+    # Closest-ligand-atom distance to mutation Cα — gives the AI the
+    # "how far do we need to extend?" number.
+    min_atom_dist = math.inf
+    for px, py, pz in pose_atoms:
+        d = math.sqrt((px - mx) ** 2 + (py - my) ** 2 + (pz - mz) ** 2)
+        if d < min_atom_dist:
+            min_atom_dist = d
+
+    # Of the ligand's contacted residues (the `hits` list, format
+    # "A:GLY60"), find the one whose Cα is closest to the mutation
+    # residue's Cα. That's the natural "extend from here" anchor.
+    closest_hit_label: Optional[str] = None
+    closest_hit_dist = math.inf
+    import re as _re
+    for hit in hits:
+        m = _re.search(r"(\d+)$", hit)
+        if not m:
+            continue
+        try:
+            hit_resnum = int(m.group(1))
+        except ValueError:
+            continue
+        if hit_resnum not in res_ca:
+            continue
+        _, (hx, hy, hz) = res_ca[hit_resnum]
+        d = math.sqrt((hx - mx) ** 2 + (hy - my) ** 2 + (hz - mz) ** 2)
+        if d < closest_hit_dist:
+            closest_hit_dist = d
+            closest_hit_label = hit  # full label "A:GLY60"
+
+    # Direction vector from ligand centroid to mutation Cα. Normalised
+    # to unit length and rounded to two decimals for prompt brevity.
+    dx, dy, dz = mx - cx, my - cy, mz - cz
+    mag = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if mag < 1e-6:
+        # Ligand IS the mutation residue — degenerate. Skip direction.
+        direction_str = "(at the residue)"
+    else:
+        ux, uy, uz = dx / mag, dy / mag, dz / mag
+        # Convert to a simple +X/-X/+Y/-Y/+Z/-Z descriptor for the
+        # dominant axis. Receptor coordinate frame is arbitrary so this
+        # is more of an identifier than a real direction; what matters
+        # is that the AI can compare directions across variants.
+        axes = [("+X", ux), ("-X", -ux), ("+Y", uy), ("-Y", -uy), ("+Z", uz), ("-Z", -uz)]
+        axes.sort(key=lambda p: p[1], reverse=True)
+        dominant_axis = axes[0][0]
+        direction_str = f"primarily {dominant_axis} (vector {ux:+.2f}, {uy:+.2f}, {uz:+.2f})"
+
+    # Format the final guidance line. Tuned to be concrete enough that
+    # the AI can act on it without 3D modelling, but short enough that
+    # it doesn't bloat the prompt.
+    parts = [
+        f"Pocket geometry guidance: the mutation residue {mut_resname}{mutation_residue} "
+        f"sits {min_atom_dist:.1f} Å from your nearest ligand atom"
+    ]
+    if closest_hit_label is not None and closest_hit_dist < math.inf:
+        parts.append(
+            f"; among your contacted residues, {closest_hit_label} is closest "
+            f"to {mut_resname}{mutation_residue} (Cα–Cα distance {closest_hit_dist:.1f} Å)"
+        )
+    parts.append(
+        f". To engage residue {mutation_residue}, extend the ligand "
+        f"{direction_str} from "
+    )
+    if closest_hit_label is not None:
+        parts.append(f"its contact with {closest_hit_label}.")
+    else:
+        parts.append("the side of the scaffold facing this direction.")
+
+    return "".join(parts)
 
 
 def _extract_contacts_for_pose(*, pose_pdbqt: Path, receptor_pdb: Path, box) -> tuple[list[str], list[str]]:

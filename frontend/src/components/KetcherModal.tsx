@@ -1747,6 +1747,24 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
     // through onto the fresh suggestions.
     setAppliedVariantSmiles(null);
     try {
+      // Re-encode the cached pose PDBQT (already decoded for 3D rendering
+      // via safeAtob earlier) back to base64 for the backend's geometric
+      // guidance computation. Skip if no pose is on file (catalog miss
+      // or first-pass un-docked path) — backend just falls back to the
+      // residue-name-only prompt. 2026-05-05 user question: "can the
+      // AI calculate where the mutation is and modify the structure
+      // to bring it close?"
+      let parentPoseB64: string | undefined;
+      if (dockResult.posePdbqt) {
+        try {
+          parentPoseB64 = btoa(dockResult.posePdbqt);
+        } catch {
+          // Pose contains non-Latin1 chars — extremely unlikely for
+          // PDBQT (ASCII only) but guard against it. Skip the pose;
+          // residue-name guidance still fires.
+          parentPoseB64 = undefined;
+        }
+      }
       const opt = await api.assistOptimize({
         smiles: dockResult.smiles,
         score: dockResult.score,
@@ -1762,6 +1780,7 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
         // segfault. See backend assist.py optimize_endpoint for the
         // matching defensive split.
         mutations: firstMutation,
+        parent_pose_pdbqt_b64: parentPoseB64,
       });
       if (!opt.variants || opt.variants.length === 0) {
         setOptimizeStatus("error");

@@ -64,11 +64,17 @@ log = logging.getLogger(__name__)
 # protein surface. Mirrors quick_dock.py's _POSE_DRIFT_THRESHOLD_A.
 _POSE_DRIFT_THRESHOLD_A = 6.0
 
-# Total attempts including the first dock. 3 is enough — in practice,
-# if a ligand can't land in pocket in 3 stochastic Vina draws the
-# pocket-box geometry is usually wrong (catalog-edit territory), not
-# something more retries can salvage. Same constant as quick_dock.
-_MAX_POCKET_RETRIES = 3
+# Total attempts including the first dock. Bumped 3 → 5 on 2026-05-05
+# after user reported off-pocket variants on KRAS Q61H — the initial
+# 3-attempt budget was tuned for kinase-style pockets where most
+# ligands land cleanly on attempt 1 (median 1.0). For looser, more
+# allosteric pockets like KRAS switch-II, ligands sometimes need a
+# few more stochastic seeds to find the canonical site. Cost: only
+# cells that drift past attempt 3 pay the extra; happy-path cells
+# still return on attempt 1. Worst-case 5×5s ≈ 25s per drifted cell.
+# Same constant used by quick_dock for parity — bump there too if you
+# adjust here.
+_MAX_POCKET_RETRIES = 5
 
 # Seed used on the FIRST dock attempt. Subsequent retries use seed +
 # attempt_index so each draw is reproducible but distinct. We keep the

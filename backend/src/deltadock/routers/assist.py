@@ -198,6 +198,18 @@ class OptimizeRequest(BaseModel):
     misses: list[str] = Field(default_factory=list)
     target_pdb: Optional[str] = Field(default=None, max_length=20)
     mutations: Optional[str] = Field(default=None, max_length=200)
+    # Parent ligand pose, base64-encoded PDBQT text. Optional but strongly
+    # recommended: when present, the orchestrator computes geometric
+    # guidance for the AI (where the mutation residue sits relative to
+    # the current pose, which contacted residue is closest to it,
+    # which direction to extend) — turns "engage residue 315" from a
+    # vague residue-name instruction into a concrete medchem direction.
+    # 2026-05-05 user request: "can the AI calculate where the mutation
+    # is and modify the structure to bring it close and not outside?"
+    # Frontend caches this from the most recent /assist/quick_dock
+    # response and re-sends on the Optimize click. Capped at 200 KB
+    # to bound payload size — typical pose PDBQT is 1–8 KB.
+    parent_pose_pdbqt_b64: Optional[str] = Field(default=None, max_length=200_000)
 
 
 def _check_quick_dock_enabled() -> None:
@@ -349,6 +361,7 @@ async def optimize_endpoint(
             misses=payload.misses or [],
             target_pdb=payload.target_pdb or "",
             mutations=safe_mutations,
+            parent_pose_pdbqt_b64=payload.parent_pose_pdbqt_b64,
         )
         # 200 OK with no variants is its own outcome — the loop fell back
         # to an undocked response or every candidate was filtered out.
