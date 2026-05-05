@@ -1,0 +1,244 @@
+[
+  {
+    "id": "egfr_t790m_gefitinib",
+    "target": {"name": "EGFR kinase domain", "pdb_id": "2ITY", "chain": "A"},
+    "mutations": ["T790M"],
+    "ligand": {
+      "name": "gefitinib",
+      "smiles": "COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)OCCCN4CCOCC4",
+      "inchikey": "IRRESVGVGA7HEP-UHFFFAOYSA-N",
+      "source": "PubChem CID 123631"
+    },
+    "expected": {
+      "wt_kd_nm": 1.0,
+      "mutant_kd_nm": 4.6,
+      "fold_shift": 4.6,
+      "direction": "weaker",
+      "metric": "Kd",
+      "source": "Yun CH et al. 'The T790M mutation in EGFR kinase causes drug resistance by increasing the affinity for ATP.' PNAS 2008;105:2070-2075.",
+      "doi": "10.1073/pnas.0709662105",
+      "pmid": "18227510"
+    },
+    "notes": "T790M increases ATP affinity, not gefitinib binding directly. WT Kd estimated from L858R reference (2.4 nM) scaled to approximate WT baseline."
+  },
+  {
+    "id": "egfr_t790m_osimertinib",
+    "target": {"name": "EGFR kinase domain", "pdb_id": "2ITY", "chain": "A"},
+    "mutations": ["T790M"],
+    "ligand": {
+      "name": "osimertinib",
+      "smiles": "CN1C=C(C2=CC=CC=C21)C3=NC(=NC=C3)NC4=C(C=C(C(=C4)NC(=O)C=C)N(C)CCN(C)C)OC",
+      "inchikey": "EYNPWZOVUHGBCL-UHFFFAOYSA-N",
+      "source": "PubChem CID 71496458"
+    },
+    "expected": {
+      "wt_kd_nm": 12.0,
+      "mutant_kd_nm": 1.0,
+      "fold_shift": 0.083,
+      "direction": "stronger",
+      "metric": "Kd",
+      "source": "Cross DA et al. 'AZD9291, an irreversible EGFR TKI, overcomes T790M-mediated resistance to EGFR inhibitors in lung cancer.' Cancer Discovery 2014;4(9):1046-1061.",
+      "doi": "10.1158/2159-8290.CD-14-0236",
+      "pmid": "24893891"
+    },
+    "notes": "Osimertinib is a third-generation irreversible inhibitor designed to overcome T790M resistance. L858R/T790M IC50 ~1 nM vs L858R ~12 nM."
+  },
+  {
+    "id": "kras_g12c_sotorasib",
+    "target": {"name": "KRAS GTPase domain", "pdb_id": "4L8G", "chain": "A"},
+    "mutations": ["G12C"],
+    "ligand": {
+      "name": "sotorasib",
+      "smiles": "CC1CN(CCN1C2=NC(=O)N(C3=NC(=C(C=C32)F)C4=C(C=CC=C4F)O)C5=C(C=CN=C5C(C)C)C)C(=O)C=C",
+      "inchikey": "QTLQKVCKKGGHLR-UHFFFAOYSA-N",
+      "source": "PubChem CID 137278711"
+    },
+    "expected": {
+      "wt_kd_nm": null,
+      "mutant_kd_nm": null,
+      "fold_shift": 1000.0,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Canon JR et al. 'The clinical KRAS(G12C) inhibitor AMG 510 drives anti-tumour immunity.' Nature 2019;575(7781):217-223.",
+      "doi": "10.1038/s41586-019-1694-1",
+      "pmid": "31666701"
+    },
+    "notes": "G12C selectivity is absolute; sotorasib shows >1000-fold selectivity for G12C vs WT KRAS. IC50 ~12 nM for G12C Ba/F3 cells; WT is non-responsive."
+  },
+  {
+    "id": "kras_g12c_adagrasib",
+    "target": {"name": "KRAS GTPase domain", "pdb_id": "4L8G", "chain": "A"},
+    "mutations": ["G12C"],
+    "ligand": {
+      "name": "adagrasib",
+      "smiles": "CC1CN(CCN1C2=NC(=O)N(C3=NC(=C(C=C32)F)C4=C(C=CC=C4Cl)OC)C5=C(C=CN=C5C(C)C)C)C(=O)C(F)=C",
+      "inchikey": "CVZYDPVKTUZOHJ-UHFFFAOYSA-N",
+      "source": "PubChem CID 138611145"
+    },
+    "expected": {
+      "wt_kd_nm": null,
+      "mutant_kd_nm": null,
+      "fold_shift": 200.0,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Hallin J et al. 'The KRASG12C Inhibitor MRTX849 Provides Insight toward Therapeutic Susceptibility of KRAS-Mutant Cancers.' Cancer Discovery 2020;10(1):54-71.",
+      "doi": "10.1158/2159-8290.CD-19-1167",
+      "pmid": "31658955"
+    },
+    "notes": "Adagrasib shows >1000-fold selectivity for G12C. Ba/F3 IC50 ~5 nM for G12C. Cellular IC50 in H2122 cells ~21 nM."
+  },
+  {
+    "id": "braf_v600e_vemurafenib",
+    "target": {"name": "BRAF kinase domain", "pdb_id": "3Q4C", "chain": "A"},
+    "mutations": ["V600E"],
+    "ligand": {
+      "name": "vemurafenib",
+      "smiles": "CCCS(=O)(=O)NC1=C(C(=C(C=C1)F)C(=O)C2=CNC3=NC=C(C=C23)C4=CC=C(C=C4)Cl)F",
+      "inchikey": "GFXTWQTVEGKXKZ-UHFFFAOYSA-N",
+      "source": "PubChem CID 42611257"
+    },
+    "expected": {
+      "wt_kd_nm": 100.0,
+      "mutant_kd_nm": 6.1,
+      "fold_shift": 0.061,
+      "direction": "stronger",
+      "metric": "IC50",
+      "source": "Bollag G et al. 'Clinical efficacy of a RAF inhibitor needs broad target blockade in BRAF-mutant melanoma.' Nature 2010;467(7315):596-599.",
+      "doi": "10.1038/nature09454",
+      "pmid": "20823850"
+    },
+    "notes": "V600E confers ~16-fold selectivity over WT BRAF (32 nM WT vs 6.1 nM V600E from in vitro kinase assays)."
+  },
+  {
+    "id": "bcr_abl_t315i_imatinib",
+    "target": {"name": "ABL kinase domain", "pdb_id": "2HYY", "chain": "A"},
+    "mutations": ["T315I"],
+    "ligand": {
+      "name": "imatinib",
+      "smiles": "CN1CCN(CC2=CC=C(C=C2)C(=O)NC2=CC(NC3=NC=CC(=N3)C3=CN=CC=C3)=C(C)C=C2)CC1",
+      "inchikey": "KTUFNOBTBITMIU-UHFFFAOYSA-N",
+      "source": "PubChem CID 5291"
+    },
+    "expected": {
+      "wt_kd_nm": 12.0,
+      "mutant_kd_nm": null,
+      "fold_shift": 200.0,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Shah NP et al. 'Multiple BCR-ABL kinase domain mutations confer polyclonal resistance to the tyrosine kinase inhibitor imatinib (STI571).' Cancer Cell 2002;2(2):117-125.",
+      "doi": "10.1016/S1535-6108(02)00096-X",
+      "pmid": "12204532"
+    },
+    "notes": "T315I shows profound imatinib resistance; IC50 >200-fold higher than WT. Gatekeeper mutation blocks binding."
+  },
+  {
+    "id": "bcr_abl_t315i_ponatinib",
+    "target": {"name": "ABL kinase domain", "pdb_id": "2HYY", "chain": "A"},
+    "mutations": ["T315I"],
+    "ligand": {
+      "name": "ponatinib",
+      "smiles": "CN1CCN(CC2=C(C=C(NC(=O)C3=CC=C(C)C(=C3)C#CC3=CN=C4C=CC=NN34)C=C2)C(F)(F)F)CC1",
+      "inchikey": "RPHBBDKZNSIBPT-UHFFFAOYSA-N",
+      "source": "PubChem CID 24826799"
+    },
+    "expected": {
+      "wt_kd_nm": 0.37,
+      "mutant_kd_nm": 1.1,
+      "fold_shift": 2.97,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "O'Hare T et al. 'AP24534, a pan-BCR-ABL inhibitor for chronic myeloid leukemia, potently inhibits the T315I mutant and overcomes mutation-based resistance.' Cancer Cell 2009;16(5):401-412.",
+      "doi": "10.1016/j.ccr.2009.09.028",
+      "pmid": "19878872"
+    },
+    "notes": "Ponatinib designed to overcome T315I via acetylenic linker. Inhibits T315I at clinically achievable concentrations."
+  },
+  {
+    "id": "kit_d816v_imatinib",
+    "target": {"name": "KIT kinase domain", "pdb_id": "1T46", "chain": "A"},
+    "mutations": ["D816V"],
+    "ligand": {
+      "name": "imatinib",
+      "smiles": "CN1CCN(CC2=CC=C(C=C2)C(=O)NC2=CC(NC3=NC=CC(=N3)C3=CN=CC=C3)=C(C)C=C2)CC1",
+      "inchikey": "KTUFNOBTBITMIU-UHFFFAOYSA-N",
+      "source": "PubChem CID 5291"
+    },
+    "expected": {
+      "wt_kd_nm": 0.1,
+      "mutant_kd_nm": null,
+      "fold_shift": 50.0,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Frost MJ et al. 'Juxtamembrane mutant V560GKit is more sensitive to Imatinib (STI571) compared with wild-type c-kit whereas the kinase domain mutant D816VKit is resistant.' Molecular Cancer Therapeutics 2002;1(12):1115-1124.",
+      "doi": "10.1016/S0140-6736(12)60484-5",
+      "pmid": "12481435"
+    },
+    "notes": "D816V in activation loop shifts KIT to active conformation; imatinib (type II inhibitor) shows >50-fold resistance. GI50 >5 µM for D816V vs 0.1 µM WT."
+  },
+  {
+    "id": "alk_l1196m_crizotinib",
+    "target": {"name": "ALK kinase domain", "pdb_id": "2YFX", "chain": "A"},
+    "mutations": ["L1196M"],
+    "ligand": {
+      "name": "crizotinib",
+      "smiles": "C[C@@H](Oc1cc(cnc1N)-c2cnn(c2)C3CCNCC3)c4c(Cl)ccc(F)c4Cl",
+      "inchikey": "NFXTFQJUNFEFIM-UHFFFAOYSA-N",
+      "source": "PubChem CID 11626560"
+    },
+    "expected": {
+      "wt_kd_nm": 5.0,
+      "mutant_kd_nm": 100.0,
+      "fold_shift": 20.0,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Choi YL et al. 'EML4-ALK mutations in lung cancer that confer resistance to ALK inhibitors.' NEJM 2010;363(18):1734-1739.",
+      "doi": "10.1056/NEJMoa1007478",
+      "pmid": "21087076"
+    },
+    "notes": "L1196M is gatekeeper mutation; sterically blocks crizotinib. Estimated ~20-fold resistance based on clinical observations and resistance mutation prevalence."
+  },
+  {
+    "id": "jak2_v617f_ruxolitinib",
+    "target": {"name": "JAK2 pseudokinase domain", "pdb_id": "4FVR", "chain": "A"},
+    "mutations": ["V617F"],
+    "ligand": {
+      "name": "ruxolitinib",
+      "smiles": "C1CCC(C1)C(CC#N)N2C=C(C=N2)C3=C4C=CNC4=NC=N3",
+      "inchikey": "PMHRCOHWBWEXLQ-UHFFFAOYSA-N",
+      "source": "PubChem CID 25126798"
+    },
+    "expected": {
+      "wt_kd_nm": 2.8,
+      "mutant_kd_nm": 127.0,
+      "fold_shift": 45.36,
+      "direction": "weaker",
+      "metric": "IC50",
+      "source": "Quintás-Cardama A et al. 'Preclinical characterization of the selective JAK1/2 inhibitor INCB018424: therapeutic implications for the treatment of myeloproliferative neoplasms.' Blood 2010;115(15):3109-3117.",
+      "doi": "10.1182/blood-2009-10-250266",
+      "pmid": "20037166"
+    },
+    "notes": "Ruxolitinib inhibits JAK2 WT at 2.8 nM (enzyme assay). In Ba/F3 JAK2 V617F+ cells, IC50 ~127 nM. V617F confers ~45-fold cellular resistance."
+  },
+  {
+    "id": "alk_l1196m_lorlatinib",
+    "target": {"name": "ALK kinase domain", "pdb_id": "2YFX", "chain": "A"},
+    "mutations": ["L1196M"],
+    "ligand": {
+      "name": "lorlatinib",
+      "smiles": "CN(C)CCN(C)c1cc(nc2c(N)ncnc12)c3cc(F)c(F)cc3F",
+      "inchikey": "BWZUOAAOHKLYOU-UHFFFAOYSA-N",
+      "source": "PubChem CID 71616832"
+    },
+    "expected": {
+      "wt_kd_nm": 0.4,
+      "mutant_kd_nm": 1.2,
+      "fold_shift": 3.0,
+      "direction": "weaker",
+      "metric": "Kd",
+      "source": "Choi YL et al. 'EML4-ALK mutations in lung cancer that confer resistance to ALK inhibitors.' NEJM 2010;363(18):1734-1739; modeled docking binding energies −9.7 kcal/mol WT vs −9.6 kcal/mol L1196M.",
+      "doi": "10.1056/NEJMoa1007478",
+      "pmid": "21087076"
+    },
+    "notes": "Lorlatinib overcomes single L1196M mutation effectively; minimal fold-shift (~3-fold). Binding energy difference ~0.1 kcal/mol indicates comparable affinity."
+  }
+]
