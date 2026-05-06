@@ -69,6 +69,10 @@ export default function StudioPage() {
 
   const [selectedTarget, setSelectedTarget] = useState<string>("egfr");
   const [selectedMutation, setSelectedMutation] = useState<string>("");
+  // Typeahead query strings — filter the chip rows live as the user
+  // types. Empty string = show all chips (default).
+  const [targetQuery, setTargetQuery] = useState("");
+  const [mutationQuery, setMutationQuery] = useState("");
 
   const [docking, setDocking] = useState(false);
   const [dockError, setDockError] = useState<string | null>(null);
@@ -125,6 +129,20 @@ export default function StudioPage() {
       setDockError(`Failed to load structure: ${e?.message || e}`);
     }
   }
+
+  // When target or mutation changes, the previous dock result is no
+  // longer valid — clear it so the 3D viewer drops back to live-conformer
+  // mode and the score/hits/misses don't lie. Without this, switching
+  // from EGFR to KRAS leaves the EGFR ribbon + EGFR pose on screen with
+  // a stale -6.50 score even though the panel now says KRAS · Q61H.
+  // 2026-05-05 user-reported bug.
+  useEffect(() => {
+    setDockResult(null);
+    setDockError(null);
+    // The Live3DViewer's internal centroid/smiles refs reset naturally
+    // when its dockResult prop transitions to null (the post-dock-preview
+    // effect short-circuits because isPostDockPreview becomes false).
+  }, [selectedTarget, selectedMutation]);
 
   // Tick clock every second; probe pod health every 30s
   useEffect(() => {
@@ -253,19 +271,7 @@ export default function StudioPage() {
         {/* LEFT — 2D Canvas */}
         <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
           <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-            <div className="flex items-center gap-3">
-              <span className={TOK.label}>2D Canvas · Ketcher</span>
-              <button
-                onClick={() => setShowLoader(!showLoader)}
-                className={`px-2 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider transition-colors ${
-                  showLoader
-                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                    : "border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50"
-                }`}
-              >
-                {showLoader ? "▾ load" : "▸ load compound"}
-              </button>
-            </div>
+            <span className={TOK.label}>2D Canvas · Ketcher</span>
             <div className="flex items-center gap-2">
               {/* 2D theme toggle — bumps iframe key so Ketcher reloads
                   with ?theme=dark or default. Current SMILES is preserved
@@ -392,22 +398,53 @@ export default function StudioPage() {
 
             {/* ─── TARGET ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
-              <div className={`${TOK.label} mb-2`}>Target</div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                {catalog?.map((t: any) => (
-                  <button
-                    key={t.id}
-                    onClick={() => { setSelectedTarget(t.id); setSelectedMutation(""); }}
-                    className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
-                      selectedTarget === t.id
-                        ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                        : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                    }`}
-                    title={t.name}
-                  >
-                    {t.id}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between mb-2">
+                <span className={TOK.label}>Target</span>
+                <span className="font-mono text-[9px] text-slate-600">
+                  {(() => {
+                    const all = catalog?.length || 0;
+                    const filt = catalog?.filter((t: any) =>
+                      !targetQuery || t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
+                      (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
+                    ).length || 0;
+                    return targetQuery ? `${filt}/${all}` : `${all} available`;
+                  })()}
+                </span>
+              </div>
+              <input
+                type="text"
+                value={targetQuery}
+                onChange={(e) => setTargetQuery(e.target.value)}
+                placeholder="search target (e.g. EGFR, kinase, kras)…"
+                className="w-full px-2 py-1 mb-2 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60"
+              />
+              <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-auto">
+                {catalog
+                  ?.filter((t: any) =>
+                    !targetQuery ||
+                    t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
+                    (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
+                  )
+                  .map((t: any) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setSelectedTarget(t.id); setSelectedMutation(""); setTargetQuery(""); }}
+                      className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
+                        selectedTarget === t.id
+                          ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                          : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                      }`}
+                      title={t.name}
+                    >
+                      {t.id}
+                    </button>
+                  ))}
+                {targetQuery && !catalog?.some((t: any) =>
+                  t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
+                  (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
+                ) && (
+                  <span className="text-[10px] font-mono text-amber-400/80 italic">no match</span>
+                )}
               </div>
             </div>
 
@@ -415,11 +452,35 @@ export default function StudioPage() {
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Mutations</span>
-                {availableMutations.length > 0 && (
-                  <span className="font-mono text-[9px] text-slate-600">{availableMutations.length} curated</span>
-                )}
+                <span className="font-mono text-[9px] text-slate-600">
+                  {(() => {
+                    const all = availableMutations.length;
+                    const filt = availableMutations.filter(m =>
+                      !mutationQuery ||
+                      m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                    ).length;
+                    return mutationQuery ? `${filt}/${all}` : `${all} curated`;
+                  })()}
+                </span>
               </div>
-              <div className="flex flex-wrap items-center gap-1.5">
+              {/* Typeahead — filters chips OR commits as a custom
+                  mutation when no chip matches. Press Enter on a non-
+                  matching query to set it as the selectedMutation. */}
+              <input
+                type="text"
+                value={mutationQuery}
+                onChange={(e) => setMutationQuery(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && mutationQuery.trim()) {
+                    setSelectedMutation(mutationQuery.trim());
+                    setMutationQuery("");
+                  }
+                }}
+                placeholder="search mutation or type custom · e.g. T790M ⏎"
+                className="w-full px-2 py-1 mb-2 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
+              />
+              <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-auto">
                 <button
                   onClick={() => setSelectedMutation("")}
                   className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
@@ -430,31 +491,46 @@ export default function StudioPage() {
                 >
                   WT
                 </button>
-                {availableMutations.map((m) => (
+                {availableMutations
+                  .filter(m =>
+                    !mutationQuery ||
+                    m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                    (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                  )
+                  .map((m) => (
+                    <button
+                      key={m.code}
+                      onClick={() => { setSelectedMutation(m.code); setMutationQuery(""); }}
+                      className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
+                        selectedMutation === m.code
+                          ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
+                          : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                      }`}
+                      title={m.label}
+                    >
+                      {m.code}
+                    </button>
+                  ))}
+                {/* If the user has a custom (non-curated) mutation
+                    selected, surface it as an amber chip so they can
+                    see what's currently active. */}
+                {selectedMutation && !availableMutations.some(m => m.code === selectedMutation) && (
                   <button
-                    key={m.code}
-                    onClick={() => setSelectedMutation(m.code)}
-                    className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                      selectedMutation === m.code
-                        ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
-                        : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                    }`}
-                    title={m.label}
+                    onClick={() => setSelectedMutation("")}
+                    className="px-2 py-0.5 text-[10px] font-mono rounded border border-amber-500/60 bg-amber-900/30 text-amber-200"
+                    title="Custom mutation — click to clear"
                   >
-                    {m.code}
+                    {selectedMutation} ✕
                   </button>
-                ))}
-                {/* Custom mutation input — type any tag the catalog
-                    doesn't carry (e.g. an exotic V600K2). Validation
-                    happens server-side at dock time. */}
-                <input
-                  type="text"
-                  value={!availableMutations.some(m => m.code === selectedMutation) ? selectedMutation : ""}
-                  onChange={(e) => setSelectedMutation(e.target.value.trim().toUpperCase())}
-                  placeholder="custom · e.g. T790M"
-                  className="px-2 py-0.5 text-[10px] font-mono rounded border border-dashed border-slate-700/60 text-slate-300 placeholder:text-slate-600 bg-transparent focus:outline-none focus:border-amber-500/60 focus:bg-amber-950/20 w-32"
-                  style={{ caretColor: "#fcd34d" }}
-                />
+                )}
+                {mutationQuery && availableMutations.filter(m =>
+                  m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                  (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                ).length === 0 && (
+                  <span className="text-[10px] font-mono text-amber-400/80 italic">
+                    no curated match — press Enter to use as custom
+                  </span>
+                )}
               </div>
             </div>
 
