@@ -19,6 +19,7 @@ import CompoundsPage from "./pages/CompoundsPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
 import ContactPage from "./pages/ContactPage";
 import AdminPage from "./pages/AdminPage";
+import StudioPage from "./pages/StudioPage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -40,6 +41,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/new" element={<RequireAuth><NewJobPage /></RequireAuth>} />
+            <Route path="/studio" element={<RequireAuth><StudioPage /></RequireAuth>} />
             <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/welcome" element={<RequireAuth><CompleteProfilePage /></RequireAuth>} />

@@ -1,11 +1,13 @@
 """AI compound editor endpoints.
 
-Two routes:
+Routes:
 
   POST /assist/properties — RDKit-only property panel for a SMILES.
                             Instant, no LLM. Used by the inline panel
                             to show MW/logP/TPSA/QED/Lipinski/PAINS as
                             the user sketches.
+
+  POST /assist/dockability — RDKit parse + validation. Returns dockable=true/false.
 
   POST /assist/compound   — natural-language edit. Takes current SMILES
                             + an instruction (and optionally target PDB
@@ -13,14 +15,17 @@ Two routes:
                             returns a new SMILES + rationale via Claude
                             Haiku.
 
-Both routes are auth-required (current_user) so we don't pay for AI calls
-on behalf of strangers, and rate-limited so a runaway client can't blow
-through the Anthropic budget. We deliberately don't gate on
-profile_complete here — the editor is a pre-job tool and a brand-new
-user might want to play with it before committing to fill the profile.
+  POST /assist/quick_dock — fast Vina dock against target+mutation.
 
-(The /jobs gate still requires profile completion, so users can sketch
-all they want but actually submitting a docking job needs the profile.)
+  POST /assist/optimize   — Generate-Score-Filter loop for variants.
+
+  POST /assist/conformer  — RDKit conformer generation for 3D preview.
+                            Takes SMILES, returns SDF (ETKDG + UFF).
+                            Instant, no docking. Used by Studio page
+                            for live 3D preview as chemist sketches.
+
+Auth-required (current_user) so we don't pay for compute on behalf of
+strangers. Rate-limited so a runaway client can't blow through budget.
 """
 from __future__ import annotations
 
@@ -32,6 +37,8 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from rdkit import Chem
+from rdkit.Chem import AllChem
 from sqlmodel import Session
 
 from ..auth import CurrentUser, current_user
@@ -505,3 +512,63 @@ def _record_optimize_attempt(
             "optimize_attempt: failed to persist row (request_id=%s status=%s): %s",
             request_id, status, e,
         )
+
+
+class ConformerRequest(BaseModel):
+    """Generate a single 3D conformer for live 3D preview in Studio."""
+    smiles: str = Field(..., min_length=1, max_length=2000)
+
+
+@router.post("/conformer", dependencies=[Depends(_PROP_LIMIT)])
+def conformer_endpoint(
+    payload: ConformerRequest,
+    user: Annotated[CurrentUser, Depends(current_user)],
+) -> dict:
+    """Generate a 3D conformer for the given SMILES.
+
+    Uses ETKDG distance geometry + UFF minimization. Returns the SDF
+    text (not binary) for rendering in 3Dmol.js.
+
+    Fast (~100-200ms) because it's all local CPU (no GPU, no network).
+    Used by Studio page for live 3D preview as the chemist sketches.
+
+    Returns {ok: true, sdf: "..."} on success, or
+            {ok: false, error: "..."} on failure.
+    """
+    smi = (payload.smiles or "").strip()
+    if not smi:
+        return {"ok": False, "error": "Empty SMILES"}
+
+    try:
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            return {"ok": False, "error": "RDKit could not parse this SMILES"}
+
+        # Add hydrogens (ETKDG expectation)
+        mol = Chem.AddHs(mol)
+
+        # Generate one conformer using ETKDG
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        if mol.GetNumConformers() == 0:
+            # Fall back without randomSeed if first attempt fails
+            AllChem.EmbedMolecule(mol)
+        if mol.GetNumConformers() == 0:
+            return {"ok": False, "error": "3D embedding failed (unusual molecule?)"}
+
+        # UFF minimization to refine the geometry
+        try:
+            AllChem.UFFMinimizeMolecule(mol, maxIters=500)
+        except Exception:
+            # UFF failure is non-fatal — just use the raw ETKDG pose
+            pass
+
+        # Export to SDF
+        sdf = Chem.MolToMolBlock(mol)
+        if not sdf or len(sdf) < 100:
+            return {"ok": False, "error": "SDF generation failed"}
+
+        return {"ok": True, "sdf": sdf}
+
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        return {"ok": False, "error": error_msg}

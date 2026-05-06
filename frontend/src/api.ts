@@ -597,6 +597,15 @@ export const api = {
       pains_hits?: { name: string; description: string }[];
       error?: string;
     }>("/assist/properties", { method: "POST", body: JSON.stringify({ smiles }) }),
+  /** Generate a 3D conformer for a SMILES via ETKDG + UFF. Returns SDF
+   *  text suitable for 3Dmol.js. Used by the Studio page's live 3D
+   *  viewer to update the 3D structure as the user edits the 2D
+   *  canvas. ~100-200ms typical. */
+  assistConformer: (smiles: string) =>
+    request<{ ok: boolean; sdf?: string; error?: string }>(
+      "/assist/conformer",
+      { method: "POST", body: JSON.stringify({ smiles }) },
+    ),
   /** Pre-flight dockability check. Used at the Ketcher save gate so
    *  unsupported atoms (As, Pb, etc.), salt forms, and oversized
    *  molecules get blocked at the editor instead of failing later in
