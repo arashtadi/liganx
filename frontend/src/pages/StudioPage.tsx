@@ -1601,7 +1601,7 @@ function Live3DViewer({
               y: dockedCentroidRef.current[1],
               z: dockedCentroidRef.current[2],
             });
-            v.zoom(1.8, 0);
+            v.zoom(1.5, 0);  // matches DockedPoseViewer for consistent framing
           }
         } catch { /* defensive */ }
         v.render();
@@ -1642,14 +1642,16 @@ function Live3DViewer({
         const picked = measureRef.current.atoms;
         picked.push(atom);
         try {
-          v.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.4, color: "cyan", opacity: 0.7 });
+          // Match DockedPoseViewer: orange (#f97316) for visibility on
+          // dark backgrounds. Cyan didn't pop against the slate ribbon.
+          v.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.4, color: "#f97316" });
           if (picked.length === 2) {
             const a = picked[0], b = picked[1];
             const d = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
-            v.addLine({ start: { x: a.x, y: a.y, z: a.z }, end: { x: b.x, y: b.y, z: b.z }, color: "cyan", dashed: true });
+            v.addLine({ start: { x: a.x, y: a.y, z: a.z }, end: { x: b.x, y: b.y, z: b.z }, color: "#f97316", dashed: true });
             v.addLabel(`${d.toFixed(2)} Å`, {
               position: { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 },
-              backgroundColor: "rgba(8, 145, 178, 0.85)", fontColor: "white", fontSize: 12, borderThickness: 0,
+              backgroundColor: "rgba(15, 23, 42, 0.85)", fontColor: "white", fontSize: 12, borderThickness: 0,
             });
             measureRef.current.atoms = [];
           }
@@ -1735,7 +1737,7 @@ function Live3DViewer({
               y: dockedCentroidRef.current[1],
               z: dockedCentroidRef.current[2],
             });
-            v.zoom(1.8, 0);  // 1.8 = tight enough to see ligand atoms, loose enough to keep pocket context
+            v.zoom(1.5, 0);  // matches DockedPoseViewer for consistent framing  // 1.8 = tight enough to see ligand atoms, loose enough to keep pocket context
           }
         } catch { /* defensive */ }
         v.render();
