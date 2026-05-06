@@ -114,17 +114,16 @@ export default function StudioPage() {
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
 
-  // No default target/mutation — user must explicitly pick. The
-  // earlier "egfr" default was presumptuous and meant the user
-  // couldn't tell whether they had configured the studio or not.
+  // No default target — user must explicitly pick. The earlier
+  // "egfr" default was presumptuous.
   const [selectedTarget, setSelectedTarget] = useState<string>("");
+  // Selection model: WT can be ON or OFF, and at most ONE mutation
+  // tag at a time. Default is WT-only (the conservative starting
+  // point — without a mutation, dock against wild-type). Adding a
+  // mutation chip alongside keeps WT selected, so the dropdown shows
+  // e.g. "WT + Q61H" and Run Dock fires both in parallel.
+  const [includeWt, setIncludeWt] = useState<boolean>(true);
   const [selectedMutation, setSelectedMutation] = useState<string>("");
-  // Compare-to-WT toggle. When true AND a mutation is selected,
-  // Run Dock fires TWO parallel docks: one against WT, one against
-  // the mutant. Telemetry panel then shows both side-by-side with a
-  // Δ. This is the bread-and-butter selectivity workflow — see if
-  // a compound prefers the mutant over WT or vice versa.
-  const [compareWt, setCompareWt] = useState<boolean>(true);
   // Typeahead query strings — filter the chip rows live as the user
   // types. Empty string = show all chips (default).
   const [targetQuery, setTargetQuery] = useState("");
@@ -217,7 +216,7 @@ export default function StudioPage() {
     setDockResultWt(null);
     setDockError(null);
     setMutationOutsidePocketA(null);
-  }, [selectedTarget, selectedMutation]);
+  }, [selectedTarget, selectedMutation, includeWt]);
 
 
   // Tick clock every second; probe pod health every 30s
@@ -320,11 +319,18 @@ export default function StudioPage() {
     setDockResult(null);
     setDockResultWt(null);
 
-    // Decide what to dock:
-    //   - mutation only (or WT only) → one dock call
-    //   - mutation + compareWt → two parallel docks (mutant + WT)
+    // Decide what to dock based on the chip selection:
+    //   - includeWt + mutation → two parallel docks (mutant + WT)
+    //   - includeWt only → WT dock only
+    //   - mutation only → mutant dock only
+    //   - neither → guarded earlier (Run Dock disabled)
     const wantMutant = !!selectedMutation;
-    const wantWt = !selectedMutation || (selectedMutation && compareWt);
+    const wantWt = includeWt;
+    if (!wantMutant && !wantWt) {
+      setDockError("Pick WT or a mutation in the Mutations section.");
+      setDocking(false);
+      return;
+    }
     const baseArgs = {
       smiles: currentSmiles,
       target_pdb: selectedTarget,
@@ -738,50 +744,49 @@ export default function StudioPage() {
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Mutations</span>
-                <div className="flex items-center gap-2">
-                  {/* Compare-to-WT toggle. Only meaningful when a
-                      mutation is selected. When on, Run Dock fires
-                      two parallel docks and the score panel shows
-                      both side-by-side with a Δ. */}
-                  {selectedMutation && (
-                    <label className="flex items-center gap-1 text-[9px] font-mono text-slate-400 cursor-pointer hover:text-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={compareWt}
-                        onChange={(e) => setCompareWt(e.target.checked)}
-                        className="accent-cyan-400 w-3 h-3"
-                      />
-                      <span>+ WT</span>
-                    </label>
-                  )}
-                  <span className="font-mono text-[9px] text-slate-600">
-                    {(() => {
-                      const all = availableMutations.length;
-                      const filt = availableMutations.filter(m =>
-                        !mutationQuery ||
-                        m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                        (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                      ).length;
-                      return mutationQuery ? `${filt}/${all}` : `${all} curated`;
-                    })()}
-                  </span>
-                </div>
+                <span className="font-mono text-[9px] text-slate-600">
+                  {(() => {
+                    const all = availableMutations.length;
+                    const filt = availableMutations.filter(m =>
+                      !mutationQuery ||
+                      m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                    ).length;
+                    return mutationQuery ? `${filt}/${all}` : `${all} curated`;
+                  })()}
+                </span>
               </div>
               {/* Trigger row: current mutation chip on the LEFT (or "WT" if
                   none selected), search input on the RIGHT. Pressing Enter
                   on a non-matching query commits it as a custom mutation. */}
               <div className="flex items-center gap-2 mb-2">
+                {/* Trigger shows current selection: "WT", "WT + Q61H",
+                    "Q61H", or "—" if user deselected everything. */}
                 <button
                   onClick={() => setMutationDropdownOpen(!mutationDropdownOpen)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded border font-mono text-[11px] uppercase tracking-wider min-w-[80px] ${
-                    selectedMutation
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded border font-mono text-[11px] uppercase tracking-wider min-w-[110px] ${
+                    selectedMutation && includeWt
+                      ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200 hover:bg-cyan-900/50"
+                      : selectedMutation
                       ? "border-amber-500/60 bg-amber-900/30 text-amber-200 hover:bg-amber-900/50"
-                      : "border-slate-600 bg-slate-700/40 text-slate-200 hover:bg-slate-700/60"
+                      : includeWt
+                      ? "border-slate-500 bg-slate-700/40 text-slate-200 hover:bg-slate-700/60"
+                      : "border-rose-700/50 bg-rose-950/30 text-rose-300 hover:bg-rose-950/50"
                   }`}
-                  title={selectedMutation || "Wild-type — click for mutations"}
+                  title={
+                    selectedMutation && includeWt ? `Will dock against WT and ${selectedMutation} in parallel`
+                    : selectedMutation ? `Will dock against ${selectedMutation} only`
+                    : includeWt ? "Will dock against wild-type only"
+                    : "Select WT or a mutation below to enable docking"
+                  }
                 >
                   <span className={`text-[8px] transition-transform ${mutationDropdownOpen ? "rotate-90" : ""}`}>▸</span>
-                  <span>{selectedMutation || "WT"}</span>
+                  <span>
+                    {includeWt && selectedMutation ? `WT + ${selectedMutation}`
+                      : selectedMutation ? selectedMutation
+                      : includeWt ? "WT"
+                      : "—"}
+                  </span>
                 </button>
                 <input
                   type="text"
@@ -801,15 +806,20 @@ export default function StudioPage() {
               </div>
               {(mutationDropdownOpen || mutationQuery) && (
                 <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto pt-1 border-t border-slate-800/70">
+                  {/* WT chip — multi-select with the mutation row.
+                      Click toggles independently. Doesn't auto-close
+                      the dropdown so the user can also pick a mutation
+                      in the same gesture. */}
                   <button
-                    onClick={() => { setSelectedMutation(""); setMutationDropdownOpen(false); }}
+                    onClick={() => setIncludeWt(!includeWt)}
                     className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                      selectedMutation === ""
-                        ? "border-slate-500 bg-slate-700/40 text-slate-200"
+                      includeWt
+                        ? "border-slate-400 bg-slate-700/60 text-slate-100"
                         : "border-slate-700/60 text-slate-500 hover:text-slate-300"
                     }`}
+                    title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
                   >
-                    WT
+                    {includeWt ? "✓ WT" : "WT"}
                   </button>
                   {availableMutations
                     .filter(m =>
@@ -821,9 +831,15 @@ export default function StudioPage() {
                       <button
                         key={m.code}
                         onClick={() => {
-                          setSelectedMutation(m.code);
-                          setMutationQuery("");
-                          setMutationDropdownOpen(false);
+                          // Single-select among mutations — clicking a
+                          // different one replaces the previous. WT
+                          // selection is independent and stays as-is.
+                          if (selectedMutation === m.code) {
+                            setSelectedMutation("");  // toggle off
+                          } else {
+                            setSelectedMutation(m.code);
+                            setMutationQuery("");
+                          }
                         }}
                         className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
                           selectedMutation === m.code
@@ -832,7 +848,7 @@ export default function StudioPage() {
                         }`}
                         title={m.label}
                       >
-                        {m.code}
+                        {selectedMutation === m.code ? `✓ ${m.code}` : m.code}
                       </button>
                     ))}
                   {mutationQuery && availableMutations.filter(m =>
