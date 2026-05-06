@@ -498,31 +498,53 @@ export default function StudioPage() {
             <div className="px-4 pt-3 pb-2 grid grid-cols-2 gap-2 border-b border-slate-800/70">
               <div>
                 <div className={TOK.label}>Score</div>
-                {dockResult && dockResultWt ? (
-                  // Side-by-side WT vs mutant display
+                {/* Show 2-column WT vs mutation panel whenever the user
+                    has BOTH selected — regardless of which results have
+                    come back. Each slot can show a score, "loading", or
+                    "—" so the user always sees what's happening. */}
+                {(includeWt && selectedMutation) ? (
+                  // Always-2-column WT vs mutation panel. Each slot
+                  // shows the score, "loading…" while the dock is in
+                  // flight, or "—" if the dock returned without a
+                  // valid score. User always sees both slots so the
+                  // structure of "WT vs mutation comparison" is
+                  // visible whether or not the data has all arrived.
                   <>
                     <div className="flex items-baseline gap-3">
+                      {/* Mutant slot (LEFT, primary — this is the new biology) */}
                       <div className="flex flex-col">
-                        <span className={`font-mono text-lg tabular-nums ${TOK.cyan}`}>
-                          {fmtScore(dockResult.score)}
+                        <span className={`font-mono text-lg tabular-nums ${
+                          dockResult?.score != null ? TOK.cyan
+                          : docking ? "text-cyan-300/40 animate-pulse"
+                          : "text-slate-600"
+                        }`}>
+                          {dockResult?.score != null ? fmtScore(dockResult.score)
+                            : docking ? "▮" : "—.——"}
                         </span>
                         <span className="text-[8px] font-mono uppercase tracking-wider text-amber-300">
                           {selectedMutation}
                         </span>
                       </div>
+                      {/* WT slot */}
                       <div className="flex flex-col">
-                        <span className="font-mono text-lg tabular-nums text-slate-300">
-                          {fmtScore(dockResultWt.score)}
+                        <span className={`font-mono text-lg tabular-nums ${
+                          dockResultWt?.score != null ? "text-slate-300"
+                          : docking ? "text-slate-400/40 animate-pulse"
+                          : "text-slate-600"
+                        }`}>
+                          {dockResultWt?.score != null ? fmtScore(dockResultWt.score)
+                            : docking ? "▮" : "—.——"}
                         </span>
                         <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
                           WT
                         </span>
                       </div>
-                      {dockResult.score != null && dockResultWt.score != null && (
+                      {/* Δ slot — only when BOTH scores are present */}
+                      {dockResult?.score != null && dockResultWt?.score != null && (
                         <div className="flex flex-col">
                           {(() => {
                             const delta = dockResult.score - dockResultWt.score;
-                            const tighter = delta < 0; // mutant binds stronger
+                            const tighter = delta < 0;
                             return (
                               <>
                                 <span className={`font-mono text-lg tabular-nums ${
@@ -541,7 +563,13 @@ export default function StudioPage() {
                         </div>
                       )}
                     </div>
-                    <div className="text-[10px] font-mono text-slate-500 mt-0.5">kcal/mol · exh=8</div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                      kcal/mol · exh=8
+                      {docking && <span className="ml-2 text-cyan-300 animate-pulse">▶ docking…</span>}
+                      {!docking && (!dockResult || !dockResultWt) && (dockResult || dockResultWt) && (
+                        <span className="ml-2 text-amber-400">⚠ one dock failed — re-run</span>
+                      )}
+                    </div>
                   </>
                 ) : (
                   <>
