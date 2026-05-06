@@ -665,6 +665,17 @@ function CompoundLoader({
 }) {
   const [paste, setPaste] = useState("");
   const [search, setSearch] = useState("");
+  // PubChem live autocomplete — debounced 250ms after typing settles.
+  // Backed by /lookup/compound/suggest which proxies PubChem's
+  // autocomplete endpoint. Returns up to 8 name suggestions.
+  const [pubchemSuggestions, setPubchemSuggestions] = useState<string[]>([]);
+  const [pubchemLoading, setPubchemLoading] = useState(false);
+  const [pubchemErr, setPubchemErr] = useState<string | null>(null);
+  // When a user clicks a PubChem name, we fire /lookup/compound to
+  // resolve to SMILES. Loading state per-name so multiple clicks don't
+  // race or flicker the global spinner.
+  const [resolvingName, setResolvingName] = useState<string | null>(null);
+
   const refCompounds = (targetMeta?.compounds ?? []) as { name: string; smiles: string; mechanism?: string }[];
   const q = search.trim().toLowerCase();
   const filteredRef = q
@@ -678,6 +689,50 @@ function CompoundLoader({
         (c.name || "").toLowerCase().includes(q) ||
         (c.smiles || "").toLowerCase().includes(q))
     : myCompounds;
+
+  // PubChem autocomplete — debounced 250ms. Skip when query is shorter
+  // than 2 chars (too noisy) or matches an existing reference/library
+  // name exactly (we already have it locally).
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (trimmed.length < 2) {
+      setPubchemSuggestions([]);
+      setPubchemErr(null);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      setPubchemLoading(true);
+      setPubchemErr(null);
+      try {
+        const res = await api.suggestCompound(trimmed);
+        if (cancelled) return;
+        setPubchemSuggestions(res.suggestions || []);
+      } catch (e: any) {
+        if (!cancelled) setPubchemErr(e?.message || "PubChem lookup failed");
+      } finally {
+        if (!cancelled) setPubchemLoading(false);
+      }
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [search]);
+
+  async function loadFromPubChem(name: string) {
+    setResolvingName(name);
+    setPubchemErr(null);
+    try {
+      const res = await api.lookupCompound(name);
+      if (res?.smiles) {
+        onPick(res.smiles);
+      } else {
+        setPubchemErr(`PubChem returned no SMILES for "${name}"`);
+      }
+    } catch (e: any) {
+      setPubchemErr(e?.message || `Couldn't resolve "${name}"`);
+    } finally {
+      setResolvingName(null);
+    }
+  }
 
   return (
     <div className="absolute top-[34px] left-0 right-0 z-20 bg-[#0d1422] border-b border-slate-800/70 max-h-[70%] overflow-auto">
@@ -695,10 +750,49 @@ function CompoundLoader({
           <button onClick={() => setSearch("")} className="text-slate-500 hover:text-slate-200 font-mono text-[10px]">clear</button>
         )}
       </div>
-      {/* Empty-state hint when nothing matched in either list */}
-      {q && filteredRef.length === 0 && filteredLib.length === 0 && (
+      {/* PubChem live suggestions — populated as the user types.
+          Click any pill to resolve via /lookup/compound and load the
+          SMILES into Ketcher. This is the same data source NewJobPage's
+          name-lookup uses, so anything you can type in /new also works
+          here (drugs, metabolites, IUPAC names). */}
+      {search.trim().length >= 2 && (pubchemLoading || pubchemSuggestions.length > 0 || pubchemErr) && (
+        <div className="px-3 py-2 border-b border-slate-800/70 bg-[#070b15]">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[9px] uppercase tracking-[0.18em] text-cyan-500">PubChem</span>
+            {pubchemLoading && <span className="text-[10px] font-mono text-slate-500 animate-pulse">▮ searching…</span>}
+            {!pubchemLoading && pubchemSuggestions.length > 0 && (
+              <span className="text-[10px] font-mono text-slate-600">{pubchemSuggestions.length} matches</span>
+            )}
+            {!pubchemLoading && !pubchemErr && pubchemSuggestions.length === 0 && search.trim().length >= 2 && (
+              <span className="text-[10px] font-mono text-slate-600 italic">no match</span>
+            )}
+            {pubchemErr && (
+              <span className="text-[10px] font-mono text-rose-400">{pubchemErr}</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {pubchemSuggestions.map((name) => (
+              <button
+                key={name}
+                onClick={() => loadFromPubChem(name)}
+                disabled={resolvingName !== null}
+                className={`px-2 py-1 font-mono text-[11px] rounded border transition-colors ${
+                  resolvingName === name
+                    ? "border-cyan-500/60 bg-cyan-900/40 text-cyan-200 animate-pulse"
+                    : "border-cyan-700/40 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 disabled:opacity-50 disabled:cursor-wait"
+                }`}
+                title={`Resolve "${name}" via PubChem and load the SMILES into Ketcher`}
+              >
+                {resolvingName === name ? `▮ ${name}` : name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Empty-state hint — only when literally nothing matched anywhere */}
+      {q && filteredRef.length === 0 && filteredLib.length === 0 && pubchemSuggestions.length === 0 && !pubchemLoading && (
         <div className="px-3 py-2 bg-amber-950/20 border-b border-amber-900/40 text-[11px] font-mono text-amber-200">
-          ⚠ no match for &ldquo;<span className="text-amber-100">{search}</span>&rdquo; in reference compounds or your library.
+          ⚠ no match for &ldquo;<span className="text-amber-100">{search}</span>&rdquo; in reference compounds, your library, or PubChem.
           {" "}Use the <span className="text-amber-100">Paste SMILES</span> column on the right to load by structure instead.
         </div>
       )}
