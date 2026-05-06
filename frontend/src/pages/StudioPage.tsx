@@ -1004,17 +1004,35 @@ function Live3DViewer({
   }
 
   function ligandStyleSpec(s: typeof ligandStyle) {
-    if (s === "stick") return { stick: { radius: 0.18, colorscheme: "cyanCarbon" } };
-    if (s === "ball") return { sphere: { scale: 0.30, colorscheme: "cyanCarbon" }, stick: { radius: 0.10 } };
-    if (s === "sphere") return { sphere: { scale: 0.85, colorscheme: "cyanCarbon" } };
-    return { line: { colorscheme: "cyanCarbon", linewidth: 2 } };
+    // Stick radius bumped 0.18 → 0.28 for visibility against a large
+    // protein ribbon. The default in DockedPoseViewer is 0.18 but
+    // that viewer is a small 280×280 panel with a tight pocket-box
+    // zoom; in Studio's full-width viewer the radius needs to be
+    // bigger to read clearly. 2026-05-05 user feedback: "after dock
+    // there's just a hexagon with ribbons" — the molecule was rendering
+    // correctly but at the wrong visual weight for the camera distance.
+    if (s === "stick") return { stick: { radius: 0.28, colorscheme: "cyanCarbon" } };
+    if (s === "ball") return { sphere: { scale: 0.32, colorscheme: "cyanCarbon" }, stick: { radius: 0.18, colorscheme: "cyanCarbon" } };
+    if (s === "sphere") return { sphere: { scale: 0.95, colorscheme: "cyanCarbon" } };
+    return { line: { colorscheme: "cyanCarbon", linewidth: 3 } };
   }
 
   function resetView() {
     const v = viewerRef.current;
     if (!v) return;
     try {
-      v.zoomTo();
+      // In docked mode, fit the pocket (ligand + 8Å of receptor) — the
+      // useful view. In conformer mode, fit the whole molecule.
+      if (dockResult) {
+        const ligandIdx = hasMutationOverlayRef.current ? 2 : 1;
+        try {
+          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdx } } });
+        } catch {
+          v.zoomTo({ model: ligandIdx });
+        }
+      } else {
+        v.zoomTo();
+      }
       v.render();
     } catch { /* defensive */ }
   }
@@ -1152,11 +1170,13 @@ function Live3DViewer({
           for (const a of atoms) { a.x += dx; a.y += dy; a.z += dz; }
         } catch { /* defensive */ }
         // Style: amber sticks so it reads as "preview, not docked"
-        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.18, color: "#fbbf24" } });
+        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.28, color: "#fbbf24" } });
+        // Same tight pocket framing as the docked-pose path
         try {
-          v.zoomTo({ model: ligandIdx });
-          v.zoom(0.7);
-        } catch { /* defensive */ }
+          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdx } } });
+        } catch {
+          try { v.zoomTo({ model: ligandIdx }); } catch { /* */ }
+        }
         v.render();
         lastRenderedSmilesRef.current = smiles;
       } catch { /* defensive */ }
@@ -1253,8 +1273,20 @@ function Live3DViewer({
         // Apply current style toggles
         applyStyles();
         const ligandIdxForZoom = hasMutationOverlayRef.current ? 2 : 1;
-        v.zoomTo({ model: ligandIdxForZoom });
-        v.zoom(0.85);
+        // Frame the ligand + pocket residues only, not the whole protein.
+        // Without this, the ligand reads as a tiny hexagon against the
+        // full receptor ribbon. 2026-05-05 user feedback. The "within"
+        // selector pulls ligand atoms + every receptor atom within 8Å,
+        // and zoomTo frames that subset to the viewport. Result: ligand
+        // fills a meaningful portion of the panel and the surrounding
+        // pocket residues are visible as context.
+        try {
+          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdxForZoom } } });
+        } catch {
+          // Older 3Dmol versions don't support `within` — fall back to
+          // ligand-only fit which still beats whole-protein zoom.
+          try { v.zoomTo({ model: ligandIdxForZoom }); } catch { /* */ }
+        }
         v.render();
       } catch (e) {
         setConformerErr(`Pose render failed: ${(e as Error).message}`);
