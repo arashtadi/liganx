@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.23-2026-05-06-measure-resize-render";
+const LIGANX_BUILD_TAG = "v0.24-2026-05-06-ux-trio";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -64,6 +64,37 @@ function getKetcherApi(iframe: HTMLIFrameElement | null): any | null {
 function fmtScore(s: number | undefined | null): string {
   if (s == null) return "—.——";
   return s >= 0 ? `+${s.toFixed(2)}` : s.toFixed(2);
+}
+
+/** Convert Vina ΔG (kcal/mol) → Kd estimate as a human-readable string.
+ *  Kd = exp(ΔG / RT) at 298 K, RT = 0.5925 kcal/mol. The result is a rough
+ *  order-of-magnitude estimate — Vina's absolute scores aren't physical
+ *  binding energies — but it gives a much more familiar number than
+ *  "−7.30 kcal/mol" for med chemists who think in nM/μM/mM. */
+function fmtScoreKd(s: number | undefined | null): string {
+  if (s == null || s >= 0) return "";
+  const kd_M = Math.exp(s / 0.5925);  // molar
+  if (kd_M < 1e-9) return `${(kd_M * 1e12).toFixed(0)} pM`;
+  if (kd_M < 1e-6) return `${(kd_M * 1e9).toFixed(0)} nM`;
+  if (kd_M < 1e-3) return `${(kd_M * 1e6).toFixed(0)} µM`;
+  if (kd_M < 1) return `${(kd_M * 1e3).toFixed(1)} mM`;
+  return `${kd_M.toFixed(2)} M`;
+}
+
+/** Tier a Vina score into a Tailwind text color so the panel visually
+ *  signals strength at a glance. Anchors:
+ *    • s ≤ −9      → emerald-300 (sub-nM, likely too good for Vina —
+ *                    treat as "very strong" but verify)
+ *    • −9 < s ≤ −7 → emerald-400 ("strong" — typical hit)
+ *    • −7 < s ≤ −5 → cyan-300    ("moderate" — needs optimization)
+ *    • s > −5      → amber-300   ("weak" — pocket isn't holding it)
+ *    • null        → slate-600   (no score yet) */
+function scoreTier(s: number | undefined | null): string {
+  if (s == null) return "text-slate-600";
+  if (s <= -9) return "text-emerald-300";
+  if (s <= -7) return "text-emerald-400";
+  if (s <= -5) return "text-cyan-300";
+  return "text-amber-300";
 }
 
 function fmtClock(d: Date): string {
@@ -519,32 +550,36 @@ export default function StudioPage() {
                   // visible whether or not the data has all arrived.
                   <>
                     <div className="flex items-baseline gap-3">
-                      {/* Mutant slot (LEFT, primary — this is the new biology) */}
+                      {/* Mutant slot (LEFT, primary — this is the new biology).
+                          Score color = scoreTier(): emerald (strong) → cyan
+                          (moderate) → amber (weak). Kd line below gives a
+                          chemistry-familiar number (nM/µM) since Vina ΔG
+                          isn't intuitive for non-computational chemists. */}
                       <div className="flex flex-col">
                         <span className={`font-mono text-lg tabular-nums ${
-                          dockResult?.score != null ? TOK.cyan
+                          dockResult?.score != null ? scoreTier(dockResult.score)
                           : docking ? "text-cyan-300/40 animate-pulse"
                           : "text-slate-600"
-                        }`}>
+                        }`} title={dockResult?.score != null ? `${fmtScore(dockResult.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResult.score)}` : undefined}>
                           {dockResult?.score != null ? fmtScore(dockResult.score)
                             : docking ? "▮" : "—.——"}
                         </span>
                         <span className="text-[8px] font-mono uppercase tracking-wider text-amber-300">
-                          {selectedMutation}
+                          {selectedMutation} {dockResult?.score != null && <span className="text-slate-500 normal-case">· ~{fmtScoreKd(dockResult.score)}</span>}
                         </span>
                       </div>
                       {/* WT slot */}
                       <div className="flex flex-col">
                         <span className={`font-mono text-lg tabular-nums ${
-                          dockResultWt?.score != null ? "text-slate-300"
+                          dockResultWt?.score != null ? scoreTier(dockResultWt.score)
                           : docking ? "text-slate-400/40 animate-pulse"
                           : "text-slate-600"
-                        }`}>
+                        }`} title={dockResultWt?.score != null ? `${fmtScore(dockResultWt.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResultWt.score)}` : undefined}>
                           {dockResultWt?.score != null ? fmtScore(dockResultWt.score)
                             : docking ? "▮" : "—.——"}
                         </span>
                         <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
-                          WT
+                          WT {dockResultWt?.score != null && <span>· ~{fmtScoreKd(dockResultWt.score)}</span>}
                         </span>
                       </div>
                       {/* Δ slot — only when BOTH scores are present */}
@@ -581,8 +616,14 @@ export default function StudioPage() {
                   </>
                 ) : (
                   <>
-                    <div className={`${TOK.valueLg} ${dockResult?.score != null ? TOK.cyan : TOK.dim}`}>
+                    <div className={`${TOK.valueLg} ${dockResult?.score != null ? scoreTier(dockResult.score) : TOK.dim}`}
+                         title={dockResult?.score != null ? `${fmtScore(dockResult.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResult.score)}` : undefined}>
                       {fmtScore(dockResult?.score)}
+                      {dockResult?.score != null && (
+                        <span className="text-[10px] text-slate-500 font-mono ml-2 normal-case">
+                          ≈ {fmtScoreKd(dockResult.score)}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10px] font-mono text-slate-500">
                       kcal/mol · exh=8
@@ -1897,6 +1938,43 @@ function ProductionViewer3D({
 
       <div className="flex-1 relative bg-[#0f172a] overflow-hidden">
         <div ref={containerRef} className="absolute inset-0" />
+        {/* Onboarding empty state — shows when there's no compound and no
+            docking result yet. Walks the user through the 4-step flow so
+            a first-time visitor doesn't stare at a black canvas. */}
+        {!smiles && !dockResult && !dockResultWt && !status && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="max-w-md px-6 py-5 rounded-lg border border-slate-800/70 bg-[#0b1220]/80 backdrop-blur-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-cyan-400 text-[10px] font-mono tracking-[0.2em] uppercase">▸ studio · ready</span>
+                <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
+              </div>
+              <div className="text-slate-300 text-xs leading-relaxed font-mono">
+                <div className="mb-2 text-slate-400">Mutation-aware docking in 4 steps:</div>
+                <ol className="space-y-1.5">
+                  <li className="flex gap-2">
+                    <span className="text-cyan-400 tabular-nums">1.</span>
+                    <span><span className="text-slate-200">Pick a target</span> <span className="text-slate-500">— select kinase + mutation, top-left</span></span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-cyan-400 tabular-nums">2.</span>
+                    <span><span className="text-slate-200">Draw a compound</span> <span className="text-slate-500">— sketch in the editor or paste SMILES</span></span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-cyan-400 tabular-nums">3.</span>
+                    <span><span className="text-slate-200">Quick Dock</span> <span className="text-slate-500">— ~30 s on GPU, scores both WT and mutant</span></span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-cyan-400 tabular-nums">4.</span>
+                    <span><span className="text-slate-200">Inspect ΔΔG</span> <span className="text-slate-500">— color-coded score, Kd estimate, 3D pose</span></span>
+                  </li>
+                </ol>
+              </div>
+              <div className="mt-3 pt-3 border-t border-slate-800/50 text-[9px] font-mono text-slate-600 tracking-wider uppercase">
+                live conformer renders here · 3D pose appears after dock
+              </div>
+            </div>
+          </div>
+        )}
         {status && (
           <div className="absolute bottom-2 left-2 right-2 px-2 py-1 rounded bg-rose-950/60 border border-rose-900/60 text-[10px] text-rose-200 font-mono">
             ✗ {status}
