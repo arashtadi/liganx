@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.20-2026-05-06-measure-fix-and-fullscreen";
+const LIGANX_BUILD_TAG = "v0.21-2026-05-06-jobpage-visual-parity";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1363,7 +1363,11 @@ function ProductionViewer3D({
   //     research default; ball is friendlier for outreach screenshots.
   //   • contacts — toggle the binding-pocket residue side chains.
   //   • measure — click two atoms to get distance in Å.
-  const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("cartoon");
+  // Default to line (wireframe) — matches the JobPage view users are
+  // already familiar with, and keeps the receptor from occluding the
+  // docked ligand. Cartoon is one click away on the toolbar for users
+  // who want the publication-style ribbon view.
+  const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("line");
   const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
   const [showContacts, setShowContacts] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
@@ -1508,13 +1512,18 @@ function ProductionViewer3D({
             try { viewer.addStyle(sel, { stick: { color: "#0ea5e9", radius: 0.18 } }); } catch { /* */ }
           }
         }
-        // Mutation residue side chain — amber, slightly fatter.
+        // Mutation residue side chain — emerald green, fat radius. Matches
+        // MutationOverlayViewer's color convention (WT side chain green,
+        // mutant blue) so users coming from JobPage immediately recognize
+        // 'green = the mutation'. Critically, green is distinct from any
+        // common atom element color (no element renders green by default
+        // except F/Cl), so it can't be confused with the docked ligand.
         if (mutation) {
           const m = String(mutation).match(/(\d+)/);
           if (m) {
             const rn = Number(m[1]);
             const sel = { model: 0, resi: rn };
-            try { viewer.addStyle(sel, { stick: { color: "#f59e0b", radius: 0.28 } }); } catch { /* */ }
+            try { viewer.addStyle(sel, { stick: { color: "#10b981", radius: 0.32 } }); } catch { /* */ }
           }
         }
       }
@@ -1525,18 +1534,19 @@ function ProductionViewer3D({
       const ligandPresent = (hasDock && (hasPose || (smilesEdited && editedConformerSdf))) || (!hasDock && conformerSdf);
       if (ligandPresent) {
         viewer.setStyle({ model: poseIdx }, {});
-        // Slightly fatter sticks (0.22) than DockedPoseViewer's 0.18 so the
-        // ligand reads from a distance even when the camera is pulled back
-        // to show binding-site context. Element-color scheme keeps O red,
-        // N blue, etc — much easier to scan than monochrome.
+        // Thick element-colored ligand (radius 0.30) — same visual weight
+        // as JobPage's MutationOverlayViewer, so the ligand reads as the
+        // hero of the scene against either cartoon or wireframe receptor.
+        // Element colors mean N=blue, O=red, F=green, Cl=green, etc —
+        // standard chemistry-paper convention.
         if (poseStyle === "stick") {
-          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.22, colorscheme: "default" } });
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.30, colorscheme: "Jmol" } });
         } else if (poseStyle === "ball") {
-          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.16, colorscheme: "default" }, sphere: { scale: 0.32 } });
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.20, colorscheme: "Jmol" }, sphere: { scale: 0.36 } });
         } else if (poseStyle === "line") {
-          viewer.setStyle({ model: poseIdx }, { line: { colorscheme: "default" } });
+          viewer.setStyle({ model: poseIdx }, { line: { colorscheme: "Jmol" } });
         } else if (poseStyle === "sphere") {
-          viewer.setStyle({ model: poseIdx }, { sphere: { colorscheme: "default" } });
+          viewer.setStyle({ model: poseIdx }, { sphere: { colorscheme: "Jmol" } });
         }
       }
       viewer.render();
