@@ -1027,6 +1027,11 @@ function Live3DViewer({
   const [ligandStyle, setLigandStyle] = useState<"stick" | "ball" | "sphere" | "line">("stick");
   const [receptorStyle, setReceptorStyle] = useState<"cartoon" | "surface" | "line" | "hide">("cartoon");
   const [measureMode, setMeasureMode] = useState(false);
+  // Fullscreen toggle for the 3D panel — when on, the viewer covers
+  // the entire viewport (escape exits). Same affordance as the
+  // production DockedPoseViewer's fullscreen mode but inline so the
+  // user doesn't get bounced into a different page.
+  const [fullscreen, setFullscreen] = useState(false);
   // Slider for WT/mutant morph (0-100). 3-zone:
   //   0-33  → WT only (model 0 visible, model 1 hidden)
   //   33-66 → both visible (geometric overlap)
@@ -1104,32 +1109,33 @@ function Live3DViewer({
   }
 
   function ligandStyleSpec(s: typeof ligandStyle) {
-    // Stick radius bumped 0.18 → 0.28 for visibility against a large
-    // protein ribbon. The default in DockedPoseViewer is 0.18 but
-    // that viewer is a small 280×280 panel with a tight pocket-box
-    // zoom; in Studio's full-width viewer the radius needs to be
-    // bigger to read clearly. 2026-05-05 user feedback: "after dock
-    // there's just a hexagon with ribbons" — the molecule was rendering
-    // correctly but at the wrong visual weight for the camera distance.
-    if (s === "stick") return { stick: { radius: 0.28, colorscheme: "cyanCarbon" } };
-    if (s === "ball") return { sphere: { scale: 0.32, colorscheme: "cyanCarbon" }, stick: { radius: 0.18, colorscheme: "cyanCarbon" } };
-    if (s === "sphere") return { sphere: { scale: 0.95, colorscheme: "cyanCarbon" } };
-    return { line: { colorscheme: "cyanCarbon", linewidth: 3 } };
+    // Match DockedPoseViewer (production JobPage 3D viewer) exactly:
+    //   colorscheme: "default" → element colors (C=grey, O=red, N=blue,
+    //   Cl=green, etc.). This is what chemists expect — they read the
+    //   molecule by element colors. The previous cyanCarbon scheme made
+    //   the entire molecule monochrome cyan so chemists couldn't tell
+    //   chlorine from carbon at a glance.
+    //   Radius 0.18 — same as DockedPoseViewer.
+    if (s === "stick") return { stick: { radius: 0.18, colorscheme: "default" } };
+    if (s === "ball") return { sphere: { scale: 0.30, colorscheme: "default" }, stick: { radius: 0.10, colorscheme: "default" } };
+    if (s === "sphere") return { sphere: { scale: 0.85, colorscheme: "default" } };
+    return { line: { colorscheme: "default", linewidth: 2 } };
   }
 
   function resetView() {
     const v = viewerRef.current;
     if (!v) return;
     try {
-      // In docked mode, fit the pocket (ligand + 8Å of receptor) — the
-      // useful view. In conformer mode, fit the whole molecule.
-      if (dockResult) {
-        const ligandIdx = hasMutationOverlayRef.current ? 2 : 1;
-        try {
-          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdx } } });
-        } catch {
-          v.zoomTo({ model: ligandIdx });
-        }
+      if (dockResult && dockedCentroidRef.current) {
+        // Center on docked ligand centroid + tight zoom (matches
+        // DockedPoseViewer pattern)
+        v.zoomTo();
+        v.center({
+          x: dockedCentroidRef.current[0],
+          y: dockedCentroidRef.current[1],
+          z: dockedCentroidRef.current[2],
+        });
+        v.zoom(1.8, 0);
       } else {
         v.zoomTo();
       }
@@ -1270,19 +1276,49 @@ function Live3DViewer({
           for (const a of atoms) { a.x += dx; a.y += dy; a.z += dz; }
         } catch { /* defensive */ }
         // Style: amber sticks so it reads as "preview, not docked"
-        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.28, color: "#fbbf24" } });
-        // Same tight pocket framing as the docked-pose path
+        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.18, color: "#fbbf24" } });
+        // Center on the docked centroid (where the original ligand sat
+        // in the pocket) so the preview molecule is in the same frame
+        // of reference as the docked one.
         try {
-          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdx } } });
-        } catch {
-          try { v.zoomTo({ model: ligandIdx }); } catch { /* */ }
-        }
+          if (dockedCentroidRef.current) {
+            v.zoomTo();
+            v.center({
+              x: dockedCentroidRef.current[0],
+              y: dockedCentroidRef.current[1],
+              z: dockedCentroidRef.current[2],
+            });
+            v.zoom(1.8, 0);
+          }
+        } catch { /* defensive */ }
         v.render();
         lastRenderedSmilesRef.current = smiles;
       } catch { /* defensive */ }
     }, 350);
     return () => { cancelled = true; window.clearTimeout(t); };
   }, [smiles, isPostDockPreview, glReady]);
+
+  // Esc key exits fullscreen
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  // Resize the 3Dmol viewer when the container size changes (entering
+  // or leaving fullscreen). 3Dmol does not auto-detect container size
+  // changes — must call resize() manually.
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v) return;
+    const t = window.setTimeout(() => {
+      try { v.resize(); v.render(); } catch { /* */ }
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [fullscreen]);
 
   // Toggle measure-mode atom-click handler on the viewer
   useEffect(() => {
@@ -1372,21 +1408,23 @@ function Live3DViewer({
         dockedSmilesRef.current = smiles;
         // Apply current style toggles
         applyStyles();
-        const ligandIdxForZoom = hasMutationOverlayRef.current ? 2 : 1;
-        // Frame the ligand + pocket residues only, not the whole protein.
-        // Without this, the ligand reads as a tiny hexagon against the
-        // full receptor ribbon. 2026-05-05 user feedback. The "within"
-        // selector pulls ligand atoms + every receptor atom within 8Å,
-        // and zoomTo frames that subset to the viewport. Result: ligand
-        // fills a meaningful portion of the panel and the surrounding
-        // pocket residues are visible as context.
+        // Match DockedPoseViewer exactly: zoom out, then center the
+        // camera ON the ligand centroid, then zoom in to a fixed factor.
+        // This gives a consistent "ligand fills the middle of the
+        // viewport with pocket context around it" look that matches
+        // the production JobPage 3D viewer. Without this the camera
+        // ends up framing the whole protein and the ligand looks tiny.
         try {
-          v.zoomTo({ within: { distance: 8, sel: { model: ligandIdxForZoom } } });
-        } catch {
-          // Older 3Dmol versions don't support `within` — fall back to
-          // ligand-only fit which still beats whole-protein zoom.
-          try { v.zoomTo({ model: ligandIdxForZoom }); } catch { /* */ }
-        }
+          v.zoomTo();
+          if (dockedCentroidRef.current) {
+            v.center({
+              x: dockedCentroidRef.current[0],
+              y: dockedCentroidRef.current[1],
+              z: dockedCentroidRef.current[2],
+            });
+            v.zoom(1.8, 0);  // 1.8 = tight enough to see ligand atoms, loose enough to keep pocket context
+          }
+        } catch { /* defensive */ }
         v.render();
       } catch (e) {
         setConformerErr(`Pose render failed: ${(e as Error).message}`);
@@ -1396,18 +1434,31 @@ function Live3DViewer({
   }, [glReady, dockResult]);
 
   return (
-    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0">
-      {/* Title strip — title + status only, no controls */}
+    <div className={
+      fullscreen
+        ? "fixed inset-0 z-50 bg-[#070b15] border border-slate-800/70 flex flex-col overflow-hidden"
+        : "bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0"
+    }>
+      {/* Title strip — title + status + fullscreen toggle */}
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-        <span className="font-mono text-slate-500">
-          {isPostDockPreview ? <span className="text-amber-300">◌ preview · re-dock to confirm</span>
-            : dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
-            : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
-            : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
-            : smiles ? <span className="text-slate-600">○ waiting</span>
-            : <span className="text-slate-700">▢ empty</span>}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-slate-500">
+            {isPostDockPreview ? <span className="text-amber-300">◌ preview · re-dock to confirm</span>
+              : dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
+              : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+              : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
+              : smiles ? <span className="text-slate-600">○ waiting</span>
+              : <span className="text-slate-700">▢ empty</span>}
+          </span>
+          <button
+            onClick={() => setFullscreen(!fullscreen)}
+            className="px-2 py-0.5 rounded border border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50 font-mono text-[10px] uppercase tracking-wider"
+            title={fullscreen ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
+          >
+            {fullscreen ? "⤢ exit" : "⤢ full"}
+          </button>
+        </div>
       </div>
       {/* Control toolbar — own row, grouped, breathing room */}
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center gap-3 text-[10px] flex-wrap">
