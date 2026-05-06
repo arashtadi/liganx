@@ -63,6 +63,14 @@ function fmtClock(d: Date): string {
   return d.toISOString().slice(11, 19) + " UTC";
 }
 
+/** Parse the residue number out of a mutation tag like "T790M" or
+ *  "L858R" or "G12C". Returns null for malformed inputs. */
+function parseMutationResidue(tag: string): number | null {
+  if (!tag) return null;
+  const m = tag.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ketcherReady, setKetcherReady] = useState(false);
@@ -347,7 +355,22 @@ export default function StudioPage() {
                 <div className={`${TOK.valueLg} ${dockResult?.score != null ? TOK.cyan : TOK.dim}`}>
                   {fmtScore(dockResult?.score)}
                 </div>
-                <div className="text-[10px] font-mono text-slate-500">kcal/mol · exh=8</div>
+                <div className="text-[10px] font-mono text-slate-500">
+                  kcal/mol · exh=8
+                  {dockResult && (
+                    <span className={`ml-2 px-1 rounded text-[9px] ${
+                      dockResult.receptor_variant === "mutant"
+                        ? "bg-amber-900/40 text-amber-200 border border-amber-800/50"
+                        : "bg-slate-800 text-slate-400 border border-slate-700"
+                    }`} title={
+                      dockResult.receptor_variant === "mutant"
+                        ? `Score is for ligand binding to the mutant receptor (${selectedMutation || "mutated"}).`
+                        : "Score is for ligand binding to the wild-type receptor."
+                    }>
+                      vs {dockResult.receptor_variant === "mutant" ? (selectedMutation || "MUT") : "WT"}
+                    </span>
+                  )}
+                </div>
               </div>
               <div>
                 <div className={TOK.label}>Pose</div>
@@ -1045,6 +1068,32 @@ function Live3DViewer({
             try { v.addSurface(2, { opacity: 0.45, color: "#0e7490" }, { model: mutIdx }); } catch { /* */ }
           }
           else if (receptorStyle === "line") v.setStyle({ model: mutIdx }, { line: { color: mutColor } });
+        }
+        // ─── Highlight the mutation residue on each visible receptor ───
+        // Without this, switching the slider just toggles overlapping
+        // ribbons of slightly different colors — visually identical for
+        // a single-residue mutation. Adding stick representation on
+        // resi=<mutationNumber> with a bright accent color makes the
+        // mutation site jump out and the slider's effect becomes
+        // visually obvious. 2026-05-05 user feedback.
+        if (hasOverlay && mutation) {
+          const resi = parseMutationResidue(mutation);
+          if (resi != null) {
+            // WT side chain — bright slate, only when WT is showing
+            if (showWt) {
+              v.setStyle(
+                { model: wtIdx, resi: resi },
+                { stick: { radius: 0.32, color: "#cbd5e1" }, cartoon: { color: wtColor } },
+              );
+            }
+            // Mutant side chain — bright cyan, only when mutant is showing
+            if (showMut && mutIdx >= 0) {
+              v.setStyle(
+                { model: mutIdx, resi: resi },
+                { stick: { radius: 0.32, color: "#22d3ee" }, cartoon: { color: mutColor } },
+              );
+            }
+          }
         }
         v.setStyle({ model: ligandIdx }, ligandStyleSpec(ligandStyle));
       } else {
