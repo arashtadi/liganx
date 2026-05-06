@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -267,6 +268,13 @@ export default function StudioPage() {
     return () => { cancelled = true; window.clearInterval(t); };
   }, [ketcherReady]);
 
+  // Live validity + SA score for whatever's on the canvas. Both hooks
+  // share the same React Query cache key so this is ONE network round-
+  // trip per unique SMILES, not two. Updates within ~10ms of the
+  // 700ms polling tick — feels live to the user.
+  const liveValidity = useSmilesValidity(currentSmiles);
+  const liveSaScore = useSmilesSaScore(currentSmiles);
+
   const targetMeta = useMemo(
     () => catalog?.find((t: any) => t.id === selectedTarget),
     [catalog, selectedTarget]
@@ -411,8 +419,15 @@ export default function StudioPage() {
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
         {/* LEFT — 2D Canvas */}
         <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
-          <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-            <span className={TOK.label}>2D Canvas · Ketcher</span>
+          <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px] gap-3">
+            <div className="flex items-center gap-3">
+              <span className={TOK.label}>2D · Ketcher</span>
+              {/* Live SMILES validity + SA score pills — update every
+                  ~700ms via the polling tick + shared inspect-smiles
+                  cache. Same hooks the original editor uses. */}
+              <ValidityPill validity={liveValidity} />
+              <SaScorePill sa={liveSaScore} />
+            </div>
             <div className="flex items-center gap-2">
               {/* 2D theme toggle — bumps iframe key so Ketcher reloads
                   with ?theme=dark or default. Current SMILES is preserved
@@ -900,6 +915,64 @@ function CollapsibleTab({
         </div>
       )}
     </div>
+  );
+}
+
+/** Live SMILES validity pill — appears next to the 2D editor title.
+ *  Five states (matches the underlying `SmilesValidity` type from
+ *  MoleculePreview):
+ *    empty      → faded "draw a structure" placeholder
+ *    loading    → cyan pulsing "checking…"
+ *    valid      → emerald "● Valid SMILES"
+ *    invalid    → rose "✗ Invalid SMILES"  (turns red live as user edits!)
+ *    fragments  → amber "⚠ Multi-fragment" (salt forms etc.)
+ *  Compact (no border noise) so it sits inline with the title strip
+ *  without dominating the header. */
+function ValidityPill({ validity }: { validity: SmilesValidity }) {
+  if (validity === "empty") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono italic text-slate-600 border border-dashed border-slate-700">
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-700 inline-block" /> draw structure
+      </span>
+    );
+  }
+  const palette: Record<Exclude<SmilesValidity, "empty">, { dot: string; bg: string; label: string }> = {
+    loading:   { dot: "bg-cyan-400 animate-pulse",  bg: "border-cyan-700/40 bg-cyan-950/30 text-cyan-200",         label: "checking…" },
+    valid:     { dot: "bg-emerald-400",             bg: "border-emerald-700/40 bg-emerald-950/40 text-emerald-200", label: "Valid SMILES" },
+    invalid:   { dot: "bg-rose-500",                bg: "border-rose-700/50 bg-rose-950/40 text-rose-200",          label: "Invalid SMILES" },
+    fragments: { dot: "bg-amber-400",               bg: "border-amber-700/40 bg-amber-950/40 text-amber-200",       label: "Multi-fragment" },
+  };
+  const p = palette[validity];
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono border ${p.bg}`}>
+      <span className={`w-1.5 h-1.5 rounded-full inline-block ${p.dot}`} />
+      <span>{p.label}</span>
+    </span>
+  );
+}
+
+/** Live Synthetic Accessibility score pill. SA score is on a [1, 10]
+ *  scale where 1 = trivial to make, 10 = currently impossible. The
+ *  three-bucket coloring matches medchem convention:
+ *    ≤ 4   → emerald · "easy"     (Med chem labs make these in days)
+ *    4-6   → amber  · "moderate"  (Achievable, multi-step synthesis)
+ *    > 6   → rose   · "hard"      (Often skipped in real campaigns)
+ *  Hidden when SMILES isn't valid yet (the parent ValidityPill covers
+ *  that state). */
+function SaScorePill({ sa }: { sa: { score: number; label: string } | null }) {
+  if (!sa) return null;
+  const tone =
+    sa.score <= 4 ? { bg: "border-emerald-700/40 bg-emerald-950/40 text-emerald-200", dot: "bg-emerald-400" }
+    : sa.score <= 6 ? { bg: "border-amber-700/40 bg-amber-950/40 text-amber-200", dot: "bg-amber-400" }
+    : { bg: "border-rose-700/40 bg-rose-950/40 text-rose-200", dot: "bg-rose-500" };
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono border ${tone.bg}`}
+      title={`Synthetic accessibility ${sa.score.toFixed(1)} / 10 (${sa.label}). 1 = trivial, 10 = currently impossible. Above 6 means a typical med chem lab will not attempt this.`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full inline-block ${tone.dot}`} />
+      <span>SA {sa.score.toFixed(1)} · {sa.label}</span>
+    </span>
   );
 }
 
