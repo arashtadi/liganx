@@ -71,6 +71,43 @@ function parseMutationResidue(tag: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+/** Parse the CA atom coordinates for a specific residue from a PDB
+ *  text. Returns null if the residue isn't found. Used to compute the
+ *  mutation-to-pocket-center distance — same semantic as JobPage's
+ *  `outsidePocketA` field, which flags mutations Vina can't see
+ *  because they sit beyond the docking box reach. */
+function parseCaCoords(pdb: string, residueN: number, chain: string = "A"): [number, number, number] | null {
+  const lines = pdb.split("\n");
+  for (const line of lines) {
+    // PDB ATOM record: cols 13-16 atom name, col 22 chain, cols 23-26 resi
+    if (!line.startsWith("ATOM")) continue;
+    const atomName = line.slice(12, 16).trim();
+    if (atomName !== "CA") continue;
+    const lineChain = line.slice(21, 22).trim();
+    if (chain && lineChain && lineChain !== chain) continue;
+    const resiStr = line.slice(22, 26).trim();
+    const resi = parseInt(resiStr, 10);
+    if (resi !== residueN) continue;
+    const x = parseFloat(line.slice(30, 38));
+    const y = parseFloat(line.slice(38, 46));
+    const z = parseFloat(line.slice(46, 54));
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      return [x, y, z];
+    }
+  }
+  return null;
+}
+
+function distance3D(a: [number, number, number], b: [number, number, number]): number {
+  const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// JobPage threshold: residues farther than ~11 Å from box center are
+// outside Vina's reach for a 22 Å box. Bumped slightly looser (12 Å) to
+// account for catalog targets with widened boxes (BRAF 36 Å, EGFR 30 Å).
+const MUTATION_OUTSIDE_POCKET_THRESHOLD_A = 12.0;
+
 export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ketcherReady, setKetcherReady] = useState(false);
@@ -86,6 +123,12 @@ export default function StudioPage() {
   const [docking, setDocking] = useState(false);
   const [dockError, setDockError] = useState<string | null>(null);
   const [dockResult, setDockResult] = useState<QuickDockResult | null>(null);
+  // Mutation-residue-to-pocket-center distance. Same semantic as
+  // JobPage's outsidePocketA: when a mutation sits far from the
+  // docking box, Vina can't capture geometric effects of that
+  // mutation, so the WT-vs-mutant Δ is unreliable. Computed
+  // client-side from the WT receptor PDB after dock completes.
+  const [mutationOutsidePocketA, setMutationOutsidePocketA] = useState<number | null>(null);
 
   const [now, setNow] = useState(new Date());
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
@@ -155,10 +198,12 @@ export default function StudioPage() {
   useEffect(() => {
     setDockResult(null);
     setDockError(null);
+    setMutationOutsidePocketA(null);
     // The Live3DViewer's internal centroid/smiles refs reset naturally
     // when its dockResult prop transitions to null (the post-dock-preview
     // effect short-circuits because isPostDockPreview becomes false).
   }, [selectedTarget, selectedMutation]);
+
 
   // Tick clock every second; probe pod health every 30s
   useEffect(() => {
@@ -213,6 +258,37 @@ export default function StudioPage() {
     [catalog, selectedTarget]
   );
   const availableMutations = (targetMeta?.mutations ?? []) as { code: string; label: string }[];
+
+  // Compute mutation-residue-to-pocket-center distance after a dock
+  // completes. Same semantic as JobPage's outsidePocketA: when a
+  // mutation sits far from the docking box, Vina can't capture
+  // geometric effects of that mutation, so the WT-vs-mutant Δ is
+  // unreliable. This is the badge JobPage shows as "◌ outside pocket".
+  useEffect(() => {
+    if (!dockResult || !selectedMutation || !targetMeta?.pocket?.center) {
+      setMutationOutsidePocketA(null);
+      return;
+    }
+    const resi = parseMutationResidue(selectedMutation);
+    if (resi == null) { setMutationOutsidePocketA(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(
+          `https://api.liganx.com/structures/${dockResult.pdb_id || targetMeta.pdb_id}/${dockResult.chain || targetMeta.chain || "A"}/WT`
+        );
+        if (!r.ok) return;
+        const pdb = await r.text();
+        if (cancelled) return;
+        const ca = parseCaCoords(pdb, resi, targetMeta.chain || "A");
+        if (!ca) return;
+        const center = targetMeta.pocket.center as [number, number, number];
+        const dist = distance3D(ca, center);
+        if (!cancelled) setMutationOutsidePocketA(dist);
+      } catch { /* defensive */ }
+    })();
+    return () => { cancelled = true; };
+  }, [dockResult, selectedMutation, targetMeta]);
 
   async function runQuickDock() {
     if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
@@ -374,27 +450,59 @@ export default function StudioPage() {
               </div>
               <div>
                 <div className={TOK.label}>Pose</div>
-                <div className={`${TOK.valueLg} ${
-                  dockResult?.pose_in_pocket === true ? TOK.emerald
-                  : dockResult?.pose_in_pocket === false ? TOK.amber
-                  : TOK.dim
-                }`}>
-                  {dockResult?.pose_in_pocket === true ? "✓ in"
-                    : dockResult?.pose_in_pocket === false ? "◌ out"
-                    : "—"}
-                </div>
-                <div className="text-[10px] font-mono text-slate-500">
-                  {dockResult ? (
+                {(() => {
+                  // Combined pose-validity logic — matches JobPage semantics.
+                  // Three states:
+                  //   1. mutation residue outside pocket box (>12Å from
+                  //      center) → AMBER "◌ out · mutation Y Å away"
+                  //      (Vina can't see geometric effect of this mutation
+                  //      regardless of where the ligand landed)
+                  //   2. ligand pose drifted off-pocket → AMBER "◌ drift"
+                  //   3. pose centered + mutation in reach → EMERALD "✓ in"
+                  const mutOut = mutationOutsidePocketA != null && mutationOutsidePocketA > MUTATION_OUTSIDE_POCKET_THRESHOLD_A;
+                  const poseOut = dockResult?.pose_in_pocket === false;
+                  if (mutOut) {
+                    return (
+                      <>
+                        <div className={`${TOK.valueLg} ${TOK.amber}`}>◌ out</div>
+                        <div className="text-[10px] font-mono text-amber-300/80" title={
+                          `Residue ${parseMutationResidue(selectedMutation)} sits ${mutationOutsidePocketA?.toFixed(1)} Å from the docking box center. Vina can't see geometric effects of mutations beyond ~11 Å, so the WT vs mutant Δ here is unreliable. Same flag as JobPage's "outside pocket" badge.`
+                        }>
+                          mutation {mutationOutsidePocketA?.toFixed(1)} Å from box
+                        </div>
+                      </>
+                    );
+                  }
+                  if (poseOut) {
+                    return (
+                      <>
+                        <div className={`${TOK.valueLg} ${TOK.amber}`}>◌ drift</div>
+                        <div className="text-[10px] font-mono text-amber-300/80">
+                          {dockResult?.pose_offset_a?.toFixed(1)} Å · pose off-center
+                        </div>
+                      </>
+                    );
+                  }
+                  return (
                     <>
-                      {dockResult.pose_offset_a != null && (
-                        <span title="Distance from docked pose centroid to the pocket box center. Threshold: 6 Å. Higher numbers = pose drifted toward edge of search box.">
-                          {dockResult.pose_offset_a.toFixed(1)} Å ·{" "}
-                        </span>
-                      )}
-                      {(dockResult.hits?.length || 0)} hits · {(dockResult.misses?.length || 0)} miss
+                      <div className={`${TOK.valueLg} ${dockResult?.pose_in_pocket === true ? TOK.emerald : TOK.dim}`}>
+                        {dockResult?.pose_in_pocket === true ? "✓ in" : "—"}
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-500">
+                        {dockResult ? (
+                          <>
+                            {dockResult.pose_offset_a != null && (
+                              <span title="Distance from docked pose centroid to the pocket box center. Threshold: 6 Å.">
+                                {dockResult.pose_offset_a.toFixed(1)} Å ·{" "}
+                              </span>
+                            )}
+                            {(dockResult.hits?.length || 0)} hits · {(dockResult.misses?.length || 0)} miss
+                          </>
+                        ) : "pocket box"}
+                      </div>
                     </>
-                  ) : "pocket box"}
-                </div>
+                  );
+                })()}
               </div>
             </div>
 
