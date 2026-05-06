@@ -113,8 +113,17 @@ export default function StudioPage() {
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
 
-  const [selectedTarget, setSelectedTarget] = useState<string>("egfr");
+  // No default target/mutation — user must explicitly pick. The
+  // earlier "egfr" default was presumptuous and meant the user
+  // couldn't tell whether they had configured the studio or not.
+  const [selectedTarget, setSelectedTarget] = useState<string>("");
   const [selectedMutation, setSelectedMutation] = useState<string>("");
+  // Compare-to-WT toggle. When true AND a mutation is selected,
+  // Run Dock fires TWO parallel docks: one against WT, one against
+  // the mutant. Telemetry panel then shows both side-by-side with a
+  // Δ. This is the bread-and-butter selectivity workflow — see if
+  // a compound prefers the mutant over WT or vice versa.
+  const [compareWt, setCompareWt] = useState<boolean>(true);
   // Typeahead query strings — filter the chip rows live as the user
   // types. Empty string = show all chips (default).
   const [targetQuery, setTargetQuery] = useState("");
@@ -122,7 +131,14 @@ export default function StudioPage() {
 
   const [docking, setDocking] = useState(false);
   const [dockError, setDockError] = useState<string | null>(null);
-  const [dockResult, setDockResult] = useState<QuickDockResult | null>(null);
+  // Two result slots: one keyed for WT, one for the mutant. When the
+  // user has selected a mutation AND compareWt is on, both fire in
+  // parallel and we display a side-by-side comparison. When WT-only
+  // or mutant-only, one slot stays null. The 3D viewer always shows
+  // the mutant pose if available, otherwise WT — that's the "primary"
+  // view, with the other surfaced as a secondary readout in the panel.
+  const [dockResult, setDockResult] = useState<QuickDockResult | null>(null); // primary (mutant if selected, else WT)
+  const [dockResultWt, setDockResultWt] = useState<QuickDockResult | null>(null); // WT comparison slot
   // Mutation-residue-to-pocket-center distance. Same semantic as
   // JobPage's outsidePocketA: when a mutation sits far from the
   // docking box, Vina can't capture geometric effects of that
@@ -197,11 +213,9 @@ export default function StudioPage() {
   // 2026-05-05 user-reported bug.
   useEffect(() => {
     setDockResult(null);
+    setDockResultWt(null);
     setDockError(null);
     setMutationOutsidePocketA(null);
-    // The Live3DViewer's internal centroid/smiles refs reset naturally
-    // when its dockResult prop transitions to null (the post-dock-preview
-    // effect short-circuits because isPostDockPreview becomes false).
   }, [selectedTarget, selectedMutation]);
 
 
@@ -296,15 +310,50 @@ export default function StudioPage() {
     setDocking(true);
     setDockError(null);
     setDockResult(null);
+    setDockResultWt(null);
+
+    // Decide what to dock:
+    //   - mutation only (or WT only) → one dock call
+    //   - mutation + compareWt → two parallel docks (mutant + WT)
+    const wantMutant = !!selectedMutation;
+    const wantWt = !selectedMutation || (selectedMutation && compareWt);
+    const baseArgs = {
+      smiles: currentSmiles,
+      target_pdb: selectedTarget,
+      chain: targetMeta?.chain || "A",
+    };
+
     try {
-      const res = await api.assistQuickDock({
-        smiles: currentSmiles,
-        target_pdb: selectedTarget,
-        chain: targetMeta?.chain || "A",
-        mutation: selectedMutation || undefined,
-      });
-      if (!res.ok) setDockError(res.error || "Dock failed.");
-      else setDockResult(res as QuickDockResult);
+      const tasks: Promise<{ kind: "mut" | "wt"; res: QuickDockResult }>[] = [];
+      if (wantMutant) {
+        tasks.push(
+          api.assistQuickDock({ ...baseArgs, mutation: selectedMutation })
+            .then((res) => ({ kind: "mut" as const, res: res as QuickDockResult }))
+        );
+      }
+      if (wantWt) {
+        tasks.push(
+          api.assistQuickDock({ ...baseArgs, mutation: undefined })
+            .then((res) => ({ kind: "wt" as const, res: res as QuickDockResult }))
+        );
+      }
+      const settled = await Promise.allSettled(tasks);
+      let firstError: string | null = null;
+      for (const s of settled) {
+        if (s.status === "fulfilled") {
+          const { kind, res } = s.value;
+          if (!res.ok) {
+            if (!firstError) firstError = res.error || "Dock failed.";
+            continue;
+          }
+          if (kind === "mut") setDockResult(res);
+          else if (wantMutant) setDockResultWt(res);
+          else setDockResult(res);  // WT-only run uses the primary slot
+        } else if (!firstError) {
+          firstError = (s.reason as Error)?.message || "Dock failed.";
+        }
+      }
+      if (firstError && !dockResult && !dockResultWt) setDockError(firstError);
     } catch (e: any) {
       setDockError(e?.message || "Dock failed.");
     } finally {
@@ -428,25 +477,74 @@ export default function StudioPage() {
             <div className="px-4 pt-3 pb-2 grid grid-cols-2 gap-2 border-b border-slate-800/70">
               <div>
                 <div className={TOK.label}>Score</div>
-                <div className={`${TOK.valueLg} ${dockResult?.score != null ? TOK.cyan : TOK.dim}`}>
-                  {fmtScore(dockResult?.score)}
-                </div>
-                <div className="text-[10px] font-mono text-slate-500">
-                  kcal/mol · exh=8
-                  {dockResult && (
-                    <span className={`ml-2 px-1 rounded text-[9px] ${
-                      dockResult.receptor_variant === "mutant"
-                        ? "bg-amber-900/40 text-amber-200 border border-amber-800/50"
-                        : "bg-slate-800 text-slate-400 border border-slate-700"
-                    }`} title={
-                      dockResult.receptor_variant === "mutant"
-                        ? `Score is for ligand binding to the mutant receptor (${selectedMutation || "mutated"}).`
-                        : "Score is for ligand binding to the wild-type receptor."
-                    }>
-                      vs {dockResult.receptor_variant === "mutant" ? (selectedMutation || "MUT") : "WT"}
-                    </span>
-                  )}
-                </div>
+                {dockResult && dockResultWt ? (
+                  // Side-by-side WT vs mutant display
+                  <>
+                    <div className="flex items-baseline gap-3">
+                      <div className="flex flex-col">
+                        <span className={`font-mono text-lg tabular-nums ${TOK.cyan}`}>
+                          {fmtScore(dockResult.score)}
+                        </span>
+                        <span className="text-[8px] font-mono uppercase tracking-wider text-amber-300">
+                          {selectedMutation}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="font-mono text-lg tabular-nums text-slate-300">
+                          {fmtScore(dockResultWt.score)}
+                        </span>
+                        <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
+                          WT
+                        </span>
+                      </div>
+                      {dockResult.score != null && dockResultWt.score != null && (
+                        <div className="flex flex-col">
+                          {(() => {
+                            const delta = dockResult.score - dockResultWt.score;
+                            const tighter = delta < 0; // mutant binds stronger
+                            return (
+                              <>
+                                <span className={`font-mono text-lg tabular-nums ${
+                                  Math.abs(delta) < 0.3 ? "text-slate-500"
+                                  : tighter ? "text-emerald-300"
+                                  : "text-rose-300"
+                                }`} title="Δ = mutant − WT. Negative = mutant binds tighter (selectivity gain). Positive = mutant binds weaker (resistance).">
+                                  {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                                </span>
+                                <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
+                                  Δ
+                                </span>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-0.5">kcal/mol · exh=8</div>
+                  </>
+                ) : (
+                  <>
+                    <div className={`${TOK.valueLg} ${dockResult?.score != null ? TOK.cyan : TOK.dim}`}>
+                      {fmtScore(dockResult?.score)}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500">
+                      kcal/mol · exh=8
+                      {dockResult && (
+                        <span className={`ml-2 px-1 rounded text-[9px] ${
+                          dockResult.receptor_variant === "mutant"
+                            ? "bg-amber-900/40 text-amber-200 border border-amber-800/50"
+                            : "bg-slate-800 text-slate-400 border border-slate-700"
+                        }`} title={
+                          dockResult.receptor_variant === "mutant"
+                            ? `Score is for ligand binding to the mutant receptor (${selectedMutation || "mutated"}).`
+                            : "Score is for ligand binding to the wild-type receptor."
+                        }>
+                          vs {dockResult.receptor_variant === "mutant" ? (selectedMutation || "MUT") : "WT"}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
               <div>
                 <div className={TOK.label}>Pose</div>
@@ -625,17 +723,34 @@ export default function StudioPage() {
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Mutations</span>
-                <span className="font-mono text-[9px] text-slate-600">
-                  {(() => {
-                    const all = availableMutations.length;
-                    const filt = availableMutations.filter(m =>
-                      !mutationQuery ||
-                      m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                    ).length;
-                    return mutationQuery ? `${filt}/${all}` : `${all} curated`;
-                  })()}
-                </span>
+                <div className="flex items-center gap-2">
+                  {/* Compare-to-WT toggle. Only meaningful when a
+                      mutation is selected. When on, Run Dock fires
+                      two parallel docks and the score panel shows
+                      both side-by-side with a Δ. */}
+                  {selectedMutation && (
+                    <label className="flex items-center gap-1 text-[9px] font-mono text-slate-400 cursor-pointer hover:text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={compareWt}
+                        onChange={(e) => setCompareWt(e.target.checked)}
+                        className="accent-cyan-400 w-3 h-3"
+                      />
+                      <span>+ WT</span>
+                    </label>
+                  )}
+                  <span className="font-mono text-[9px] text-slate-600">
+                    {(() => {
+                      const all = availableMutations.length;
+                      const filt = availableMutations.filter(m =>
+                        !mutationQuery ||
+                        m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                        (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                      ).length;
+                      return mutationQuery ? `${filt}/${all}` : `${all} curated`;
+                    })()}
+                  </span>
+                </div>
               </div>
               {/* Trigger row: current mutation chip on the LEFT (or "WT" if
                   none selected), search input on the RIGHT. Pressing Enter
