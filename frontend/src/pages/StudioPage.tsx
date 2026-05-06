@@ -1,3 +1,9 @@
+// Build verification tag — surfaces the deploy tag in the bundled JS so a
+// `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
+// version is live. Cheap, ~50 bytes; replace each release.
+const LIGANX_BUILD_TAG = "v0.16-2026-05-06-3dviewer-replacement";
+if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
+
 /**
  * Studio (v0.1) — unified workspace, control-center aesthetic.
  *
