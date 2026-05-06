@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.21-2026-05-06-jobpage-visual-parity";
+const LIGANX_BUILD_TAG = "v0.21.1-2026-05-06-zoom-direction-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1622,21 +1622,22 @@ function ProductionViewer3D({
           } else if (posePdbqt) {
             viewer.addModel(posePdbqt, "pdbqt");
           }
-          // Camera framing — IMPORTANT: in 3Dmol, the rotation pivot is
-          // the most-recently zoomTo'd point, NOT what center() sets. If
-          // we use `center() + zoom()` alone, mouse-rotate orbits around
-          // the model origin (often far from the pocket) and the molecule
-          // swings out of view — exactly the 'disappears and comes back'
-          // bug users hit. zoomTo({model: poseIdx}) fits the camera AND
-          // sets the pose centroid as the rotation pivot, so dragging
-          // keeps the ligand on screen. The follow-up zoom() factor is
-          // 3Dmol's "zoom out by factor" — values > 1 pull the camera
-          // back to show binding-site context. 1.4 leaves the ligand
-          // ~70% of the canvas with surrounding cartoon visible.
+          // Camera framing — IMPORTANT 3Dmol API quirks here:
+          //   • zoomTo({selection}) fits the camera AND sets the rotation
+          //     pivot to the selection's centroid. Critical for keeping
+          //     the ligand on-screen during mouse rotation.
+          //   • zoom(factor) — factor < 1 zooms IN (camera closer),
+          //     factor > 1 zooms OUT. (Earlier version had this wrong
+          //     and used 1.4 thinking it zoomed in — that left the
+          //     ligand tiny in a wide protein view.)
+          // 0.6 is what JobPage's MutationOverlayViewer uses (it does
+          // 0.55-0.7 depending on mode) — gives the ligand ~150% of the
+          // canvas-fit while keeping enough binding-site cartoon for
+          // context.
           const ligandIdx = posePdbqt || useEditedPreview ? 1 : -1;
           if (ligandIdx >= 0) {
             viewer.zoomTo({ model: ligandIdx });
-            viewer.zoom(1.4, 0);
+            viewer.zoom(0.6, 0);
           } else {
             viewer.zoomTo();
           }
@@ -1728,11 +1729,11 @@ function ProductionViewer3D({
     try {
       // Mirror the data-effect framing exactly so Reset returns to the
       // same view the user got after the dock. zoomTo({model: 1}) sets
-      // both the camera AND the rotation pivot — critical for keeping
-      // the ligand in view through subsequent drags.
+      // both the camera AND the rotation pivot. zoom(0.6) zooms IN
+      // (factor < 1 = closer in 3Dmol).
       if (hasDock && hasPose) {
         v.zoomTo({ model: 1 });
-        v.zoom(1.4, 0);
+        v.zoom(0.6, 0);
       } else {
         v.zoomTo();
       }
