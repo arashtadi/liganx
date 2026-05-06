@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.21.1-2026-05-06-zoom-direction-fix";
+const LIGANX_BUILD_TAG = "v0.21.2-2026-05-06-keep-only-pose-mode-1";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1388,7 +1388,20 @@ function ProductionViewer3D({
   const chain = primary?.chain || targetMeta?.chain || "A";
   const variant = dockResult ? mutation || "WT" : "WT";
   const hasDock = !!primary;
-  const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+  // Vina returns multiple binding modes in one PDBQT (MODEL 1 ... ENDMDL ·
+  // MODEL 2 ... etc — up to 9 by default). 3Dmol's addModel concatenates
+  // all of them into a single model with 9× the atoms scattered across
+  // space, which broke camera framing — zoomTo({model:1}) fit the bbox
+  // of all 9 modes, leaving each individual mode tiny in the viewport.
+  // Strip everything after the first ENDMDL so only the top-ranked pose
+  // (mode 1, the one matching the score) is rendered.
+  const posePdbqtFull = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+  const posePdbqt = (() => {
+    if (!posePdbqtFull) return "";
+    const endIdx = posePdbqtFull.indexOf("ENDMDL");
+    if (endIdx < 0) return posePdbqtFull;
+    return posePdbqtFull.slice(0, endIdx + "ENDMDL".length);
+  })();
   const hasPose = hasDock && !!posePdbqt;
   // Live-preview gate: true when the user has edited the 2D structure
   // since the dock that produced the current pose. While true, the 3D
