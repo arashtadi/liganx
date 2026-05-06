@@ -1466,20 +1466,22 @@ function Live3DViewer({
         const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
         if (cancelled || !containerRef.current) return;
         const viewer = $3Dmol.createViewer(containerRef.current, {
-          // Transparent background — matches DockedPoseViewer pattern.
-          // The parent container's color (#070b15) shows through, but
-          // 3Dmol's distance-fade fog has no solid color to blend
-          // toward, so atoms stay visible at all camera angles.
-          // Earlier solid bg made distant ribbon parts fade to black
-          // and disappear when rotated.
-          backgroundColor: "rgba(0,0,0,0)",
+          // Solid slate-900 — matches MutationOverlayViewer (the
+          // production WT/mutant 3D viewer on JobPage). 3Dmol's fog
+          // blends atoms toward THIS color as they get farther from
+          // the camera. Slate-900 is dark enough to fit the
+          // control-center aesthetic, but not pitch-black, so faded
+          // atoms stay visible.
+          //
+          // Earlier transparent bg let our container's #070b15 leak
+          // through, which is much darker than #0f172a — fog faded
+          // atoms toward near-black and they disappeared when
+          // rotated. 2026-05-05 user-reported bug, fixed by mimicking
+          // MutationOverlayViewer.
+          backgroundColor: "#0f172a",
           antialias: true,
         });
         viewerRef.current = viewer;
-        // Belt-and-suspenders: explicitly disable fog if 3Dmol supports
-        // it. Some versions ignore the call; that's fine because the
-        // transparent background already does most of the work.
-        try { viewer.enableFog?.(false); } catch { /* */ }
         setGlReady(true);
       } catch (e) {
         if (!cancelled) setConformerErr(`3Dmol load failed: ${(e as Error).message}`);
