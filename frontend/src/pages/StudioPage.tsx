@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.16.2-2026-05-06-self-contained-3D";
+const LIGANX_BUILD_TAG = "v0.17-2026-05-06-3D-controls";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1313,6 +1313,9 @@ function CompoundLoader({
  *  ligand pose. Camera frames the pose centroid when available, else the
  *  whole receptor.
  */
+type BackboneStyle = "cartoon" | "surface" | "line" | "hide";
+type PoseStyle = "stick" | "ball" | "line" | "sphere";
+
 function ProductionViewer3D({
   smiles,
   dockResult,
@@ -1328,11 +1331,27 @@ function ProductionViewer3D({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
+  const measurePicksRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [receptorPdb, setReceptorPdb] = useState<string | null>(null);
   const [receptorErr, setReceptorErr] = useState<string | null>(null);
+
+  // Visual controls (mirrored from MutationOverlayViewer's toolbar). These
+  // cover the 80%-case knobs a user wants when inspecting a docked pose:
+  //   • backbone — cartoon (default), surface (pocket shape), line (X-ray-
+  //     style), hide (pose-only). Sphere/spacefill is skipped — too heavy
+  //     to render at our panel size and rarely useful for kinase work.
+  //   • pose style — stick / ball-and-stick / line / sphere. Stick is the
+  //     research default; ball is friendlier for outreach screenshots.
+  //   • contacts — toggle the binding-pocket residue side chains.
+  //   • measure — click two atoms to get distance in Å.
+  const [backboneStyle, setBackboneStyle] = useState<BackboneStyle>("cartoon");
+  const [poseStyle, setPoseStyle] = useState<PoseStyle>("stick");
+  const [showContacts, setShowContacts] = useState(true);
+  const [measureMode, setMeasureMode] = useState(false);
+  const [measureDistance, setMeasureDistance] = useState<number | null>(null);
 
   const primary = dockResult || dockResultWt;
   const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
@@ -1340,6 +1359,19 @@ function ProductionViewer3D({
   const variant = dockResult ? mutation || "WT" : "WT";
   const hasDock = !!primary;
   const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+  const hasPose = hasDock && !!posePdbqt;
+
+  // Hits = pocket-contact residues from the dock result. Used to highlight
+  // side chains and to decide whether to enable the Contacts toggle.
+  const contactResnums = useMemo<number[]>(() => {
+    const hits = (dockResult?.hits || []) as string[];
+    const out = new Set<number>();
+    for (const h of hits) {
+      const m = String(h).match(/(\d+)/);
+      if (m) out.add(Number(m[1]));
+    }
+    return Array.from(out);
+  }, [dockResult?.hits]);
 
   // Fetch the live conformer when SMILES changes (only when no dock yet).
   useEffect(() => {
@@ -1360,9 +1392,7 @@ function ProductionViewer3D({
     return () => window.clearTimeout(t);
   }, [smiles, hasDock]);
 
-  // Fetch the receptor PDB when a dock result arrives. Same endpoint
-  // DockedPoseViewer uses; we just call it ourselves so we control the
-  // 3Dmol scene.
+  // Fetch the receptor PDB when a dock result arrives.
   useEffect(() => {
     if (!hasDock || !pdbId || !chain) return;
     let cancelled = false;
@@ -1383,9 +1413,63 @@ function ProductionViewer3D({
     return () => { cancelled = true; };
   }, [hasDock, pdbId, chain, variant]);
 
-  // Build / rebuild the 3Dmol scene when the inputs change. We rebuild
-  // from scratch each time — simpler than diffing models, and the viewer
-  // is small enough that the overhead is invisible.
+  // Apply visual styles based on toolbar state. This is the single place
+  // styles are written to the 3Dmol viewer — both the data-load effect
+  // (below) and the toolbar buttons trigger it via dependency.
+  function applyStyles(viewer: any) {
+    if (!viewer) return;
+    try {
+      // Receptor model — index 0. Conformer-only mode skips this branch.
+      if (hasDock && receptorPdb) {
+        viewer.setStyle({ model: 0 }, {});
+        try { viewer.removeAllSurfaces(); } catch { /* */ }
+        const recColor = "#94a3b8";
+        if (backboneStyle === "cartoon") {
+          viewer.setStyle({ model: 0 }, { cartoon: { color: recColor } });
+        } else if (backboneStyle === "line") {
+          viewer.setStyle({ model: 0 }, { line: { color: recColor } });
+        } else if (backboneStyle === "surface") {
+          viewer.setStyle({ model: 0 }, { cartoon: { color: recColor, opacity: 0.45 } });
+          try { viewer.addSurface(2, { opacity: 0.55, color: "#475569" }, { model: 0 }); } catch { /* */ }
+        }
+        // hide: leave receptor empty
+        // Side-chain sticks at pocket-contact residues.
+        if (showContacts && contactResnums.length > 0) {
+          for (const rn of contactResnums) {
+            const sel = { model: 0, resi: rn, atom: ["CA","CB","CG","CG1","CG2","CD","CD1","CD2","CE","CE1","CE2","CZ","NE","NE1","NE2","NZ","NH1","NH2","ND1","ND2","OD1","OD2","OE1","OE2","OG","OG1","OH","SG","SD"] };
+            try { viewer.addStyle(sel, { stick: { color: "#0ea5e9", radius: 0.18 } }); } catch { /* */ }
+          }
+        }
+        // Mutation residue side chain — amber, slightly fatter.
+        if (mutation) {
+          const m = String(mutation).match(/(\d+)/);
+          if (m) {
+            const rn = Number(m[1]);
+            const sel = { model: 0, resi: rn };
+            try { viewer.addStyle(sel, { stick: { color: "#f59e0b", radius: 0.28 } }); } catch { /* */ }
+          }
+        }
+      }
+      // Pose model (last loaded). With receptor: model:1. Without dock,
+      // the conformer is at model:0.
+      const poseIdx = hasDock && receptorPdb ? 1 : 0;
+      if ((hasDock && hasPose) || (!hasDock && conformerSdf)) {
+        viewer.setStyle({ model: poseIdx }, {});
+        if (poseStyle === "stick") {
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.18, colorscheme: "default" } });
+        } else if (poseStyle === "ball") {
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.13, colorscheme: "default" }, sphere: { scale: 0.28 } });
+        } else if (poseStyle === "line") {
+          viewer.setStyle({ model: poseIdx }, { line: { colorscheme: "default" } });
+        } else if (poseStyle === "sphere") {
+          viewer.setStyle({ model: poseIdx }, { sphere: { colorscheme: "default" } });
+        }
+      }
+      viewer.render();
+    } catch { /* defensive — ignore style errors */ }
+  }
+
+  // Build the scene when underlying DATA changes, then apply styles.
   useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
@@ -1394,7 +1478,6 @@ function ProductionViewer3D({
         const mod: any = await import("3dmol");
         const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
         if (cancelled || !containerRef.current) return;
-        // Clear existing viewer's canvas before re-creating.
         containerRef.current.innerHTML = "";
         const viewer = $3Dmol.createViewer(containerRef.current, {
           backgroundColor: "#0f172a",
@@ -1403,15 +1486,9 @@ function ProductionViewer3D({
         viewerRef.current = viewer;
 
         if (hasDock && receptorPdb) {
-          // Receptor — slate-400 cartoon. Distinctly visible against the
-          // #0f172a background but neutral enough that the ligand pops.
           viewer.addModel(receptorPdb, "pdb");
-          viewer.setStyle({}, { cartoon: { color: "#94a3b8" } });
+          if (posePdbqt) viewer.addModel(posePdbqt, "pdbqt");
           if (posePdbqt) {
-            viewer.addModel(posePdbqt, "pdbqt");
-            viewer.setStyle({ model: 1 }, { stick: { radius: 0.18, colorscheme: "default" } });
-            // Frame the pose tightly: zoom to model:1 (the ligand) with
-            // a comfortable padding so binding-site context is visible.
             viewer.zoomTo({ model: 1 });
             viewer.zoom(0.7, 0);
           } else {
@@ -1419,16 +1496,81 @@ function ProductionViewer3D({
           }
         } else if (conformerSdf) {
           viewer.addModel(conformerSdf, "sdf");
-          viewer.setStyle({}, { stick: { radius: 0.18, colorscheme: "default" } });
           viewer.zoomTo();
         }
-        viewer.render();
+        applyStyles(viewer);
       } catch (e) {
         if (!cancelled) setConformerErr(`Render failed: ${(e as Error).message}`);
       }
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasDock, receptorPdb, posePdbqt, conformerSdf]);
+
+  // Re-apply styles when toolbar state changes — without rebuilding scene.
+  useEffect(() => {
+    if (viewerRef.current) applyStyles(viewerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backboneStyle, poseStyle, showContacts, mutation]);
+
+  // Wire / unwire the measure-mode click handler.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || typeof viewer.setClickable !== "function") return;
+    if (!measureMode) {
+      try { viewer.setClickable({}, false, null); } catch { /* */ }
+      return;
+    }
+    const onClick = (atom: any) => {
+      if (!atom) return;
+      try {
+        measurePicksRef.current.push({ x: atom.x, y: atom.y, z: atom.z });
+        viewer.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.35, color: "#f97316" });
+        if (measurePicksRef.current.length === 2) {
+          const [a, b] = measurePicksRef.current;
+          const d = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
+          setMeasureDistance(d);
+          viewer.addLine({ start: a, end: b, dashed: true, color: "#f97316" });
+          const mid = { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 };
+          viewer.addLabel(`${d.toFixed(2)} Å`, {
+            position: mid, backgroundColor: "rgba(15,23,42,0.85)",
+            backgroundOpacity: 0.85, fontColor: "white", fontSize: 12,
+            borderThickness: 0, inFront: true,
+          });
+          measurePicksRef.current = [];
+        }
+        viewer.render();
+      } catch { /* */ }
+    };
+    try { viewer.setClickable({}, true, onClick); } catch { /* */ }
+    return () => {
+      try { viewer.setClickable({}, false, null); } catch { /* */ }
+    };
+  }, [measureMode]);
+
+  // Camera helpers wired to toolbar buttons.
+  const onResetView = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      if (hasDock && hasPose) { v.zoomTo({ model: 1 }); v.zoom(0.7, 0); }
+      else v.zoomTo();
+      v.render();
+    } catch { /* */ }
+  };
+  const onZoomIn = () => { try { viewerRef.current?.zoom(1.2, 200); } catch { /* */ } };
+  const onZoomOut = () => { try { viewerRef.current?.zoom(0.8, 200); } catch { /* */ } };
+  const onClearMeasure = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      v.removeAllShapes();
+      v.removeAllLabels();
+      measurePicksRef.current = [];
+      setMeasureDistance(null);
+      applyStyles(v);
+    } catch { /* */ }
+  };
 
   const status = receptorErr || conformerErr;
   const statusBadge = hasDock
@@ -1443,12 +1585,66 @@ function ProductionViewer3D({
           ? <span className="text-slate-600">○ waiting</span>
           : <span className="text-slate-700">▢ empty</span>;
 
+  // Show toolbar when there's content to control. Pre-conformer + no-dock
+  // we still show pose/style toggles so users can preview the conformer
+  // in different modes.
+  const showToolbar = hasDock || !!conformerSdf;
+
   return (
     <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]">
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
         <span className="font-mono text-slate-500">{statusBadge}</span>
       </div>
+
+      {showToolbar && (
+        <div className="px-2 py-1.5 border-b border-slate-800/70 flex items-center gap-2 flex-wrap text-[9px] font-mono">
+          {hasDock && (
+            <ViewerControlGroup label="BACKBONE">
+              <ViewerSegBtn active={backboneStyle === "cartoon"} onClick={() => setBackboneStyle("cartoon")} title="Cartoon ribbon">cartoon</ViewerSegBtn>
+              <ViewerSegBtn active={backboneStyle === "surface"} onClick={() => setBackboneStyle("surface")} title="Translucent solvent surface — best to see the pocket shape">surface</ViewerSegBtn>
+              <ViewerSegBtn active={backboneStyle === "line"} onClick={() => setBackboneStyle("line")} title="Bond line wireframe">line</ViewerSegBtn>
+              <ViewerSegBtn active={backboneStyle === "hide"} onClick={() => setBackboneStyle("hide")} title="Hide receptor — pose only">hide</ViewerSegBtn>
+            </ViewerControlGroup>
+          )}
+          <ViewerControlGroup label="POSE">
+            <ViewerSegBtn active={poseStyle === "stick"} onClick={() => setPoseStyle("stick")} title="Sticks (default)">stick</ViewerSegBtn>
+            <ViewerSegBtn active={poseStyle === "ball"} onClick={() => setPoseStyle("ball")} title="Ball-and-stick">ball</ViewerSegBtn>
+            <ViewerSegBtn active={poseStyle === "line"} onClick={() => setPoseStyle("line")} title="Wireframe">line</ViewerSegBtn>
+            <ViewerSegBtn active={poseStyle === "sphere"} onClick={() => setPoseStyle("sphere")} title="Space-filling spheres">sphere</ViewerSegBtn>
+          </ViewerControlGroup>
+          {hasDock && contactResnums.length > 0 && (
+            <ViewerControlGroup label="CONTACTS">
+              <ViewerSegBtn active={showContacts} onClick={() => setShowContacts(!showContacts)} title="Toggle binding-pocket side chains">
+                {showContacts ? "on" : "off"}
+              </ViewerSegBtn>
+            </ViewerControlGroup>
+          )}
+          <div className="flex-1" />
+          <ViewerControlGroup label="VIEW">
+            <ViewerSegBtn active={false} onClick={onZoomOut} title="Zoom out">−</ViewerSegBtn>
+            <ViewerSegBtn active={false} onClick={onZoomIn} title="Zoom in">+</ViewerSegBtn>
+            <ViewerSegBtn active={false} onClick={onResetView} title="Reset camera to default framing">reset</ViewerSegBtn>
+          </ViewerControlGroup>
+          <ViewerControlGroup label="MEASURE">
+            <ViewerSegBtn
+              active={measureMode}
+              onClick={() => setMeasureMode(!measureMode)}
+              title="Click two atoms to measure distance (Å)"
+              tone="amber"
+            >
+              {measureMode ? "click 2 atoms" : "off"}
+            </ViewerSegBtn>
+            {measureDistance !== null && (
+              <span className="px-1.5 text-amber-300 tabular-nums">{measureDistance.toFixed(2)} Å</span>
+            )}
+            {(measureMode || measureDistance !== null) && (
+              <ViewerSegBtn active={false} onClick={onClearMeasure} title="Clear measurement marks">clear</ViewerSegBtn>
+            )}
+          </ViewerControlGroup>
+        </div>
+      )}
+
       <div className="flex-1 relative bg-[#0f172a] overflow-hidden">
         <div ref={containerRef} className="absolute inset-0" />
         {status && (
@@ -1458,6 +1654,48 @@ function ProductionViewer3D({
         )}
       </div>
     </div>
+  );
+}
+
+/** Tiny label + segmented-button group used by the 3D viewer toolbar.
+ *  Designed to match the rest of Studio's control-center vibe: monospace,
+ *  uppercase tiny labels, faint border, cyan accent for the active item. */
+function ViewerControlGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[8px] tracking-[0.18em] text-slate-600 mr-0.5 select-none">{label}</span>
+      <div className="flex items-center bg-[#070b15] rounded border border-slate-800 overflow-hidden">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A single segmented-button cell. Active uses cyan; the amber tone is
+ *  reserved for action modes (measure). */
+function ViewerSegBtn({
+  active, onClick, title, children, tone = "cyan",
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+  tone?: "cyan" | "amber";
+}) {
+  const accent = tone === "amber"
+    ? "border-amber-500/60 bg-amber-900/40 text-amber-200"
+    : "border-cyan-500/60 bg-cyan-900/40 text-cyan-200";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider border-r border-slate-800 last:border-r-0 transition-colors ${
+        active ? accent : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/40"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
