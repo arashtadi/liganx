@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.22-2026-05-06-pdbqt-to-pdb-conversion";
+const LIGANX_BUILD_TAG = "v0.23-2026-05-06-measure-resize-render";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1736,9 +1736,22 @@ function ProductionViewer3D({
         viewer.render();
       } catch { /* */ }
     };
-    try { viewer.setClickable({}, true, onClick); } catch { /* */ }
+    // 3Dmol's hit-test ray uses the canvas's screen bounding box to map
+    // click pixels → 3D ray. Those bounds get stale if the user scrolled
+    // or the panel resized between dock and toolbar-toggle. resize()
+    // refreshes them, then render() rebuilds the hit-test geometry buffer
+    // — without these calls the click handler fires but the picked atom
+    // is wrong (or null), so the measurement silently does nothing.
+    // Same pattern used by MutationOverlayViewer (the JobPage viewer).
+    try {
+      viewer.resize();
+      viewer.setClickable({}, true, onClick);
+      viewer.render();
+    } catch { /* */ }
     return () => {
-      try { viewer.setClickable({}, false, null); } catch { /* */ }
+      // Pass an empty function rather than null — some 3Dmol versions
+      // throw when null is passed as the callback.
+      try { viewer.setClickable({}, false, () => {}); } catch { /* */ }
     };
     // viewerVersion in deps: when the viewer is rebuilt by the data
     // effect, this hook re-binds the click handler to the fresh
