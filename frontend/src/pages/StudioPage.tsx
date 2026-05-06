@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.18-2026-05-06-pose-visible-and-live-edit";
+const LIGANX_BUILD_TAG = "v0.18.1-2026-05-06-no-flicker-on-interact";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1533,9 +1533,28 @@ function ProductionViewer3D({
     } catch { /* defensive — ignore style errors */ }
   }
 
-  // Build the scene when underlying DATA changes, then apply styles.
+  // Build the scene when underlying DATA changes, then apply styles. To
+  // avoid teardown-and-rebuild flicker on every parent re-render (the page
+  // header's UTC clock alone ticks every second), we compare a content
+  // signature against the last build. If nothing meaningful changed, skip
+  // the rebuild entirely — the existing 3Dmol viewer keeps the user's
+  // rotation/zoom state and continues to render. This is what was causing
+  // the 'molecule disappears and comes back' artefact during drag.
+  const lastBuildKeyRef = useRef<string>("");
   useEffect(() => {
     if (!containerRef.current) return;
+    const buildKey = [
+      hasDock ? "D" : "_",
+      receptorPdb ? `r${receptorPdb.length}` : "_",
+      posePdbqt ? `p${posePdbqt.length}` : "_",
+      conformerSdf ? `c${conformerSdf.length}` : "_",
+      smilesEdited && editedConformerSdf ? `e${editedConformerSdf.length}` : "_",
+    ].join("|");
+    if (buildKey === lastBuildKeyRef.current && viewerRef.current) {
+      // Same data, viewer already exists — leave it alone.
+      return;
+    }
+    lastBuildKeyRef.current = buildKey;
     let cancelled = false;
     (async () => {
       try {
