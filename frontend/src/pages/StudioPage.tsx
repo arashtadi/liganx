@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.19-2026-05-06-rotation-pivot-fix";
+const LIGANX_BUILD_TAG = "v0.20-2026-05-06-measure-fix-and-fullscreen";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1368,6 +1368,16 @@ function ProductionViewer3D({
   const [showContacts, setShowContacts] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
   const [measureDistance, setMeasureDistance] = useState<number | null>(null);
+  // Bumped every time createViewer runs. Click-handler / style effects
+  // depend on this so they re-bind to the FRESH 3Dmol instance after a
+  // rebuild (data change). Without this, measure mode silently lost its
+  // click handler whenever a re-dock or 2D edit triggered a viewer
+  // recreate.
+  const [viewerVersion, setViewerVersion] = useState(0);
+  // Fullscreen toggle — when true, the 3D panel covers the entire
+  // viewport (escape key exits). Lets users zoom into atomic detail
+  // without leaving the page. Same affordance as JobPage's hero viewer.
+  const [fullscreen, setFullscreen] = useState(false);
 
   const primary = dockResult || dockResultWt;
   const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
@@ -1567,6 +1577,9 @@ function ProductionViewer3D({
           antialias: true,
         });
         viewerRef.current = viewer;
+        // Tell dependents (measure-mode click binder, style effect) that
+        // the viewer instance is brand new and they need to re-bind.
+        setViewerVersion((v) => v + 1);
 
         if (hasDock && receptorPdb) {
           viewer.addModel(receptorPdb, "pdb");
@@ -1630,11 +1643,14 @@ function ProductionViewer3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasDock, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited]);
 
-  // Re-apply styles when toolbar state changes — without rebuilding scene.
+  // Re-apply styles when toolbar state OR the viewer instance changes.
+  // viewerVersion bump ensures style re-applies after the data effect
+  // creates a fresh viewer (otherwise the new viewer would render with
+  // 3Dmol's defaults until the user clicks a toolbar button).
   useEffect(() => {
     if (viewerRef.current) applyStyles(viewerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backboneStyle, poseStyle, showContacts, mutation]);
+  }, [backboneStyle, poseStyle, showContacts, mutation, viewerVersion]);
 
   // Wire / unwire the measure-mode click handler.
   useEffect(() => {
@@ -1669,7 +1685,31 @@ function ProductionViewer3D({
     return () => {
       try { viewer.setClickable({}, false, null); } catch { /* */ }
     };
-  }, [measureMode]);
+    // viewerVersion in deps: when the viewer is rebuilt by the data
+    // effect, this hook re-binds the click handler to the fresh
+    // instance. Without it, measureMode would silently break after any
+    // re-dock or 2D edit.
+  }, [measureMode, viewerVersion]);
+
+  // Fullscreen handling — Escape exits, and on toggle we tell 3Dmol to
+  // resize so its WebGL viewport matches the new container size. Without
+  // resize() the canvas would render at the original small size in the
+  // top-left of a viewport-sized panel.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v) return;
+    // Defer one tick so the DOM has updated to the new layout before we
+    // measure. Two RAFs is the standard idiom for "after style + layout".
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { v.resize(); v.render(); } catch { /* */ }
+    }));
+  }, [fullscreen]);
 
   // Camera helpers wired to toolbar buttons.
   const onResetView = () => {
@@ -1726,9 +1766,13 @@ function ProductionViewer3D({
   const showToolbar = hasDock || !!conformerSdf;
 
   return (
-    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]">
+    <div className={
+      fullscreen
+        ? "fixed inset-0 z-50 bg-[#0d1422] border border-slate-800/70 flex flex-col overflow-hidden"
+        : "bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]"
+    }>
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
+        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View{fullscreen ? " · fullscreen (esc)" : ""}</span>
         <span className="font-mono text-slate-500">{statusBadge}</span>
       </div>
 
@@ -1760,6 +1804,9 @@ function ProductionViewer3D({
             <ViewerSegBtn active={false} onClick={onZoomOut} title="Zoom out">−</ViewerSegBtn>
             <ViewerSegBtn active={false} onClick={onZoomIn} title="Zoom in">+</ViewerSegBtn>
             <ViewerSegBtn active={false} onClick={onResetView} title="Reset camera to default framing">reset</ViewerSegBtn>
+            <ViewerSegBtn active={fullscreen} onClick={() => setFullscreen(f => !f)} title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen — fill the entire viewport"}>
+              {fullscreen ? "⊠ exit" : "⛶ full"}
+            </ViewerSegBtn>
           </ViewerControlGroup>
           <ViewerControlGroup label="MEASURE">
             <ViewerSegBtn
