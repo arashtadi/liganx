@@ -19,11 +19,12 @@ agents will be testing for.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import HTTPException, Request, Response
 
@@ -51,6 +52,38 @@ class RateLimit:
 # raise on a fresh IP; the deque holds Unix timestamps of recent requests.
 _buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _lock = Lock()
+
+
+def _bypass_emails() -> set[str]:
+    """Comma-separated list of emails (lowercased) read from
+    RATE_LIMIT_BYPASS_EMAILS env var. Re-read every call so a Fly secret
+    update takes effect without restart (cheap: just a string split)."""
+    raw = os.environ.get("RATE_LIMIT_BYPASS_EMAILS", "") or ""
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _user_email_in_bypass(request: Request) -> bool:
+    """True iff the request carries a Supabase JWT whose email is in the
+    RATE_LIMIT_BYPASS_EMAILS allowlist. All errors are swallowed — bypass
+    must NEVER be the reason a request fails. Callers treat False as 'no
+    bypass, apply the limit normally'.
+
+    We import auth lazily to avoid a circular import (auth → fastapi deps,
+    rate_limit is itself a fastapi dep)."""
+    allow = _bypass_emails()
+    if not allow:
+        return False
+    try:
+        from deltadock.auth import _decode, _extract_bearer
+        token = _extract_bearer(request.headers.get("Authorization"))
+        if not token:
+            return False
+        user = _decode(token)
+        return (user.email or "").lower() in allow
+    except Exception:
+        # Any auth failure → not bypassed. The endpoint's own auth dep
+        # will handle the real 401; we just shouldn't crash the dep.
+        return False
 
 
 def _client_ip(request: Request) -> str:
@@ -92,6 +125,14 @@ def rate_limit(scope: str, limit: RateLimit) -> Callable:
         # shouldn't count toward the limit. Whitelist the loopback + Fly's
         # internal address space so we don't lock ourselves out.
         if ip in ("127.0.0.1", "::1", "unknown") or ip.startswith("fdaa:"):
+            return
+        # Per-user bypass — whitelist driven by RATE_LIMIT_BYPASS_EMAILS
+        # env var (comma-separated). Used so the dev/founder can iterate
+        # at high speed without burning through the 20/hr cap. The dev's
+        # IP can change (different networks, VPN, mobile) so IP-based
+        # whitelisting is unreliable; email-from-JWT is stable.
+        if _user_email_in_bypass(request):
+            log.info("rate-limit bypassed for whitelisted email · scope=%s ip=%s", scope, ip)
             return
 
         key = (ip, scope)
