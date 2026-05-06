@@ -373,9 +373,26 @@ export default function StudioPage() {
               </div>
             </div>
 
-            {/* Target / mutation chips */}
+            {/* ─── COMPOUND ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
-              <div className={`${TOK.label} mb-2`}>Target / Mutation</div>
+              <div className="flex items-center justify-between mb-2">
+                <span className={TOK.label}>Compound</span>
+                <button
+                  onClick={() => setShowLoader(!showLoader)}
+                  className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border border-cyan-700/40 text-cyan-300 hover:bg-cyan-950/40"
+                  title="Load reference, library, or paste SMILES"
+                >
+                  ▸ load
+                </button>
+              </div>
+              <div className="font-mono text-[11px] text-slate-300 truncate" title={currentSmiles || "(empty)"}>
+                {currentSmiles || <span className="text-slate-600 italic">— sketch or load a structure —</span>}
+              </div>
+            </div>
+
+            {/* ─── TARGET ─── */}
+            <div className="px-4 py-3 border-b border-slate-800/70">
+              <div className={`${TOK.label} mb-2`}>Target</div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {catalog?.map((t: any) => (
                   <button
@@ -386,12 +403,23 @@ export default function StudioPage() {
                         ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
                         : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
                     }`}
+                    title={t.name}
                   >
                     {t.id}
                   </button>
                 ))}
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            </div>
+
+            {/* ─── MUTATIONS ─── */}
+            <div className="px-4 py-3 border-b border-slate-800/70">
+              <div className="flex items-center justify-between mb-2">
+                <span className={TOK.label}>Mutations</span>
+                {availableMutations.length > 0 && (
+                  <span className="font-mono text-[9px] text-slate-600">{availableMutations.length} curated</span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setSelectedMutation("")}
                   className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
@@ -416,15 +444,14 @@ export default function StudioPage() {
                     {m.code}
                   </button>
                 ))}
-                {/* Custom mutation input — type any e.g. "T790M, L858R"
-                    or "G719S". Validation happens server-side at dock
-                    time, so a typo just fails the dock with a clear
-                    error rather than blocking up-front. */}
+                {/* Custom mutation input — type any tag the catalog
+                    doesn't carry (e.g. an exotic V600K2). Validation
+                    happens server-side at dock time. */}
                 <input
                   type="text"
                   value={!availableMutations.some(m => m.code === selectedMutation) ? selectedMutation : ""}
                   onChange={(e) => setSelectedMutation(e.target.value.trim().toUpperCase())}
-                  placeholder="custom (e.g. T790M)"
+                  placeholder="custom · e.g. T790M"
                   className="px-2 py-0.5 text-[10px] font-mono rounded border border-dashed border-slate-700/60 text-slate-300 placeholder:text-slate-600 bg-transparent focus:outline-none focus:border-amber-500/60 focus:bg-amber-950/20 w-32"
                   style={{ caretColor: "#fcd34d" }}
                 />
@@ -585,13 +612,20 @@ function CompoundLoader({
           autoFocus
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="search compounds (name, SMILES, mechanism)…"
+          placeholder="filter by name, SMILES, or mechanism…"
           className="flex-1 bg-transparent border-none outline-none font-mono text-xs text-slate-200 placeholder:text-slate-600"
         />
         {search && (
           <button onClick={() => setSearch("")} className="text-slate-500 hover:text-slate-200 font-mono text-[10px]">clear</button>
         )}
       </div>
+      {/* Empty-state hint when nothing matched in either list */}
+      {q && filteredRef.length === 0 && filteredLib.length === 0 && (
+        <div className="px-3 py-2 bg-amber-950/20 border-b border-amber-900/40 text-[11px] font-mono text-amber-200">
+          ⚠ no match for &ldquo;<span className="text-amber-100">{search}</span>&rdquo; in reference compounds or your library.
+          {" "}Use the <span className="text-amber-100">Paste SMILES</span> column on the right to load by structure instead.
+        </div>
+      )}
       <div className="grid grid-cols-3 divide-x divide-slate-800/70">
         {/* Reference compounds for current target */}
         <div className="p-3">
@@ -910,6 +944,13 @@ function Live3DViewer({
         } catch { /* defensive */ }
         // Style: amber sticks so it reads as "preview, not docked"
         v.setStyle({ model: 1 }, { stick: { radius: 0.18, color: "#fbbf24" } });
+        // Soft zoom to the new ligand so the user can actually see it.
+        // Without this the camera stays locked on the original docked
+        // pose and a small new molecule looks like a tiny dot.
+        try {
+          v.zoomTo({ model: 1 });
+          v.zoom(0.7);  // pull back a bit so receptor context is visible
+        } catch { /* defensive */ }
         v.render();
         lastRenderedSmilesRef.current = smiles;
       } catch { /* defensive */ }
