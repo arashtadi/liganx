@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.16.1-2026-05-06-fillcontainer";
+const LIGANX_BUILD_TAG = "v0.16.2-2026-05-06-self-contained-3D";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -33,7 +33,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
-import DockedPoseViewer from "../components/DockedPoseViewer";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -1304,6 +1303,16 @@ function CompoundLoader({
  *   - The conformer fetch is debounced AND deduped — if the same SMILES
  *     is asked twice, the second request short-circuits.
  */
+/** Self-contained 3D viewer for Studio. Uses the same proven 3Dmol pattern
+ *  as LiveConformerPlaceholder (which renders correctly) — no delegation to
+ *  DockedPoseViewer (which is the kind of code path that produced an
+ *  invisible canvas in v0.16/v0.16.1).
+ *
+ *  Pre-dock: shows the live SMILES conformer (re-fetched on edit, debounced).
+ *  Post-dock: fetches the cleaned receptor PDB and overlays the docked
+ *  ligand pose. Camera frames the pose centroid when available, else the
+ *  whole receptor.
+ */
 function ProductionViewer3D({
   smiles,
   dockResult,
@@ -1317,58 +1326,31 @@ function ProductionViewer3D({
   mutation: string | null;
   targetMeta: any;
 }) {
-  if (!dockResult && !dockResultWt) {
-    return <LiveConformerPlaceholder smiles={smiles} />;
-  }
-  const primary = dockResult || dockResultWt;
-  if (!primary) return null;
-  const pdbId = primary.pdb_id || targetMeta?.pdb_id || "";
-  const chain = primary.chain || targetMeta?.chain || "A";
-  const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
-
-  // DockedPoseViewer with fillContainer=true takes up the available space
-  // in the panel rather than rendering a fixed 210×210 square. The outer
-  // wrapper enforces the panel's height (40% of the column grid row) so
-  // the receptor cartoon + ligand sticks have room to render visibly.
-  return (
-    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]">
-      <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-        <span className="font-mono text-emerald-400">● docked pose · {dockResult ? mutation || "WT" : "WT"}</span>
-      </div>
-      <div className="flex-1 min-h-0 p-2 [&>div]:h-full [&>div>div:first-child]:flex-1">
-        <DockedPoseViewer
-          pdbId={pdbId}
-          chain={chain}
-          variant={dockResult ? mutation || "WT" : "WT"}
-          posePdbqt={posePdbqt}
-          fillContainer={true}
-          pocketCenter={targetMeta?.pocket?.center}
-        />
-      </div>
-    </div>
-  );
-}
-
-function LiveConformerPlaceholder({ smiles }: { smiles: string }) {
-  const [conformerSdf, setConformerSdf] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [conformerErr, setConformerErr] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
+  const [conformerSdf, setConformerSdf] = useState<string | null>(null);
+  const [conformerErr, setConformerErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [receptorPdb, setReceptorPdb] = useState<string | null>(null);
+  const [receptorErr, setReceptorErr] = useState<string | null>(null);
 
+  const primary = dockResult || dockResultWt;
+  const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
+  const chain = primary?.chain || targetMeta?.chain || "A";
+  const variant = dockResult ? mutation || "WT" : "WT";
+  const hasDock = !!primary;
+  const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+
+  // Fetch the live conformer when SMILES changes (only when no dock yet).
   useEffect(() => {
-    if (!smiles) return;
+    if (hasDock || !smiles) return;
     const t = window.setTimeout(async () => {
       setLoading(true);
       setConformerErr(null);
       try {
         const res = await api.assistConformer(smiles);
-        if (res.ok && res.sdf) {
-          setConformerSdf(res.sdf);
-        } else {
-          setConformerErr(res.error || "Conformer failed");
-        }
+        if (res.ok && res.sdf) setConformerSdf(res.sdf);
+        else setConformerErr(res.error || "Conformer failed");
       } catch (e: any) {
         setConformerErr(e?.message || "Conformer request failed");
       } finally {
@@ -1376,52 +1358,113 @@ function LiveConformerPlaceholder({ smiles }: { smiles: string }) {
       }
     }, 350);
     return () => window.clearTimeout(t);
-  }, [smiles]);
+  }, [smiles, hasDock]);
 
+  // Fetch the receptor PDB when a dock result arrives. Same endpoint
+  // DockedPoseViewer uses; we just call it ourselves so we control the
+  // 3Dmol scene.
   useEffect(() => {
-    if (!conformerSdf) return;
+    if (!hasDock || !pdbId || !chain) return;
+    let cancelled = false;
+    setReceptorErr(null);
+    api
+      .structure(pdbId, chain, variant)
+      .then((text) => {
+        if (cancelled) return;
+        if (!text || text.length < 100) {
+          setReceptorErr(`Receptor ${pdbId}/${chain}/${variant} returned empty`);
+          return;
+        }
+        setReceptorPdb(text);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setReceptorErr(`Receptor fetch failed: ${e.message}`);
+      });
+    return () => { cancelled = true; };
+  }, [hasDock, pdbId, chain, variant]);
+
+  // Build / rebuild the 3Dmol scene when the inputs change. We rebuild
+  // from scratch each time — simpler than diffing models, and the viewer
+  // is small enough that the overhead is invisible.
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let cancelled = false;
     (async () => {
       try {
         const mod: any = await import("3dmol");
         const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
-        if (!containerRef.current) return;
+        if (cancelled || !containerRef.current) return;
+        // Clear existing viewer's canvas before re-creating.
+        containerRef.current.innerHTML = "";
         const viewer = $3Dmol.createViewer(containerRef.current, {
           backgroundColor: "#0f172a",
           antialias: true,
         });
-        viewer.addModel(conformerSdf, "sdf");
-        viewer.zoomTo();
-        viewer.setStyle({}, { stick: { radius: 0.18, colorscheme: "default" } });
-        viewer.render();
         viewerRef.current = viewer;
+
+        if (hasDock && receptorPdb) {
+          // Receptor — slate-400 cartoon. Distinctly visible against the
+          // #0f172a background but neutral enough that the ligand pops.
+          viewer.addModel(receptorPdb, "pdb");
+          viewer.setStyle({}, { cartoon: { color: "#94a3b8" } });
+          if (posePdbqt) {
+            viewer.addModel(posePdbqt, "pdbqt");
+            viewer.setStyle({ model: 1 }, { stick: { radius: 0.18, colorscheme: "default" } });
+            // Frame the pose tightly: zoom to model:1 (the ligand) with
+            // a comfortable padding so binding-site context is visible.
+            viewer.zoomTo({ model: 1 });
+            viewer.zoom(0.7, 0);
+          } else {
+            viewer.zoomTo();
+          }
+        } else if (conformerSdf) {
+          viewer.addModel(conformerSdf, "sdf");
+          viewer.setStyle({}, { stick: { radius: 0.18, colorscheme: "default" } });
+          viewer.zoomTo();
+        }
+        viewer.render();
       } catch (e) {
-        setConformerErr(`Render failed: ${(e as Error).message}`);
+        if (!cancelled) setConformerErr(`Render failed: ${(e as Error).message}`);
       }
     })();
-  }, [conformerSdf]);
+    return () => { cancelled = true; };
+  }, [hasDock, receptorPdb, posePdbqt, conformerSdf]);
+
+  const status = receptorErr || conformerErr;
+  const statusBadge = hasDock
+    ? receptorPdb && posePdbqt
+      ? <span className="text-emerald-400">● docked pose · {variant}</span>
+      : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
+    : loading
+      ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+      : conformerSdf
+        ? <span className="text-emerald-400">● live conformer</span>
+        : smiles
+          ? <span className="text-slate-600">○ waiting</span>
+          : <span className="text-slate-700">▢ empty</span>;
 
   return (
-    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0">
+    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]">
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-        <span className="font-mono text-slate-500">
-          {loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
-            : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
-            : smiles ? <span className="text-slate-600">○ waiting</span>
-            : <span className="text-slate-700">▢ empty</span>}
-        </span>
+        <span className="font-mono text-slate-500">{statusBadge}</span>
       </div>
-      <div className="flex-1 relative bg-[#070b15] overflow-hidden">
+      <div className="flex-1 relative bg-[#0f172a] overflow-hidden">
         <div ref={containerRef} className="absolute inset-0" />
-        {conformerErr && (
+        {status && (
           <div className="absolute bottom-2 left-2 right-2 px-2 py-1 rounded bg-rose-950/60 border border-rose-900/60 text-[10px] text-rose-200 font-mono">
-            ✗ {conformerErr}
+            ✗ {status}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+// LiveConformerPlaceholder removed in v0.16.2 — ProductionViewer3D now
+// handles both pre-dock conformer preview and post-dock receptor+pose
+// in one self-contained component, using the same 3Dmol pattern that
+// was already proven to render correctly here.
 
 /** Compact properties readout — fetched only when smiles present + panel open. */
 function PropertiesPanel({ smiles }: { smiles: string }) {
