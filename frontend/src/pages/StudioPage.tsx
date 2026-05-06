@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
+import DockedPoseViewer from "../components/DockedPoseViewer";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -477,10 +478,12 @@ export default function StudioPage() {
         {/* RIGHT — 3D + KPI */}
         <section className="col-span-5 flex flex-col gap-3 min-h-0">
           {/* 3D viewer — live conformer until dock result, then docked pose */}
-          <Live3DViewer
+          <ProductionViewer3D
             smiles={currentSmiles}
             dockResult={dockResult}
+            dockResultWt={dockResultWt}
             mutation={selectedMutation || null}
+            targetMeta={targetMeta}
           />
 
           {/* KPI panel */}
@@ -1020,44 +1023,6 @@ function SaScorePill({ sa }: { sa: { score: number; label: string } | null }) {
   );
 }
 
-/** Tiny labelled group of toggle buttons for the 3D toolbar. Renders
- *  a faint "RECEPTOR" / "LIGAND" / "TOOLS" caption above its children
- *  so the user can scan groupings instead of reading every button. */
-function ControlGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[8px] uppercase tracking-[0.2em] text-slate-600 mr-0.5">{label}</span>
-      <div className="flex items-center bg-[#070b15] rounded border border-slate-800 overflow-hidden">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/** Compact pill button for the 3D toolbar. Active state uses cyan; the
- *  amber tone is reserved for "this changes how clicks work" modes
- *  (currently just measure mode). */
-function ControlBtn({
-  active = false, onClick, title, children, tone = "cyan",
-}: {
-  active?: boolean; onClick: () => void; title?: string; children: React.ReactNode; tone?: "cyan" | "amber";
-}) {
-  const accent = tone === "amber"
-    ? "border-amber-500/60 bg-amber-900/40 text-amber-200"
-    : "border-cyan-500/60 bg-cyan-900/40 text-cyan-200";
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`px-2 py-1 font-mono text-[9px] uppercase tracking-wider border-r border-slate-800 last:border-r-0 transition-colors ${
-        active ? accent : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/40"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 /** Compound loader panel — slides down below the canvas header when
  *  the user clicks "load compound". Three sources:
  *   1. Reference compounds for the currently-selected target (e.g. EGFR
@@ -1304,9 +1269,9 @@ function CompoundLoader({
   );
 }
 
-/** Live 3D viewer — the headline feature.
+/** Production Viewer3D — unified interface using JobPage production components.
  *
- *  As the user sketches in 2D, the 3D viewer updates within ~500ms. Pipeline:
+ *  Reuses MutationOverlayViewer and DockedPoseViewer instead of custom inline code.
  *
  *    SMILES change (polled every 700ms from Ketcher)
  *      → debounce 350ms (avoid spamming the conformer endpoint while drawing)
@@ -1333,211 +1298,60 @@ function CompoundLoader({
  *   - The conformer fetch is debounced AND deduped — if the same SMILES
  *     is asked twice, the second request short-circuits.
  */
-function Live3DViewer({
-  smiles, dockResult, mutation,
+function ProductionViewer3D({
+  smiles,
+  dockResult,
+  dockResultWt,
+  mutation,
+  targetMeta,
 }: {
   smiles: string;
   dockResult: QuickDockResult | null;
-  /** Mutation tag (e.g. "T790M") if user selected one. When non-null and
-   *  a dock has run, the viewer fetches BOTH the WT receptor AND the
-   *  mutant receptor and shows a 3-zone slider in the toolbar that lets
-   *  the chemist morph between them: WT only / both overlaid / mutant
-   *  only. Dock pose is bound to the docked variant; the slider only
-   *  switches receptor visibility. */
+  dockResultWt: QuickDockResult | null;
   mutation: string | null;
+  targetMeta: any;
 }) {
+  if (!dockResult && !dockResultWt) {
+    return <LiveConformerPlaceholder smiles={smiles} />;
+  }
+  const primary = dockResult || dockResultWt;
+  if (!primary) return null;
+  const pdbId = primary.pdb_id || targetMeta?.pdb_id || "";
+  const chain = primary.chain || targetMeta?.chain || "A";
+  const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+
+  // DockedPoseViewer shows the receptor + docked ligand pose. For mutations,
+  // variant is the mutation code; for WT, it's "WT". MutationOverlayViewer
+  // would require fetching both WT and mutant full PDB structures (expensive),
+  // so we stick with single-variant viewer for studio context.
+  return (
+    <DockedPoseViewer
+      pdbId={pdbId}
+      chain={chain}
+      variant={dockResult ? mutation || "WT" : "WT"}
+      posePdbqt={posePdbqt}
+      size={undefined}
+      pocketCenter={targetMeta?.pocket?.center}
+    />
+  );
+}
+
+function LiveConformerPlaceholder({ smiles }: { smiles: string }) {
+  const [conformerSdf, setConformerSdf] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [conformerErr, setConformerErr] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
-  const lastRenderedSmilesRef = useRef<string>("");
-  const lastDockResultIdRef = useRef<string>("");
-  const dockedSmilesRef = useRef<string>("");
-  const dockedCentroidRef = useRef<[number, number, number] | null>(null);
-  const measureRef = useRef<{ atoms: any[] }>({ atoms: [] });
-  // In docked mode we keep model indices stable so the slider can
-  // toggle visibility without re-loading. With a mutation:
-  //   model 0 = WT receptor, model 1 = mutant receptor, model 2 = ligand pose
-  // Without a mutation (WT-only dock):
-  //   model 0 = WT receptor, model 1 = ligand pose
-  const hasMutationOverlayRef = useRef<boolean>(false);
-  const [conformerSdf, setConformerSdf] = useState<string | null>(null);
-  const [conformerErr, setConformerErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [glReady, setGlReady] = useState(false);
-  // Controls — apply to whichever model is currently shown
-  const [ligandStyle, setLigandStyle] = useState<"stick" | "ball" | "sphere" | "line">("stick");
-  const [receptorStyle, setReceptorStyle] = useState<"cartoon" | "surface" | "line" | "hide">("cartoon");
-  const [measureMode, setMeasureMode] = useState(false);
-  // Fullscreen toggle for the 3D panel — when on, the viewer covers
-  // the entire viewport (escape exits). Same affordance as the
-  // production DockedPoseViewer's fullscreen mode but inline so the
-  // user doesn't get bounced into a different page.
-  const [fullscreen, setFullscreen] = useState(false);
-  // Slider for WT/mutant morph (0-100). 3-zone:
-  //   0-33  → WT only (model 0 visible, model 1 hidden)
-  //   33-66 → both visible (geometric overlap)
-  //   66-100→ mutant only (model 0 hidden, model 1 visible)
-  const [wtMutantBlend, setWtMutantBlend] = useState(50);
 
-  // Re-apply styles whenever the toggles change. Idempotent — setStyle
-  // replaces the existing style spec, so it's safe to call repeatedly.
-  function applyStyles() {
-    const v = viewerRef.current;
-    if (!v) return;
-    try {
-      if (dockResult) {
-        const hasOverlay = hasMutationOverlayRef.current;
-        const wtIdx = 0;
-        const mutIdx = hasOverlay ? 1 : -1;
-        const ligandIdx = hasOverlay ? 2 : 1;
-        const recColor = "#94a3b8";    // slate-400 — neutral backdrop
-        // Clear all styles, then layer back
-        v.setStyle({ model: wtIdx }, {});
-        if (mutIdx >= 0) v.setStyle({ model: mutIdx }, {});
-        try { v.removeAllSurfaces(); } catch { /* */ }
-        // ─── Backbone — ONLY on the WT model (model 0) ───
-        // The mutant model 1 stays unstyled and is only used to source
-        // the mutation residues side-chain stick. Both receptors are
-        // aligned on the same backbone coordinates anyway, so showing
-        // both cartoons would just look like one ribbon. This matches
-        // MutationOverlayViewer (the production JobPage 3D viewer)
-        // exactly — it never toggles backbone visibility from the
-        // slider, only the side-chain stick at the mutation residue.
-        if (receptorStyle === "cartoon") v.setStyle({ model: wtIdx }, { cartoon: { color: recColor } });
-        else if (receptorStyle === "surface") {
-          v.setStyle({ model: wtIdx }, { cartoon: { color: recColor } });
-          try { v.addSurface(2, { opacity: 0.5, color: "#334155" }, { model: wtIdx }); } catch { /* */ }
-        }
-        else if (receptorStyle === "line") v.setStyle({ model: wtIdx }, { line: { color: recColor } });
-        // hide → leave model 0 unstyled
-        // ─── Mutation residue side-chain — controlled by slider ───
-        // 3-zone semantics matching MutationOverlayViewer:
-        //   blend < 25  → WT side chain only (green stick)
-        //   blend 25-75 → both side chains (overlay — see the geometric
-        //                 / chemical difference at the mutation site)
-        //   blend > 75  → mutant side chain only (blue stick)
-        // Hard show/hide is more reliable than per-atom opacity blending
-        // (3Dmol does not handle alpha consistently across versions).
-        if (hasOverlay && mutation) {
-          const resi = parseMutationResidue(mutation);
-          if (resi != null) {
-            const showWtSide = wtMutantBlend < 75;
-            const showMutSide = wtMutantBlend > 25;
-            if (showWtSide) {
-              v.addStyle({ model: wtIdx, resi }, { stick: { color: "#10b981", radius: 0.32 } });
-            }
-            if (showMutSide && mutIdx >= 0) {
-              v.addStyle({ model: mutIdx, resi }, { stick: { color: "#3b6cf6", radius: 0.32 } });
-            }
-          }
-        }
-        // Ligand pose
-        v.setStyle({ model: ligandIdx }, ligandStyleSpec(ligandStyle));
-      } else {
-        v.setStyle({}, ligandStyleSpec(ligandStyle));
-      }
-      v.render();
-    } catch { /* defensive — 3Dmol API quirks */ }
-  }
-
-  function ligandStyleSpec(s: typeof ligandStyle) {
-    // Match DockedPoseViewer (production JobPage 3D viewer) exactly:
-    //   colorscheme: "default" → element colors (C=grey, O=red, N=blue,
-    //   Cl=green, etc.). This is what chemists expect — they read the
-    //   molecule by element colors. The previous cyanCarbon scheme made
-    //   the entire molecule monochrome cyan so chemists couldn't tell
-    //   chlorine from carbon at a glance.
-    //   Radius 0.18 — same as DockedPoseViewer.
-    if (s === "stick") return { stick: { radius: 0.18, colorscheme: "default" } };
-    if (s === "ball") return { sphere: { scale: 0.30, colorscheme: "default" }, stick: { radius: 0.10, colorscheme: "default" } };
-    if (s === "sphere") return { sphere: { scale: 0.85, colorscheme: "default" } };
-    return { line: { colorscheme: "default", linewidth: 2 } };
-  }
-
-  function resetView() {
-    const v = viewerRef.current;
-    if (!v) return;
-    try {
-      if (dockResult && dockedCentroidRef.current) {
-        // Center on docked ligand centroid + tight zoom (matches
-        // DockedPoseViewer pattern)
-        v.zoomTo();
-        v.center({
-          x: dockedCentroidRef.current[0],
-          y: dockedCentroidRef.current[1],
-          z: dockedCentroidRef.current[2],
-        });
-        v.zoom(1.8, 0);
-      } else {
-        v.zoomTo();
-      }
-      v.render();
-    } catch { /* defensive */ }
-  }
-
-  function clearMeasurements() {
-    const v = viewerRef.current;
-    if (!v) return;
-    try {
-      v.removeAllShapes();
-      v.removeAllLabels();
-      measureRef.current.atoms = [];
-      v.render();
-    } catch { /* defensive */ }
-  }
-
-  // Mount the 3Dmol viewer ONCE. Lazy import keeps initial bundle small.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const mod: any = await import("3dmol");
-        const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
-        if (cancelled || !containerRef.current) return;
-        const viewer = $3Dmol.createViewer(containerRef.current, {
-          // Solid slate-900 — matches MutationOverlayViewer (the
-          // production WT/mutant 3D viewer on JobPage). 3Dmol's fog
-          // blends atoms toward THIS color as they get farther from
-          // the camera. Slate-900 is dark enough to fit the
-          // control-center aesthetic, but not pitch-black, so faded
-          // atoms stay visible.
-          //
-          // Earlier transparent bg let our container's #070b15 leak
-          // through, which is much darker than #0f172a — fog faded
-          // atoms toward near-black and they disappeared when
-          // rotated. 2026-05-05 user-reported bug, fixed by mimicking
-          // MutationOverlayViewer.
-          backgroundColor: "#0f172a",
-          antialias: true,
-        });
-        viewerRef.current = viewer;
-        setGlReady(true);
-      } catch (e) {
-        if (!cancelled) setConformerErr(`3Dmol load failed: ${(e as Error).message}`);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      try { viewerRef.current?.clear?.(); } catch { /* defensive */ }
-      viewerRef.current = null;
-    };
-  }, []);
-
-  // Debounced SMILES → conformer fetch
-  useEffect(() => {
-    if (!smiles || dockResult) {
-      // Either canvas is empty, or we have a docked pose to show instead
-      return;
-    }
+    if (!smiles) return;
     const t = window.setTimeout(async () => {
-      // Dedupe — don't refetch the same SMILES we just rendered
-      if (smiles === lastRenderedSmilesRef.current) return;
       setLoading(true);
       setConformerErr(null);
       try {
         const res = await api.assistConformer(smiles);
         if (res.ok && res.sdf) {
           setConformerSdf(res.sdf);
-          lastRenderedSmilesRef.current = smiles;
         } else {
           setConformerErr(res.error || "Conformer failed");
         }
@@ -1548,345 +1362,43 @@ function Live3DViewer({
       }
     }, 350);
     return () => window.clearTimeout(t);
-  }, [smiles, dockResult]);
-
-  // Render conformer SDF when it arrives (and no dock result yet)
-  useEffect(() => {
-    if (!glReady || !viewerRef.current || !conformerSdf || dockResult) return;
-    try {
-      const v = viewerRef.current;
-      v.removeAllModels();
-      v.removeAllShapes();
-      v.removeAllLabels();
-      v.addModel(conformerSdf, "sdf");
-      // Only zoomTo on first model — preserve camera on updates
-      if (!v._didFirstZoom) {
-        v.zoomTo();
-        v._didFirstZoom = true;
-      }
-      applyStyles();
-    } catch (e) {
-      setConformerErr(`Render failed: ${(e as Error).message}`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [glReady, conformerSdf, dockResult]);
-
-  // Re-apply styles whenever toggles or the WT/mutant slider change
-  useEffect(() => {
-    applyStyles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ligandStyle, receptorStyle, wtMutantBlend]);
-
-  // POST-DOCK PREVIEW MODE: receptor stays mounted, ligand is swapped
-  // for a fresh conformer translated to the docked-pose centroid as
-  // the user edits the 2D canvas. Renders in amber to signal "preview,
-  // not docked — click Run Dock to re-run." Useful for "what would
-  // adding a methyl here look like in the pocket?" without burning a
-  // full dock cycle.
-  const isPostDockPreview = !!dockResult
-    && !!smiles
-    && smiles !== dockedSmilesRef.current
-    && !!dockedCentroidRef.current;
+  }, [smiles]);
 
   useEffect(() => {
-    if (!isPostDockPreview || !glReady || !viewerRef.current) return;
-    let cancelled = false;
-    const t = window.setTimeout(async () => {
-      if (cancelled || smiles === lastRenderedSmilesRef.current) return;
-      try {
-        const res = await api.assistConformer(smiles);
-        if (!res.ok || !res.sdf) return;
-        if (cancelled) return;
-        const v = viewerRef.current;
-        // Remove only the ligand model (preserves receptor(s) so the
-        // amber preview molecule appears in the same pocket frame).
-        const ligandIdx = hasMutationOverlayRef.current ? 2 : 1;
-        try { v.removeModel(ligandIdx); } catch { /* */ }
-        const m = v.addModel(res.sdf, "sdf");
-        // Translate the new conformer so its centroid matches the
-        // docked-pose centroid (where the original ligand was sitting
-        // in the pocket). RDKit emits conformers near the origin, so
-        // we just translate by the docked centroid.
-        try {
-          const atoms = m?.selectedAtoms?.({}) || [];
-          let cx = 0, cy = 0, cz = 0;
-          for (const a of atoms) { cx += a.x; cy += a.y; cz += a.z; }
-          if (atoms.length > 0) {
-            cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
-          }
-          const [tx, ty, tz] = dockedCentroidRef.current!;
-          const dx = tx - cx, dy = ty - cy, dz = tz - cz;
-          for (const a of atoms) { a.x += dx; a.y += dy; a.z += dz; }
-        } catch { /* defensive */ }
-        // Style: amber sticks so it reads as "preview, not docked"
-        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.18, color: "#fbbf24" } });
-        // Center on the docked centroid (where the original ligand sat
-        // in the pocket) so the preview molecule is in the same frame
-        // of reference as the docked one.
-        try {
-          if (dockedCentroidRef.current) {
-            v.zoomTo();
-            v.center({
-              x: dockedCentroidRef.current[0],
-              y: dockedCentroidRef.current[1],
-              z: dockedCentroidRef.current[2],
-            });
-            v.zoom(1.5, 0);  // matches DockedPoseViewer for consistent framing
-          }
-        } catch { /* defensive */ }
-        v.render();
-        lastRenderedSmilesRef.current = smiles;
-      } catch { /* defensive */ }
-    }, 350);
-    return () => { cancelled = true; window.clearTimeout(t); };
-  }, [smiles, isPostDockPreview, glReady]);
-
-  // Esc key exits fullscreen
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFullscreen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
-
-  // Resize the 3Dmol viewer when the container size changes (entering
-  // or leaving fullscreen). 3Dmol does not auto-detect container size
-  // changes — must call resize() manually.
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v) return;
-    const t = window.setTimeout(() => {
-      try { v.resize(); v.render(); } catch { /* */ }
-    }, 50);
-    return () => window.clearTimeout(t);
-  }, [fullscreen]);
-
-  // Toggle measure-mode atom-click handler on the viewer
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!glReady || !v) return;
-    if (measureMode) {
-      v.setClickable({}, true, (atom: any) => {
-        const picked = measureRef.current.atoms;
-        picked.push(atom);
-        try {
-          // Match DockedPoseViewer: orange (#f97316) for visibility on
-          // dark backgrounds. Cyan didn't pop against the slate ribbon.
-          v.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.4, color: "#f97316" });
-          if (picked.length === 2) {
-            const a = picked[0], b = picked[1];
-            const d = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
-            v.addLine({ start: { x: a.x, y: a.y, z: a.z }, end: { x: b.x, y: b.y, z: b.z }, color: "#f97316", dashed: true });
-            v.addLabel(`${d.toFixed(2)} Å`, {
-              position: { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 },
-              backgroundColor: "rgba(15, 23, 42, 0.85)", fontColor: "white", fontSize: 12, borderThickness: 0,
-            });
-            measureRef.current.atoms = [];
-          }
-          v.render();
-        } catch { /* defensive */ }
-      });
-    } else {
-      try { v.setClickable({}, false, () => {}); } catch { /* */ }
-    }
-  }, [glReady, measureMode]);
-
-  // Render docked pose when dockResult arrives
-  useEffect(() => {
-    if (!glReady || !viewerRef.current || !dockResult?.pose_pdbqt_b64) return;
-    const poseB64 = dockResult.pose_pdbqt_b64 || "";
-    const dockKey = `${dockResult.pdb_id}-${dockResult.score}-${poseB64.slice(0, 20)}`;
-    if (lastDockResultIdRef.current === dockKey) return;
-    lastDockResultIdRef.current = dockKey;
+    if (!conformerSdf) return;
     (async () => {
       try {
-        const v = viewerRef.current;
-        v.removeAllModels();
-        v.removeAllShapes();
-        v.removeAllLabels();
-        try { v.removeAllSurfaces(); } catch { /* */ }
-        // model 0: WT receptor
-        const wtRes = await fetch(
-          `https://api.liganx.com/structures/${dockResult.pdb_id}/${dockResult.chain || "A"}/WT`
-        );
-        if (wtRes.ok) {
-          const recPdb = await wtRes.text();
-          v.addModel(recPdb, "pdb");
-        }
-        // model 1: mutant receptor (only if mutation selected and not "WT")
-        const wantsOverlay = !!mutation && mutation.toUpperCase() !== "WT";
-        if (wantsOverlay) {
-          try {
-            const mutRes = await fetch(
-              `https://api.liganx.com/structures/${dockResult.pdb_id}/${dockResult.chain || "A"}/${mutation}`
-            );
-            if (mutRes.ok) {
-              const mutPdb = await mutRes.text();
-              v.addModel(mutPdb, "pdb");
-              hasMutationOverlayRef.current = true;
-            } else {
-              hasMutationOverlayRef.current = false;
-            }
-          } catch {
-            hasMutationOverlayRef.current = false;
-          }
-        } else {
-          hasMutationOverlayRef.current = false;
-        }
-        // Last model: ligand pose
-        const poseModel = v.addModel(atob(poseB64), "pdbqt");
-        // Compute centroid of the docked ligand atoms — saved so a
-        // post-dock conformer preview can be translated to the same
-        // spot in the receptor pocket.
-        try {
-          const atoms = poseModel?.selectedAtoms?.({}) || [];
-          if (atoms.length > 0) {
-            let sx = 0, sy = 0, sz = 0;
-            for (const a of atoms) { sx += a.x; sy += a.y; sz += a.z; }
-            dockedCentroidRef.current = [sx / atoms.length, sy / atoms.length, sz / atoms.length];
-          }
-        } catch { /* defensive */ }
-        // Remember the SMILES that was actually docked, so we know when
-        // the user has edited it and we should switch to preview mode.
-        dockedSmilesRef.current = smiles;
-        // Apply current style toggles
-        applyStyles();
-        // Match DockedPoseViewer exactly: zoom out, then center the
-        // camera ON the ligand centroid, then zoom in to a fixed factor.
-        // This gives a consistent "ligand fills the middle of the
-        // viewport with pocket context around it" look that matches
-        // the production JobPage 3D viewer. Without this the camera
-        // ends up framing the whole protein and the ligand looks tiny.
-        try {
-          v.zoomTo();
-          if (dockedCentroidRef.current) {
-            v.center({
-              x: dockedCentroidRef.current[0],
-              y: dockedCentroidRef.current[1],
-              z: dockedCentroidRef.current[2],
-            });
-            v.zoom(1.5, 0);  // matches DockedPoseViewer for consistent framing  // 1.8 = tight enough to see ligand atoms, loose enough to keep pocket context
-          }
-        } catch { /* defensive */ }
-        v.render();
+        const mod: any = await import("3dmol");
+        const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
+        if (!containerRef.current) return;
+        const viewer = $3Dmol.createViewer(containerRef.current, {
+          backgroundColor: "#0f172a",
+          antialias: true,
+        });
+        viewer.addModel(conformerSdf, "sdf");
+        viewer.zoomTo();
+        viewer.setStyle({}, { stick: { radius: 0.18, colorscheme: "default" } });
+        viewer.render();
+        viewerRef.current = viewer;
       } catch (e) {
-        setConformerErr(`Pose render failed: ${(e as Error).message}`);
+        setConformerErr(`Render failed: ${(e as Error).message}`);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [glReady, dockResult]);
+  }, [conformerSdf]);
 
   return (
-    <div className={
-      fullscreen
-        ? "fixed inset-0 z-50 bg-[#070b15] border border-slate-800/70 flex flex-col overflow-hidden"
-        : "bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0"
-    }>
-      {/* Title strip — title + status + fullscreen toggle */}
+    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0">
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-slate-500">
-            {isPostDockPreview ? <span className="text-amber-300">◌ preview · re-dock to confirm</span>
-              : dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
-              : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
-              : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
-              : smiles ? <span className="text-slate-600">○ waiting</span>
-              : <span className="text-slate-700">▢ empty</span>}
-          </span>
-          <button
-            onClick={() => setFullscreen(!fullscreen)}
-            className="px-2 py-0.5 rounded border border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50 font-mono text-[10px] uppercase tracking-wider"
-            title={fullscreen ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
-          >
-            {fullscreen ? "⤢ exit" : "⤢ full"}
-          </button>
-        </div>
+        <span className="font-mono text-slate-500">
+          {loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+            : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
+            : smiles ? <span className="text-slate-600">○ waiting</span>
+            : <span className="text-slate-700">▢ empty</span>}
+        </span>
       </div>
-      {/* Control toolbar — own row, grouped, breathing room */}
-      <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center gap-3 text-[10px] flex-wrap">
-        {dockResult && (
-          <ControlGroup label="Receptor">
-            {(["cartoon", "surface", "line", "hide"] as const).map((s) => (
-              <ControlBtn key={s} active={receptorStyle === s} onClick={() => setReceptorStyle(s)} title={`Receptor: ${s}`}>
-                {s === "cartoon" ? "ribbon" : s}
-              </ControlBtn>
-            ))}
-          </ControlGroup>
-        )}
-        <ControlGroup label="Ligand">
-          {(["stick", "ball", "sphere", "line"] as const).map((s) => (
-            <ControlBtn key={s} active={ligandStyle === s} onClick={() => setLigandStyle(s)} title={`Ligand: ${s}`}>
-              {s}
-            </ControlBtn>
-          ))}
-        </ControlGroup>
-        <ControlGroup label="Tools">
-          <ControlBtn
-            active={measureMode}
-            tone={measureMode ? "amber" : undefined}
-            onClick={() => setMeasureMode(!measureMode)}
-            title="Click two atoms to measure distance"
-          >
-            ⟷ measure
-          </ControlBtn>
-          {measureMode && (
-            <ControlBtn onClick={clearMeasurements} title="Clear measurements">clear</ControlBtn>
-          )}
-          <ControlBtn onClick={resetView} title="Reset camera">↺ fit</ControlBtn>
-        </ControlGroup>
-      </div>
-
-      {/* WT ↔ MUTANT slider — only shown when a mutant overlay was loaded.
-          3-zone semantics:
-            0-33   → WT only (model 0 visible, model 1 hidden)
-            33-66  → both visible (geometric overlap — see what shifted)
-            66-100 → mutant only
-          The label below the slider tells the user what zone they're in. */}
-      {dockResult && hasMutationOverlayRef.current && mutation && (
-        <div className="px-3 py-2 border-b border-slate-800/70 bg-[#070b15]">
-          <div className="flex items-center gap-3 text-[10px] font-mono">
-            <span className="text-slate-500 uppercase tracking-[0.18em] text-[9px]">Side chain</span>
-            <span className={`${wtMutantBlend < 75 ? "text-emerald-400" : "text-slate-600"}`}>WT</span>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={wtMutantBlend}
-              onChange={(e) => setWtMutantBlend(Number(e.target.value))}
-              className="flex-1 accent-emerald-400 h-1"
-              title={
-                wtMutantBlend < 25 ? "WT side chain only — drag right to overlay or switch to mutant"
-                : wtMutantBlend > 75 ? `${mutation} side chain only — drag left to overlay or switch to WT`
-                : `Both side chains visible — see the geometric/chemical difference at residue ${parseMutationResidue(mutation)}`
-              }
-            />
-            <span className={`${wtMutantBlend > 25 ? "text-blue-400" : "text-slate-600"}`}>{mutation}</span>
-            <span className="text-slate-500 ml-1 min-w-[80px] text-right">
-              {wtMutantBlend < 25 ? "WT only"
-                : wtMutantBlend > 75 ? `${mutation} only`
-                : "overlay"}
-            </span>
-          </div>
-          <div className="text-[9px] font-mono text-slate-600 mt-1 ml-[68px]">
-            backbone is shared (aligned) — slider only toggles the residue side chain
-          </div>
-        </div>
-      )}
-      <div className="flex-1 relative bg-[#070b15]">
+      <div className="flex-1 relative bg-[#070b15] overflow-hidden">
         <div ref={containerRef} className="absolute inset-0" />
-        {!glReady && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-600 font-mono text-[11px] pointer-events-none animate-pulse">
-            ▮ loading 3D engine
-          </div>
-        )}
-        {glReady && !smiles && !dockResult && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-700 font-mono text-[11px] pointer-events-none">
-            ▢ sketch a structure
-          </div>
-        )}
         {conformerErr && (
           <div className="absolute bottom-2 left-2 right-2 px-2 py-1 rounded bg-rose-950/60 border border-rose-900/60 text-[10px] text-rose-200 font-mono">
             ✗ {conformerErr}
