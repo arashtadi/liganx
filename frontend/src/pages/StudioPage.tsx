@@ -318,6 +318,7 @@ export default function StudioPage() {
           <Live3DViewer
             smiles={currentSmiles}
             dockResult={dockResult}
+            mutation={selectedMutation || null}
           />
 
           {/* KPI panel */}
@@ -919,18 +920,31 @@ function CompoundLoader({
  *     is asked twice, the second request short-circuits.
  */
 function Live3DViewer({
-  smiles, dockResult,
+  smiles, dockResult, mutation,
 }: {
   smiles: string;
   dockResult: QuickDockResult | null;
+  /** Mutation tag (e.g. "T790M") if user selected one. When non-null and
+   *  a dock has run, the viewer fetches BOTH the WT receptor AND the
+   *  mutant receptor and shows a 3-zone slider in the toolbar that lets
+   *  the chemist morph between them: WT only / both overlaid / mutant
+   *  only. Dock pose is bound to the docked variant; the slider only
+   *  switches receptor visibility. */
+  mutation: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const lastRenderedSmilesRef = useRef<string>("");
   const lastDockResultIdRef = useRef<string>("");
-  const dockedSmilesRef = useRef<string>("");      // SMILES at the moment of last successful dock
+  const dockedSmilesRef = useRef<string>("");
   const dockedCentroidRef = useRef<[number, number, number] | null>(null);
   const measureRef = useRef<{ atoms: any[] }>({ atoms: [] });
+  // In docked mode we keep model indices stable so the slider can
+  // toggle visibility without re-loading. With a mutation:
+  //   model 0 = WT receptor, model 1 = mutant receptor, model 2 = ligand pose
+  // Without a mutation (WT-only dock):
+  //   model 0 = WT receptor, model 1 = ligand pose
+  const hasMutationOverlayRef = useRef<boolean>(false);
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -939,6 +953,11 @@ function Live3DViewer({
   const [ligandStyle, setLigandStyle] = useState<"stick" | "ball" | "sphere" | "line">("stick");
   const [receptorStyle, setReceptorStyle] = useState<"cartoon" | "surface" | "line" | "hide">("cartoon");
   const [measureMode, setMeasureMode] = useState(false);
+  // Slider for WT/mutant morph (0-100). 3-zone:
+  //   0-33  → WT only (model 0 visible, model 1 hidden)
+  //   33-66 → both visible (geometric overlap)
+  //   66-100→ mutant only (model 0 hidden, model 1 visible)
+  const [wtMutantBlend, setWtMutantBlend] = useState(50);
 
   // Re-apply styles whenever the toggles change. Idempotent — setStyle
   // replaces the existing style spec, so it's safe to call repeatedly.
@@ -946,20 +965,38 @@ function Live3DViewer({
     const v = viewerRef.current;
     if (!v) return;
     try {
-      // Receptor style (docked-pose mode only — conformer has no receptor)
       if (dockResult) {
-        v.setStyle({ model: 0 }, {});
-        if (receptorStyle === "cartoon") v.setStyle({ model: 0 }, { cartoon: { color: "#475569" } });
-        else if (receptorStyle === "surface") {
-          v.setStyle({ model: 0 }, { cartoon: { color: "#475569" } });
-          try { v.removeAllSurfaces(); v.addSurface(2 /* VDW */, { opacity: 0.55, color: "#334155" }, { model: 0 }); } catch { /* surface can fail on big proteins */ }
+        const hasOverlay = hasMutationOverlayRef.current;
+        const wtIdx = 0;
+        const mutIdx = hasOverlay ? 1 : -1;
+        const ligandIdx = hasOverlay ? 2 : 1;
+        // 3-zone slider visibility (only meaningful when overlay is mounted)
+        const showWt = !hasOverlay || wtMutantBlend < 67;
+        const showMut = hasOverlay && wtMutantBlend > 33;
+        const wtColor = "#64748b";    // slate-500
+        const mutColor = "#22d3ee";   // cyan-400 — visually distinct from WT
+        // Clear receptor styles
+        v.setStyle({ model: wtIdx }, {});
+        if (mutIdx >= 0) v.setStyle({ model: mutIdx }, {});
+        try { v.removeAllSurfaces(); } catch { /* */ }
+        if (showWt) {
+          if (receptorStyle === "cartoon") v.setStyle({ model: wtIdx }, { cartoon: { color: wtColor } });
+          else if (receptorStyle === "surface") {
+            v.setStyle({ model: wtIdx }, { cartoon: { color: wtColor } });
+            try { v.addSurface(2, { opacity: 0.5, color: "#334155" }, { model: wtIdx }); } catch { /* */ }
+          }
+          else if (receptorStyle === "line") v.setStyle({ model: wtIdx }, { line: { color: wtColor } });
         }
-        else if (receptorStyle === "line") v.setStyle({ model: 0 }, { line: { color: "#475569" } });
-        // hide → leave empty {}
-        // Ligand is model 1 in docked mode
-        v.setStyle({ model: 1 }, ligandStyleSpec(ligandStyle));
+        if (showMut && mutIdx >= 0) {
+          if (receptorStyle === "cartoon") v.setStyle({ model: mutIdx }, { cartoon: { color: mutColor } });
+          else if (receptorStyle === "surface") {
+            v.setStyle({ model: mutIdx }, { cartoon: { color: mutColor } });
+            try { v.addSurface(2, { opacity: 0.45, color: "#0e7490" }, { model: mutIdx }); } catch { /* */ }
+          }
+          else if (receptorStyle === "line") v.setStyle({ model: mutIdx }, { line: { color: mutColor } });
+        }
+        v.setStyle({ model: ligandIdx }, ligandStyleSpec(ligandStyle));
       } else {
-        // Conformer mode — only one model (the ligand)
         v.setStyle({}, ligandStyleSpec(ligandStyle));
       }
       v.render();
@@ -1067,11 +1104,11 @@ function Live3DViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [glReady, conformerSdf, dockResult]);
 
-  // Re-apply styles whenever toggles change
+  // Re-apply styles whenever toggles or the WT/mutant slider change
   useEffect(() => {
     applyStyles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ligandStyle, receptorStyle]);
+  }, [ligandStyle, receptorStyle, wtMutantBlend]);
 
   // POST-DOCK PREVIEW MODE: receptor stays mounted, ligand is swapped
   // for a fresh conformer translated to the docked-pose centroid as
@@ -1094,8 +1131,10 @@ function Live3DViewer({
         if (!res.ok || !res.sdf) return;
         if (cancelled) return;
         const v = viewerRef.current;
-        // Remove only the ligand (model 1), keep receptor (model 0)
-        try { v.removeModel(1); } catch { /* */ }
+        // Remove only the ligand model (preserves receptor(s) so the
+        // amber preview molecule appears in the same pocket frame).
+        const ligandIdx = hasMutationOverlayRef.current ? 2 : 1;
+        try { v.removeModel(ligandIdx); } catch { /* */ }
         const m = v.addModel(res.sdf, "sdf");
         // Translate the new conformer so its centroid matches the
         // docked-pose centroid (where the original ligand was sitting
@@ -1113,13 +1152,10 @@ function Live3DViewer({
           for (const a of atoms) { a.x += dx; a.y += dy; a.z += dz; }
         } catch { /* defensive */ }
         // Style: amber sticks so it reads as "preview, not docked"
-        v.setStyle({ model: 1 }, { stick: { radius: 0.18, color: "#fbbf24" } });
-        // Soft zoom to the new ligand so the user can actually see it.
-        // Without this the camera stays locked on the original docked
-        // pose and a small new molecule looks like a tiny dot.
+        v.setStyle({ model: ligandIdx }, { stick: { radius: 0.18, color: "#fbbf24" } });
         try {
-          v.zoomTo({ model: 1 });
-          v.zoom(0.7);  // pull back a bit so receptor context is visible
+          v.zoomTo({ model: ligandIdx });
+          v.zoom(0.7);
         } catch { /* defensive */ }
         v.render();
         lastRenderedSmilesRef.current = smiles;
@@ -1170,15 +1206,35 @@ function Live3DViewer({
         v.removeAllShapes();
         v.removeAllLabels();
         try { v.removeAllSurfaces(); } catch { /* */ }
-        // Receptor (model 0)
-        const recRes = await fetch(
+        // model 0: WT receptor
+        const wtRes = await fetch(
           `https://api.liganx.com/structures/${dockResult.pdb_id}/${dockResult.chain || "A"}/WT`
         );
-        if (recRes.ok) {
-          const recPdb = await recRes.text();
+        if (wtRes.ok) {
+          const recPdb = await wtRes.text();
           v.addModel(recPdb, "pdb");
         }
-        // Ligand pose (model 1)
+        // model 1: mutant receptor (only if mutation selected and not "WT")
+        const wantsOverlay = !!mutation && mutation.toUpperCase() !== "WT";
+        if (wantsOverlay) {
+          try {
+            const mutRes = await fetch(
+              `https://api.liganx.com/structures/${dockResult.pdb_id}/${dockResult.chain || "A"}/${mutation}`
+            );
+            if (mutRes.ok) {
+              const mutPdb = await mutRes.text();
+              v.addModel(mutPdb, "pdb");
+              hasMutationOverlayRef.current = true;
+            } else {
+              hasMutationOverlayRef.current = false;
+            }
+          } catch {
+            hasMutationOverlayRef.current = false;
+          }
+        } else {
+          hasMutationOverlayRef.current = false;
+        }
+        // Last model: ligand pose
         const poseModel = v.addModel(atob(poseB64), "pdbqt");
         // Compute centroid of the docked ligand atoms — saved so a
         // post-dock conformer preview can be translated to the same
@@ -1196,7 +1252,8 @@ function Live3DViewer({
         dockedSmilesRef.current = smiles;
         // Apply current style toggles
         applyStyles();
-        v.zoomTo({ model: 1 });
+        const ligandIdxForZoom = hasMutationOverlayRef.current ? 2 : 1;
+        v.zoomTo({ model: ligandIdxForZoom });
         v.zoom(0.85);
         v.render();
       } catch (e) {
@@ -1253,6 +1310,39 @@ function Live3DViewer({
           <ControlBtn onClick={resetView} title="Reset camera">↺ fit</ControlBtn>
         </ControlGroup>
       </div>
+
+      {/* WT ↔ MUTANT slider — only shown when a mutant overlay was loaded.
+          3-zone semantics:
+            0-33   → WT only (model 0 visible, model 1 hidden)
+            33-66  → both visible (geometric overlap — see what shifted)
+            66-100 → mutant only
+          The label below the slider tells the user what zone they're in. */}
+      {dockResult && hasMutationOverlayRef.current && mutation && (
+        <div className="px-3 py-2 border-b border-slate-800/70 bg-[#070b15]">
+          <div className="flex items-center gap-3 text-[10px] font-mono">
+            <span className="text-slate-500 uppercase tracking-[0.18em] text-[9px]">Receptor</span>
+            <span className={`${wtMutantBlend < 67 ? "text-slate-300" : "text-slate-600"}`}>WT</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={wtMutantBlend}
+              onChange={(e) => setWtMutantBlend(Number(e.target.value))}
+              className="flex-1 accent-cyan-400 h-1"
+              title={
+                wtMutantBlend < 33 ? "WT only" :
+                wtMutantBlend > 66 ? `${mutation} only` : `WT + ${mutation} (overlay)`
+              }
+            />
+            <span className={`${wtMutantBlend > 33 ? "text-cyan-300" : "text-slate-600"}`}>{mutation}</span>
+            <span className="text-slate-500 ml-1 min-w-[80px] text-right">
+              {wtMutantBlend < 33 ? "WT only" :
+               wtMutantBlend > 66 ? `${mutation} only` :
+               "overlay"}
+            </span>
+          </div>
+        </div>
+      )}
       <div className="flex-1 relative bg-[#070b15]">
         <div ref={containerRef} className="absolute inset-0" />
         {!glReady && (
