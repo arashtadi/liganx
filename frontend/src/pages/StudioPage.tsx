@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.21.2-2026-05-06-keep-only-pose-mode-1";
+const LIGANX_BUILD_TAG = "v0.22-2026-05-06-pdbqt-to-pdb-conversion";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1396,11 +1396,37 @@ function ProductionViewer3D({
   // Strip everything after the first ENDMDL so only the top-ranked pose
   // (mode 1, the one matching the score) is rendered.
   const posePdbqtFull = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+  // Convert PDBQT → simplified PDB before passing to 3Dmol. Two reasons:
+  //   1. PDBQT contains up to 9 binding modes (MODEL/ENDMDL blocks). We
+  //      only want mode 1 — the one whose score matches the panel.
+  //   2. PDBQT's BRANCH / ENDBRANCH / ROOT / ENDROOT torsion-tree
+  //      markers confuse 3Dmol's pdbqt parser — verified empirically:
+  //      a 38-atom ligand only renders as a single OH fragment when
+  //      passed as 'pdbqt' format, but renders fully when passed as
+  //      'pdb'. We strip the AutoDock-specific markers and trailing
+  //      charge/type columns, leaving plain PDB ATOM lines.
   const posePdbqt = (() => {
     if (!posePdbqtFull) return "";
     const endIdx = posePdbqtFull.indexOf("ENDMDL");
-    if (endIdx < 0) return posePdbqtFull;
-    return posePdbqtFull.slice(0, endIdx + "ENDMDL".length);
+    const mode1 = endIdx >= 0 ? posePdbqtFull.slice(0, endIdx) : posePdbqtFull;
+    const lines: string[] = [];
+    for (const raw of mode1.split("\n")) {
+      const line = raw.replace(/\r$/, "");
+      // Keep only ATOM/HETATM lines; drop ROOT, ENDROOT, BRANCH, ENDBRANCH,
+      // TORSDOF, REMARK, MODEL, etc. Trim PDBQT extras after column 66
+      // (the standard PDB occupancy/B-factor fields end there) and append
+      // an element guess so 3Dmol colors atoms correctly.
+      if (line.startsWith("ATOM") || line.startsWith("HETATM")) {
+        const trimmed = line.slice(0, 66).padEnd(66, " ");
+        // Atom name is in cols 13-16 (1-indexed) = JS 12-16. Take the
+        // first letter of the trimmed name as the element. AutoDock
+        // names like "OA", "NA" map to O, N.
+        const name = line.slice(12, 16).trim();
+        const element = name.replace(/^[0-9]+/, "")[0] || "C";
+        lines.push(trimmed + "          " + element.padStart(2, " "));
+      }
+    }
+    return lines.join("\n") + "\nEND\n";
   })();
   const hasPose = hasDock && !!posePdbqt;
   // Live-preview gate: true when the user has edited the 2D structure
@@ -1633,7 +1659,12 @@ function ProductionViewer3D({
               }
             } catch { /* fallback to native conformer position */ }
           } else if (posePdbqt) {
-            viewer.addModel(posePdbqt, "pdbqt");
+            // We pre-converted PDBQT to PDB-format ATOM lines above, so
+            // load with format 'pdb'. 3Dmol's pdbqt parser drops BRANCH
+            // atoms (verified: only ROOT atoms render with 'pdbqt'), so
+            // we strip the AutoDock markers and use the well-tested PDB
+            // parser instead.
+            viewer.addModel(posePdbqt, "pdb");
           }
           // Camera framing — IMPORTANT 3Dmol API quirks here:
           //   • zoomTo({selection}) fits the camera AND sets the rotation
