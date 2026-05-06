@@ -81,13 +81,16 @@ export default function StudioPage() {
   const [showAi, setShowAi] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showLoader, setShowLoader] = useState(false);
-  // 2D editor theme — Ketcher reads ?theme=dark from the iframe URL.
-  // Bumping `iframeKey` forces a remount when the user toggles, so the
-  // new theme takes effect without reloading the whole page. The current
-  // canvas SMILES is preserved by reapplying it after the iframe re-inits.
+  // 2D editor theme — Ketcher's bundled build doesn't honor ?theme=dark,
+  // so we fake dark mode with the "dark reader" CSS filter trick:
+  // invert(1) hue-rotate(180deg) flips the background to black while
+  // re-rotating hues so red atoms still look red. This works on any
+  // 2D molecular editor (or any web content) without needing the iframe
+  // to cooperate. Imperfect on raster images and gradients but Ketcher
+  // is line art so the result is clean. 2026-05-05 user fallback.
   const [editorTheme, setEditorTheme] = useState<"light" | "dark">("light");
-  const [iframeKey, setIframeKey] = useState(0);
-  const ketcherSrc = editorTheme === "dark" ? `${KETCHER_SRC}?theme=dark` : KETCHER_SRC;
+  const [iframeKey] = useState(0);  // reserved for future remounts
+  const darkFilter = "invert(0.92) hue-rotate(180deg) brightness(1.1) contrast(0.95)";
 
   const { data: catalog } = useQuery({
     queryKey: ["catalog"],
@@ -268,25 +271,7 @@ export default function StudioPage() {
                   with ?theme=dark or default. Current SMILES is preserved
                   by re-applying it after the iframe re-inits. */}
               <button
-                onClick={() => {
-                  const sketchedNow = currentSmiles;
-                  setEditorTheme(editorTheme === "light" ? "dark" : "light");
-                  setKetcherReady(false);
-                  setIframeKey((k) => k + 1);
-                  // Re-apply the current SMILES once the new iframe is ready
-                  if (sketchedNow) {
-                    const t0 = Date.now();
-                    const t = window.setInterval(async () => {
-                      const a = getKetcherApi(iframeRef.current);
-                      if (a?.setMolecule) {
-                        try { await a.setMolecule(sketchedNow); } catch { /* */ }
-                        window.clearInterval(t);
-                      } else if (Date.now() - t0 > 8000) {
-                        window.clearInterval(t);
-                      }
-                    }, 200);
-                  }
-                }}
+                onClick={() => setEditorTheme(editorTheme === "light" ? "dark" : "light")}
                 className="px-2 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider transition-colors border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50"
                 title={`Switch 2D editor to ${editorTheme === "light" ? "dark" : "light"} mode`}
               >
@@ -312,9 +297,10 @@ export default function StudioPage() {
             <iframe
               key={iframeKey}
               ref={iframeRef}
-              src={ketcherSrc}
+              src={KETCHER_SRC}
               title="Ketcher 2D editor"
               className="w-full h-full border-0"
+              style={editorTheme === "dark" ? { filter: darkFilter } : undefined}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             />
           </div>
@@ -405,34 +391,44 @@ export default function StudioPage() {
                   </button>
                 ))}
               </div>
-              {availableMutations.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => setSelectedMutation("")}
+                  className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
+                    selectedMutation === ""
+                      ? "border-slate-500 bg-slate-700/40 text-slate-200"
+                      : "border-slate-700/60 text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  WT
+                </button>
+                {availableMutations.map((m) => (
                   <button
-                    onClick={() => setSelectedMutation("")}
+                    key={m.code}
+                    onClick={() => setSelectedMutation(m.code)}
                     className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                      selectedMutation === ""
-                        ? "border-slate-500 bg-slate-700/40 text-slate-200"
-                        : "border-slate-700/60 text-slate-500 hover:text-slate-300"
+                      selectedMutation === m.code
+                        ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
+                        : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
                     }`}
+                    title={m.label}
                   >
-                    WT
+                    {m.code}
                   </button>
-                  {availableMutations.map((m) => (
-                    <button
-                      key={m.code}
-                      onClick={() => setSelectedMutation(m.code)}
-                      className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                        selectedMutation === m.code
-                          ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
-                          : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                      }`}
-                      title={m.label}
-                    >
-                      {m.code}
-                    </button>
-                  ))}
-                </div>
-              )}
+                ))}
+                {/* Custom mutation input — type any e.g. "T790M, L858R"
+                    or "G719S". Validation happens server-side at dock
+                    time, so a typo just fails the dock with a clear
+                    error rather than blocking up-front. */}
+                <input
+                  type="text"
+                  value={!availableMutations.some(m => m.code === selectedMutation) ? selectedMutation : ""}
+                  onChange={(e) => setSelectedMutation(e.target.value.trim().toUpperCase())}
+                  placeholder="custom (e.g. T790M)"
+                  className="px-2 py-0.5 text-[10px] font-mono rounded border border-dashed border-slate-700/60 text-slate-300 placeholder:text-slate-600 bg-transparent focus:outline-none focus:border-amber-500/60 focus:bg-amber-950/20 w-32"
+                  style={{ caretColor: "#fcd34d" }}
+                />
+              </div>
             </div>
 
             {/* Action area */}
@@ -506,6 +502,44 @@ function CollapsibleTab({
   );
 }
 
+/** Tiny labelled group of toggle buttons for the 3D toolbar. Renders
+ *  a faint "RECEPTOR" / "LIGAND" / "TOOLS" caption above its children
+ *  so the user can scan groupings instead of reading every button. */
+function ControlGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[8px] uppercase tracking-[0.2em] text-slate-600 mr-0.5">{label}</span>
+      <div className="flex items-center bg-[#070b15] rounded border border-slate-800 overflow-hidden">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Compact pill button for the 3D toolbar. Active state uses cyan; the
+ *  amber tone is reserved for "this changes how clicks work" modes
+ *  (currently just measure mode). */
+function ControlBtn({
+  active = false, onClick, title, children, tone = "cyan",
+}: {
+  active?: boolean; onClick: () => void; title?: string; children: React.ReactNode; tone?: "cyan" | "amber";
+}) {
+  const accent = tone === "amber"
+    ? "border-amber-500/60 bg-amber-900/40 text-amber-200"
+    : "border-cyan-500/60 bg-cyan-900/40 text-cyan-200";
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`px-2 py-1 font-mono text-[9px] uppercase tracking-wider border-r border-slate-800 last:border-r-0 transition-colors ${
+        active ? accent : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/40"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 /** Compound loader panel — slides down below the canvas header when
  *  the user clicks "load compound". Three sources:
  *   1. Reference compounds for the currently-selected target (e.g. EGFR
@@ -527,19 +561,46 @@ function CompoundLoader({
   onClose: () => void;
 }) {
   const [paste, setPaste] = useState("");
+  const [search, setSearch] = useState("");
   const refCompounds = (targetMeta?.compounds ?? []) as { name: string; smiles: string; mechanism?: string }[];
+  const q = search.trim().toLowerCase();
+  const filteredRef = q
+    ? refCompounds.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        c.smiles.toLowerCase().includes(q) ||
+        (c.mechanism || "").toLowerCase().includes(q))
+    : refCompounds;
+  const filteredLib = q
+    ? myCompounds.filter(c =>
+        (c.name || "").toLowerCase().includes(q) ||
+        (c.smiles || "").toLowerCase().includes(q))
+    : myCompounds;
 
   return (
-    <div className="absolute top-[34px] left-0 right-0 z-20 bg-[#0d1422] border-b border-slate-800/70 max-h-[60%] overflow-auto">
+    <div className="absolute top-[34px] left-0 right-0 z-20 bg-[#0d1422] border-b border-slate-800/70 max-h-[70%] overflow-auto">
+      {/* Search bar — filters both reference + library lists */}
+      <div className="px-3 py-2 border-b border-slate-800/70 flex items-center gap-2">
+        <span className="text-cyan-400 text-xs">🔍</span>
+        <input
+          autoFocus
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="search compounds (name, SMILES, mechanism)…"
+          className="flex-1 bg-transparent border-none outline-none font-mono text-xs text-slate-200 placeholder:text-slate-600"
+        />
+        {search && (
+          <button onClick={() => setSearch("")} className="text-slate-500 hover:text-slate-200 font-mono text-[10px]">clear</button>
+        )}
+      </div>
       <div className="grid grid-cols-3 divide-x divide-slate-800/70">
         {/* Reference compounds for current target */}
         <div className="p-3">
           <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-2 flex items-center gap-2">
             <span>Reference · {targetMeta?.id?.toUpperCase() || "—"}</span>
-            <span className="text-slate-700">{refCompounds.length}</span>
+            <span className="text-slate-700">{filteredRef.length}{q && refCompounds.length !== filteredRef.length ? `/${refCompounds.length}` : ""}</span>
           </div>
           <div className="space-y-1">
-            {refCompounds.length > 0 ? refCompounds.map((c) => (
+            {filteredRef.length > 0 ? filteredRef.map((c) => (
               <button
                 key={c.name}
                 onClick={() => onPick(c.smiles)}
@@ -553,7 +614,7 @@ function CompoundLoader({
                 )}
               </button>
             )) : (
-              <div className="font-mono text-[11px] text-slate-600 italic">Pick a target first</div>
+              <div className="font-mono text-[11px] text-slate-600 italic">{q ? "no match" : "Pick a target first"}</div>
             )}
           </div>
         </div>
@@ -562,10 +623,10 @@ function CompoundLoader({
         <div className="p-3">
           <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-2 flex items-center gap-2">
             <span>My Library</span>
-            <span className="text-slate-700">{myCompounds.length}</span>
+            <span className="text-slate-700">{filteredLib.length}{q && myCompounds.length !== filteredLib.length ? `/${myCompounds.length}` : ""}</span>
           </div>
           <div className="space-y-1">
-            {myCompounds.length > 0 ? myCompounds.slice(0, 30).map((c) => (
+            {filteredLib.length > 0 ? filteredLib.slice(0, 30).map((c) => (
               <button
                 key={c.id}
                 onClick={() => onPick(c.smiles)}
@@ -577,11 +638,11 @@ function CompoundLoader({
                 </div>
               </button>
             )) : (
-              <div className="font-mono text-[11px] text-slate-600 italic">No saved compounds yet</div>
+              <div className="font-mono text-[11px] text-slate-600 italic">{q ? "no match" : "No saved compounds yet"}</div>
             )}
-            {myCompounds.length > 30 && (
+            {filteredLib.length > 30 && (
               <div className="font-mono text-[10px] text-slate-600 italic px-2">
-                +{myCompounds.length - 30} more (use /compounds to browse)
+                +{filteredLib.length - 30} more — refine search above
               </div>
             )}
           </div>
@@ -872,86 +933,49 @@ function Live3DViewer({
 
   return (
     <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0">
+      {/* Title strip — title + status only, no controls */}
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-          <span className="font-mono text-slate-500">
-            {dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
-              : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
-              : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
-              : smiles ? <span className="text-slate-600">○ waiting</span>
-              : <span className="text-slate-700">▢ empty</span>}
-          </span>
-        </div>
-        {/* 3D controls */}
-        <div className="flex items-center gap-1">
-          {/* Receptor style toggle (only meaningful in docked mode) */}
-          {dockResult && (
-            <div className="flex items-center gap-0.5 mr-1">
-              {(["cartoon", "surface", "line", "hide"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setReceptorStyle(s)}
-                  className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
-                    receptorStyle === s
-                      ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                      : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
-                  }`}
-                  title={`Receptor: ${s}`}
-                >
-                  {s.slice(0, 3)}
-                </button>
-              ))}
-              <span className="w-px h-3 bg-slate-700 mx-1" />
-            </div>
-          )}
-          {/* Ligand style toggle */}
-          <div className="flex items-center gap-0.5">
-            {(["stick", "ball", "sphere", "line"] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setLigandStyle(s)}
-                className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
-                  ligandStyle === s
-                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                    : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
-                }`}
-                title={`Ligand: ${s}`}
-              >
-                {s === "stick" ? "stk" : s === "sphere" ? "sph" : s.slice(0, 3)}
-              </button>
+        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
+        <span className="font-mono text-slate-500">
+          {dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
+            : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+            : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
+            : smiles ? <span className="text-slate-600">○ waiting</span>
+            : <span className="text-slate-700">▢ empty</span>}
+        </span>
+      </div>
+      {/* Control toolbar — own row, grouped, breathing room */}
+      <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center gap-3 text-[10px] flex-wrap">
+        {dockResult && (
+          <ControlGroup label="Receptor">
+            {(["cartoon", "surface", "line", "hide"] as const).map((s) => (
+              <ControlBtn key={s} active={receptorStyle === s} onClick={() => setReceptorStyle(s)} title={`Receptor: ${s}`}>
+                {s === "cartoon" ? "ribbon" : s}
+              </ControlBtn>
             ))}
-          </div>
-          <span className="w-px h-3 bg-slate-700 mx-1" />
-          {/* Measure mode + utilities */}
-          <button
+          </ControlGroup>
+        )}
+        <ControlGroup label="Ligand">
+          {(["stick", "ball", "sphere", "line"] as const).map((s) => (
+            <ControlBtn key={s} active={ligandStyle === s} onClick={() => setLigandStyle(s)} title={`Ligand: ${s}`}>
+              {s}
+            </ControlBtn>
+          ))}
+        </ControlGroup>
+        <ControlGroup label="Tools">
+          <ControlBtn
+            active={measureMode}
+            tone={measureMode ? "amber" : undefined}
             onClick={() => setMeasureMode(!measureMode)}
-            className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
-              measureMode
-                ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
-                : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
-            }`}
             title="Click two atoms to measure distance"
           >
-            ⟷ msr
-          </button>
+            ⟷ measure
+          </ControlBtn>
           {measureMode && (
-            <button
-              onClick={clearMeasurements}
-              className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
-              title="Clear measurements"
-            >
-              clr
-            </button>
+            <ControlBtn onClick={clearMeasurements} title="Clear measurements">clear</ControlBtn>
           )}
-          <button
-            onClick={resetView}
-            className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
-            title="Reset camera"
-          >
-            ↺ fit
-          </button>
-        </div>
+          <ControlBtn onClick={resetView} title="Reset camera">↺ fit</ControlBtn>
+        </ControlGroup>
       </div>
       <div className="flex-1 relative bg-[#070b15]">
         <div ref={containerRef} className="absolute inset-0" />
