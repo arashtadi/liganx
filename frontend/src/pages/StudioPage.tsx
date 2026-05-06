@@ -80,11 +80,48 @@ export default function StudioPage() {
   const [showProps, setShowProps] = useState(false);
   const [showAi, setShowAi] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showLoader, setShowLoader] = useState(false);
+  // 2D editor theme — Ketcher reads ?theme=dark from the iframe URL.
+  // Bumping `iframeKey` forces a remount when the user toggles, so the
+  // new theme takes effect without reloading the whole page. The current
+  // canvas SMILES is preserved by reapplying it after the iframe re-inits.
+  const [editorTheme, setEditorTheme] = useState<"light" | "dark">("light");
+  const [iframeKey, setIframeKey] = useState(0);
+  const ketcherSrc = editorTheme === "dark" ? `${KETCHER_SRC}?theme=dark` : KETCHER_SRC;
 
   const { data: catalog } = useQuery({
     queryKey: ["catalog"],
     queryFn: api.catalog,
   });
+  const { data: myCompounds } = useQuery({
+    queryKey: ["my-compounds"],
+    queryFn: api.getMyCompounds,
+    staleTime: 60_000,
+  });
+
+  /** Load a SMILES into the Ketcher canvas. Used by the compound picker
+   *  to start from a known structure (drug or saved library entry). */
+  async function loadIntoCanvas(smiles: string) {
+    if (!smiles) return;
+    const a = getKetcherApi(iframeRef.current);
+    if (!a?.setMolecule) {
+      setDockError("Editor not ready yet — wait a moment and try again.");
+      return;
+    }
+    try {
+      await a.setMolecule(smiles);
+      setShowLoader(false);
+      // Trigger an immediate poll-style update so currentSmiles refreshes
+      setTimeout(async () => {
+        try {
+          const s = await a.getSmiles();
+          setCurrentSmiles((s || "").trim());
+        } catch { /* polling will catch it */ }
+      }, 100);
+    } catch (e: any) {
+      setDockError(`Failed to load structure: ${e?.message || e}`);
+    }
+  }
 
   // Tick clock every second; probe pod health every 30s
   useEffect(() => {
@@ -211,11 +248,61 @@ export default function StudioPage() {
       {/* ═══ MAIN GRID ═══ */}
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
         {/* LEFT — 2D Canvas */}
-        <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden">
+        <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
           <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-            <span className={TOK.label}>2D Canvas · Ketcher</span>
-            <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
+            <div className="flex items-center gap-3">
+              <span className={TOK.label}>2D Canvas · Ketcher</span>
+              <button
+                onClick={() => setShowLoader(!showLoader)}
+                className={`px-2 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider transition-colors ${
+                  showLoader
+                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                    : "border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50"
+                }`}
+              >
+                {showLoader ? "▾ load" : "▸ load compound"}
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* 2D theme toggle — bumps iframe key so Ketcher reloads
+                  with ?theme=dark or default. Current SMILES is preserved
+                  by re-applying it after the iframe re-inits. */}
+              <button
+                onClick={() => {
+                  const sketchedNow = currentSmiles;
+                  setEditorTheme(editorTheme === "light" ? "dark" : "light");
+                  setKetcherReady(false);
+                  setIframeKey((k) => k + 1);
+                  // Re-apply the current SMILES once the new iframe is ready
+                  if (sketchedNow) {
+                    const t0 = Date.now();
+                    const t = window.setInterval(async () => {
+                      const a = getKetcherApi(iframeRef.current);
+                      if (a?.setMolecule) {
+                        try { await a.setMolecule(sketchedNow); } catch { /* */ }
+                        window.clearInterval(t);
+                      } else if (Date.now() - t0 > 8000) {
+                        window.clearInterval(t);
+                      }
+                    }, 200);
+                  }
+                }}
+                className="px-2 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider transition-colors border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50"
+                title={`Switch 2D editor to ${editorTheme === "light" ? "dark" : "light"} mode`}
+              >
+                {editorTheme === "light" ? "☼ light" : "☾ dark"}
+              </button>
+              <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
+            </div>
           </div>
+          {showLoader && (
+            <CompoundLoader
+              targetMeta={targetMeta}
+              myCompounds={myCompounds || []}
+              onPick={loadIntoCanvas}
+              onClose={() => setShowLoader(false)}
+            />
+          )}
           <div className="flex-1 relative bg-white">
             {!ketcherReady && (
               <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs font-mono z-10 bg-[#070b15]">
@@ -223,8 +310,9 @@ export default function StudioPage() {
               </div>
             )}
             <iframe
+              key={iframeKey}
               ref={iframeRef}
-              src={KETCHER_SRC}
+              src={ketcherSrc}
               title="Ketcher 2D editor"
               className="w-full h-full border-0"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -370,7 +458,7 @@ export default function StudioPage() {
                     : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
                 }`}
               >
-                {docking ? "▶ docking…" : "⏵ Run Quick Dock"}
+                {docking ? "▶ docking…" : "⏵ Run Dock"}
               </button>
             </div>
           </div>
@@ -418,6 +506,124 @@ function CollapsibleTab({
   );
 }
 
+/** Compound loader panel — slides down below the canvas header when
+ *  the user clicks "load compound". Three sources:
+ *   1. Reference compounds for the currently-selected target (e.g. EGFR
+ *      ships with gefitinib/erlotinib/osimertinib/afatinib). Most useful
+ *      starting point — these are the ground-truth inhibitors the
+ *      mutation set is calibrated against.
+ *   2. The user's saved library (CompoundsPage entries).
+ *   3. A free-form SMILES paste box for ad-hoc structures.
+ *
+ *  Selecting any entry calls Ketcher's setMolecule() and closes the
+ *  panel. The 3D viewer picks up the change automatically via the
+ *  SMILES polling tick. */
+function CompoundLoader({
+  targetMeta, myCompounds, onPick, onClose,
+}: {
+  targetMeta: any;
+  myCompounds: any[];
+  onPick: (smiles: string) => void;
+  onClose: () => void;
+}) {
+  const [paste, setPaste] = useState("");
+  const refCompounds = (targetMeta?.compounds ?? []) as { name: string; smiles: string; mechanism?: string }[];
+
+  return (
+    <div className="absolute top-[34px] left-0 right-0 z-20 bg-[#0d1422] border-b border-slate-800/70 max-h-[60%] overflow-auto">
+      <div className="grid grid-cols-3 divide-x divide-slate-800/70">
+        {/* Reference compounds for current target */}
+        <div className="p-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-2 flex items-center gap-2">
+            <span>Reference · {targetMeta?.id?.toUpperCase() || "—"}</span>
+            <span className="text-slate-700">{refCompounds.length}</span>
+          </div>
+          <div className="space-y-1">
+            {refCompounds.length > 0 ? refCompounds.map((c) => (
+              <button
+                key={c.name}
+                onClick={() => onPick(c.smiles)}
+                className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
+              >
+                <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200">{c.name}</div>
+                {c.mechanism && (
+                  <div className="font-mono text-[10px] text-slate-500 truncate" title={c.mechanism}>
+                    {c.mechanism}
+                  </div>
+                )}
+              </button>
+            )) : (
+              <div className="font-mono text-[11px] text-slate-600 italic">Pick a target first</div>
+            )}
+          </div>
+        </div>
+
+        {/* User's saved library */}
+        <div className="p-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-2 flex items-center gap-2">
+            <span>My Library</span>
+            <span className="text-slate-700">{myCompounds.length}</span>
+          </div>
+          <div className="space-y-1">
+            {myCompounds.length > 0 ? myCompounds.slice(0, 30).map((c) => (
+              <button
+                key={c.id}
+                onClick={() => onPick(c.smiles)}
+                className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
+              >
+                <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200 truncate">{c.name}</div>
+                <div className="font-mono text-[10px] text-slate-500 truncate" title={c.smiles}>
+                  {c.smiles}
+                </div>
+              </button>
+            )) : (
+              <div className="font-mono text-[11px] text-slate-600 italic">No saved compounds yet</div>
+            )}
+            {myCompounds.length > 30 && (
+              <div className="font-mono text-[10px] text-slate-600 italic px-2">
+                +{myCompounds.length - 30} more (use /compounds to browse)
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Paste SMILES */}
+        <div className="p-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-2">Paste SMILES</div>
+          <textarea
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+            placeholder="e.g. CC(=O)Oc1ccccc1C(=O)O"
+            className="w-full h-20 p-2 bg-[#070b15] border border-slate-800 rounded font-mono text-[11px] text-slate-200 resize-none focus:outline-none focus:border-cyan-600/60"
+          />
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={() => paste.trim() && onPick(paste.trim())}
+              disabled={!paste.trim()}
+              className="px-3 py-1 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 disabled:border-slate-800 disabled:bg-slate-900/30 disabled:text-slate-600 disabled:cursor-not-allowed font-mono text-[10px] uppercase tracking-wider transition-colors"
+            >
+              ⏵ Load
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1 rounded border border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-600 font-mono text-[10px] uppercase tracking-wider transition-colors"
+            >
+              cancel
+            </button>
+          </div>
+          <div className="mt-2 text-[10px] font-mono text-slate-600">
+            Examples: <button onClick={() => onPick("CC(=O)Oc1ccccc1C(=O)O")} className="text-cyan-500 hover:text-cyan-300 underline">aspirin</button>
+            {" · "}
+            <button onClick={() => onPick("CC(C)Cc1ccc(C(C)C(=O)O)cc1")} className="text-cyan-500 hover:text-cyan-300 underline">ibuprofen</button>
+            {" · "}
+            <button onClick={() => onPick("CN1CCC[C@H]1c1cccnc1")} className="text-cyan-500 hover:text-cyan-300 underline">nicotine</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Live 3D viewer — the headline feature.
  *
  *  As the user sketches in 2D, the 3D viewer updates within ~500ms. Pipeline:
@@ -457,10 +663,68 @@ function Live3DViewer({
   const viewerRef = useRef<any>(null);
   const lastRenderedSmilesRef = useRef<string>("");
   const lastDockResultIdRef = useRef<string>("");
+  const measureRef = useRef<{ atoms: any[] }>({ atoms: [] });
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [glReady, setGlReady] = useState(false);
+  // Controls — apply to whichever model is currently shown
+  const [ligandStyle, setLigandStyle] = useState<"stick" | "ball" | "sphere" | "line">("stick");
+  const [receptorStyle, setReceptorStyle] = useState<"cartoon" | "surface" | "line" | "hide">("cartoon");
+  const [measureMode, setMeasureMode] = useState(false);
+
+  // Re-apply styles whenever the toggles change. Idempotent — setStyle
+  // replaces the existing style spec, so it's safe to call repeatedly.
+  function applyStyles() {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      // Receptor style (docked-pose mode only — conformer has no receptor)
+      if (dockResult) {
+        v.setStyle({ model: 0 }, {});
+        if (receptorStyle === "cartoon") v.setStyle({ model: 0 }, { cartoon: { color: "#475569" } });
+        else if (receptorStyle === "surface") {
+          v.setStyle({ model: 0 }, { cartoon: { color: "#475569" } });
+          try { v.removeAllSurfaces(); v.addSurface(2 /* VDW */, { opacity: 0.55, color: "#334155" }, { model: 0 }); } catch { /* surface can fail on big proteins */ }
+        }
+        else if (receptorStyle === "line") v.setStyle({ model: 0 }, { line: { color: "#475569" } });
+        // hide → leave empty {}
+        // Ligand is model 1 in docked mode
+        v.setStyle({ model: 1 }, ligandStyleSpec(ligandStyle));
+      } else {
+        // Conformer mode — only one model (the ligand)
+        v.setStyle({}, ligandStyleSpec(ligandStyle));
+      }
+      v.render();
+    } catch { /* defensive — 3Dmol API quirks */ }
+  }
+
+  function ligandStyleSpec(s: typeof ligandStyle) {
+    if (s === "stick") return { stick: { radius: 0.18, colorscheme: "cyanCarbon" } };
+    if (s === "ball") return { sphere: { scale: 0.30, colorscheme: "cyanCarbon" }, stick: { radius: 0.10 } };
+    if (s === "sphere") return { sphere: { scale: 0.85, colorscheme: "cyanCarbon" } };
+    return { line: { colorscheme: "cyanCarbon", linewidth: 2 } };
+  }
+
+  function resetView() {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      v.zoomTo();
+      v.render();
+    } catch { /* defensive */ }
+  }
+
+  function clearMeasurements() {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      v.removeAllShapes();
+      v.removeAllLabels();
+      measureRef.current.atoms = [];
+      v.render();
+    } catch { /* defensive */ }
+  }
 
   // Mount the 3Dmol viewer ONCE. Lazy import keeps initial bundle small.
   useEffect(() => {
@@ -521,20 +785,54 @@ function Live3DViewer({
     try {
       const v = viewerRef.current;
       v.removeAllModels();
+      v.removeAllShapes();
+      v.removeAllLabels();
       v.addModel(conformerSdf, "sdf");
-      v.setStyle({}, { stick: { radius: 0.15, colorscheme: "Jmol" } });
       // Only zoomTo on first model — preserve camera on updates
-      if (lastRenderedSmilesRef.current === smiles && !lastDockResultIdRef.current) {
-        if (!v._didFirstZoom) {
-          v.zoomTo();
-          v._didFirstZoom = true;
-        }
+      if (!v._didFirstZoom) {
+        v.zoomTo();
+        v._didFirstZoom = true;
       }
-      v.render();
+      applyStyles();
     } catch (e) {
       setConformerErr(`Render failed: ${(e as Error).message}`);
     }
-  }, [glReady, conformerSdf, dockResult, smiles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [glReady, conformerSdf, dockResult]);
+
+  // Re-apply styles whenever toggles change
+  useEffect(() => {
+    applyStyles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ligandStyle, receptorStyle]);
+
+  // Toggle measure-mode atom-click handler on the viewer
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!glReady || !v) return;
+    if (measureMode) {
+      v.setClickable({}, true, (atom: any) => {
+        const picked = measureRef.current.atoms;
+        picked.push(atom);
+        try {
+          v.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.4, color: "cyan", opacity: 0.7 });
+          if (picked.length === 2) {
+            const a = picked[0], b = picked[1];
+            const d = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
+            v.addLine({ start: { x: a.x, y: a.y, z: a.z }, end: { x: b.x, y: b.y, z: b.z }, color: "cyan", dashed: true });
+            v.addLabel(`${d.toFixed(2)} Å`, {
+              position: { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 },
+              backgroundColor: "rgba(8, 145, 178, 0.85)", fontColor: "white", fontSize: 12, borderThickness: 0,
+            });
+            measureRef.current.atoms = [];
+          }
+          v.render();
+        } catch { /* defensive */ }
+      });
+    } else {
+      try { v.setClickable({}, false, () => {}); } catch { /* */ }
+    }
+  }, [glReady, measureMode]);
 
   // Render docked pose when dockResult arrives
   useEffect(() => {
@@ -547,39 +845,113 @@ function Live3DViewer({
       try {
         const v = viewerRef.current;
         v.removeAllModels();
-        // Receptor — fetch from API
+        v.removeAllShapes();
+        v.removeAllLabels();
+        try { v.removeAllSurfaces(); } catch { /* */ }
+        // Receptor (model 0)
         const recRes = await fetch(
           `https://api.liganx.com/structures/${dockResult.pdb_id}/${dockResult.chain || "A"}/WT`
         );
         if (recRes.ok) {
           const recPdb = await recRes.text();
           v.addModel(recPdb, "pdb");
-          v.setStyle({}, { cartoon: { color: "#475569" } });
         }
-        // Ligand pose — decode base64 PDBQT
-        const poseText = atob(poseB64);
-        v.addModel(poseText, "pdbqt");
-        v.setStyle({ model: -1 }, { stick: { radius: 0.18, colorscheme: "cyanCarbon" } });
-        v.zoomTo({ model: -1 });
+        // Ligand pose (model 1)
+        v.addModel(atob(poseB64), "pdbqt");
+        // Apply current style toggles
+        applyStyles();
+        v.zoomTo({ model: 1 });
         v.zoom(0.85);
         v.render();
       } catch (e) {
         setConformerErr(`Pose render failed: ${(e as Error).message}`);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [glReady, dockResult]);
 
   return (
     <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-0">
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
-        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
-        <span className="font-mono text-slate-500">
-          {dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
-            : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
-            : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
-            : smiles ? <span className="text-slate-600">○ waiting</span>
-            : <span className="text-slate-700">▢ empty</span>}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
+          <span className="font-mono text-slate-500">
+            {dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
+              : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+              : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
+              : smiles ? <span className="text-slate-600">○ waiting</span>
+              : <span className="text-slate-700">▢ empty</span>}
+          </span>
+        </div>
+        {/* 3D controls */}
+        <div className="flex items-center gap-1">
+          {/* Receptor style toggle (only meaningful in docked mode) */}
+          {dockResult && (
+            <div className="flex items-center gap-0.5 mr-1">
+              {(["cartoon", "surface", "line", "hide"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setReceptorStyle(s)}
+                  className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
+                    receptorStyle === s
+                      ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                      : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
+                  }`}
+                  title={`Receptor: ${s}`}
+                >
+                  {s.slice(0, 3)}
+                </button>
+              ))}
+              <span className="w-px h-3 bg-slate-700 mx-1" />
+            </div>
+          )}
+          {/* Ligand style toggle */}
+          <div className="flex items-center gap-0.5">
+            {(["stick", "ball", "sphere", "line"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setLigandStyle(s)}
+                className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
+                  ligandStyle === s
+                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                    : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
+                }`}
+                title={`Ligand: ${s}`}
+              >
+                {s === "stick" ? "stk" : s === "sphere" ? "sph" : s.slice(0, 3)}
+              </button>
+            ))}
+          </div>
+          <span className="w-px h-3 bg-slate-700 mx-1" />
+          {/* Measure mode + utilities */}
+          <button
+            onClick={() => setMeasureMode(!measureMode)}
+            className={`px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border ${
+              measureMode
+                ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
+                : "border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
+            }`}
+            title="Click two atoms to measure distance"
+          >
+            ⟷ msr
+          </button>
+          {measureMode && (
+            <button
+              onClick={clearMeasurements}
+              className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
+              title="Clear measurements"
+            >
+              clr
+            </button>
+          )}
+          <button
+            onClick={resetView}
+            className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider rounded border border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700"
+            title="Reset camera"
+          >
+            ↺ fit
+          </button>
+        </div>
       </div>
       <div className="flex-1 relative bg-[#070b15]">
         <div ref={containerRef} className="absolute inset-0" />
