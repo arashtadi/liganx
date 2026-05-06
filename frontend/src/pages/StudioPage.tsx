@@ -724,6 +724,8 @@ function Live3DViewer({
   const viewerRef = useRef<any>(null);
   const lastRenderedSmilesRef = useRef<string>("");
   const lastDockResultIdRef = useRef<string>("");
+  const dockedSmilesRef = useRef<string>("");      // SMILES at the moment of last successful dock
+  const dockedCentroidRef = useRef<[number, number, number] | null>(null);
   const measureRef = useRef<{ atoms: any[] }>({ atoms: [] });
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
@@ -867,6 +869,54 @@ function Live3DViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ligandStyle, receptorStyle]);
 
+  // POST-DOCK PREVIEW MODE: receptor stays mounted, ligand is swapped
+  // for a fresh conformer translated to the docked-pose centroid as
+  // the user edits the 2D canvas. Renders in amber to signal "preview,
+  // not docked — click Run Dock to re-run." Useful for "what would
+  // adding a methyl here look like in the pocket?" without burning a
+  // full dock cycle.
+  const isPostDockPreview = !!dockResult
+    && !!smiles
+    && smiles !== dockedSmilesRef.current
+    && !!dockedCentroidRef.current;
+
+  useEffect(() => {
+    if (!isPostDockPreview || !glReady || !viewerRef.current) return;
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      if (cancelled || smiles === lastRenderedSmilesRef.current) return;
+      try {
+        const res = await api.assistConformer(smiles);
+        if (!res.ok || !res.sdf) return;
+        if (cancelled) return;
+        const v = viewerRef.current;
+        // Remove only the ligand (model 1), keep receptor (model 0)
+        try { v.removeModel(1); } catch { /* */ }
+        const m = v.addModel(res.sdf, "sdf");
+        // Translate the new conformer so its centroid matches the
+        // docked-pose centroid (where the original ligand was sitting
+        // in the pocket). RDKit emits conformers near the origin, so
+        // we just translate by the docked centroid.
+        try {
+          const atoms = m?.selectedAtoms?.({}) || [];
+          let cx = 0, cy = 0, cz = 0;
+          for (const a of atoms) { cx += a.x; cy += a.y; cz += a.z; }
+          if (atoms.length > 0) {
+            cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
+          }
+          const [tx, ty, tz] = dockedCentroidRef.current!;
+          const dx = tx - cx, dy = ty - cy, dz = tz - cz;
+          for (const a of atoms) { a.x += dx; a.y += dy; a.z += dz; }
+        } catch { /* defensive */ }
+        // Style: amber sticks so it reads as "preview, not docked"
+        v.setStyle({ model: 1 }, { stick: { radius: 0.18, color: "#fbbf24" } });
+        v.render();
+        lastRenderedSmilesRef.current = smiles;
+      } catch { /* defensive */ }
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [smiles, isPostDockPreview, glReady]);
+
   // Toggle measure-mode atom-click handler on the viewer
   useEffect(() => {
     const v = viewerRef.current;
@@ -918,7 +968,21 @@ function Live3DViewer({
           v.addModel(recPdb, "pdb");
         }
         // Ligand pose (model 1)
-        v.addModel(atob(poseB64), "pdbqt");
+        const poseModel = v.addModel(atob(poseB64), "pdbqt");
+        // Compute centroid of the docked ligand atoms — saved so a
+        // post-dock conformer preview can be translated to the same
+        // spot in the receptor pocket.
+        try {
+          const atoms = poseModel?.selectedAtoms?.({}) || [];
+          if (atoms.length > 0) {
+            let sx = 0, sy = 0, sz = 0;
+            for (const a of atoms) { sx += a.x; sy += a.y; sz += a.z; }
+            dockedCentroidRef.current = [sx / atoms.length, sy / atoms.length, sz / atoms.length];
+          }
+        } catch { /* defensive */ }
+        // Remember the SMILES that was actually docked, so we know when
+        // the user has edited it and we should switch to preview mode.
+        dockedSmilesRef.current = smiles;
         // Apply current style toggles
         applyStyles();
         v.zoomTo({ model: 1 });
@@ -937,7 +1001,8 @@ function Live3DViewer({
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
         <span className="font-mono text-slate-500">
-          {dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
+          {isPostDockPreview ? <span className="text-amber-300">◌ preview · re-dock to confirm</span>
+            : dockResult ? <span className="text-cyan-300">▦ docked · {dockResult.pdb_id}</span>
             : loading ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
             : conformerSdf ? <span className="text-emerald-400">● live conformer</span>
             : smiles ? <span className="text-slate-600">○ waiting</span>
