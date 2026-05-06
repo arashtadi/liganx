@@ -35,8 +35,14 @@ interface Props {
    *  produced no parseable pose; the viewer renders just the receptor. */
   posePdbqt: string;
   /** Side length in pixels. The dashboard column passes ~210; the
-   *  fullscreen overlay passes a much larger number. */
+   *  fullscreen overlay passes a much larger number. Ignored when
+   *  fillContainer is true. */
   size?: number;
+  /** When true, the outer wrapper expands to fill its parent (using
+   *  flex sizing) instead of being a fixed `size`-by-`size` square.
+   *  Studio uses this so the viewer fills the 3D panel responsively;
+   *  KetcherModal still uses the fixed-size mode. Default false. */
+  fillContainer?: boolean;
   /** Optional pocket center to focus the camera on. When provided, the
    *  viewer zooms to a tight box around this point instead of fitting
    *  the whole receptor — much more useful since the compound editor
@@ -56,6 +62,7 @@ export default function DockedPoseViewer({
   posePdbqt,
   size = 210,
   pocketCenter = null,
+  fillContainer = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -239,8 +246,11 @@ export default function DockedPoseViewer({
   return (
     <div className="space-y-1.5 flex flex-col h-full">
       <div
-        className="relative rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 overflow-hidden"
-        style={{ width: size, height: size }}
+        className={
+          "relative rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 overflow-hidden " +
+          (fillContainer ? "flex-1 min-h-0 w-full" : "")
+        }
+        style={fillContainer ? undefined : { width: size, height: size }}
       >
         <div ref={containerRef} className="absolute inset-0" />
         {loading && (

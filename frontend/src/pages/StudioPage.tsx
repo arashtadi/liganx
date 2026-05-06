@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.16-2026-05-06-3dviewer-replacement";
+const LIGANX_BUILD_TAG = "v0.16.1-2026-05-06-fillcontainer";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1326,19 +1326,27 @@ function ProductionViewer3D({
   const chain = primary.chain || targetMeta?.chain || "A";
   const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
 
-  // DockedPoseViewer shows the receptor + docked ligand pose. For mutations,
-  // variant is the mutation code; for WT, it's "WT". MutationOverlayViewer
-  // would require fetching both WT and mutant full PDB structures (expensive),
-  // so we stick with single-variant viewer for studio context.
+  // DockedPoseViewer with fillContainer=true takes up the available space
+  // in the panel rather than rendering a fixed 210×210 square. The outer
+  // wrapper enforces the panel's height (40% of the column grid row) so
+  // the receptor cartoon + ligand sticks have room to render visibly.
   return (
-    <DockedPoseViewer
-      pdbId={pdbId}
-      chain={chain}
-      variant={dockResult ? mutation || "WT" : "WT"}
-      posePdbqt={posePdbqt}
-      size={undefined}
-      pocketCenter={targetMeta?.pocket?.center}
-    />
+    <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]">
+      <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
+        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View</span>
+        <span className="font-mono text-emerald-400">● docked pose · {dockResult ? mutation || "WT" : "WT"}</span>
+      </div>
+      <div className="flex-1 min-h-0 p-2 [&>div]:h-full [&>div>div:first-child]:flex-1">
+        <DockedPoseViewer
+          pdbId={pdbId}
+          chain={chain}
+          variant={dockResult ? mutation || "WT" : "WT"}
+          posePdbqt={posePdbqt}
+          fillContainer={true}
+          pocketCenter={targetMeta?.pocket?.center}
+        />
+      </div>
+    </div>
   );
 }
 
