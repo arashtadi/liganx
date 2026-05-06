@@ -1475,10 +1475,20 @@ function Live3DViewer({
         const $3Dmol: any = mod?.default ?? mod?.$3Dmol ?? mod;
         if (cancelled || !containerRef.current) return;
         const viewer = $3Dmol.createViewer(containerRef.current, {
-          backgroundColor: 0x070b15,
+          // Transparent background — matches DockedPoseViewer pattern.
+          // The parent container's color (#070b15) shows through, but
+          // 3Dmol's distance-fade fog has no solid color to blend
+          // toward, so atoms stay visible at all camera angles.
+          // Earlier solid bg made distant ribbon parts fade to black
+          // and disappear when rotated.
+          backgroundColor: "rgba(0,0,0,0)",
           antialias: true,
         });
         viewerRef.current = viewer;
+        // Belt-and-suspenders: explicitly disable fog if 3Dmol supports
+        // it. Some versions ignore the call; that's fine because the
+        // transparent background already does most of the work.
+        try { viewer.enableFog?.(false); } catch { /* */ }
         setGlReady(true);
       } catch (e) {
         if (!cancelled) setConformerErr(`3Dmol load failed: ${(e as Error).message}`);
