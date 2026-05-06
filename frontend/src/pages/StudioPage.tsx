@@ -41,6 +41,7 @@ interface QuickDockResult {
   receptor_variant?: "mutant" | "wt";
   mutation_caveat?: string;
   pose_in_pocket?: boolean;
+  pose_offset_a?: number;
   dock_attempts?: number;
 }
 
@@ -85,6 +86,13 @@ export default function StudioPage() {
   const [showAi, setShowAi] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showLoader, setShowLoader] = useState(false);
+  // Dropdown open/closed state for target & mutation pickers. Closed
+  // by default — current selection shows as a chip with a chevron;
+  // clicking expands to show full filtered list. The search input on
+  // the right stays visible always (typing into it auto-opens the
+  // dropdown so users don't have to click twice).
+  const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
+  const [mutationDropdownOpen, setMutationDropdownOpen] = useState(false);
   // 2D editor theme — Ketcher's bundled build doesn't honor ?theme=dark,
   // so we fake dark mode with the "dark reader" CSS filter trick:
   // invert(1) hue-rotate(180deg) flips the background to black while
@@ -353,7 +361,16 @@ export default function StudioPage() {
                     : "—"}
                 </div>
                 <div className="text-[10px] font-mono text-slate-500">
-                  {dockResult ? `${(dockResult.hits?.length || 0)} hits · ${(dockResult.misses?.length || 0)} miss` : "pocket box"}
+                  {dockResult ? (
+                    <>
+                      {dockResult.pose_offset_a != null && (
+                        <span title="Distance from docked pose centroid to the pocket box center. Threshold: 6 Å. Higher numbers = pose drifted toward edge of search box.">
+                          {dockResult.pose_offset_a.toFixed(1)} Å ·{" "}
+                        </span>
+                      )}
+                      {(dockResult.hits?.length || 0)} hits · {(dockResult.misses?.length || 0)} miss
+                    </>
+                  ) : "pocket box"}
                 </div>
               </div>
             </div>
@@ -397,7 +414,7 @@ export default function StudioPage() {
               </div>
             </div>
 
-            {/* ─── TARGET ─── */}
+            {/* ─── TARGET (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Target</span>
@@ -412,44 +429,68 @@ export default function StudioPage() {
                   })()}
                 </span>
               </div>
-              <input
-                type="text"
-                value={targetQuery}
-                onChange={(e) => setTargetQuery(e.target.value)}
-                placeholder="search target (e.g. EGFR, kinase, kras)…"
-                className="w-full px-2 py-1 mb-2 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60"
-              />
-              <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-auto">
-                {catalog
-                  ?.filter((t: any) =>
-                    !targetQuery ||
+              {/* Trigger row: dropdown showing current selection (LEFT) +
+                  search input (RIGHT). Click trigger or type to expand
+                  the option list below. */}
+              <div className="flex items-center gap-2 mb-2">
+                <button
+                  onClick={() => setTargetDropdownOpen(!targetDropdownOpen)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-cyan-500/60 bg-cyan-900/30 text-cyan-200 font-mono text-[11px] uppercase tracking-wider hover:bg-cyan-900/50 min-w-[80px]"
+                  title={targetMeta?.name || ""}
+                >
+                  <span className={`text-[8px] transition-transform ${targetDropdownOpen ? "rotate-90" : ""}`}>▸</span>
+                  <span>{targetMeta?.id?.toUpperCase() || "—"}</span>
+                </button>
+                <input
+                  type="text"
+                  value={targetQuery}
+                  onChange={(e) => { setTargetQuery(e.target.value); if (e.target.value) setTargetDropdownOpen(true); }}
+                  onFocus={() => setTargetDropdownOpen(true)}
+                  placeholder="search…"
+                  className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60"
+                />
+              </div>
+              {/* Expanded chip list — visible when dropdown is open OR
+                  when there's a search query (forces visibility so the
+                  user sees what their typing matches). */}
+              {(targetDropdownOpen || targetQuery) && (
+                <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto pt-1 border-t border-slate-800/70">
+                  {catalog
+                    ?.filter((t: any) =>
+                      !targetQuery ||
+                      t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
+                      (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
+                    )
+                    .map((t: any) => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          setSelectedTarget(t.id);
+                          setSelectedMutation("");
+                          setTargetQuery("");
+                          setTargetDropdownOpen(false);
+                        }}
+                        className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
+                          selectedTarget === t.id
+                            ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                            : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                        }`}
+                        title={t.name}
+                      >
+                        {t.id}
+                      </button>
+                    ))}
+                  {targetQuery && !catalog?.some((t: any) =>
                     t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
                     (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
-                  )
-                  .map((t: any) => (
-                    <button
-                      key={t.id}
-                      onClick={() => { setSelectedTarget(t.id); setSelectedMutation(""); setTargetQuery(""); }}
-                      className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
-                        selectedTarget === t.id
-                          ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                          : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                      }`}
-                      title={t.name}
-                    >
-                      {t.id}
-                    </button>
-                  ))}
-                {targetQuery && !catalog?.some((t: any) =>
-                  t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
-                  (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
-                ) && (
-                  <span className="text-[10px] font-mono text-amber-400/80 italic">no match</span>
-                )}
-              </div>
+                  ) && (
+                    <span className="text-[10px] font-mono text-amber-400/80 italic">no match</span>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* ─── MUTATIONS ─── */}
+            {/* ─── MUTATIONS (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Mutations</span>
@@ -465,74 +506,84 @@ export default function StudioPage() {
                   })()}
                 </span>
               </div>
-              {/* Typeahead — filters chips OR commits as a custom
-                  mutation when no chip matches. Press Enter on a non-
-                  matching query to set it as the selectedMutation. */}
-              <input
-                type="text"
-                value={mutationQuery}
-                onChange={(e) => setMutationQuery(e.target.value.toUpperCase())}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && mutationQuery.trim()) {
-                    setSelectedMutation(mutationQuery.trim());
-                    setMutationQuery("");
-                  }
-                }}
-                placeholder="search mutation or type custom · e.g. T790M ⏎"
-                className="w-full px-2 py-1 mb-2 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
-              />
-              <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-auto">
+              {/* Trigger row: current mutation chip on the LEFT (or "WT" if
+                  none selected), search input on the RIGHT. Pressing Enter
+                  on a non-matching query commits it as a custom mutation. */}
+              <div className="flex items-center gap-2 mb-2">
                 <button
-                  onClick={() => setSelectedMutation("")}
-                  className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                    selectedMutation === ""
-                      ? "border-slate-500 bg-slate-700/40 text-slate-200"
-                      : "border-slate-700/60 text-slate-500 hover:text-slate-300"
+                  onClick={() => setMutationDropdownOpen(!mutationDropdownOpen)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded border font-mono text-[11px] uppercase tracking-wider min-w-[80px] ${
+                    selectedMutation
+                      ? "border-amber-500/60 bg-amber-900/30 text-amber-200 hover:bg-amber-900/50"
+                      : "border-slate-600 bg-slate-700/40 text-slate-200 hover:bg-slate-700/60"
                   }`}
+                  title={selectedMutation || "Wild-type — click for mutations"}
                 >
-                  WT
+                  <span className={`text-[8px] transition-transform ${mutationDropdownOpen ? "rotate-90" : ""}`}>▸</span>
+                  <span>{selectedMutation || "WT"}</span>
                 </button>
-                {availableMutations
-                  .filter(m =>
-                    !mutationQuery ||
+                <input
+                  type="text"
+                  value={mutationQuery}
+                  onChange={(e) => { setMutationQuery(e.target.value.toUpperCase()); if (e.target.value) setMutationDropdownOpen(true); }}
+                  onFocus={() => setMutationDropdownOpen(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && mutationQuery.trim()) {
+                      setSelectedMutation(mutationQuery.trim());
+                      setMutationQuery("");
+                      setMutationDropdownOpen(false);
+                    }
+                  }}
+                  placeholder="search · ⏎ for custom"
+                  className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
+                />
+              </div>
+              {(mutationDropdownOpen || mutationQuery) && (
+                <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto pt-1 border-t border-slate-800/70">
+                  <button
+                    onClick={() => { setSelectedMutation(""); setMutationDropdownOpen(false); }}
+                    className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
+                      selectedMutation === ""
+                        ? "border-slate-500 bg-slate-700/40 text-slate-200"
+                        : "border-slate-700/60 text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    WT
+                  </button>
+                  {availableMutations
+                    .filter(m =>
+                      !mutationQuery ||
+                      m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                    )
+                    .map((m) => (
+                      <button
+                        key={m.code}
+                        onClick={() => {
+                          setSelectedMutation(m.code);
+                          setMutationQuery("");
+                          setMutationDropdownOpen(false);
+                        }}
+                        className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
+                          selectedMutation === m.code
+                            ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
+                            : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                        }`}
+                        title={m.label}
+                      >
+                        {m.code}
+                      </button>
+                    ))}
+                  {mutationQuery && availableMutations.filter(m =>
                     m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
                     (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                  )
-                  .map((m) => (
-                    <button
-                      key={m.code}
-                      onClick={() => { setSelectedMutation(m.code); setMutationQuery(""); }}
-                      className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                        selectedMutation === m.code
-                          ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
-                          : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                      }`}
-                      title={m.label}
-                    >
-                      {m.code}
-                    </button>
-                  ))}
-                {/* If the user has a custom (non-curated) mutation
-                    selected, surface it as an amber chip so they can
-                    see what's currently active. */}
-                {selectedMutation && !availableMutations.some(m => m.code === selectedMutation) && (
-                  <button
-                    onClick={() => setSelectedMutation("")}
-                    className="px-2 py-0.5 text-[10px] font-mono rounded border border-amber-500/60 bg-amber-900/30 text-amber-200"
-                    title="Custom mutation — click to clear"
-                  >
-                    {selectedMutation} ✕
-                  </button>
-                )}
-                {mutationQuery && availableMutations.filter(m =>
-                  m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                  (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                ).length === 0 && (
-                  <span className="text-[10px] font-mono text-amber-400/80 italic">
-                    no curated match — press Enter to use as custom
-                  </span>
-                )}
-              </div>
+                  ).length === 0 && (
+                    <span className="text-[10px] font-mono text-amber-400/80 italic">
+                      no curated match — press Enter to use as custom
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Action area */}
