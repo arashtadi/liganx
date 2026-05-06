@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.17-2026-05-06-3D-controls";
+const LIGANX_BUILD_TAG = "v0.18-2026-05-06-pose-visible-and-live-edit";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1332,11 +1332,27 @@ function ProductionViewer3D({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const measurePicksRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
+  // SMILES that produced the current dockResult.pose. When the user edits
+  // the 2D editor, currentSmiles diverges from this and we swap the docked
+  // pose for a live conformer of the new structure (positioned at the
+  // pocket center). Re-dock writes a new value and we go back to the
+  // crystal-style docked pose. Stored in a ref so editing doesn't loop
+  // through React state updates.
+  const dockedSmilesRef = useRef<string>("");
+  // Centroid of the docked pose in receptor coordinates. Used to (a) place
+  // the live-conformer overlay inside the pocket when the user edits the
+  // 2D structure, and (b) frame the camera consistently across pose /
+  // conformer / re-dock cycles. Computed once when the pose loads.
+  const poseCentroidRef = useRef<[number, number, number] | null>(null);
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [receptorPdb, setReceptorPdb] = useState<string | null>(null);
   const [receptorErr, setReceptorErr] = useState<string | null>(null);
+  // Live preview SMILES — set when currentSmiles diverges from the last
+  // docked SMILES. Drives the conformer fetch + overlay logic below so
+  // the 3D view reflects 2D edits without requiring a re-dock.
+  const [editedConformerSdf, setEditedConformerSdf] = useState<string | null>(null);
 
   // Visual controls (mirrored from MutationOverlayViewer's toolbar). These
   // cover the 80%-case knobs a user wants when inspecting a docked pose:
@@ -1360,6 +1376,13 @@ function ProductionViewer3D({
   const hasDock = !!primary;
   const posePdbqt = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
   const hasPose = hasDock && !!posePdbqt;
+  // Live-preview gate: true when the user has edited the 2D structure
+  // since the dock that produced the current pose. While true, the 3D
+  // view shows a live conformer of the edited SMILES (positioned at
+  // the docked pose's centroid) instead of the now-stale docked pose.
+  // Reset by a successful re-dock (which writes the new SMILES into
+  // dockedSmilesRef).
+  const smilesEdited = hasDock && !!smiles && !!dockedSmilesRef.current && smiles !== dockedSmilesRef.current;
 
   // Hits = pocket-contact residues from the dock result. Used to highlight
   // side chains and to decide whether to enable the Contacts toggle.
@@ -1373,16 +1396,51 @@ function ProductionViewer3D({
     return Array.from(out);
   }, [dockResult?.hits]);
 
-  // Fetch the live conformer when SMILES changes (only when no dock yet).
+  // When a fresh dock arrives, snapshot the SMILES that produced it so
+  // we can detect later 2D edits as "stale pose" and switch the 3D view
+  // to a live conformer preview.
   useEffect(() => {
-    if (hasDock || !smiles) return;
+    if (hasDock && smiles && posePdbqt) {
+      dockedSmilesRef.current = smiles;
+      setEditedConformerSdf(null);  // clear any prior preview
+      // Compute pose centroid from the PDBQT — atoms x/y/z columns are
+      // 8-char fixed-width starting at col 30 (PDB format).
+      try {
+        const lines = posePdbqt.split("\n");
+        let sx = 0, sy = 0, sz = 0, n = 0;
+        for (const ln of lines) {
+          if (!ln.startsWith("ATOM") && !ln.startsWith("HETATM")) continue;
+          const x = parseFloat(ln.slice(30, 38));
+          const y = parseFloat(ln.slice(38, 46));
+          const z = parseFloat(ln.slice(46, 54));
+          if (!Number.isNaN(x) && !Number.isNaN(y) && !Number.isNaN(z)) {
+            sx += x; sy += y; sz += z; n++;
+          }
+        }
+        if (n > 0) poseCentroidRef.current = [sx/n, sy/n, sz/n];
+      } catch { /* ignore — fallback to model:1 zoomTo */ }
+    }
+  }, [hasDock, posePdbqt, smiles]);
+
+  // Fetch the live conformer in two cases:
+  //   1. No dock yet — preview whatever the user is sketching.
+  //   2. Dock done but the user has since edited the 2D structure —
+  //      preview the new compound in the pocket so they can see how
+  //      their edit fits before re-docking.
+  useEffect(() => {
+    if (!smiles) return;
+    if (hasDock && !smilesEdited) return;  // docked pose is still current
     const t = window.setTimeout(async () => {
       setLoading(true);
       setConformerErr(null);
       try {
         const res = await api.assistConformer(smiles);
-        if (res.ok && res.sdf) setConformerSdf(res.sdf);
-        else setConformerErr(res.error || "Conformer failed");
+        if (res.ok && res.sdf) {
+          if (smilesEdited) setEditedConformerSdf(res.sdf);
+          else setConformerSdf(res.sdf);
+        } else {
+          setConformerErr(res.error || "Conformer failed");
+        }
       } catch (e: any) {
         setConformerErr(e?.message || "Conformer request failed");
       } finally {
@@ -1390,7 +1448,7 @@ function ProductionViewer3D({
       }
     }, 350);
     return () => window.clearTimeout(t);
-  }, [smiles, hasDock]);
+  }, [smiles, hasDock, smilesEdited]);
 
   // Fetch the receptor PDB when a dock result arrives.
   useEffect(() => {
@@ -1451,14 +1509,20 @@ function ProductionViewer3D({
         }
       }
       // Pose model (last loaded). With receptor: model:1. Without dock,
-      // the conformer is at model:0.
+      // the conformer is at model:0. The edited-preview path also lives
+      // at model:1 so the same selector covers it.
       const poseIdx = hasDock && receptorPdb ? 1 : 0;
-      if ((hasDock && hasPose) || (!hasDock && conformerSdf)) {
+      const ligandPresent = (hasDock && (hasPose || (smilesEdited && editedConformerSdf))) || (!hasDock && conformerSdf);
+      if (ligandPresent) {
         viewer.setStyle({ model: poseIdx }, {});
+        // Slightly fatter sticks (0.22) than DockedPoseViewer's 0.18 so the
+        // ligand reads from a distance even when the camera is pulled back
+        // to show binding-site context. Element-color scheme keeps O red,
+        // N blue, etc — much easier to scan than monochrome.
         if (poseStyle === "stick") {
-          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.18, colorscheme: "default" } });
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.22, colorscheme: "default" } });
         } else if (poseStyle === "ball") {
-          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.13, colorscheme: "default" }, sphere: { scale: 0.28 } });
+          viewer.setStyle({ model: poseIdx }, { stick: { radius: 0.16, colorscheme: "default" }, sphere: { scale: 0.32 } });
         } else if (poseStyle === "line") {
           viewer.setStyle({ model: poseIdx }, { line: { colorscheme: "default" } });
         } else if (poseStyle === "sphere") {
@@ -1487,10 +1551,49 @@ function ProductionViewer3D({
 
         if (hasDock && receptorPdb) {
           viewer.addModel(receptorPdb, "pdb");
-          if (posePdbqt) viewer.addModel(posePdbqt, "pdbqt");
-          if (posePdbqt) {
+          // Choose what to render as the ligand model:
+          //   • smilesEdited + we have a fresh conformer → show the edit
+          //     translated to the pocket centroid (live preview).
+          //   • else if the dock returned a pose → show the docked pose.
+          //   • else → no ligand.
+          const useEditedPreview = smilesEdited && !!editedConformerSdf;
+          if (useEditedPreview) {
+            const m = viewer.addModel(editedConformerSdf!, "sdf");
+            // Re-position the conformer at the pocket centroid. RDKit's
+            // ETKDG conformer is centered around (0,0,0); the receptor
+            // lives in PDB coords. Translate by (poseCentroid − conformer
+            // centroid) so the new compound sits where the docked pose was.
+            try {
+              const atoms = m.selectedAtoms ? m.selectedAtoms({}) : [];
+              if (atoms.length && poseCentroidRef.current) {
+                let cx = 0, cy = 0, cz = 0;
+                for (const a of atoms) { cx += a.x; cy += a.y; cz += a.z; }
+                cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
+                const [px, py, pz] = poseCentroidRef.current;
+                if (typeof m.translate === "function") {
+                  m.translate(px - cx, py - cy, pz - cz);
+                } else {
+                  for (const a of atoms) { a.x += px - cx; a.y += py - cy; a.z += pz - cz; }
+                }
+              }
+            } catch { /* fallback to native conformer position */ }
+          } else if (posePdbqt) {
+            viewer.addModel(posePdbqt, "pdbqt");
+          }
+          // Camera framing — use the pocket centroid we computed from the
+          // docked pose (or, if missing, fall back to model:1's bbox).
+          // viewer.zoomTo() in 3Dmol fits the camera around the selection;
+          // we then nudge `zoom(2.0, 0)` to actually zoom IN (factor > 1
+          // is closer in 3Dmol's coordinate system) so the ligand fills
+          // a meaningful fraction of the canvas. Without this nudge the
+          // ligand renders as a few pixels lost in a sea of receptor.
+          if (poseCentroidRef.current) {
+            const [px, py, pz] = poseCentroidRef.current;
+            viewer.center({ x: px, y: py, z: pz });
+            viewer.zoom(2.5, 0);
+          } else if (posePdbqt || useEditedPreview) {
             viewer.zoomTo({ model: 1 });
-            viewer.zoom(0.7, 0);
+            viewer.zoom(2.0, 0);
           } else {
             viewer.zoomTo();
           }
@@ -1505,7 +1608,7 @@ function ProductionViewer3D({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasDock, receptorPdb, posePdbqt, conformerSdf]);
+  }, [hasDock, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited]);
 
   // Re-apply styles when toolbar state changes — without rebuilding scene.
   useEffect(() => {
@@ -1574,9 +1677,13 @@ function ProductionViewer3D({
 
   const status = receptorErr || conformerErr;
   const statusBadge = hasDock
-    ? receptorPdb && posePdbqt
-      ? <span className="text-emerald-400">● docked pose · {variant}</span>
-      : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
+    ? smilesEdited
+      ? editedConformerSdf
+        ? <span className="text-amber-300">⚠ live preview · re-dock to score</span>
+        : <span className="text-cyan-300 animate-pulse">▮ updating preview…</span>
+      : receptorPdb && posePdbqt
+        ? <span className="text-emerald-400">● docked pose · {variant}</span>
+        : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
     : loading
       ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
       : conformerSdf
