@@ -1361,57 +1361,48 @@ function Live3DViewer({
         const wtIdx = 0;
         const mutIdx = hasOverlay ? 1 : -1;
         const ligandIdx = hasOverlay ? 2 : 1;
-        // 3-zone slider visibility (only meaningful when overlay is mounted)
-        const showWt = !hasOverlay || wtMutantBlend < 67;
-        const showMut = hasOverlay && wtMutantBlend > 33;
-        const wtColor = "#64748b";    // slate-500
-        const mutColor = "#22d3ee";   // cyan-400 — visually distinct from WT
-        // Clear receptor styles
+        const recColor = "#94a3b8";    // slate-400 — neutral backdrop
+        // Clear all styles, then layer back
         v.setStyle({ model: wtIdx }, {});
         if (mutIdx >= 0) v.setStyle({ model: mutIdx }, {});
         try { v.removeAllSurfaces(); } catch { /* */ }
-        if (showWt) {
-          if (receptorStyle === "cartoon") v.setStyle({ model: wtIdx }, { cartoon: { color: wtColor } });
-          else if (receptorStyle === "surface") {
-            v.setStyle({ model: wtIdx }, { cartoon: { color: wtColor } });
-            try { v.addSurface(2, { opacity: 0.5, color: "#334155" }, { model: wtIdx }); } catch { /* */ }
-          }
-          else if (receptorStyle === "line") v.setStyle({ model: wtIdx }, { line: { color: wtColor } });
+        // ─── Backbone — ONLY on the WT model (model 0) ───
+        // The mutant model 1 stays unstyled and is only used to source
+        // the mutation residues side-chain stick. Both receptors are
+        // aligned on the same backbone coordinates anyway, so showing
+        // both cartoons would just look like one ribbon. This matches
+        // MutationOverlayViewer (the production JobPage 3D viewer)
+        // exactly — it never toggles backbone visibility from the
+        // slider, only the side-chain stick at the mutation residue.
+        if (receptorStyle === "cartoon") v.setStyle({ model: wtIdx }, { cartoon: { color: recColor } });
+        else if (receptorStyle === "surface") {
+          v.setStyle({ model: wtIdx }, { cartoon: { color: recColor } });
+          try { v.addSurface(2, { opacity: 0.5, color: "#334155" }, { model: wtIdx }); } catch { /* */ }
         }
-        if (showMut && mutIdx >= 0) {
-          if (receptorStyle === "cartoon") v.setStyle({ model: mutIdx }, { cartoon: { color: mutColor } });
-          else if (receptorStyle === "surface") {
-            v.setStyle({ model: mutIdx }, { cartoon: { color: mutColor } });
-            try { v.addSurface(2, { opacity: 0.45, color: "#0e7490" }, { model: mutIdx }); } catch { /* */ }
-          }
-          else if (receptorStyle === "line") v.setStyle({ model: mutIdx }, { line: { color: mutColor } });
-        }
-        // ─── Highlight the mutation residue on each visible receptor ───
-        // Without this, switching the slider just toggles overlapping
-        // ribbons of slightly different colors — visually identical for
-        // a single-residue mutation. Adding stick representation on
-        // resi=<mutationNumber> with a bright accent color makes the
-        // mutation site jump out and the slider's effect becomes
-        // visually obvious. 2026-05-05 user feedback.
+        else if (receptorStyle === "line") v.setStyle({ model: wtIdx }, { line: { color: recColor } });
+        // hide → leave model 0 unstyled
+        // ─── Mutation residue side-chain — controlled by slider ───
+        // 3-zone semantics matching MutationOverlayViewer:
+        //   blend < 25  → WT side chain only (green stick)
+        //   blend 25-75 → both side chains (overlay — see the geometric
+        //                 / chemical difference at the mutation site)
+        //   blend > 75  → mutant side chain only (blue stick)
+        // Hard show/hide is more reliable than per-atom opacity blending
+        // (3Dmol does not handle alpha consistently across versions).
         if (hasOverlay && mutation) {
           const resi = parseMutationResidue(mutation);
           if (resi != null) {
-            // WT side chain — bright slate, only when WT is showing
-            if (showWt) {
-              v.setStyle(
-                { model: wtIdx, resi: resi },
-                { stick: { radius: 0.32, color: "#cbd5e1" }, cartoon: { color: wtColor } },
-              );
+            const showWtSide = wtMutantBlend < 75;
+            const showMutSide = wtMutantBlend > 25;
+            if (showWtSide) {
+              v.addStyle({ model: wtIdx, resi }, { stick: { color: "#10b981", radius: 0.32 } });
             }
-            // Mutant side chain — bright cyan, only when mutant is showing
-            if (showMut && mutIdx >= 0) {
-              v.setStyle(
-                { model: mutIdx, resi: resi },
-                { stick: { radius: 0.32, color: "#22d3ee" }, cartoon: { color: mutColor } },
-              );
+            if (showMutSide && mutIdx >= 0) {
+              v.addStyle({ model: mutIdx, resi }, { stick: { color: "#3b6cf6", radius: 0.32 } });
             }
           }
         }
+        // Ligand pose
         v.setStyle({ model: ligandIdx }, ligandStyleSpec(ligandStyle));
       } else {
         v.setStyle({}, ligandStyleSpec(ligandStyle));
@@ -1825,26 +1816,30 @@ function Live3DViewer({
       {dockResult && hasMutationOverlayRef.current && mutation && (
         <div className="px-3 py-2 border-b border-slate-800/70 bg-[#070b15]">
           <div className="flex items-center gap-3 text-[10px] font-mono">
-            <span className="text-slate-500 uppercase tracking-[0.18em] text-[9px]">Receptor</span>
-            <span className={`${wtMutantBlend < 67 ? "text-slate-300" : "text-slate-600"}`}>WT</span>
+            <span className="text-slate-500 uppercase tracking-[0.18em] text-[9px]">Side chain</span>
+            <span className={`${wtMutantBlend < 75 ? "text-emerald-400" : "text-slate-600"}`}>WT</span>
             <input
               type="range"
               min={0}
               max={100}
               value={wtMutantBlend}
               onChange={(e) => setWtMutantBlend(Number(e.target.value))}
-              className="flex-1 accent-cyan-400 h-1"
+              className="flex-1 accent-emerald-400 h-1"
               title={
-                wtMutantBlend < 33 ? "WT only" :
-                wtMutantBlend > 66 ? `${mutation} only` : `WT + ${mutation} (overlay)`
+                wtMutantBlend < 25 ? "WT side chain only — drag right to overlay or switch to mutant"
+                : wtMutantBlend > 75 ? `${mutation} side chain only — drag left to overlay or switch to WT`
+                : `Both side chains visible — see the geometric/chemical difference at residue ${parseMutationResidue(mutation)}`
               }
             />
-            <span className={`${wtMutantBlend > 33 ? "text-cyan-300" : "text-slate-600"}`}>{mutation}</span>
+            <span className={`${wtMutantBlend > 25 ? "text-blue-400" : "text-slate-600"}`}>{mutation}</span>
             <span className="text-slate-500 ml-1 min-w-[80px] text-right">
-              {wtMutantBlend < 33 ? "WT only" :
-               wtMutantBlend > 66 ? `${mutation} only` :
-               "overlay"}
+              {wtMutantBlend < 25 ? "WT only"
+                : wtMutantBlend > 75 ? `${mutation} only`
+                : "overlay"}
             </span>
+          </div>
+          <div className="text-[9px] font-mono text-slate-600 mt-1 ml-[68px]">
+            backbone is shared (aligned) — slider only toggles the residue side chain
           </div>
         </div>
       )}
