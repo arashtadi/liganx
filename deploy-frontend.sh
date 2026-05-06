@@ -24,7 +24,12 @@ fi
 cd "$(dirname "$0")/frontend"
 
 echo "==> Building + deploying to Vercel..."
-DEPLOY_URL=$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" 2>&1 \
+# --force bypasses Vercel's build cache. Without it, deploys can re-use a
+# previously-cached build artifact even when source files changed — we hit
+# this on Studio v0.16 where the bundle hash on liganx.com didn't move
+# despite a 556-line source change. Caching gives us nothing here (Vite is
+# already fast) so always do a clean build.
+DEPLOY_URL=$(vercel deploy --prod --yes --force --token="$VERCEL_TOKEN" 2>&1 \
   | grep -oE 'https://frontend-[a-z0-9-]+\.vercel\.app' \
   | head -1)
 
