@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.28.1-2026-05-06-scroll-fixes";
+const LIGANX_BUILD_TAG = "v0.29-2026-05-06-live-dock-toggle";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1490,6 +1490,14 @@ function ProductionViewer3D({
   // viewport (escape key exits). Lets users zoom into atomic detail
   // without leaving the page. Same affordance as JobPage's hero viewer.
   const [fullscreen, setFullscreen] = useState(false);
+  // (v0.29) View mode toggle. After a dock completes, the viewer
+  // auto-switches to the docked-pose scene (receptor + bound ligand),
+  // which is usually what the user wants — but sometimes they want to
+  // pop back to the loose live conformer (e.g. while editing a follow-
+  // up compound to compare unbound geometry vs. the docked pose). This
+  // state lets the user override the default. Resets to "dock" each
+  // time a fresh dockResult arrives so the new dock takes the spotlight.
+  const [viewMode, setViewMode] = useState<"live" | "dock">("dock");
 
   const primary = dockResult || dockResultWt;
   const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
@@ -1537,6 +1545,13 @@ function ProductionViewer3D({
     return lines.join("\n") + "\nEND\n";
   })();
   const hasPose = hasDock && !!posePdbqt;
+  // Effective scene flag — drives the data-load effect and the
+  // applyStyles branches. When the user has flipped the toolbar to
+  // "live" we deliberately downgrade to the conformer-only path so
+  // the receptor + pose disappear and the unbound ligand snaps to its
+  // RDKit ETKDG geometry. The hasDock variable above is kept honest
+  // so the score panel and other UI remain accurate.
+  const showDockedScene = hasDock && viewMode === "dock";
   // Live-preview gate: true when the user has edited the 2D structure
   // since the dock that produced the current pose. While true, the 3D
   // view shows a live conformer of the edited SMILES (positioned at
@@ -1556,6 +1571,14 @@ function ProductionViewer3D({
     }
     return Array.from(out);
   }, [dockResult?.hits]);
+
+  // (v0.29) When a fresh dockResult lands, default the view back to
+  // the docked-pose scene. If the user manually flipped to "live"
+  // before the next dock finished, we still want the new dock to
+  // get the spotlight — they can flip back with one click.
+  useEffect(() => {
+    if (dockResult) setViewMode("dock");
+  }, [dockResult]);
 
   // When a fresh dock arrives, snapshot the SMILES that produced it so
   // we can detect later 2D edits as "stale pose" and switch the 3D view
@@ -1583,14 +1606,19 @@ function ProductionViewer3D({
     }
   }, [hasDock, posePdbqt, smiles]);
 
-  // Fetch the live conformer in two cases:
+  // Fetch the live conformer in three cases:
   //   1. No dock yet — preview whatever the user is sketching.
   //   2. Dock done but the user has since edited the 2D structure —
   //      preview the new compound in the pocket so they can see how
   //      their edit fits before re-docking.
+  //   3. (v0.29) User flipped the live/dock toggle to "live" while a
+  //      dock exists — they want to see the unbound conformer of the
+  //      docked compound. Skip the fetch if we already have a
+  //      conformer for this SMILES (cached in conformerSdf).
   useEffect(() => {
     if (!smiles) return;
-    if (hasDock && !smilesEdited) return;  // docked pose is still current
+    if (hasDock && !smilesEdited && viewMode !== "live") return;  // docked pose is still current
+    if (viewMode === "live" && conformerSdf) return;  // already cached
     const t = window.setTimeout(async () => {
       setLoading(true);
       setConformerErr(null);
@@ -1609,7 +1637,14 @@ function ProductionViewer3D({
       }
     }, 350);
     return () => window.clearTimeout(t);
-  }, [smiles, hasDock, smilesEdited]);
+    // viewMode + conformerSdf in deps so flipping to "live" triggers a
+    // fetch when we don't already have a cached conformer for this
+    // SMILES. eslint-disable: conformerSdf is intentionally read inside
+    // the early-return so the rule doesn't see a hooks-rules violation,
+    // but TS sees it as a non-deps usage. Manual list keeps the rebuild
+    // count minimal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smiles, hasDock, smilesEdited, viewMode]);
 
   // Fetch the receptor PDB when a dock result arrives.
   useEffect(() => {
@@ -1638,8 +1673,9 @@ function ProductionViewer3D({
   function applyStyles(viewer: any) {
     if (!viewer) return;
     try {
-      // Receptor model — index 0. Conformer-only mode skips this branch.
-      if (hasDock && receptorPdb) {
+      // Receptor model — index 0. Conformer-only mode (no dock OR user
+      // flipped to "live") skips this whole branch.
+      if (showDockedScene && receptorPdb) {
         viewer.setStyle({ model: 0 }, {});
         try { viewer.removeAllSurfaces(); } catch { /* */ }
         const recColor = "#94a3b8";
@@ -1676,9 +1712,11 @@ function ProductionViewer3D({
       }
       // Pose model (last loaded). With receptor: model:1. Without dock,
       // the conformer is at model:0. The edited-preview path also lives
-      // at model:1 so the same selector covers it.
-      const poseIdx = hasDock && receptorPdb ? 1 : 0;
-      const ligandPresent = (hasDock && (hasPose || (smilesEdited && editedConformerSdf))) || (!hasDock && conformerSdf);
+      // at model:1 so the same selector covers it. (v0.29) Mirror the
+      // showDockedScene flag here too — when the user picks "live"
+      // there's no receptor in the scene, so the conformer is at 0.
+      const poseIdx = showDockedScene && receptorPdb ? 1 : 0;
+      const ligandPresent = (showDockedScene && (hasPose || (smilesEdited && editedConformerSdf))) || (!showDockedScene && conformerSdf);
       if (ligandPresent) {
         viewer.setStyle({ model: poseIdx }, {});
         // Thick element-colored ligand (radius 0.30) — same visual weight
@@ -1711,7 +1749,10 @@ function ProductionViewer3D({
   useEffect(() => {
     if (!containerRef.current) return;
     const buildKey = [
-      hasDock ? "D" : "_",
+      // (v0.29) Use showDockedScene instead of hasDock so flipping the
+      // live/dock toggle invalidates the cached scene and triggers a
+      // rebuild. Without this the toggle would have no visible effect.
+      showDockedScene ? "D" : "_",
       receptorPdb ? `r${receptorPdb.length}` : "_",
       posePdbqt ? `p${posePdbqt.length}` : "_",
       conformerSdf ? `c${conformerSdf.length}` : "_",
@@ -1738,7 +1779,7 @@ function ProductionViewer3D({
         // the viewer instance is brand new and they need to re-bind.
         setViewerVersion((v) => v + 1);
 
-        if (hasDock && receptorPdb) {
+        if (showDockedScene && receptorPdb) {
           viewer.addModel(receptorPdb, "pdb");
           // Choose what to render as the ligand model:
           //   • smilesEdited + we have a fresh conformer → show the edit
@@ -1804,7 +1845,7 @@ function ProductionViewer3D({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasDock, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited]);
+  }, [showDockedScene, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited]);
 
   // Re-apply styles when toolbar state OR the viewer instance changes.
   // viewerVersion bump ensures style re-applies after the data effect
@@ -1954,6 +1995,22 @@ function ProductionViewer3D({
 
       {showToolbar && (
         <div className="px-2 py-1.5 border-b border-slate-800/70 flex items-center gap-2 flex-wrap text-[9px] font-mono">
+          {/* (v0.29) Live ↔ Dock toggle. Only meaningful once a dock has
+              landed: before that, the live conformer is the only thing
+              the viewer can show. After the dock, the user can flip
+              back to the unbound conformer to compare geometries — and
+              flip forward again to revisit the bound pose. The toggle
+              auto-resets to "dock" each time a fresh dockResult lands. */}
+          {hasDock && !!smiles && (
+            <ViewerControlGroup label="VIEW MODE">
+              <ViewerSegBtn active={viewMode === "live"} onClick={() => setViewMode("live")} title="Show the live (unbound) conformer of the current SMILES — RDKit ETKDG geometry, no receptor.">
+                live
+              </ViewerSegBtn>
+              <ViewerSegBtn active={viewMode === "dock"} onClick={() => setViewMode("dock")} title="Show the docked pose with receptor (default after a dock completes).">
+                docked
+              </ViewerSegBtn>
+            </ViewerControlGroup>
+          )}
           {hasDock && (
             <ViewerControlGroup label="BACKBONE">
               <ViewerSegBtn active={backboneStyle === "cartoon"} onClick={() => setBackboneStyle("cartoon")} title="Cartoon ribbon">cartoon</ViewerSegBtn>
