@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.57-2026-05-07-save-button-2d-header";
+const LIGANX_BUILD_TAG = "v0.58-2026-05-07-camera-stable-on-edit";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3181,12 +3181,12 @@ function ProductionViewer3D({
   // rotation/zoom state and continues to render. This is what was causing
   // the 'molecule disappears and comes back' artefact during drag.
   const lastBuildKeyRef = useRef<string>("");
-  // (v0.52) Snapshot refs used to detect "variant-only" rebuilds —
-  // i.e. flips between wt/both/mut where every other input is
-  // unchanged. When that's the case the build effect captures and
-  // restores the user's camera so the scene doesn't jump.
-  const lastInputSnapshotRef = useRef<string>("");
-  const lastViewVariantRef = useRef<typeof viewVariant | null>(null);
+  // (v0.58) Single snapshot of the dock-result fingerprints. The
+  // build effect uses this to decide whether to re-frame the camera
+  // (only when fingerprints differ — i.e. a NEW dock arrived). All
+  // other rebuild causes (SMILES edits, conformer fetches, variant
+  // flips, live↔docked toggles) preserve the user's camera state.
+  const lastStructuralSnapshotRef = useRef<string>("");
   useEffect(() => {
     if (!containerRef.current) return;
     const buildKey = [
@@ -3208,32 +3208,29 @@ function ProductionViewer3D({
       // Same data, viewer already exists — leave it alone.
       return;
     }
-    // (v0.52) Robust "variant flip" detection. v0.51 stripped only the
-    // variant slot from the buildKey, but flipping variant ALSO swaps
-    // the primary receptor PDB (because `variant` drives the fetch),
-    // so the receptor signature `r...` differed and the heuristic
-    // missed the case. Now: track viewVariant + the IDs of the
-    // upstream inputs (dock result fingerprints, smiles, showDockedScene)
-    // in a snapshot ref. If everything except viewVariant matches the
-    // previous render, treat it as a pure variant flip and preserve
-    // the camera. WT and mutant receptors are essentially the same
-    // protein with one residue different, so reusing the camera is
-    // visually correct.
-    const inputSnapshot = [
-      showDockedScene ? "D" : "_",
-      smiles,
+    // (v0.58) Generalised camera-preserve. Previously the camera was
+    // only kept stable on variant flips (v0.52), but the same problem
+    // applies whenever we rebuild the scene without changing the
+    // underlying STRUCTURE — e.g. a SMILES edit that fetches an
+    // edited conformer, a live/dock toggle, or a variant flip. The
+    // user reported camera jumps on every 2D edit even after the
+    // variant fix.
+    //
+    // New rule: capture viewer.getView() before rebuild and restore
+    // it after, EXCEPT when one of the dock-result fingerprints just
+    // changed (a fresh dock arrived → user expects re-framing on the
+    // new pose centroid). Conformer-only / edited-conformer / variant
+    // / mode changes all preserve camera.
+    const structuralSnapshot = [
       dockResult?.pose_pdbqt_b64 || "_",
       dockResultWt?.pose_pdbqt_b64 || "_",
-      conformerSdf ? `c${conformerSdf.length}` : "_",
-      smilesEdited && editedConformerSdf ? `e${editedConformerSdf.length}` : "_",
     ].join("|");
-    const variantOnlyChange = lastInputSnapshotRef.current === inputSnapshot && lastViewVariantRef.current !== null && lastViewVariantRef.current !== viewVariant;
+    const isFreshStructure = lastStructuralSnapshotRef.current !== structuralSnapshot;
     let savedView: any = null;
-    if (variantOnlyChange && viewerRef.current && typeof viewerRef.current.getView === "function") {
+    if (!isFreshStructure && viewerRef.current && typeof viewerRef.current.getView === "function") {
       try { savedView = viewerRef.current.getView(); } catch { /* no-op */ }
     }
-    lastInputSnapshotRef.current = inputSnapshot;
-    lastViewVariantRef.current = viewVariant;
+    lastStructuralSnapshotRef.current = structuralSnapshot;
     lastBuildKeyRef.current = buildKey;
     let cancelled = false;
     (async () => {
