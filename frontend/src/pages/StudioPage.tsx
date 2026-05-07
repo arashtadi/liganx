@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.26-2026-05-06-mono-header";
+const LIGANX_BUILD_TAG = "v0.27-2026-05-06-unified-theme-mono-site";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -204,7 +204,23 @@ export default function StudioPage() {
   // 2D molecular editor (or any web content) without needing the iframe
   // to cooperate. Imperfect on raster images and gradients but Ketcher
   // is line art so the result is clean. 2026-05-05 user fallback.
-  const [editorTheme, setEditorTheme] = useState<"light" | "dark">("light");
+  //
+  // v0.27: editor theme is no longer independent — it derives from the
+  // global site theme (`<html>.dark` class, owned by ThemeToggle in the
+  // header). One toggle, both flip together. We watch the html class via
+  // a MutationObserver so changes from anywhere on the page propagate.
+  const [editorTheme, setEditorTheme] = useState<"light" | "dark">(() =>
+    typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? "dark" : "light"
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    const obs = new MutationObserver(() => {
+      setEditorTheme(root.classList.contains("dark") ? "dark" : "light");
+    });
+    obs.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
   const [iframeKey] = useState(0);  // reserved for future remounts
   const darkFilter = "invert(0.92) hue-rotate(180deg) brightness(1.1) contrast(0.95)";
 
@@ -472,16 +488,9 @@ export default function StudioPage() {
               <SaScorePill sa={liveSaScore} />
             </div>
             <div className="flex items-center gap-2">
-              {/* 2D theme toggle — bumps iframe key so Ketcher reloads
-                  with ?theme=dark or default. Current SMILES is preserved
-                  by re-applying it after the iframe re-inits. */}
-              <button
-                onClick={() => setEditorTheme(editorTheme === "light" ? "dark" : "light")}
-                className="px-2 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider transition-colors border-slate-700/60 text-slate-400 hover:text-cyan-300 hover:border-cyan-700/50"
-                title={`Switch 2D editor to ${editorTheme === "light" ? "dark" : "light"} mode`}
-              >
-                {editorTheme === "light" ? "☼ light" : "☾ dark"}
-              </button>
+              {/* (v0.27) The 2D theme toggle moved to the global header.
+                  Editor theme now follows the site theme automatically —
+                  see the MutationObserver wired to <html>.dark above. */}
               <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
             </div>
           </div>

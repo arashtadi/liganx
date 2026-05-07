@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 
 /**
- * Theme toggle button — light / dark.
+ * Theme toggle — light / dark, single source of truth for the WHOLE site.
  *
  * The actual theme application happens via a `.dark` class on <html>. The
  * initial value is set by an inline script in index.html (so there's no
  * flash-of-wrong-theme before React mounts). This component just keeps
- * React state in sync with the DOM, persists changes to localStorage, and
- * renders a sun/moon icon button.
+ * React state in sync with the DOM and persists changes to localStorage.
+ *
+ * UX note (v0.27): we used to render a separate sun/moon icon-only toggle
+ * here AND a text "☼ light / ☾ dark" toggle inside the Studio 2D editor
+ * header. Two buttons for one concept caused predictable confusion ("why
+ * is the page dark but the molecule editor light?"). Now there's a single
+ * text button in the global header and Studio derives the Ketcher iframe
+ * filter from this same `.dark` class — one click, everything flips.
  *
  * Honours `prefers-color-scheme` as the default when nothing is saved.
  */
@@ -50,28 +56,11 @@ export default function ThemeToggle() {
     <button
       type="button"
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      className="inline-flex items-center justify-center w-9 h-9 rounded-md text-slate-600 hover:text-ink hover:bg-slate-100 transition-colors dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800"
-      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      className="px-2.5 py-1 rounded-md border font-mono text-[11px] uppercase tracking-[0.15em] transition-colors border-slate-300 text-slate-600 hover:text-ink hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800"
+      title={isDark ? "Switch entire site to light mode" : "Switch entire site to dark mode"}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
     >
-      {isDark ? <SunIcon /> : <MoonIcon />}
+      {isDark ? "☼ Light" : "☾ Dark"}
     </button>
-  );
-}
-
-function SunIcon() {
-  return (
-    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
   );
 }
