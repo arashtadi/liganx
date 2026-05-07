@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.58-2026-05-07-camera-stable-on-edit";
+const LIGANX_BUILD_TAG = "v0.59-2026-05-07-compact-score-panel";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -897,10 +897,14 @@ export default function StudioPage() {
                 run is in flight (so the user sees the dock-pending
                 state instead of the panel jumping in late). */}
             {(dockResult || dockResultWt || docking || (fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")) && <>
-            {/* Score + Pose row — biggest type on the page */}
-            <div className="px-4 pt-3 pb-2 grid grid-cols-2 gap-2 border-b border-slate-800/70">
+            {/* Score + Pose row — biggest type on the page.
+                (v0.59) Padding/margins tightened across the board so
+                the result section reads more compact: px-3, no top
+                'Score' label (the column headers already carry the
+                semantics), grid gap-2 between columns, and the
+                three-column score grid uses gap-2 instead of gap-3. */}
+            <div className="px-3 pt-2 pb-1.5 grid grid-cols-2 gap-3 border-b border-slate-800/70">
               <div>
-                <div className={TOK.label}>Score</div>
                 {/* Show 2-column WT vs mutation panel whenever the user
                     has BOTH selected — regardless of which results have
                     come back. Each slot can show a score, "loading", or
@@ -913,11 +917,11 @@ export default function StudioPage() {
                   // biology), WT (middle, slate, baseline),
                   // Δ (right, emerald/rose, the selectivity readout).
                   <>
-                    <div className="grid grid-cols-3 gap-3 mt-1">
+                    <div className="grid grid-cols-3 gap-2">
                       {/* MUTANT column */}
                       <div className="flex flex-col">
-                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-amber-300 mb-0.5">
-                          ▸ Mutant · {selectedMutation}
+                        <span className="text-[9px] font-mono uppercase tracking-[0.15em] text-amber-300 truncate">
+                          MUT · {selectedMutation}
                         </span>
                         <span className={`font-mono text-lg tabular-nums leading-tight ${
                           dockResult?.score != null ? scoreTier(dockResult.score)
@@ -934,9 +938,9 @@ export default function StudioPage() {
                         )}
                       </div>
                       {/* WT column */}
-                      <div className="flex flex-col border-l border-slate-800 pl-3">
-                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-400 mb-0.5">
-                          ▸ Wild-type
+                      <div className="flex flex-col border-l border-slate-800 pl-2">
+                        <span className="text-[9px] font-mono uppercase tracking-[0.15em] text-slate-400 truncate">
+                          WT
                         </span>
                         <span className={`font-mono text-lg tabular-nums leading-tight ${
                           dockResultWt?.score != null ? scoreTier(dockResultWt.score)
@@ -956,9 +960,9 @@ export default function StudioPage() {
                           mutant tighter (gain), positive = looser
                           (resistance). Only renders when both scores
                           are in. */}
-                      <div className="flex flex-col border-l border-slate-800 pl-3">
-                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-cyan-300 mb-0.5">
-                          ▸ Δ Selectivity
+                      <div className="flex flex-col border-l border-slate-800 pl-2">
+                        <span className="text-[9px] font-mono uppercase tracking-[0.15em] text-cyan-300 truncate" title="Δ Selectivity = Mutant − WT score">
+                          Δ SEL.
                         </span>
                         {dockResult?.score != null && dockResultWt?.score != null ? (() => {
                           const delta = dockResult.score - dockResultWt.score;
@@ -987,8 +991,8 @@ export default function StudioPage() {
                         )}
                       </div>
                     </div>
-                    <div className="text-[10px] font-mono text-slate-500 mt-0.5">
-                      kcal/mol · exh=8
+                    <div className="text-[9px] font-mono text-slate-600 mt-0.5">
+                      kcal/mol
                       {docking && <span className="ml-2 text-cyan-300 animate-pulse">▶ docking…</span>}
                       {!docking && (!dockResult || !dockResultWt) && (dockResult || dockResultWt) && (
                         <span className="ml-2 text-amber-400">⚠ one dock failed — re-run</span>
@@ -1083,27 +1087,33 @@ export default function StudioPage() {
               </div>
             </div>
 
-            {/* Hits / Misses */}
-            <div className="px-4 py-3 border-b border-slate-800/70">
-              <div className="flex gap-6 text-[11px] font-mono">
-                <div className="flex-1 min-w-0">
-                  <div className={`${TOK.label} mb-1`}>Hits</div>
-                  <div className="text-emerald-300 truncate" title={(dockResult?.hits || []).join(" · ")}>
-                    {dockResult?.hits?.length
-                      ? dockResult.hits.slice(0, 5).join(" · ") + (dockResult.hits.length > 5 ? ` +${dockResult.hits.length - 5}` : "")
-                      : <span className="text-slate-600">—</span>}
-                  </div>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className={`${TOK.label} mb-1`}>Misses</div>
-                  <div className="text-rose-300 truncate" title={(dockResult?.misses || []).join(" · ")}>
-                    {dockResult?.misses?.length
-                      ? dockResult.misses.slice(0, 5).join(" · ") + (dockResult.misses.length > 5 ? ` +${dockResult.misses.length - 5}` : "")
-                      : <span className="text-slate-600">—</span>}
-                  </div>
+            {/* Hits / Misses — only render when at least one has data.
+                Full Job results currently don't populate hits/misses
+                (Studio's polling synth zero-fills these arrays), so
+                showing two empty em-dash columns wasted vertical
+                real estate. (v0.59) */}
+            {((dockResult?.hits?.length || 0) + (dockResult?.misses?.length || 0)) > 0 && (
+              <div className="px-3 py-1.5 border-b border-slate-800/70">
+                <div className="flex gap-4 text-[11px] font-mono">
+                  {!!dockResult?.hits?.length && (
+                    <div className="flex-1 min-w-0">
+                      <div className={`${TOK.label} mb-0.5`}>Hits</div>
+                      <div className="text-emerald-300 truncate" title={(dockResult?.hits || []).join(" · ")}>
+                        {dockResult.hits.slice(0, 5).join(" · ") + (dockResult.hits.length > 5 ? ` +${dockResult.hits.length - 5}` : "")}
+                      </div>
+                    </div>
+                  )}
+                  {!!dockResult?.misses?.length && (
+                    <div className="flex-1 min-w-0">
+                      <div className={`${TOK.label} mb-0.5`}>Misses</div>
+                      <div className="text-rose-300 truncate" title={(dockResult?.misses || []).join(" · ")}>
+                        {dockResult.misses.slice(0, 5).join(" · ") + (dockResult.misses.length > 5 ? ` +${dockResult.misses.length - 5}` : "")}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
+            )}
             </>}
             {/* /v0.48 conditional close */}
 
