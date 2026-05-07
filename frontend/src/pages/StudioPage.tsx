@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.50-2026-05-07-variant-both-overlay";
+const LIGANX_BUILD_TAG = "v0.51-2026-05-07-variant-camera-stable";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3114,6 +3114,19 @@ function ProductionViewer3D({
       // Same data, viewer already exists — leave it alone.
       return;
     }
+    // (v0.51) Detect "variant-only" rebuilds — i.e. user clicked
+    // wt/both/mut but the underlying receptor/pose for THIS render
+    // is the same as before. In that case we preserve the camera so
+    // the scene doesn't jump on every toggle. We compare the build-
+    // key WITHOUT the variant slot; if the rest is identical we know
+    // the rebuild is purely a variant flip.
+    const prevKey = lastBuildKeyRef.current;
+    const stripVariant = (k: string) => k.split("|").filter((p) => !p.startsWith("v") && !p.startsWith("a") && !p.startsWith("q")).join("|");
+    const variantOnlyChange = !!prevKey && stripVariant(prevKey) === stripVariant(buildKey);
+    let savedView: any = null;
+    if (variantOnlyChange && viewerRef.current && typeof viewerRef.current.getView === "function") {
+      try { savedView = viewerRef.current.getView(); } catch { /* no-op */ }
+    }
     lastBuildKeyRef.current = buildKey;
     let cancelled = false;
     (async () => {
@@ -3193,11 +3206,16 @@ function ProductionViewer3D({
           // canvas-fit while keeping enough binding-site cartoon for
           // context.
           const ligandIdx = posePdbqt || useEditedPreview ? 1 : -1;
-          if (ligandIdx >= 0) {
-            viewer.zoomTo({ model: ligandIdx });
-            viewer.zoom(0.6, 0);
-          } else {
-            viewer.zoomTo();
+          // (v0.51) Skip the auto-frame zoom when this rebuild was
+          // triggered by a variant flip — savedView will be applied
+          // below to restore the camera the user already had.
+          if (!savedView) {
+            if (ligandIdx >= 0) {
+              viewer.zoomTo({ model: ligandIdx });
+              viewer.zoom(0.6, 0);
+            } else {
+              viewer.zoomTo();
+            }
           }
         } else {
           // (v0.30) Live (no-receptor) branch. Render the FRESHEST
@@ -3210,8 +3228,16 @@ function ProductionViewer3D({
           const liveSdf = (smilesEdited && editedConformerSdf) ? editedConformerSdf : conformerSdf;
           if (liveSdf) {
             viewer.addModel(liveSdf, "sdf");
-            viewer.zoomTo();
+            // (v0.51) Same camera-preserve rule applies in the live
+            // conformer branch.
+            if (!savedView) viewer.zoomTo();
           }
+        }
+        // (v0.51) Restore the user's prior camera state if this was a
+        // pure variant flip — keeps the scene stable instead of
+        // re-framing on every wt/both/mut click.
+        if (savedView && typeof viewer.setView === "function") {
+          try { viewer.setView(savedView); } catch { /* ignore */ }
         }
         applyStyles(viewer);
       } catch (e) {
