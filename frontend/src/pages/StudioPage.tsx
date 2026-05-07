@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.36-2026-05-07-promote-modal";
+const LIGANX_BUILD_TAG = "v0.37-2026-05-07-mutation-autopopulate";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -981,8 +981,15 @@ export default function StudioPage() {
                   className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
                 />
               </div>
-              {(mutationDropdownOpen || mutationQuery) && (
-                <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto pt-1 border-t border-slate-800/70">
+              {/* (v0.37) Show curated mutation chips as soon as a target
+                  is selected and has curated mutations — no click on the
+                  search box required. Matches NewJobPage's "Curated for
+                  EGFR: T790M, L858R, …" affordance. The dropdown-open
+                  flag now only matters when there are NO curated entries
+                  (so the user can still type a custom mutation and see
+                  the WT toggle). */}
+              {(availableMutations.length > 0 || mutationDropdownOpen || mutationQuery) && (
+                <div className="flex flex-wrap items-center gap-1.5 max-h-40 overflow-auto pt-1 border-t border-slate-800/70">
                   {/* WT chip — multi-select with the mutation row.
                       Click toggles independently. Doesn't auto-close
                       the dropdown so the user can also pick a mutation
