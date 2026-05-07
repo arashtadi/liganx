@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.24-2026-05-06-ux-trio";
+const LIGANX_BUILD_TAG = "v0.25-2026-05-06-compound-section-parity";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -724,23 +724,6 @@ export default function StudioPage() {
               </div>
             </div>
 
-            {/* ─── COMPOUND ─── */}
-            <div className="px-4 py-3 border-b border-slate-800/70">
-              <div className="flex items-center justify-between mb-2">
-                <span className={TOK.label}>Compound</span>
-                <button
-                  onClick={() => setShowLoader(!showLoader)}
-                  className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border border-cyan-700/40 text-cyan-300 hover:bg-cyan-950/40"
-                  title="Load reference, library, or paste SMILES"
-                >
-                  ▸ load
-                </button>
-              </div>
-              <div className="font-mono text-[11px] text-slate-300 truncate" title={currentSmiles || "(empty)"}>
-                {currentSmiles || <span className="text-slate-600 italic">— sketch or load a structure —</span>}
-              </div>
-            </div>
-
             {/* ─── TARGET (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
@@ -938,6 +921,43 @@ export default function StudioPage() {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* ─── COMPOUND (trigger-chip + search row, mirrors Target/Mutation) ─── */}
+            <div className="px-4 py-3 border-b border-slate-800/70">
+              <div className="flex items-center justify-between mb-2">
+                <span className={TOK.label}>Compound</span>
+                <span className="font-mono text-[9px] text-slate-600">
+                  {currentSmiles ? `${currentSmiles.length} chars` : "empty"}
+                </span>
+              </div>
+              {/* Trigger row: chip on the left shows current SMILES preview
+                  (or "—" when empty); input on the right opens the loader
+                  popover on focus, identical to Target's "search" affordance.
+                  Both controls toggle the same loader so the section behaves
+                  uniformly with Target/Mutation. */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowLoader(!showLoader)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-cyan-500/60 bg-cyan-900/30 text-cyan-200 font-mono text-[11px] uppercase tracking-wider hover:bg-cyan-900/50 min-w-[80px]"
+                  title={currentSmiles ? `Current SMILES: ${currentSmiles}` : "Load reference, library, or paste SMILES"}
+                >
+                  <span className={`text-[8px] transition-transform ${showLoader ? "rotate-90" : ""}`}>▸</span>
+                  <span className="truncate max-w-[80px]">
+                    {currentSmiles
+                      ? (currentSmiles.length > 10 ? currentSmiles.slice(0, 10) + "…" : currentSmiles)
+                      : "—"}
+                  </span>
+                </button>
+                <input
+                  type="text"
+                  readOnly
+                  onFocus={() => setShowLoader(true)}
+                  onClick={() => setShowLoader(true)}
+                  placeholder="search · paste SMILES · pubchem"
+                  className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60 cursor-pointer"
+                />
+              </div>
             </div>
 
             {/* Action area */}
