@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.46-2026-05-07-dock-buttons-peers";
+const LIGANX_BUILD_TAG = "v0.46.1-2026-05-07-fulljob-pdbid-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -561,12 +561,22 @@ export default function StudioPage() {
   async function runFullJob() {
     if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (!selectedTarget) { setDockError("Pick a target."); return; }
+    // (v0.46.1) Backend /jobs expects the REAL PDB id (e.g. "4OBE"),
+    // not the catalog target id (e.g. "kras"). Earlier path passed the
+    // catalog id and got a 'fetch_pdb pdb=KRAS' 404 from RCSB. Use
+    // targetMeta.pdb_id, the same field NewJobPage sends.
+    const realPdbId = (targetMeta?.pdb_id || "").trim();
+    if (!realPdbId) {
+      setDockError(`Couldn't resolve a PDB id for target "${selectedTarget}". Pick a different target or use NewJobPage.`);
+      return;
+    }
     setDockError(null);
     setSubmittingFull(true);
     try {
       const job = await api.createJob({
-        pdb_id: selectedTarget,           // catalog id; backend resolves to PDB
+        pdb_id: realPdbId,
         chain: targetMeta?.chain || "A",
+        uniprot_id: targetMeta?.uniprot,
         mutations: selectedMutation ? [selectedMutation] : [],
         compounds: [{
           name: loadedCompound?.name || activeDraft?.name || "Studio compound",
