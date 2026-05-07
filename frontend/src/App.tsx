@@ -99,7 +99,15 @@ export default function App() {
  */
 function Main({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
-  const fullBleedRoutes = ["/"];
+  // Routes that opt out of the centered max-w-6xl column.
+  // - "/"        : marketing landing page with edge-to-edge gradient bands.
+  // - "/studio"  : control-center cockpit; needs the full viewport so the
+  //                two-column 2D-editor + 3D-viewer layout doesn't get
+  //                squeezed AND so the dark background covers everything
+  //                (otherwise in light mode the body bg leaks around the
+  //                centered Studio panels — the "half white, half black"
+  //                bug the user reported on v0.27).
+  const fullBleedRoutes = ["/", "/studio"];
   const fullBleed = fullBleedRoutes.includes(pathname);
   return (
     <main
