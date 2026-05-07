@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.67-2026-05-07-edit-staged-compound";
+const LIGANX_BUILD_TAG = "v0.68-2026-05-07-canonical-baseline-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -398,8 +398,22 @@ export default function StudioPage() {
   });
 
   /** Load a SMILES into the Ketcher canvas. Used by the compound picker
-   *  to start from a known structure (drug or saved library entry). */
-  async function loadIntoCanvas(smiles: string) {
+   *  to start from a known structure (drug or saved library entry).
+   *
+   *  (v0.68) `opts.stagedId` and `opts.libraryName` opt into "canonical
+   *  baseline sync": after Ketcher rewrites the SMILES on load (it
+   *  canonicalizes atom ordering, H placement, etc.), we update the
+   *  matching compounds[].smiles and/or loadedCompound.smiles to the
+   *  rewritten form. Without this, every staged-row click fires the
+   *  SAVE EDITS button on load, because compounds[i].smiles holds the
+   *  pre-canonical string while currentSmiles holds the post-canonical
+   *  one — and the !== check trips falsely. With the sync in place,
+   *  the dirty check only fires on REAL user edits in the canvas.
+   */
+  async function loadIntoCanvas(
+    smiles: string,
+    opts?: { stagedId?: string; libraryName?: string },
+  ) {
     if (!smiles) return;
     const a = getKetcherApi(iframeRef.current);
     if (!a?.setMolecule) {
@@ -412,8 +426,26 @@ export default function StudioPage() {
       // Trigger an immediate poll-style update so currentSmiles refreshes
       setTimeout(async () => {
         try {
-          const s = await a.getSmiles();
-          setCurrentSmiles((s || "").trim());
+          const s = ((await a.getSmiles()) || "").trim();
+          setCurrentSmiles(s);
+          // (v0.68) Canonical-baseline sync. Treat whatever Ketcher
+          // emits on load as the "untouched" state for this load.
+          if (s) {
+            if (opts?.stagedId) {
+              setCompounds((prev) =>
+                prev.map((entry) =>
+                  entry.id === opts.stagedId ? { ...entry, smiles: s } : entry,
+                ),
+              );
+            }
+            if (opts?.libraryName) {
+              setLoadedCompound((prev) =>
+                prev && prev.name === opts.libraryName
+                  ? { name: opts.libraryName, smiles: s }
+                  : prev,
+              );
+            }
+          }
         } catch { /* polling will catch it */ }
       }, 100);
     } catch (e: any) {
@@ -1442,8 +1474,21 @@ export default function StudioPage() {
               {/* (v0.33) Fork-on-edit pill. Only renders when the user
                   loaded a NAMED compound and has since edited it. Two
                   buttons: Save changes (overwrite) vs Save as new
-                  (keep original safe; default by visual emphasis). */}
-              {loadedCompound && currentSmiles && currentSmiles !== loadedCompound.smiles && (
+                  (keep original safe; default by visual emphasis).
+                  (v0.68) Hidden whenever the user is editing one of the
+                  staged compounds in the suite — in that case the inline
+                  SAVE EDITS button on the row covers the same intent
+                  (apply the edit to this dock run), and showing both
+                  fork buttons + SAVE EDITS together was confusing.
+                  Library-overwrite / fork-as-new are still reachable
+                  via the Promote action; the pill only nags when the
+                  user has loaded a library compound that ISN'T already
+                  staged in the current suite. */}
+              {loadedCompound && currentSmiles && currentSmiles !== loadedCompound.smiles && !(
+                activeCompoundIdx >= 0 &&
+                activeCompoundIdx < compounds.length &&
+                currentSmiles !== compounds[activeCompoundIdx].smiles
+              ) && (
                 <div className="mb-2 px-2 py-1.5 rounded bg-amber-950/30 border border-amber-900/60 text-[10px] font-mono">
                   <div className="text-amber-200 mb-1.5">
                     ✎ Modified from <span className="font-bold">{loadedCompound.name}</span>
@@ -1538,7 +1583,13 @@ export default function StudioPage() {
                         type="button"
                         onClick={() => {
                           setActiveCompoundIdx(i);
-                          loadIntoCanvas(c.smiles);
+                          // (v0.68) Pass stagedId + libraryName so the
+                          // canonical SMILES Ketcher emits gets folded
+                          // back into the staged entry and into
+                          // loadedCompound — both serve as "baseline"
+                          // for the dirty checks below, so this is the
+                          // load step where they need to be aligned.
+                          loadIntoCanvas(c.smiles, { stagedId: c.id, libraryName: c.name });
                           if (c.name) setLoadedCompound({ name: c.name, smiles: c.smiles });
                         }}
                         className="flex-1 text-left flex items-center gap-2 min-w-0"
