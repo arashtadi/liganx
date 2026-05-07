@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.61-2026-05-07-autoframe-and-leave-warn";
+const LIGANX_BUILD_TAG = "v0.62-2026-05-07-multi-target-mutation-compound";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -32,7 +32,7 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../api";
+import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
 import { appendDockHistory, listDockHistory, deleteDockHistoryEntry, clearDockHistory, type DockHistoryEntry } from "../lib/dockHistory";
@@ -192,16 +192,41 @@ export default function StudioPage() {
   // sketches from scratch.
   const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(null);
 
-  // No default target — user must explicitly pick. The earlier
-  // "egfr" default was presumptuous.
-  const [selectedTarget, setSelectedTarget] = useState<string>("");
-  // Selection model: WT can be ON or OFF, and at most ONE mutation
-  // tag at a time. Default is WT-only (the conservative starting
-  // point — without a mutation, dock against wild-type). Adding a
-  // mutation chip alongside keeps WT selected, so the dropdown shows
-  // e.g. "WT + Q61H" and Run Dock fires both in parallel.
+  // (v0.62-0.64) Studio supports up to 2 targets, 2 mutations, and
+  // 10 compounds per Full Job. State shape: arrays for all three.
+  // To avoid touching every existing call site that read the
+  // singleton primary, we derive selectedTarget and selectedMutation
+  // helpers below as 'first-of-array' shims. New code should prefer
+  // the array forms.
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  // Selection model: WT can be ON or OFF, and up to TWO mutation tags.
+  // Default is WT-only (the conservative starting point — without a
+  // mutation, dock against wild-type). Adding mutation chips alongside
+  // keeps WT selected, so the trigger shows e.g. "WT + Q61H + L597R"
+  // and Run Dock fires all in parallel.
   const [includeWt, setIncludeWt] = useState<boolean>(true);
-  const [selectedMutation, setSelectedMutation] = useState<string>("");
+  const [selectedMutations, setSelectedMutations] = useState<string[]>([]);
+  // Singleton shims — every existing reference to selectedTarget /
+  // selectedMutation reads the first array entry. Setters that pass a
+  // single string (or empty string to clear) are mapped onto the
+  // array form too. New multi-select call sites should use the arrays
+  // directly.
+  const selectedTarget = selectedTargets[0] || "";
+  const selectedMutation = selectedMutations[0] || "";
+  const setSelectedTarget = (t: string) => setSelectedTargets(t ? [t] : []);
+  const setSelectedMutation = (m: string) => setSelectedMutations(m ? [m] : []);
+  const MAX_TARGETS = 2;
+  const MAX_MUTATIONS = 2;
+  const MAX_COMPOUNDS = 10;
+  // (v0.64) Compound list — up to 10 compounds per job. Each entry is
+  // a SMILES + optional name + a stable id. activeCompoundIdx is the
+  // one currently loaded into the 2D Ketcher canvas. The legacy
+  // currentSmiles state is kept and synced with the active compound
+  // so existing rendering paths (live conformer, score panel, etc.)
+  // keep working without touching dozens of call sites.
+  type CompoundEntry = { id: string; smiles: string; name?: string };
+  const [compounds, setCompounds] = useState<CompoundEntry[]>([]);
+  const [activeCompoundIdx, setActiveCompoundIdx] = useState<number>(0);
   // Typeahead query strings — filter the chip rows live as the user
   // types. Empty string = show all chips (default).
   const [targetQuery, setTargetQuery] = useState("");
@@ -623,47 +648,64 @@ export default function StudioPage() {
   // undefined, so this is zero-cost at runtime.
   void runQuickDock;
   async function runFullJob() {
-    if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
-    if (!selectedTarget) { setDockError("Pick a target."); return; }
-    // (v0.46.1) Backend /jobs expects the REAL PDB id (e.g. "4OBE"),
-    // not the catalog target id (e.g. "kras"). Earlier path passed the
-    // catalog id and got a 'fetch_pdb pdb=KRAS' 404 from RCSB. Use
-    // targetMeta.pdb_id, the same field NewJobPage sends.
-    const realPdbId = (targetMeta?.pdb_id || "").trim();
-    if (!realPdbId) {
-      setDockError(`Couldn't resolve a PDB id for target "${selectedTarget}". Pick a different target or use NewJobPage.`);
-      return;
-    }
+    // (v0.62-0.64) Build the compound list. If the user has staged
+    // compounds, use those; otherwise fall back to currentSmiles
+    // (the singleton path). Filter out empties.
+    const compoundList: { name?: string | null; smiles: string }[] = compounds.length > 0
+      ? compounds.filter((c) => c.smiles).map((c) => ({ name: c.name || null, smiles: c.smiles }))
+      : currentSmiles
+      ? [{ name: loadedCompound?.name || activeDraft?.name || "Studio compound", smiles: currentSmiles }]
+      : [];
+    if (compoundList.length === 0) { setDockError("Canvas is empty — sketch a structure first."); return; }
+    if (selectedTargets.length === 0) { setDockError("Pick a target."); return; }
     setDockError(null);
     setSubmittingFull(true);
     try {
-      const job = await api.createJob({
-        pdb_id: realPdbId,
-        chain: targetMeta?.chain || "A",
-        uniprot_id: targetMeta?.uniprot,
-        mutations: selectedMutation ? [selectedMutation] : [],
-        compounds: [{
-          name: loadedCompound?.name || activeDraft?.name || "Studio compound",
-          smiles: currentSmiles,
-        }],
-        include_wt: includeWt,
-        title: `Studio · ${selectedTarget?.toUpperCase() || "?"}${selectedMutation ? ` · ${selectedMutation}` : ""}`,
+      // (v0.62-0.64) One Full Job per target. Backend /jobs accepts
+      // multiple compounds + multiple mutations per job, but only
+      // ONE pdb_id, so we fan out across selected targets in parallel
+      // and use the first job's share_id for the in-Studio polling
+      // (and link the user to /history for the rest). For 1 target,
+      // this is a single createJob call (no behavior change).
+      const tasks: Promise<{ tid: string; job: Job; pdbId: string }>[] = selectedTargets.map(async (tid) => {
+        const tMeta = catalog?.find((c: any) => c.id === tid);
+        const tPdb = (tMeta?.pdb_id || "").trim();
+        if (!tPdb) throw new Error(`Couldn't resolve a PDB id for target "${tid}".`);
+        const job = await api.createJob({
+          pdb_id: tPdb,
+          chain: tMeta?.chain || "A",
+          uniprot_id: tMeta?.uniprot,
+          mutations: selectedMutations,
+          compounds: compoundList,
+          include_wt: includeWt,
+          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}`,
+        });
+        return { tid, job, pdbId: tPdb };
       });
-      // (v0.47) Stay in Studio. Use share_id (URL-safe), fall back to
-      // numeric id for legacy. Set status to pending and let the
-      // polling effect take over.
-      const jobKey = (job as any).share_id ?? String((job as any).id ?? "");
+      const results = await Promise.allSettled(tasks);
+      // First successful job drives Studio's in-page polling; any
+      // others are submitted but the user views them via /history.
+      let primary: { tid: string; job: Job } | null = null;
+      let firstError: string | null = null;
+      for (const r of results) {
+        if (r.status === "fulfilled" && !primary) primary = r.value;
+        else if (r.status === "rejected" && !firstError) firstError = (r.reason as Error)?.message || "Submit failed";
+      }
+      if (!primary) { setDockError(firstError || "All Full Job submissions failed."); return; }
+      const jobKey = (primary.job as any).share_id ?? String((primary.job as any).id ?? "");
       if (!jobKey) {
         setDockError("Job created but no id returned — refresh /history to find it.");
         return;
       }
-      // Clear previous Quick Dock results so the score panel reflects
-      // the new in-flight Full Job, not stale GPU numbers.
       setDockResult(null);
       setDockResultWt(null);
       setFullJobKey(jobKey);
-      setFullJobStatus(job.status || "pending");
-      setFullJobStage(job.stage || null);
+      setFullJobStatus(primary.job.status || "pending");
+      setFullJobStage(primary.job.stage || null);
+      if (results.length > 1) {
+        setPromoteToast(`✓ ${results.filter(r => r.status === "fulfilled").length}/${results.length} jobs submitted — polling first; check /history for the rest`);
+        window.setTimeout(() => setPromoteToast(null), 6000);
+      }
     } catch (e: any) {
       setDockError(e?.message || "Full Job submission failed.");
     } finally {
@@ -791,6 +833,72 @@ export default function StudioPage() {
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
         {/* LEFT — 2D Canvas */}
         <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
+          {/* (v0.64) Compounds rail — small horizontal strip above the
+              Ketcher header listing every compound staged for the
+              next dock (max 10). The active compound is highlighted
+              and shown in the canvas. + ADD captures the current
+              SMILES into the list and clears the canvas for the next
+              sketch. × per chip removes a compound. When the list is
+              empty the rail collapses (back to single-compound mode
+              where currentSmiles is the one and only). */}
+          {(compounds.length > 0 || !!currentSmiles) && (
+            <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center gap-2 text-[10px] flex-wrap">
+              <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
+                Compounds {compounds.length > 0 ? `${compounds.length}/${MAX_COMPOUNDS}` : ""}
+              </span>
+              {compounds.map((c, i) => (
+                <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-mono ${
+                  i === activeCompoundIdx
+                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                    : "border-slate-700/60 text-slate-400 hover:border-slate-500"
+                }`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveCompoundIdx(i);
+                      loadIntoCanvas(c.smiles);
+                    }}
+                    className="truncate max-w-[14ch]"
+                    title={`${c.name || "untitled"} — ${c.smiles}`}
+                  >
+                    {c.name || `#${i + 1}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompounds((prev) => prev.filter((_, j) => j !== i));
+                      if (activeCompoundIdx >= compounds.length - 1) setActiveCompoundIdx(0);
+                    }}
+                    className="text-slate-600 hover:text-rose-400"
+                    title="Remove this compound from the list"
+                  >×</button>
+                </span>
+              ))}
+              {!!currentSmiles && compounds.length < MAX_COMPOUNDS && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Snapshot the current SMILES into the staged list,
+                    // give it the loadedCompound name if any.
+                    const newCompound: CompoundEntry = {
+                      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                      smiles: currentSmiles,
+                      name: loadedCompound?.name || activeDraft?.name?.replace(/^untitled.*/, "") || undefined,
+                    };
+                    setCompounds((prev) => [...prev, newCompound]);
+                    setActiveCompoundIdx(compounds.length);  // newly-added is now active
+                  }}
+                  className="px-1.5 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider"
+                  title="Stage this compound for the next dock and clear the canvas to sketch the next one. Run Dock will submit all staged compounds in one Full Job."
+                >
+                  + add
+                </button>
+              )}
+              {compounds.length >= MAX_COMPOUNDS && (
+                <span className="text-[9px] text-slate-600 italic">max {MAX_COMPOUNDS} reached</span>
+              )}
+            </div>
+          )}
           <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px] gap-3">
             <div className="flex items-center gap-3">
               <span className={TOK.label}>2D · Ketcher</span>
@@ -1173,7 +1281,7 @@ export default function StudioPage() {
                   title={targetMeta?.name || ""}
                 >
                   <span className={`text-[8px] transition-transform ${targetDropdownOpen ? "rotate-90" : ""}`}>▸</span>
-                  <span>{targetMeta?.id?.toUpperCase() || "—"}</span>
+                  <span>{selectedTargets.length > 0 ? selectedTargets.map(s => s.toUpperCase()).join(" + ") : "—"}</span>
                 </button>
                 <input
                   type="text"
@@ -1195,25 +1303,42 @@ export default function StudioPage() {
                       t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
                       (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
                     )
-                    .map((t: any) => (
-                      <button
-                        key={t.id}
-                        onClick={() => {
-                          setSelectedTarget(t.id);
-                          setSelectedMutation("");
-                          setTargetQuery("");
-                          setTargetDropdownOpen(false);
-                        }}
-                        className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
-                          selectedTarget === t.id
-                            ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                            : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                        }`}
-                        title={t.name}
-                      >
-                        {t.id}
-                      </button>
-                    ))}
+                    .map((t: any) => {
+                      // (v0.63) Multi-target: clicking toggles in/out of
+                      // selectedTargets, capped at MAX_TARGETS=2. Mutations
+                      // also reset only when ADDING the first target (so
+                      // mutations carry across when adding a second).
+                      const active = selectedTargets.includes(t.id);
+                      const atCap = !active && selectedTargets.length >= MAX_TARGETS;
+                      return (
+                        <button
+                          key={t.id}
+                          disabled={atCap}
+                          onClick={() => {
+                            setSelectedTargets((prev) => {
+                              if (prev.includes(t.id)) return prev.filter((x) => x !== t.id);
+                              if (prev.length >= MAX_TARGETS) return prev;
+                              const next = [...prev, t.id];
+                              // Clear mutations when going from empty → 1 target,
+                              // since the mutation list is target-specific.
+                              if (prev.length === 0) setSelectedMutations([]);
+                              return next;
+                            });
+                            setTargetQuery("");
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
+                            active
+                              ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
+                              : atCap
+                              ? "border-slate-800 text-slate-700 cursor-not-allowed"
+                              : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                          }`}
+                          title={t.name + (atCap ? ` (max ${MAX_TARGETS} targets)` : "")}
+                        >
+                          {active ? `✓ ${t.id}` : t.id}
+                        </button>
+                      );
+                    })}
                   {targetQuery && !catalog?.some((t: any) =>
                     t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
                     (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
@@ -1255,13 +1380,20 @@ export default function StudioPage() {
                 <MutationDropdown
                   availableMutations={availableMutations}
                   mutationQuery={mutationQuery}
-                  selectedMutation={selectedMutation}
+                  selectedMutations={selectedMutations}
                   includeWt={includeWt}
                   setIncludeWt={setIncludeWt}
-                  setSelectedMutation={setSelectedMutation}
+                  toggleMutation={(code) => {
+                    setSelectedMutations((prev) => {
+                      if (prev.includes(code)) return prev.filter((c) => c !== code);
+                      if (prev.length >= MAX_MUTATIONS) return prev;
+                      return [...prev, code];
+                    });
+                  }}
                   setMutationQuery={setMutationQuery}
                   setOpen={setMutationDropdownOpen}
                   targetId={targetMeta?.id}
+                  maxMutations={MAX_MUTATIONS}
                 />
               )}
               {/* Trigger row: current mutation chip on the LEFT (or "WT" if
@@ -1290,10 +1422,12 @@ export default function StudioPage() {
                 >
                   <span className={`text-[8px] transition-transform ${mutationDropdownOpen ? "rotate-90" : ""}`}>▸</span>
                   <span>
-                    {includeWt && selectedMutation ? `WT + ${selectedMutation}`
-                      : selectedMutation ? selectedMutation
-                      : includeWt ? "WT"
-                      : "—"}
+                    {(() => {
+                      const parts: string[] = [];
+                      if (includeWt) parts.push("WT");
+                      parts.push(...selectedMutations);
+                      return parts.length > 0 ? parts.join(" + ") : "—";
+                    })()}
                   </span>
                 </button>
                 <input
@@ -1303,7 +1437,13 @@ export default function StudioPage() {
                   onFocus={() => setMutationDropdownOpen(true)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && mutationQuery.trim()) {
-                      setSelectedMutation(mutationQuery.trim());
+                      // (v0.62) Append custom mutation if room and not duplicate.
+                      const code = mutationQuery.trim().toUpperCase();
+                      setSelectedMutations((prev) => {
+                        if (prev.includes(code)) return prev;
+                        if (prev.length >= MAX_MUTATIONS) return prev;
+                        return [...prev, code];
+                      });
                       setMutationQuery("");
                       setMutationDropdownOpen(false);
                     }
@@ -1321,13 +1461,20 @@ export default function StudioPage() {
                 <MutationDropdown
                   availableMutations={availableMutations}
                   mutationQuery={mutationQuery}
-                  selectedMutation={selectedMutation}
+                  selectedMutations={selectedMutations}
                   includeWt={includeWt}
                   setIncludeWt={setIncludeWt}
-                  setSelectedMutation={setSelectedMutation}
+                  toggleMutation={(code) => {
+                    setSelectedMutations((prev) => {
+                      if (prev.includes(code)) return prev.filter((c) => c !== code);
+                      if (prev.length >= MAX_MUTATIONS) return prev;
+                      return [...prev, code];
+                    });
+                  }}
                   setMutationQuery={setMutationQuery}
                   setOpen={setMutationDropdownOpen}
                   targetId={targetMeta?.id}
+                  maxMutations={MAX_MUTATIONS}
                 />
               )}
               </div>
@@ -1752,19 +1899,25 @@ export default function StudioPage() {
  *  dismisses via Done or by clicking outside (v0.40 user request).
  */
 function MutationDropdown({
-  availableMutations, mutationQuery, selectedMutation, includeWt,
-  setIncludeWt, setSelectedMutation, setMutationQuery, setOpen, targetId,
+  availableMutations, mutationQuery, selectedMutations, includeWt,
+  setIncludeWt, toggleMutation, setMutationQuery, setOpen, targetId, maxMutations,
 }: {
   availableMutations: { code: string; label: string; significance: string }[];
   mutationQuery: string;
-  selectedMutation: string;
+  selectedMutations: string[];
   includeWt: boolean;
   setIncludeWt: (v: boolean) => void;
-  setSelectedMutation: (v: string) => void;
+  toggleMutation: (code: string) => void;
   setMutationQuery: (v: string) => void;
   setOpen: (v: boolean) => void;
   targetId?: string;
+  maxMutations: number;
 }) {
+  // (v0.62) Singleton-compat helper for code paths that reference
+  // selectedMutation as a string — first selected mutation = primary.
+  // Currently no callsite inside MutationDropdown uses it (we drive
+  // off selectedMutations directly), but kept for future readers.
+  void selectedMutations;  // referenced via selectedMutations.includes() below
   const filtered = availableMutations.filter(m =>
     !mutationQuery ||
     m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
@@ -1791,16 +1944,18 @@ function MutationDropdown({
           <span className="text-[10px] font-mono text-slate-500 italic truncate">wild-type — always recommended</span>
         </button>
         {filtered.map((m) => {
-          const active = selectedMutation === m.code;
+          // (v0.62) Multi-select up to MAX_MUTATIONS. Active = currently
+          // in the selected array. Click toggles in/out; tickets are
+          // capped at maxMutations on the way in.
+          const active = selectedMutations.includes(m.code);
+          const atCap = !active && selectedMutations.length >= maxMutations;
           return (
             <button
               key={m.code}
+              disabled={atCap}
               onClick={() => {
-                // Single-select; click again to deselect. (v0.40)
-                // Does NOT auto-close — user can pick / change /
-                // toggle WT freely until they hit Done or click out.
-                if (selectedMutation === m.code) setSelectedMutation("");
-                else { setSelectedMutation(m.code); setMutationQuery(""); }
+                toggleMutation(m.code);
+                setMutationQuery("");
               }}
               className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
                 active ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
@@ -1839,10 +1994,11 @@ function MutationDropdown({
           their pick before closing. Click-outside also still works. */}
       <div className="px-3 py-1.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] font-mono shrink-0">
         <span className="text-slate-600">
-          {selectedMutation
-            ? <>selected <span className="text-amber-300">{selectedMutation}</span>{includeWt && <span className="text-slate-500"> + WT</span>}</>
+          {selectedMutations.length > 0
+            ? <>selected <span className="text-amber-300">{selectedMutations.join(" + ")}</span>{includeWt && <span className="text-slate-500"> + WT</span>}</>
             : includeWt ? <span className="text-slate-400">WT only</span>
             : <span className="text-rose-400">none — pick at least one</span>}
+          {selectedMutations.length >= maxMutations && <span className="ml-2 text-slate-700">(max {maxMutations})</span>}
         </span>
         <button
           onClick={() => setOpen(false)}
