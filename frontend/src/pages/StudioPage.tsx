@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.52-2026-05-07-variant-color-and-stable-cam";
+const LIGANX_BUILD_TAG = "v0.53-2026-05-07-eager-dual-receptor-fetch";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2690,12 +2690,12 @@ function ProductionViewer3D({
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [receptorPdb, setReceptorPdb] = useState<string | null>(null);
-  // (v0.50) Second receptor slot — used in "both" mode to load the
-  // OTHER variant alongside the primary. When viewVariant === "both"
-  // the primary receptor is mutant (cyan-ish) and the alt is WT
-  // (slate, semi-transparent). When primary is WT, alt is mutant.
-  const [receptorPdbAlt, setReceptorPdbAlt] = useState<string | null>(null);
+  // (v0.53) Both receptors fetched eagerly so the variant toggle is
+  // a style change, not a fetch+rebuild. Computed values below derive
+  // the "primary" and "alt" slots based on the current viewVariant for
+  // backward compat with the existing build/style code.
+  const [receptorPdbWt, setReceptorPdbWt] = useState<string | null>(null);
+  const [receptorPdbMut, setReceptorPdbMut] = useState<string | null>(null);
   const [receptorErr, setReceptorErr] = useState<string | null>(null);
   // Live preview SMILES — set when currentSmiles diverges from the last
   // docked SMILES. Drives the conformer fetch + overlay logic below so
@@ -2749,6 +2749,12 @@ function ProductionViewer3D({
     if (dockResult) setViewVariant("mut");
     else if (dockResultWt && !dockResult) setViewVariant("wt");
   }, [dockResult, dockResultWt]);
+  // (v0.53) Primary receptor = whichever the current viewVariant
+  // points at. Alt = the OTHER one (used by 'both' mode for the
+  // overlay). Both already in state; we just pick which slot is which
+  // based on the current view.
+  const receptorPdb = viewVariant === "wt" ? receptorPdbWt : receptorPdbMut;
+  const receptorPdbAlt = viewVariant === "wt" ? receptorPdbMut : receptorPdbWt;
 
   // (v0.43) Pick which dock result drives the scene based on viewVariant.
   // Falls back gracefully when one of the two slots is empty (single-
@@ -2757,8 +2763,10 @@ function ProductionViewer3D({
     ? (dockResultWt || dockResult)
     : (dockResult || dockResultWt);
   const primary = activeDockResult;
-  const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
-  const chain = primary?.chain || targetMeta?.chain || "A";
+  // pdbId/chain used to drive the (now-removed) primary-only receptor
+  // fetch; replaced in v0.53 by the dual-fetch effects above. Kept the
+  // variant string because it's used to color the primary receptor in
+  // applyStyles (WT slate vs mutant amber).
   const variant = viewVariant === "wt" ? "WT" : (mutation || "WT");
   const hasDock = !!primary;
   // Vina returns multiple binding modes in one PDBQT (MODEL 1 ... ENDMDL ·
@@ -2945,46 +2953,49 @@ function ProductionViewer3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smiles, hasDock, smilesEdited, viewMode]);
 
-  // Fetch the receptor PDB when a dock result arrives.
+  // (v0.53) Fetch the WT receptor whenever we have a WT dock result.
+  // Independent of viewVariant — both receptors stay loaded so the
+  // variant toggle is pure-style with no rebuild.
   useEffect(() => {
-    if (!hasDock || !pdbId || !chain) return;
+    if (!dockResultWt) { setReceptorPdbWt(null); return; }
+    const wtPdb = dockResultWt.pdb_id || targetMeta?.pdb_id;
+    const wtChain = dockResultWt.chain || targetMeta?.chain || "A";
+    if (!wtPdb || !wtChain) return;
     let cancelled = false;
     setReceptorErr(null);
     api
-      .structure(pdbId, chain, variant)
+      .structure(wtPdb, wtChain, "WT")
       .then((text) => {
         if (cancelled) return;
-        if (!text || text.length < 100) {
-          setReceptorErr(`Receptor ${pdbId}/${chain}/${variant} returned empty`);
-          return;
-        }
-        setReceptorPdb(text);
+        if (!text || text.length < 100) return;
+        setReceptorPdbWt(text);
       })
       .catch((e: Error) => {
-        if (!cancelled) setReceptorErr(`Receptor fetch failed: ${e.message}`);
+        if (!cancelled) setReceptorErr(`WT receptor fetch failed: ${e.message}`);
       });
     return () => { cancelled = true; };
-  }, [hasDock, pdbId, chain, variant]);
+  }, [dockResultWt, targetMeta?.pdb_id, targetMeta?.chain]);
 
-  // (v0.50) When viewVariant is "both", fetch the OTHER variant's
-  // receptor in parallel so we can overlay it. Skipped otherwise to
-  // avoid wasting bandwidth when the user only cares about one side.
+  // (v0.53) Mirror for the mutant receptor. Fetched only when there's
+  // a mutant dock result AND the user actually selected a mutation
+  // (mutation prop non-empty); otherwise the "mutant" structure
+  // doesn't exist as a distinct PDB.
   useEffect(() => {
-    if (viewVariant !== "both") { setReceptorPdbAlt(null); return; }
-    if (!hasDock || !pdbId || !chain || !mutation || !dockResult || !dockResultWt) return;
-    // Primary variant is whichever activeDockResult resolved to.
-    // Alt is the other one. mutation is e.g. "Q61H".
-    const altVariant = variant === "WT" ? mutation : "WT";
+    if (!dockResult || !mutation) { setReceptorPdbMut(null); return; }
+    const mPdb = dockResult.pdb_id || targetMeta?.pdb_id;
+    const mChain = dockResult.chain || targetMeta?.chain || "A";
+    if (!mPdb || !mChain) return;
     let cancelled = false;
     api
-      .structure(pdbId, chain, altVariant)
+      .structure(mPdb, mChain, mutation)
       .then((text) => {
         if (cancelled) return;
-        if (text && text.length >= 100) setReceptorPdbAlt(text);
+        if (!text || text.length < 100) return;
+        setReceptorPdbMut(text);
       })
-      .catch(() => { /* alt is best-effort; primary still renders */ });
+      .catch(() => { /* mutant fetch is best-effort */ });
     return () => { cancelled = true; };
-  }, [viewVariant, hasDock, pdbId, chain, variant, mutation, dockResult, dockResultWt]);
+  }, [dockResult, mutation, targetMeta?.pdb_id, targetMeta?.chain]);
 
   // Apply visual styles based on toolbar state. This is the single place
   // styles are written to the 3Dmol viewer — both the data-load effect
