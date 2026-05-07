@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.38-2026-05-07-mutation-rich-dropdown";
+const LIGANX_BUILD_TAG = "v0.39-2026-05-07-mutation-popover-on-focus";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -273,6 +273,22 @@ export default function StudioPage() {
   // dropdown so users don't have to click twice).
   const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
   const [mutationDropdownOpen, setMutationDropdownOpen] = useState(false);
+  // (v0.39) Click-outside ref for the mutation popover. Wrapped around
+  // the trigger row + dropdown so a click anywhere else (canvas, 3D
+  // viewer, header, even the COMPOUND section right below) collapses
+  // the popover. Also closes after a selection so the user lands on a
+  // clean state without having to dismiss it manually.
+  const mutationWrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!mutationDropdownOpen) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (mutationWrapRef.current && !mutationWrapRef.current.contains(e.target as Node)) {
+        setMutationDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [mutationDropdownOpen]);
   // 2D editor theme — Ketcher's bundled build doesn't honor ?theme=dark,
   // so we fake dark mode with the "dark reader" CSS filter trick:
   // invert(1) hue-rotate(180deg) flips the background to black while
@@ -933,6 +949,12 @@ export default function StudioPage() {
                   })()}
                 </span>
               </div>
+              {/* (v0.39) Wrapper for the trigger row + dropdown so a
+                  click outside this region closes the popover. Both
+                  must live under the same ref'd parent — clicking
+                  inside the dropdown to pick a mutation must NOT count
+                  as outside. */}
+              <div ref={mutationWrapRef}>
               {/* Trigger row: current mutation chip on the LEFT (or "WT" if
                   none selected), search input on the RIGHT. Pressing Enter
                   on a non-matching query commits it as a custom mutation. */}
@@ -981,16 +1003,12 @@ export default function StudioPage() {
                   className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
                 />
               </div>
-              {/* (v0.38) Rich mutation dropdown — matches NewJobPage's
-                  STEP 2 popout. Each curated mutation gets its own row
-                  with the code in bold, target id tag, significance
-                  description, and a 'CURATED' badge on the right.
-                  Renders inline (not absolute) because the right rail
-                  has overflow-y-auto and a portal would be overkill.
-                  Always visible when there are curated entries — also
-                  appears when the user types a custom query so they
-                  see "no match" feedback. */}
-              {(availableMutations.length > 0 || mutationDropdownOpen || mutationQuery) && (
+              {/* (v0.39) Rich mutation dropdown — only renders when the
+                  search box (or trigger chip) is focused. Closes on
+                  click-outside via the wrapper ref above, AND on
+                  selecting a mutation row. WT toggles don't close —
+                  user might want to add a mutation in the same gesture. */}
+              {mutationDropdownOpen && (
                 <div className="rounded border border-slate-800 bg-[#070b15] divide-y divide-slate-800/60 max-h-64 overflow-auto">
                   {/* WT row — always at top, multi-select with the
                       mutation rows. Distinct visual (slate, "BASELINE"
@@ -1034,6 +1052,9 @@ export default function StudioPage() {
                               setSelectedMutation(m.code);
                               setMutationQuery("");
                             }
+                            // (v0.39) Close after selection so the user
+                            // lands on a clean state ready to dock.
+                            setMutationDropdownOpen(false);
                           }}
                           className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
                             active ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
@@ -1073,6 +1094,8 @@ export default function StudioPage() {
                   )}
                 </div>
               )}
+              </div>
+              {/* /v0.39 wrapper — closes mutationWrapRef */}
             </div>
 
             {/* ─── COMPOUND (trigger-chip + search row, mirrors Target/Mutation) ─── */}
