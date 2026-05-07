@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.59-2026-05-07-compact-score-panel";
+const LIGANX_BUILD_TAG = "v0.60-2026-05-07-ai-apply-and-dock";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1624,25 +1624,26 @@ export default function StudioPage() {
             currentSmiles={currentSmiles}
             targetPdb={targetMeta?.pdb_id || dockResult?.pdb_id}
             mutation={selectedMutation || undefined}
+            // (v0.60) Pass Full Job submission state in so the panel
+            // can show per-card "applying / docking" indicators and
+            // re-trigger a dock automatically on Apply & Dock.
+            submittingFull={submittingFull}
+            fullJobKey={fullJobKey}
+            fullJobStatus={fullJobStatus}
+            runFullJob={runFullJob}
             onUseVariant={(variant) => {
               // (v0.41) Treat AI variants as a deliberate fork of
-              // whatever's currently loaded. If the parent had a
-              // name (loadedCompound), we KEEP it set so the
-              // "Modified from <name>" pill appears the moment the
-              // new SMILES lands — user gets the explicit Save
-              // changes / Save as new prompt for the variant.
-              // If the parent was unnamed, mark loadedCompound from
-              // the active draft so the user still gets the pill
-              // and the autosave creates a new fork-draft instead
-              // of mutating the parent draft.
+              // whatever's currently loaded. (v0.60) The actual
+              // 'apply + dock' sequence is owned by the panel; this
+              // callback just handles the Studio-side state changes
+              // so the parent compound identity flows correctly.
               const parentName = loadedCompound?.name || activeDraft?.name;
               const parentSmiles = loadedCompound?.smiles || activeDraft?.smiles || currentSmiles;
               if (parentName && parentSmiles) {
                 setLoadedCompound({ name: parentName, smiles: parentSmiles });
               }
-              setActiveDraft(null);  // start a fresh autosave id for the variant
+              setActiveDraft(null);
               loadIntoCanvas(variant.new_smiles);
-              setShowAi(false);
             }}
           />
         </CollapsibleTab>
@@ -2075,16 +2076,53 @@ type AiVariant = {
 };
 function AiVariantsPanel({
   dockResult, currentSmiles, targetPdb, mutation, onUseVariant,
+  submittingFull, fullJobStatus, runFullJob,
 }: {
   dockResult: QuickDockResult | null;
   currentSmiles: string;
   targetPdb?: string;
   mutation?: string;
   onUseVariant: (v: AiVariant) => void;
+  // (v0.60) Full Job state passed in so we can show per-card
+  // applying/docking indicators and chain Apply → Full Job in one
+  // click without requiring the user to find the Run Dock button.
+  submittingFull: boolean;
+  fullJobKey: string | null;  // accepted but not read here; parent surfaces via Run Dock area
+  fullJobStatus: "pending" | "running" | "completed" | "failed" | "cancelled" | null;
+  runFullJob: () => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
   const [variants, setVariants] = useState<AiVariant[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // (v0.60) Persistent history of variants the user has Apply &
+  // Dock'd on. Stays visible across Generate clicks so the user can
+  // always go back to a previously-applied variant. Each entry has
+  // an ISO timestamp captured at apply time. localStorage-backed so
+  // the history survives refreshes.
+  const APPLIED_KEY = "liganx-studio-applied-variants";
+  type AppliedVariant = AiVariant & { appliedAt: string };
+  const [appliedVariants, setAppliedVariants] = useState<AppliedVariant[]>(() => {
+    if (typeof localStorage === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(APPLIED_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  // The variant the user just clicked Apply & Dock on — used to
+  // show a "applying compound + submitting dock…" mini-state on
+  // that specific card while the dock is in flight.
+  const [pendingVariantSmiles, setPendingVariantSmiles] = useState<string | null>(null);
+  // Clear the pending state once Full Job submission lands AND the
+  // job moved past the queued/pending phase. We can't just watch
+  // submittingFull — it flips back to false in <1s once createJob
+  // returns; we want to keep the indicator until the job's actually
+  // running.
+  useEffect(() => {
+    if (!pendingVariantSmiles) return;
+    if (fullJobStatus === "running" || fullJobStatus === "completed" || fullJobStatus === "failed" || fullJobStatus === "cancelled") {
+      setPendingVariantSmiles(null);
+    }
+  }, [fullJobStatus, pendingVariantSmiles]);
 
   async function generate() {
     if (!dockResult || !currentSmiles || dockResult.score == null) return;
@@ -2163,9 +2201,15 @@ function AiVariantsPanel({
       )}
       {variants && variants.length > 0 && (
         <div className="divide-y divide-slate-800/60">
-          {variants.map((v, i) => (
-            <div key={i} className="px-3 py-2 text-[11px] font-mono hover:bg-slate-800/30">
-              <div className="flex items-center gap-3 mb-1">
+          {variants.map((v, i) => {
+            // (v0.60) Track per-card state. A variant is "pending" if
+            // the user just clicked Apply & Dock and the job hasn't
+            // moved to running yet; "applied" if it's in the history.
+            const isPending = pendingVariantSmiles === v.new_smiles;
+            const wasApplied = appliedVariants.some((a) => a.new_smiles === v.new_smiles);
+            return (
+            <div key={i} className={`px-3 py-2 text-[11px] font-mono ${isPending ? "bg-emerald-950/30" : "hover:bg-slate-800/30"}`}>
+              <div className="flex items-center gap-3 mb-1 flex-wrap">
                 <span className="text-[9px] uppercase tracking-[0.18em] text-slate-600">▸ variant {i + 1}</span>
                 {v.score != null && (
                   <span className="text-cyan-300 tabular-nums" title={`Vina score (kcal/mol) of the docked variant — lower is stronger.`}>
@@ -2193,23 +2237,43 @@ function AiVariantsPanel({
                     ⚠ off-pocket
                   </span>
                 )}
+                {wasApplied && !isPending && (
+                  <span className="text-[10px] text-emerald-300" title="You've already applied this variant. Click again to re-dock.">
+                    ✓ applied
+                  </span>
+                )}
                 <button
                   type="button"
-                  onClick={() => onUseVariant(v)}
-                  className="ml-auto px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 text-[10px] uppercase tracking-wider"
-                  title="Load this variant into Studio. Becomes a new draft (the original parent is preserved)."
+                  disabled={isPending || submittingFull}
+                  onClick={async () => {
+                    setPendingVariantSmiles(v.new_smiles);
+                    onUseVariant(v);
+                    // Persist this as an applied variant with timestamp.
+                    const stamped: AppliedVariant = { ...v, appliedAt: new Date().toISOString() };
+                    setAppliedVariants((prev) => {
+                      // Move-to-front behavior so newest applied is first
+                      // and we don't keep duplicates of the same SMILES.
+                      const filtered = prev.filter((p) => p.new_smiles !== v.new_smiles);
+                      const next = [stamped, ...filtered].slice(0, 25);
+                      try { localStorage.setItem(APPLIED_KEY, JSON.stringify(next)); } catch { /* */ }
+                      return next;
+                    });
+                    // Wait a tick so currentSmiles propagates before
+                    // runFullJob reads it, then submit.
+                    setTimeout(() => { runFullJob(); }, 100);
+                  }}
+                  className={`ml-auto px-2 py-0.5 rounded border text-[10px] uppercase tracking-wider transition-colors ${
+                    isPending
+                      ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
+                      : submittingFull
+                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                      : "border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60"
+                  }`}
+                  title="Load this variant into Studio AND submit a Full Job in one click. The variant becomes a fork-draft of the parent compound and the dock starts immediately."
                 >
-                  ⤴ use
+                  {isPending ? "▶ applying + docking…" : "⤴ Apply & Dock"}
                 </button>
               </div>
-              {/* (v0.45) SMILES + rationale render in full now. Both
-                  used to be truncated client-side (60 chars / 140 chars
-                  respectively) with a hover-tooltip carrying the rest,
-                  which made the rationales unreadable — they're often
-                  multi-sentence explanations of the design choice and
-                  the user genuinely wants to read them. break-all keeps
-                  long SMILES from blowing out the row width; the
-                  rationale wraps normally. */}
               <div className="text-[10px] text-slate-400 break-all" title={v.new_smiles}>
                 <span className="text-slate-600">SMILES </span>
                 {v.new_smiles}
@@ -2220,7 +2284,79 @@ function AiVariantsPanel({
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
+        </div>
+      )}
+      {/* (v0.60) Applied history. Shows every variant the user has
+          clicked Apply & Dock on, newest first, with timestamp so
+          they can always go back to a previous experiment. Persists
+          across Generate clicks AND across page refreshes via
+          localStorage. */}
+      {appliedVariants.length > 0 && (
+        <div className="border-t border-slate-800/70">
+          <div className="px-3 py-1.5 flex items-center justify-between text-[10px] font-mono">
+            <span className="text-slate-500 uppercase tracking-[0.18em]">
+              ✓ applied ({appliedVariants.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm(`Clear all ${appliedVariants.length} applied variants from history?`)) {
+                  setAppliedVariants([]);
+                  try { localStorage.removeItem(APPLIED_KEY); } catch { /* */ }
+                }
+              }}
+              className="text-slate-600 hover:text-rose-400 text-[10px]"
+              title="Wipe the applied history. Doesn't affect any docks already submitted to /jobs."
+            >
+              clear
+            </button>
+          </div>
+          <div className="divide-y divide-slate-800/60">
+            {appliedVariants.map((a) => {
+              const isPending = pendingVariantSmiles === a.new_smiles;
+              const dt = Math.max(0, Math.floor((Date.now() - new Date(a.appliedAt).getTime()) / 1000));
+              const ago = dt < 60 ? `${dt}s` : dt < 3600 ? `${Math.floor(dt/60)}m` : dt < 86400 ? `${Math.floor(dt/3600)}h` : `${Math.floor(dt/86400)}d`;
+              return (
+                <div key={a.appliedAt + a.new_smiles} className={`px-3 py-1.5 text-[10px] font-mono ${isPending ? "bg-emerald-950/30" : "hover:bg-slate-800/30"}`}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {a.score != null && (
+                      <span className="text-cyan-300 tabular-nums">{a.score.toFixed(2)}</span>
+                    )}
+                    {a.delta != null && (
+                      <span className={`tabular-nums ${a.delta > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                        {a.delta > 0 ? "+" : ""}{a.delta.toFixed(2)} Δ
+                      </span>
+                    )}
+                    <span className="text-slate-400 truncate min-w-0 flex-1" title={a.new_smiles}>
+                      {a.new_smiles.length > 36 ? a.new_smiles.slice(0, 36) + "…" : a.new_smiles}
+                    </span>
+                    <span className="text-slate-600 shrink-0" title={a.appliedAt}>{ago} ago</span>
+                    <button
+                      type="button"
+                      disabled={isPending || submittingFull}
+                      onClick={() => {
+                        setPendingVariantSmiles(a.new_smiles);
+                        onUseVariant(a);
+                        setTimeout(() => { runFullJob(); }, 100);
+                      }}
+                      className={`px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wider shrink-0 transition-colors ${
+                        isPending
+                          ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
+                          : submittingFull
+                          ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                          : "border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60"
+                      }`}
+                      title="Re-apply this variant and dock it again. Useful for re-running with a different mutation or comparing results."
+                    >
+                      {isPending ? "▶ applying…" : "⤴ re-dock"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
