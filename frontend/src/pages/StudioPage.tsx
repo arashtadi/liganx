@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.37-2026-05-07-mutation-autopopulate";
+const LIGANX_BUILD_TAG = "v0.38-2026-05-07-mutation-rich-dropdown";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -407,7 +407,7 @@ export default function StudioPage() {
     () => catalog?.find((t: any) => t.id === selectedTarget),
     [catalog, selectedTarget]
   );
-  const availableMutations = (targetMeta?.mutations ?? []) as { code: string; label: string }[];
+  const availableMutations = (targetMeta?.mutations ?? []) as { code: string; label: string; significance: string }[];
 
   // Compute mutation-residue-to-pocket-center distance after a dock
   // completes. Same semantic as JobPage's outsidePocketA: when a
@@ -981,67 +981,95 @@ export default function StudioPage() {
                   className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
                 />
               </div>
-              {/* (v0.37) Show curated mutation chips as soon as a target
-                  is selected and has curated mutations — no click on the
-                  search box required. Matches NewJobPage's "Curated for
-                  EGFR: T790M, L858R, …" affordance. The dropdown-open
-                  flag now only matters when there are NO curated entries
-                  (so the user can still type a custom mutation and see
-                  the WT toggle). */}
+              {/* (v0.38) Rich mutation dropdown — matches NewJobPage's
+                  STEP 2 popout. Each curated mutation gets its own row
+                  with the code in bold, target id tag, significance
+                  description, and a 'CURATED' badge on the right.
+                  Renders inline (not absolute) because the right rail
+                  has overflow-y-auto and a portal would be overkill.
+                  Always visible when there are curated entries — also
+                  appears when the user types a custom query so they
+                  see "no match" feedback. */}
               {(availableMutations.length > 0 || mutationDropdownOpen || mutationQuery) && (
-                <div className="flex flex-wrap items-center gap-1.5 max-h-40 overflow-auto pt-1 border-t border-slate-800/70">
-                  {/* WT chip — multi-select with the mutation row.
-                      Click toggles independently. Doesn't auto-close
-                      the dropdown so the user can also pick a mutation
-                      in the same gesture. */}
+                <div className="rounded border border-slate-800 bg-[#070b15] divide-y divide-slate-800/60 max-h-64 overflow-auto">
+                  {/* WT row — always at top, multi-select with the
+                      mutation rows. Distinct visual (slate, "BASELINE"
+                      tag) so it reads as the wild-type baseline rather
+                      than just another mutation pill. */}
                   <button
                     onClick={() => setIncludeWt(!includeWt)}
-                    className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                      includeWt
-                        ? "border-slate-400 bg-slate-700/60 text-slate-100"
-                        : "border-slate-700/60 text-slate-500 hover:text-slate-300"
+                    className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
+                      includeWt ? "bg-slate-800/40 hover:bg-slate-800/60" : "hover:bg-slate-800/30"
                     }`}
                     title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
                   >
-                    {includeWt ? "✓ WT" : "WT"}
+                    <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] ${
+                      includeWt ? "border-slate-300 bg-slate-300 text-slate-900" : "border-slate-600"
+                    }`}>
+                      {includeWt ? "✓" : ""}
+                    </span>
+                    <span className="font-mono text-[11px] font-bold text-slate-100">WT</span>
+                    <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/60">baseline</span>
+                    <span className="text-[10px] font-mono text-slate-500 italic">wild-type — always recommended</span>
                   </button>
                   {availableMutations
                     .filter(m =>
                       !mutationQuery ||
                       m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                      (m.significance || "").toLowerCase().includes(mutationQuery.toLowerCase())
                     )
-                    .map((m) => (
-                      <button
-                        key={m.code}
-                        onClick={() => {
-                          // Single-select among mutations — clicking a
-                          // different one replaces the previous. WT
-                          // selection is independent and stays as-is.
-                          if (selectedMutation === m.code) {
-                            setSelectedMutation("");  // toggle off
-                          } else {
-                            setSelectedMutation(m.code);
-                            setMutationQuery("");
-                          }
-                        }}
-                        className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
-                          selectedMutation === m.code
-                            ? "border-amber-500/60 bg-amber-900/30 text-amber-200"
-                            : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                        }`}
-                        title={m.label}
-                      >
-                        {selectedMutation === m.code ? `✓ ${m.code}` : m.code}
-                      </button>
-                    ))}
+                    .map((m) => {
+                      const active = selectedMutation === m.code;
+                      return (
+                        <button
+                          key={m.code}
+                          onClick={() => {
+                            // Single-select among mutations — clicking a
+                            // different one replaces the previous. WT
+                            // selection is independent and stays as-is.
+                            if (selectedMutation === m.code) {
+                              setSelectedMutation("");  // toggle off
+                            } else {
+                              setSelectedMutation(m.code);
+                              setMutationQuery("");
+                            }
+                          }}
+                          className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
+                            active ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
+                          }`}
+                          title={m.significance || m.label}
+                        >
+                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
+                            active ? "border-amber-400 bg-amber-400 text-slate-900" : "border-slate-600"
+                          }`}>
+                            {active ? "✓" : ""}
+                          </span>
+                          <span className={`font-mono text-[11px] font-bold shrink-0 ${active ? "text-amber-200" : "text-slate-100"}`}>
+                            {m.code}
+                          </span>
+                          {targetMeta?.id && (
+                            <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
+                              {targetMeta.id}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono text-slate-400 truncate min-w-0 flex-1" title={m.significance}>
+                            {m.significance || m.label || "—"}
+                          </span>
+                          <span className="text-[8px] uppercase tracking-[0.18em] text-cyan-300/80 px-1.5 py-0.5 rounded border border-cyan-700/40 bg-cyan-950/30 shrink-0">
+                            curated
+                          </span>
+                        </button>
+                      );
+                    })}
                   {mutationQuery && availableMutations.filter(m =>
                     m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                    (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
+                    (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase()) ||
+                    (m.significance || "").toLowerCase().includes(mutationQuery.toLowerCase())
                   ).length === 0 && (
-                    <span className="text-[10px] font-mono text-amber-400/80 italic">
-                      no curated match — press Enter to use as custom
-                    </span>
+                    <div className="px-3 py-2 text-[10px] font-mono text-amber-400/80 italic">
+                      no curated match for “{mutationQuery}” — press Enter to use it as a custom mutation
+                    </div>
                   )}
                 </div>
               )}
