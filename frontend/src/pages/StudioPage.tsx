@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.32-2026-05-06-promote-and-live-fix";
+const LIGANX_BUILD_TAG = "v0.33-2026-05-06-fork-on-edit";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -171,6 +171,13 @@ export default function StudioPage() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   // (v0.32) Toast for the Promote button result. Auto-clears after 3-5s.
   const [promoteToast, setPromoteToast] = useState<string | null>(null);
+  // (v0.33) Loaded named compound — set when the user picks something
+  // from the library / reference / PubChem (anything that has a name).
+  // While set, edits are treated as forks: the user is asked to choose
+  // between "Save changes to <name>" (overwrite) and "Save as new"
+  // (keep the original). Cleared when the user explicitly forks or
+  // sketches from scratch.
+  const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(null);
 
   // No default target — user must explicitly pick. The earlier
   // "egfr" default was presumptuous.
@@ -1057,6 +1064,68 @@ export default function StudioPage() {
                   {promoteToast}
                 </div>
               )}
+              {/* (v0.33) Fork-on-edit pill. Only renders when the user
+                  loaded a NAMED compound and has since edited it. Two
+                  buttons: Save changes (overwrite) vs Save as new
+                  (keep original safe; default by visual emphasis). */}
+              {loadedCompound && currentSmiles && currentSmiles !== loadedCompound.smiles && (
+                <div className="mb-2 px-2 py-1.5 rounded bg-amber-950/30 border border-amber-900/60 text-[10px] font-mono">
+                  <div className="text-amber-200 mb-1.5">
+                    ✎ Modified from <span className="font-bold">{loadedCompound.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.saveMyCompound({ name: loadedCompound.name, smiles: currentSmiles });
+                          setLoadedCompound({ name: loadedCompound.name, smiles: currentSmiles });
+                          setPromoteToast(`✓ "${loadedCompound.name}" updated`);
+                          window.setTimeout(() => setPromoteToast(null), 3000);
+                        } catch (e: any) {
+                          setPromoteToast(`✗ ${e?.message || "Save failed"}`);
+                          window.setTimeout(() => setPromoteToast(null), 5000);
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded border border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60 text-[10px] uppercase tracking-wider"
+                      title={`Overwrite the saved compound "${loadedCompound.name}" with the current SMILES.`}
+                    >
+                      save changes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const name = window.prompt(
+                          `Save the modified compound as a new entry in your library:`,
+                          `${loadedCompound.name} · variant`,
+                        );
+                        if (!name || !name.trim()) return;
+                        try {
+                          await api.saveMyCompound({ name: name.trim(), smiles: currentSmiles });
+                          setLoadedCompound({ name: name.trim(), smiles: currentSmiles });
+                          setPromoteToast(`✓ "${name.trim()}" saved · "${loadedCompound.name}" preserved`);
+                          window.setTimeout(() => setPromoteToast(null), 4000);
+                        } catch (e: any) {
+                          setPromoteToast(`✗ ${e?.message || "Save failed"}`);
+                          window.setTimeout(() => setPromoteToast(null), 5000);
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 text-[10px] uppercase tracking-wider"
+                      title={`Keep "${loadedCompound.name}" untouched and save the modified compound under a new name.`}
+                    >
+                      ⇡ save as new
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLoadedCompound(null)}
+                      className="ml-auto text-slate-600 hover:text-slate-400 text-[10px]"
+                      title="Dismiss this prompt — the autosave draft will keep tracking the edited SMILES on its own."
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
               {/* Trigger row: chip on the left shows current SMILES preview
                   (or "—" when empty); input on the right opens the loader
                   popover on focus, identical to Target's "search" affordance.
@@ -1137,7 +1206,22 @@ export default function StudioPage() {
             <CompoundLoader
               targetMeta={targetMeta}
               myCompounds={myCompounds || []}
-              onPick={loadIntoCanvas}
+              onPick={(smiles, name) => {
+                // (v0.33) When a NAMED compound is loaded (library /
+                // reference / PubChem), record the identity so the
+                // first edit triggers fork-on-edit instead of silently
+                // overwriting via autosave. Paste-SMILES picks pass
+                // undefined → no fork lock, plain new draft.
+                if (name) {
+                  setLoadedCompound({ name, smiles });
+                  // Start a fresh autosave id; otherwise the autosave
+                  // would update whatever draft was active before.
+                  setActiveDraft(null);
+                } else {
+                  setLoadedCompound(null);
+                }
+                loadIntoCanvas(smiles);
+              }}
               onClose={() => setShowLoader(false)}
             />
           </div>
@@ -1397,7 +1481,12 @@ function CompoundLoader({
 }: {
   targetMeta: any;
   myCompounds: any[];
-  onPick: (smiles: string) => void;
+  // (v0.33) Optional name passed alongside SMILES. When present, the
+  // caller treats the result as a "loaded named compound" — if the user
+  // then edits, fork-on-edit kicks in (Save changes vs Save as new)
+  // instead of silently overwriting. Paste-SMILES picks pass undefined
+  // so they remain ordinary fresh drafts.
+  onPick: (smiles: string, name?: string) => void;
   onClose: () => void;
 }) {
   const [paste, setPaste] = useState("");
@@ -1460,7 +1549,9 @@ function CompoundLoader({
     try {
       const res = await api.lookupCompound(name);
       if (res?.smiles) {
-        onPick(res.smiles);
+        // Pass the PubChem name as the loaded-compound identity so
+        // fork-on-edit treats post-load edits as a fork (v0.33).
+        onPick(res.smiles, name);
       } else {
         setPubchemErr(`PubChem returned no SMILES for "${name}"`);
       }
@@ -1548,7 +1639,7 @@ function CompoundLoader({
             {filteredRef.length > 0 ? filteredRef.map((c) => (
               <button
                 key={c.name}
-                onClick={() => onPick(c.smiles)}
+                onClick={() => onPick(c.smiles, c.name)}
                 className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
               >
                 <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200">{c.name}</div>
@@ -1574,7 +1665,7 @@ function CompoundLoader({
             {filteredLib.length > 0 ? filteredLib.slice(0, 30).map((c) => (
               <button
                 key={c.id}
-                onClick={() => onPick(c.smiles)}
+                onClick={() => onPick(c.smiles, c.name)}
                 className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
               >
                 <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200 truncate">{c.name}</div>
