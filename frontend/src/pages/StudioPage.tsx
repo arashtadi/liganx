@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.31-2026-05-06-drafts-panel";
+const LIGANX_BUILD_TAG = "v0.32-2026-05-06-promote-and-live-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -169,6 +169,8 @@ export default function StudioPage() {
   // confirmation that their work is on disk.
   const [activeDraft, setActiveDraft] = useState<StudioDraft | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // (v0.32) Toast for the Promote button result. Auto-clears after 3-5s.
+  const [promoteToast, setPromoteToast] = useState<string | null>(null);
 
   // No default target — user must explicitly pick. The earlier
   // "egfr" default was presumptuous.
@@ -1006,10 +1008,55 @@ export default function StudioPage() {
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className={TOK.label}>Compound</span>
-                <span className="font-mono text-[9px] text-slate-600">
-                  {currentSmiles ? `${currentSmiles.length} chars` : "empty"}
-                </span>
+                <div className="flex items-center gap-2">
+                  {/* (v0.32) Promote-to-library button. Only meaningful
+                      when there's a draft to promote. Click → name
+                      prompt → POST /me/compounds → delete the local
+                      draft. The user's first explicit "I want to keep
+                      this" moment in the whole flow. */}
+                  {!!currentSmiles && !!activeDraft && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const suggested = activeDraft.name?.startsWith("untitled")
+                          ? ""
+                          : (activeDraft.name || "");
+                        const name = window.prompt(
+                          "Name this compound to save it to your library:",
+                          suggested,
+                        );
+                        if (!name || !name.trim()) return;
+                        try {
+                          await api.saveMyCompound({ name: name.trim(), smiles: currentSmiles });
+                          deleteDraft(activeDraft.id);
+                          setActiveDraft(null);
+                          setPromoteToast(`✓ "${name.trim()}" saved to your library`);
+                          window.setTimeout(() => setPromoteToast(null), 3000);
+                        } catch (e: any) {
+                          setPromoteToast(`✗ ${e?.message || "Save failed"}`);
+                          window.setTimeout(() => setPromoteToast(null), 5000);
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider transition-colors"
+                      title="Save this compound permanently to your library — picks a name now, available across sessions."
+                    >
+                      ⇡ promote
+                    </button>
+                  )}
+                  <span className="font-mono text-[9px] text-slate-600">
+                    {currentSmiles ? `${currentSmiles.length} chars` : "empty"}
+                  </span>
+                </div>
               </div>
+              {promoteToast && (
+                <div className={`mb-2 px-2 py-1 rounded text-[10px] font-mono ${
+                  promoteToast.startsWith("✓")
+                    ? "bg-emerald-950/40 border border-emerald-900/60 text-emerald-200"
+                    : "bg-rose-950/40 border border-rose-900/60 text-rose-200"
+                }`}>
+                  {promoteToast}
+                </div>
+              )}
               {/* Trigger row: chip on the left shows current SMILES preview
                   (or "—" when empty); input on the right opens the loader
                   popover on focus, identical to Target's "search" affordance.
@@ -1805,7 +1852,17 @@ function ProductionViewer3D({
         if (n > 0) poseCentroidRef.current = [sx/n, sy/n, sz/n];
       } catch { /* ignore — fallback to model:1 zoomTo */ }
     }
-  }, [hasDock, posePdbqt, smiles]);
+    // (v0.32) DELIBERATELY excluding `smiles` from deps. Including it
+    // re-snapshots dockedSmilesRef on every keystroke, which makes
+    // smilesEdited always false → LIVE mode + 2D edit kept rendering
+    // the pre-edit conformer because nothing thought the SMILES had
+    // diverged. We only want to snapshot when a NEW dock arrives
+    // (posePdbqt changes), so deps are [hasDock, posePdbqt] only.
+    // smiles is read inside the effect via closure on the current
+    // render — that's fine because the effect runs once per dock and
+    // the SMILES at that moment is the docked SMILES.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasDock, posePdbqt]);
 
   // Fetch the live conformer in three cases:
   //   1. No dock yet — preview whatever the user is sketching.
