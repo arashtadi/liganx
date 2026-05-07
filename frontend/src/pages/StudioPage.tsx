@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.56-2026-05-07-fulljob-only-progress";
+const LIGANX_BUILD_TAG = "v0.57-2026-05-07-save-button-2d-header";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -773,6 +773,40 @@ export default function StudioPage() {
               {/* (v0.27) The 2D theme toggle moved to the global header.
                   Editor theme now follows the site theme automatically —
                   see the MutationObserver wired to <html>.dark above. */}
+              {/* (v0.57) Prominent Save button right next to the
+                  Ketcher canvas. Visible whenever a SMILES is present
+                  so the user has an obvious place to commit a sketch
+                  to the library. The ⇡ promote button in the COMPOUND
+                  section still works (and now opens the same dialog),
+                  but a 'Save' CTA in the editor header is what users
+                  intuit on first sketch. */}
+              {!!currentSmiles && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // If we already have a fork-locked named compound,
+                    // route through the fork prompt naturally; otherwise
+                    // promote-from-draft. Either way, the modal handles
+                    // the API call + draft cleanup.
+                    if (loadedCompound && currentSmiles !== loadedCompound.smiles) {
+                      setPromoteDialog({
+                        mode: "fork",
+                        initialName: `${loadedCompound.name} · variant`,
+                        originalName: loadedCompound.name,
+                      });
+                    } else {
+                      const suggested = activeDraft?.name?.startsWith("untitled")
+                        ? ""
+                        : (activeDraft?.name || loadedCompound?.name || "");
+                      setPromoteDialog({ mode: "promote", initialName: suggested });
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded border border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider"
+                  title="Save this compound to your library — picks a name now, available across sessions and pre-fills future docks."
+                >
+                  💾 Save compound
+                </button>
+              )}
               <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
             </div>
           </div>
