@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.60-2026-05-07-ai-apply-and-dock";
+const LIGANX_BUILD_TAG = "v0.61-2026-05-07-autoframe-and-leave-warn";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -226,6 +226,37 @@ export default function StudioPage() {
 
   const [now, setNow] = useState(new Date());
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
+
+  // (v0.61) Warn the user if they try to close the tab / refresh /
+  // navigate away while they have un-promoted work in the canvas.
+  // Autosave drafts protect against data loss inside Studio (the
+  // user can come back and find their sketch), but they don't make
+  // the compound show up in /compounds for re-use elsewhere — for
+  // that you have to hit Save / Promote. This warning catches the
+  // case of "I sketched something, didn't promote, and was about to
+  // close my tab".
+  //
+  // Browser-native confirm prompt — modern browsers ignore the
+  // returnValue text and show their own copy ("Reload site?"), but
+  // setting it is still the standard way to opt in. Only fires on
+  // tab-close / refresh / external nav; in-app navigation uses
+  // React Router which doesn't trigger beforeunload.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      const hasUnsaved = !!currentSmiles && (
+        !loadedCompound ||
+        currentSmiles !== loadedCompound.smiles
+      );
+      if (!hasUnsaved) return;
+      e.preventDefault();
+      // Returning a string is the legacy spec; modern browsers ignore
+      // the text but require the property to be set + a return value.
+      e.returnValue = "You have an unsaved compound. Save to your library before leaving?";
+      return e.returnValue;
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [currentSmiles, loadedCompound]);
 
   // (v0.30) Silent autosave loop — debounced 600 ms after the user
   // stops editing. The contract: every meaningful state the user
@@ -3367,9 +3398,27 @@ function ProductionViewer3D({
     // changed (a fresh dock arrived → user expects re-framing on the
     // new pose centroid). Conformer-only / edited-conformer / variant
     // / mode changes all preserve camera.
+    // (v0.61) Snapshot includes receptor + conformer presence too.
+    // The previous snapshot was just the dock-result fingerprints,
+    // which fired the "fresh structure" path the moment dockResult
+    // arrived — but the receptor PDB fetches in a SEPARATE effect
+    // and lands a few hundred ms later. By the time the receptor
+    // arrived and the build effect re-fired, the snapshot was
+    // unchanged → camera preserved at the conformer view → the
+    // ligand was off-screen until the user manually zoomed.
+    //
+    // Now the snapshot also tracks receptor lengths and conformer
+    // length, so the first time receptor or conformer data lands,
+    // it counts as a structural change and the build effect
+    // auto-frames on the new pose. Variant flip is unaffected
+    // because both receptor lengths stay constant in state.
     const structuralSnapshot = [
+      showDockedScene ? "D" : "L",
       dockResult?.pose_pdbqt_b64 || "_",
       dockResultWt?.pose_pdbqt_b64 || "_",
+      receptorPdbWt?.length || 0,
+      receptorPdbMut?.length || 0,
+      conformerSdf?.length || 0,
     ].join("|");
     const isFreshStructure = lastStructuralSnapshotRef.current !== structuralSnapshot;
     let savedView: any = null;
