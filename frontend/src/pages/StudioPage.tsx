@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.63-2026-05-07-add-to-suite-clears-canvas";
+const LIGANX_BUILD_TAG = "v0.64-2026-05-07-multi-add-compound-flow";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -833,87 +833,13 @@ export default function StudioPage() {
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
         {/* LEFT — 2D Canvas */}
         <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
-          {/* (v0.64) Compounds rail — small horizontal strip above the
-              Ketcher header listing every compound staged for the
-              next dock (max 10). The active compound is highlighted
-              and shown in the canvas. + ADD captures the current
-              SMILES into the list and clears the canvas for the next
-              sketch. × per chip removes a compound. When the list is
-              empty the rail collapses (back to single-compound mode
-              where currentSmiles is the one and only). */}
-          {(compounds.length > 0 || !!currentSmiles) && (
-            <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center gap-2 text-[10px] flex-wrap">
-              <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
-                Compounds {compounds.length > 0 ? `${compounds.length}/${MAX_COMPOUNDS}` : ""}
-              </span>
-              {compounds.map((c, i) => (
-                <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-mono ${
-                  i === activeCompoundIdx
-                    ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                    : "border-slate-700/60 text-slate-400 hover:border-slate-500"
-                }`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveCompoundIdx(i);
-                      loadIntoCanvas(c.smiles);
-                    }}
-                    className="truncate max-w-[14ch]"
-                    title={`${c.name || "untitled"} — ${c.smiles}`}
-                  >
-                    {c.name || `#${i + 1}`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCompounds((prev) => prev.filter((_, j) => j !== i));
-                      if (activeCompoundIdx >= compounds.length - 1) setActiveCompoundIdx(0);
-                    }}
-                    className="text-slate-600 hover:text-rose-400"
-                    title="Remove this compound from the list"
-                  >×</button>
-                </span>
-              ))}
-              {!!currentSmiles && compounds.length < MAX_COMPOUNDS && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    // (v0.63) Snapshot the current SMILES into the
-                    // staged list. CRUCIAL: clear the Ketcher canvas
-                    // afterwards so the user sees an empty editor and
-                    // knows the next sketch will be a new compound.
-                    // Without the clear, Add appeared to do 'nothing'
-                    // because the canvas didn't change.
-                    const newCompound: CompoundEntry = {
-                      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                      smiles: currentSmiles,
-                      name: loadedCompound?.name || activeDraft?.name?.replace(/^untitled.*/, "") || undefined,
-                    };
-                    setCompounds((prev) => [...prev, newCompound]);
-                    setActiveCompoundIdx(compounds.length + 1);  // index after the next sketch lands
-                    // Clear canvas + reset live SMILES so the user
-                    // can start drawing the next compound. Reset the
-                    // loaded-compound lock too — the staged compound
-                    // owns that name now.
-                    setLoadedCompound(null);
-                    setActiveDraft(null);
-                    setCurrentSmiles("");
-                    try {
-                      const a = getKetcherApi(iframeRef.current);
-                      if (a?.setMolecule) await a.setMolecule("");
-                    } catch { /* ignore */ }
-                  }}
-                  className="px-2 py-0.5 rounded border border-emerald-500/70 bg-emerald-900/40 text-emerald-100 hover:bg-emerald-800/50 hover:border-emerald-400 font-mono text-[10px] uppercase tracking-wider font-bold"
-                  title={`Save this molecule to the staged list (${compounds.length + 1}/${MAX_COMPOUNDS}) and clear the canvas so you can draw the next one. Run Dock submits all staged compounds in a single Full Job.`}
-                >
-                  + add to suite ({compounds.length + 1}/{MAX_COMPOUNDS})
-                </button>
-              )}
-              {compounds.length >= MAX_COMPOUNDS && (
-                <span className="text-[9px] text-amber-400 italic">✓ max {MAX_COMPOUNDS} compounds — ready to dock</span>
-              )}
-            </div>
-          )}
+          {/* (v0.64) Compound rail above the 2D editor was removed —
+              the staged compound list now lives in the right-rail
+              COMPOUND section below the search trigger, matching the
+              user's mental model of 'open compound section → search
+              and pick multiple → see them listed there'. The 2D
+              editor still allows custom sketching and an inline
+              '+ Add sketch to suite' button below. */}
           <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px] gap-3">
             <div className="flex items-center gap-3">
               <span className={TOK.label}>2D · Ketcher</span>
@@ -1496,35 +1422,13 @@ export default function StudioPage() {
               {/* /v0.39 wrapper — closes mutationWrapRef */}
             </div>
 
-            {/* ─── COMPOUND (trigger-chip + search row, mirrors Target/Mutation) ─── */}
+            {/* ─── COMPOUND (v0.64: multi-add list, click-to-search) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
-                <span className={TOK.label}>Compound</span>
-                <div className="flex items-center gap-2">
-                  {/* (v0.32) Promote-to-library button. Only meaningful
-                      when there's a draft to promote. Click → name
-                      prompt → POST /me/compounds → delete the local
-                      draft. The user's first explicit "I want to keep
-                      this" moment in the whole flow. */}
-                  {!!currentSmiles && !!activeDraft && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const suggested = activeDraft.name?.startsWith("untitled")
-                          ? ""
-                          : (activeDraft.name || "");
-                        setPromoteDialog({ mode: "promote", initialName: suggested });
-                      }}
-                      className="px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider transition-colors"
-                      title="Save this compound permanently to your library — picks a name now, available across sessions."
-                    >
-                      ⇡ promote
-                    </button>
-                  )}
-                  <span className="font-mono text-[9px] text-slate-600">
-                    {currentSmiles ? `${currentSmiles.length} chars` : "empty"}
-                  </span>
-                </div>
+                <span className={TOK.label}>Compounds</span>
+                <span className="font-mono text-[9px] text-slate-600">
+                  {compounds.length}/{MAX_COMPOUNDS}{compounds.length === MAX_COMPOUNDS && <span className="text-amber-400 ml-1">· full</span>}
+                </span>
               </div>
               {promoteToast && (
                 <div className={`mb-2 px-2 py-1 rounded text-[10px] font-mono ${
@@ -1586,33 +1490,94 @@ export default function StudioPage() {
                   </div>
                 </div>
               )}
-              {/* Trigger row: chip on the left shows current SMILES preview
-                  (or "—" when empty); input on the right opens the loader
-                  popover on focus, identical to Target's "search" affordance.
-                  Both controls toggle the same loader so the section behaves
-                  uniformly with Target/Mutation. */}
-              <div className="flex items-center gap-2">
+              {/* (v0.64) Click anywhere on this row → opens the search
+                  modal in multi-add mode. User can pick several
+                  compounds (reference / library / PubChem / paste
+                  SMILES) without closing; modal stays open until they
+                  hit Done. Each pick lands in the staged list below. */}
+              <button
+                type="button"
+                onClick={() => setShowLoader(true)}
+                disabled={compounds.length >= MAX_COMPOUNDS}
+                className={`w-full px-3 py-2 rounded border font-mono text-[11px] flex items-center gap-2 transition-colors ${
+                  compounds.length >= MAX_COMPOUNDS
+                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                    : "border-cyan-500/60 bg-cyan-900/30 text-cyan-200 hover:bg-cyan-900/50"
+                }`}
+                title="Search the curated reference list, your library, or PubChem. Click multiple compounds to stage them all at once. Run Dock submits all staged compounds in a single Full Job."
+              >
+                <span className="text-[12px]">🔍</span>
+                <span className="uppercase tracking-wider">
+                  {compounds.length === 0 ? "Search & add compounds" : "Add more compounds"}
+                </span>
+                <span className="ml-auto text-[9px] text-cyan-400/70 normal-case">
+                  reference · library · pubchem · sketch
+                </span>
+              </button>
+              {/* Staged compounds list — newest at the bottom. Each row
+                  shows name + SMILES preview; click to load into 2D
+                  for inspection/editing; × removes from the suite. */}
+              {compounds.length > 0 && (
+                <div className="mt-2 rounded border border-slate-800 divide-y divide-slate-800/60">
+                  {compounds.map((c, i) => (
+                    <div key={c.id} className={`px-2 py-1.5 flex items-center gap-2 text-[10px] font-mono ${
+                      i === activeCompoundIdx ? "bg-cyan-950/20" : "hover:bg-slate-800/30"
+                    }`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveCompoundIdx(i);
+                          loadIntoCanvas(c.smiles);
+                          if (c.name) setLoadedCompound({ name: c.name, smiles: c.smiles });
+                        }}
+                        className="flex-1 text-left flex items-center gap-2 min-w-0"
+                        title={`Load ${c.name || `compound #${i + 1}`} into the 2D editor for inspection or editing.`}
+                      >
+                        <span className="text-[8px] text-slate-600 tabular-nums shrink-0">{i + 1}</span>
+                        <span className={`shrink-0 truncate max-w-[12ch] ${i === activeCompoundIdx ? "text-cyan-200" : "text-slate-200"}`}>
+                          {c.name || `untitled #${i + 1}`}
+                        </span>
+                        <span className="text-[9px] text-slate-500 truncate min-w-0">{c.smiles}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCompounds((prev) => prev.filter((_, j) => j !== i));
+                          if (activeCompoundIdx >= compounds.length - 1) setActiveCompoundIdx(0);
+                        }}
+                        className="text-slate-600 hover:text-rose-400 px-1 shrink-0"
+                        title="Remove this compound from the suite"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Inline 'add the canvas sketch' helper — shows when the
+                  user has drawn something custom that isn't in the list. */}
+              {!!currentSmiles && !compounds.some((c) => c.smiles === currentSmiles) && compounds.length < MAX_COMPOUNDS && (
                 <button
-                  onClick={() => setShowLoader(!showLoader)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-cyan-500/60 bg-cyan-900/30 text-cyan-200 font-mono text-[11px] uppercase tracking-wider hover:bg-cyan-900/50 min-w-[80px]"
-                  title={currentSmiles ? `Current SMILES: ${currentSmiles}` : "Load reference, library, or paste SMILES"}
+                  type="button"
+                  onClick={async () => {
+                    const newC: CompoundEntry = {
+                      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                      smiles: currentSmiles,
+                      name: loadedCompound?.name || (activeDraft?.name && !activeDraft.name.startsWith("untitled") ? activeDraft.name : undefined),
+                    };
+                    setCompounds((prev) => [...prev, newC]);
+                    setLoadedCompound(null);
+                    setActiveDraft(null);
+                    setCurrentSmiles("");
+                    try {
+                      const a = getKetcherApi(iframeRef.current);
+                      if (a?.setMolecule) await a.setMolecule("");
+                    } catch { /* */ }
+                  }}
+                  className="mt-2 w-full px-2 py-1 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider"
+                  title="Stage the current 2D sketch as compound and clear the canvas to draw the next one."
                 >
-                  <span className={`text-[8px] transition-transform ${showLoader ? "rotate-90" : ""}`}>▸</span>
-                  <span className="truncate max-w-[80px]">
-                    {currentSmiles
-                      ? (currentSmiles.length > 10 ? currentSmiles.slice(0, 10) + "…" : currentSmiles)
-                      : "—"}
-                  </span>
+                  + add 2D sketch to suite ({compounds.length + 1}/{MAX_COMPOUNDS})
                 </button>
-                <input
-                  type="text"
-                  readOnly
-                  onFocus={() => setShowLoader(true)}
-                  onClick={() => setShowLoader(true)}
-                  placeholder="search · paste SMILES · pubchem"
-                  className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60 cursor-pointer"
-                />
-              </div>
+              )}
             </div>
 
             </div>
@@ -1753,21 +1718,24 @@ export default function StudioPage() {
             <CompoundLoader
               targetMeta={targetMeta}
               myCompounds={myCompounds || []}
+              stagedCount={compounds.length}
+              maxStaged={MAX_COMPOUNDS}
               onPick={(smiles, name) => {
-                // (v0.33) When a NAMED compound is loaded (library /
-                // reference / PubChem), record the identity so the
-                // first edit triggers fork-on-edit instead of silently
-                // overwriting via autosave. Paste-SMILES picks pass
-                // undefined → no fork lock, plain new draft.
-                if (name) {
-                  setLoadedCompound({ name, smiles });
-                  // Start a fresh autosave id; otherwise the autosave
-                  // would update whatever draft was active before.
-                  setActiveDraft(null);
-                } else {
-                  setLoadedCompound(null);
-                }
-                loadIntoCanvas(smiles);
+                // (v0.64) Multi-add: pick adds to the staged compound
+                // list and the modal STAYS OPEN so the user can pick
+                // several at once. Dedup by SMILES; cap at
+                // MAX_COMPOUNDS. Modal closes only via the Done
+                // button or backdrop click.
+                if (!smiles) return;
+                setCompounds((prev) => {
+                  if (prev.some((c) => c.smiles === smiles)) return prev;  // already staged
+                  if (prev.length >= MAX_COMPOUNDS) return prev;
+                  return [...prev, {
+                    id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                    smiles,
+                    name: name || undefined,
+                  }];
+                });
               }}
               onClose={() => setShowLoader(false)}
             />
@@ -2763,7 +2731,7 @@ function SaScorePill({ sa }: { sa: { score: number; label: string } | null }) {
  *  panel. The 3D viewer picks up the change automatically via the
  *  SMILES polling tick. */
 function CompoundLoader({
-  targetMeta, myCompounds, onPick, onClose,
+  targetMeta, myCompounds, onPick, onClose, stagedCount, maxStaged,
 }: {
   targetMeta: any;
   myCompounds: any[];
@@ -2772,8 +2740,14 @@ function CompoundLoader({
   // then edits, fork-on-edit kicks in (Save changes vs Save as new)
   // instead of silently overwriting. Paste-SMILES picks pass undefined
   // so they remain ordinary fresh drafts.
+  // (v0.64) onPick is now multi-add: each pick adds the compound to
+  // the parent's staged list and the modal STAYS OPEN so the user can
+  // continue picking more. Modal closes only via the explicit Done
+  // button at the bottom or backdrop click.
   onPick: (smiles: string, name?: string) => void;
   onClose: () => void;
+  stagedCount: number;
+  maxStaged: number;
 }) {
   const [paste, setPaste] = useState("");
   const [search, setSearch] = useState("");
@@ -2853,7 +2827,18 @@ function CompoundLoader({
     // inside a centered modal panel rendered at the StudioPage root, so
     // it just needs to fill its container. Caller controls the backdrop
     // and the close-on-click-outside behaviour.
-    <div className="bg-[#0d1422] flex-1 overflow-auto">
+    <div className="bg-[#0d1422] flex-1 overflow-auto flex flex-col">
+      {/* (v0.64) Header bar — shows the running count of compounds
+          staged so the user knows how many they've picked so far and
+          how many slots remain. */}
+      <div className="px-3 py-2 border-b border-slate-800/70 flex items-center justify-between text-[11px] font-mono shrink-0">
+        <span className="text-slate-400">
+          Pick compounds — <span className="text-cyan-300">{stagedCount}</span> / {maxStaged} staged
+        </span>
+        {stagedCount >= maxStaged && (
+          <span className="text-amber-400 text-[10px]">max reached — click Done to dock</span>
+        )}
+      </div>
       {/* Search bar — filters both reference + library lists */}
       <div className="px-3 py-2 border-b border-slate-800/70 flex items-center gap-2">
         <span className="text-cyan-400 text-xs">🔍</span>
@@ -3002,6 +2987,23 @@ function CompoundLoader({
             <button onClick={() => onPick("CN1CCC[C@H]1c1cccnc1")} className="text-cyan-500 hover:text-cyan-300 underline">nicotine</button>
           </div>
         </div>
+      </div>
+      {/* (v0.64) Sticky Done bar — explicit dismissal so the user can
+          pick multiple compounds without the modal closing on each
+          click. Backdrop click + Esc still close as before. */}
+      <div className="px-3 py-2 border-t border-slate-800/70 flex items-center justify-between text-[11px] font-mono shrink-0 bg-[#0d1422]">
+        <span className="text-slate-500">
+          {stagedCount === 0
+            ? "Pick at least one compound, or close to cancel."
+            : <>{stagedCount} compound{stagedCount === 1 ? "" : "s"} staged</>}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-3 py-1 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 uppercase tracking-wider"
+        >
+          done
+        </button>
       </div>
     </div>
   );
