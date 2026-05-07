@@ -780,11 +780,19 @@ function Header({
   });
   const proteinLabel = pdbInfo?.protein ? prettifyProtein(pdbInfo.protein) : null;
 
+  // (v0.49) Back-link target. Studio's "view ↗" link passes
+  // ?from=studio so we can offer a single-click return path back to
+  // the cockpit instead of forcing the user through History.
+  const [backSearchParams] = useSearchParams();
+  const backFrom = backSearchParams.get("from");
+  const backHref = backFrom === "studio" ? "/studio" : "/history";
+  const backLabel = backFrom === "studio" ? "Back to Studio" : "Back to history";
+
   return (
     <header className="card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
       <div>
-        <Link to="/history" className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
-          <ArrowRight size={11} className="rotate-180" /> Back to history
+        <Link to={backHref} className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
+          <ArrowRight size={11} className="rotate-180" /> {backLabel}
         </Link>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="font-mono text-delta-700 dark:text-delta-300">{job.pdb_id}</span>

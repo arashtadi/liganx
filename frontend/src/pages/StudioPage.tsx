@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.48-2026-05-07-hide-empty-telemetry";
+const LIGANX_BUILD_TAG = "v0.49-2026-05-07-back-to-studio";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -813,7 +813,7 @@ export default function StudioPage() {
                 {fullJobKey && fullJobStatus && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled" ? (
                   <>
                     <span className="text-emerald-300 animate-pulse truncate">⇢ {fullJobStageLabel(fullJobStage)}</span>
-                    <a href={`/jobs/${fullJobKey}`} target="_blank" rel="noreferrer"
+                    <a href={`/jobs/${fullJobKey}?from=studio`} target="_blank" rel="noreferrer"
                        className="text-cyan-400 hover:text-cyan-300 underline-offset-2 hover:underline shrink-0"
                        title="Open the persistent results page in a new tab — full progress UI, runner logs, build steps.">
                       view ↗
@@ -822,7 +822,7 @@ export default function StudioPage() {
                 ) : fullJobKey && fullJobStatus === "completed" ? (
                   <>
                     <span className="text-emerald-400">✓ full job done</span>
-                    <a href={`/jobs/${fullJobKey}`} target="_blank" rel="noreferrer"
+                    <a href={`/jobs/${fullJobKey}?from=studio`} target="_blank" rel="noreferrer"
                        className="text-cyan-400 hover:text-cyan-300 underline-offset-2 hover:underline">
                       view ↗
                     </a>
