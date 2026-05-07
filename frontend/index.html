@@ -128,25 +128,14 @@
       }
     }
     </script>
-    <!-- Inline theme bootstrap: runs before React mounts so the .dark class
-         is set on <html> before first paint. Prevents flash-of-wrong-theme
-         when user has dark mode saved.
-         Default for NEW users (no saved preference) is LIGHT mode regardless
-         of the OS-level prefers-color-scheme. Liganx is a science tool first
-         seen in marketing screenshots and shared links — light reads as the
-         "default product look". Users on dark-mode systems can flip via the
-         toggle, and that choice persists. -->
+    <!-- Theme bootstrap (v0.28+): site is dark-only.
+         The toggle was removed — Studio's hardcoded dark cockpit looked
+         half-and-half against a light page chrome, and the simplest answer
+         was to commit fully to dark across every route. This inline script
+         pins .dark on <html> before React mounts so there's no flash of
+         the unstyled (light-default) Tailwind base on first paint. -->
     <script>
-      (function () {
-        try {
-          // Read the new key first; fall back to the legacy `deltadock-theme`
-          // so a user's saved choice survives the rebrand on first load.
-          var saved = localStorage.getItem("liganx-theme") || localStorage.getItem("deltadock-theme");
-          // ONLY apply dark when the user has explicitly chosen it. New
-          // users / cleared storage = light by default, not OS-following.
-          if (saved === "dark") document.documentElement.classList.add("dark");
-        } catch (_) { /* localStorage unavailable — silently default to light */ }
-      })();
+      document.documentElement.classList.add("dark");
     </script>
   </head>
   <body>

@@ -27,7 +27,8 @@ import StudioPage from "./pages/StudioPage";
 // admin, update both this constant and the Fly secret in lockstep.
 const ADMIN_EMAIL = "arashtadi@gmail.com";
 import { LogoMark, Spinner } from "./components/Icons";
-import ThemeToggle from "./components/ThemeToggle";
+// (v0.28) ThemeToggle import removed — site is dark-only now.
+// import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { api } from "./api";
 import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
@@ -278,7 +279,7 @@ function Header() {
               History
             </NavLink>
           )}
-          <ThemeToggle />
+          {/* (v0.28) ThemeToggle removed — dark-only site. */}
           {user ? (
             <UserMenu
               email={user.email || "account"}
