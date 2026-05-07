@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.45-2026-05-07-ai-variant-full-text";
+const LIGANX_BUILD_TAG = "v0.46-2026-05-07-dock-buttons-peers";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1299,39 +1299,56 @@ export default function StudioPage() {
                   ⚠ {dockResult.mutation_caveat}
                 </div>
               )}
-              <button
-                onClick={runQuickDock}
-                disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
-                className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
-                  docking
-                    ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 cursor-wait animate-pulse"
-                    : !ketcherReady || !currentSmiles
-                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                    : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
-                }`}
-                title="Quick Dock — GPU pipeline. ~30 s, scores both WT and mutant in parallel. Has a flexibility/MW cap; large scaffolds may be rejected."
-              >
-                {docking ? "▶ docking…" : "⏵ Quick Dock · GPU · ~30s"}
-              </button>
-              {/* (v0.44) Full Job — submits to /jobs and navigates to
-                  the persistent results page. ~3 min, no scaffold cap,
-                  full exhaustiveness + multi-engine support. Sized
-                  smaller than Quick Dock so it reads as the deliberate
-                  alternative rather than the primary action. */}
-              <button
-                onClick={runFullJob}
-                disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
-                className={`w-full mt-1.5 px-4 py-1.5 rounded border font-mono text-[10px] uppercase tracking-[0.18em] transition-all ${
-                  submittingFull
-                    ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
-                    : !ketcherReady || !currentSmiles || !selectedTarget
-                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                    : "border-emerald-700/50 bg-emerald-950/20 text-emerald-300/90 hover:bg-emerald-900/30 hover:border-emerald-500/60"
-                }`}
-                title="Full Job — submits to /jobs queue and opens the persistent results page. Slower (~3 min) but no scaffold cap, full exhaustiveness, GNINA & Boltz-2 available."
-              >
-                {submittingFull ? "▶ submitting…" : "⇢ Run as Full Job · ~3 min · no caps"}
-              </button>
+              {/* (v0.46) Quick Dock + Full Job rendered as equal-weight
+                  peers in a 2-column grid. Same height, same type
+                  scale; the only difference is the accent color (cyan
+                  for the fast GPU path, emerald for the persistent
+                  CPU job path). User picks per run without one
+                  feeling primary or secondary. */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={runQuickDock}
+                  disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
+                  className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
+                    docking
+                      ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 cursor-wait animate-pulse"
+                      : !ketcherReady || !currentSmiles || !selectedTarget
+                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                      : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
+                  }`}
+                  title="Quick Dock — GPU pipeline. ~30 s, results inline in the score panel. Flexibility/MW cap; large scaffolds may be rejected."
+                >
+                  {docking ? (
+                    <span>▶ docking…</span>
+                  ) : (
+                    <>
+                      <div>⏵ Quick Dock</div>
+                      <div className="text-[8px] tracking-[0.2em] text-cyan-400/70 normal-case mt-0.5">gpu · ~30s · inline</div>
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={runFullJob}
+                  disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
+                  className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
+                    submittingFull
+                      ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
+                      : !ketcherReady || !currentSmiles || !selectedTarget
+                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                      : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
+                  }`}
+                  title="Full Job — submits to /jobs queue and opens the persistent results page. ~3 min, no scaffold cap, full exhaustiveness, GNINA & Boltz-2 available."
+                >
+                  {submittingFull ? (
+                    <span>▶ submitting…</span>
+                  ) : (
+                    <>
+                      <div>⇢ Full Job</div>
+                      <div className="text-[8px] tracking-[0.2em] text-emerald-400/70 normal-case mt-0.5">cpu · ~3 min · no caps</div>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </section>
