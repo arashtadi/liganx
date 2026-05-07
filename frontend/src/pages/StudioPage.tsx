@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.44-2026-05-07-full-job-submit";
+const LIGANX_BUILD_TAG = "v0.45-2026-05-07-ai-variant-full-text";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1995,13 +1995,21 @@ function AiVariantsPanel({
                   ⤴ use
                 </button>
               </div>
-              <div className="text-[10px] text-slate-400 truncate" title={v.new_smiles}>
+              {/* (v0.45) SMILES + rationale render in full now. Both
+                  used to be truncated client-side (60 chars / 140 chars
+                  respectively) with a hover-tooltip carrying the rest,
+                  which made the rationales unreadable — they're often
+                  multi-sentence explanations of the design choice and
+                  the user genuinely wants to read them. break-all keeps
+                  long SMILES from blowing out the row width; the
+                  rationale wraps normally. */}
+              <div className="text-[10px] text-slate-400 break-all" title={v.new_smiles}>
                 <span className="text-slate-600">SMILES </span>
-                {v.new_smiles.length > 60 ? v.new_smiles.slice(0, 60) + "…" : v.new_smiles}
+                {v.new_smiles}
               </div>
               {v.rationale && (
-                <div className="text-[10px] text-slate-500 mt-1 italic" title={v.rationale}>
-                  {v.rationale.length > 140 ? v.rationale.slice(0, 140) + "…" : v.rationale}
+                <div className="text-[10px] text-slate-300/90 mt-1 italic leading-relaxed">
+                  {v.rationale}
                 </div>
               )}
             </div>
