@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.30-2026-05-06-autosave-drafts";
+const LIGANX_BUILD_TAG = "v0.31-2026-05-06-drafts-panel";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -33,7 +33,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
-import { upsertDraft, type StudioDraft } from "../lib/drafts";
+import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -1105,8 +1105,34 @@ export default function StudioPage() {
         <CollapsibleTab label="AI Variants" open={showAi} onToggle={() => setShowAi(!showAi)}>
           <div className="text-slate-500 font-mono text-[11px] p-3">AI variant generation · v0.2 (deferred)</div>
         </CollapsibleTab>
-        <CollapsibleTab label="History" open={showHistory} onToggle={() => setShowHistory(!showHistory)}>
-          <div className="text-slate-500 font-mono text-[11px] p-3">Session dock history · v0.2 (deferred)</div>
+        <CollapsibleTab label="Drafts" open={showHistory} onToggle={() => setShowHistory(!showHistory)}>
+          {/* (v0.31) Drafts panel — shows every autosaved compound. Click
+              a row to restore it (SMILES + target + mutation flow back
+              into Studio); click ✕ to permanently delete. The active
+              draft is highlighted so the user always knows which row
+              their current work is being saved into. */}
+          <DraftsPanel
+            activeDraftId={activeDraft?.id ?? null}
+            onRestore={(d) => {
+              loadIntoCanvas(d.smiles);
+              if (d.target) setSelectedTarget(d.target);
+              if (d.mutation && d.mutation !== "WT") {
+                setSelectedMutation(d.mutation);
+                setIncludeWt(false);
+              } else {
+                setSelectedMutation("");
+                setIncludeWt(true);
+              }
+              // Make the restored draft the active one so subsequent
+              // edits update it in place rather than starting fresh.
+              setActiveDraft(d);
+              setShowHistory(false);
+            }}
+            onDelete={(id) => {
+              deleteDraft(id);
+              if (activeDraft?.id === id) setActiveDraft(null);
+            }}
+          />
         </CollapsibleTab>
       </div>
     </div>
@@ -1115,6 +1141,117 @@ export default function StudioPage() {
 
 /** Collapsible bottom-strip tab. Closed = just a ▸ Label header.
  *  Open = expands upward as a 240px-tall panel above the strip. */
+/** (v0.31) Drafts panel — list of every autosaved compound. Lives in
+ *  the bottom-strip "Drafts" tab. State is a snapshot of localStorage
+ *  taken on mount and every time the parent toggles the tab open;
+ *  refresh via a small ✻ refresh button if needed. (Kept local rather
+ *  than reactive because the autosave loop already owns the source of
+ *  truth — pulling on demand avoids a storage-event subscription.)
+ */
+function DraftsPanel({
+  activeDraftId, onRestore, onDelete,
+}: {
+  activeDraftId: string | null;
+  onRestore: (draft: StudioDraft) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [drafts, setDrafts] = useState<StudioDraft[]>(() => listDrafts());
+  const [tick, setTick] = useState(0);  // 'updated Xs ago' refresh
+  // Re-read the bucket whenever the parent re-renders this panel and
+  // every 5s while it's mounted. Cheap (localStorage read + sort).
+  useEffect(() => {
+    setDrafts(listDrafts());
+    const t = window.setInterval(() => {
+      setDrafts(listDrafts());
+      setTick((n) => n + 1);
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, []);
+  // Also resync when the active draft id changes — e.g. after a fresh
+  // autosave or a restore — so the row highlight follows reality.
+  useEffect(() => {
+    setDrafts(listDrafts());
+  }, [activeDraftId, tick]);
+
+  if (drafts.length === 0) {
+    return (
+      <div className="p-3 text-[11px] font-mono text-slate-500">
+        <div className="mb-1">No drafts yet.</div>
+        <div className="text-slate-600 text-[10px]">
+          Sketch a compound — every change is auto-saved here. Drafts persist across refreshes and tab closes.
+        </div>
+      </div>
+    );
+  }
+
+  const fmtAgo = (iso: string): string => {
+    const dt = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (dt < 60) return `${dt}s`;
+    if (dt < 3600) return `${Math.floor(dt / 60)}m`;
+    if (dt < 86400) return `${Math.floor(dt / 3600)}h`;
+    return `${Math.floor(dt / 86400)}d`;
+  };
+
+  return (
+    <div className="overflow-auto max-h-full">
+      <div className="px-3 py-2 border-b border-slate-800/70 flex items-center justify-between text-[10px] font-mono">
+        <span className="text-slate-500 uppercase tracking-[0.18em]">{drafts.length} draft{drafts.length === 1 ? "" : "s"}</span>
+        <span className="text-slate-600 italic">
+          autosave is on · click any row to restore
+        </span>
+      </div>
+      <div className="divide-y divide-slate-800/60">
+        {drafts.map((d) => {
+          const isActive = d.id === activeDraftId;
+          return (
+            <div
+              key={d.id}
+              className={`px-3 py-2 flex items-center gap-3 text-[11px] font-mono transition-colors ${
+                isActive ? "bg-cyan-950/20" : "hover:bg-slate-800/30"
+              }`}
+            >
+              <button
+                onClick={() => onRestore(d)}
+                className="flex-1 text-left flex items-center gap-3 min-w-0"
+                title="Restore this draft into Studio"
+              >
+                <span className={`text-[9px] uppercase tracking-[0.18em] ${isActive ? "text-cyan-400" : "text-slate-600"}`}>
+                  {isActive ? "● active" : "▸"}
+                </span>
+                <span className={`truncate min-w-0 ${isActive ? "text-cyan-200" : "text-slate-200"}`}>
+                  {d.name}
+                </span>
+                {d.target && (
+                  <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0">
+                    {d.target}{d.mutation && d.mutation !== "WT" ? ` · ${d.mutation}` : ""}
+                  </span>
+                )}
+                <span className="text-[10px] text-slate-500 truncate min-w-0" title={d.smiles}>
+                  {d.smiles.length > 40 ? d.smiles.slice(0, 40) + "…" : d.smiles}
+                </span>
+                <span className="text-[10px] text-slate-600 ml-auto shrink-0">{fmtAgo(d.updatedAt)} ago</span>
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (window.confirm(`Delete draft "${d.name}"? This cannot be undone.`)) {
+                    onDelete(d.id);
+                    setDrafts(listDrafts());
+                  }
+                }}
+                className="text-slate-600 hover:text-rose-400 px-1 text-[12px] shrink-0"
+                title="Delete this draft permanently"
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CollapsibleTab({
   label, open, onToggle, children,
 }: {
