@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.68-2026-05-07-canonical-baseline-fix";
+const LIGANX_BUILD_TAG = "v0.69-2026-05-07-save-as-new-and-discard-prompt";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -268,20 +268,33 @@ export default function StudioPage() {
   // React Router which doesn't trigger beforeunload.
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
-      const hasUnsaved = !!currentSmiles && (
+      // (v0.69) Also catch unsaved edits to a staged suite compound —
+      // the user can edit the canvas, walk away, and lose the edit
+      // unless we prompt. Treats staged-row drift the same as any
+      // other dirty state.
+      const stagedDirty =
+        activeCompoundIdx >= 0 &&
+        activeCompoundIdx < compounds.length &&
+        !!currentSmiles &&
+        currentSmiles !== compounds[activeCompoundIdx].smiles;
+      const libraryDirty = !!currentSmiles && (
         !loadedCompound ||
         currentSmiles !== loadedCompound.smiles
       );
+      // Library dirty fires for any non-staged sketch; ignore it when
+      // the user is mid-edit on a staged compound (stagedDirty owns
+      // that case) so we don't double-count.
+      const hasUnsaved = stagedDirty || (libraryDirty && !stagedDirty);
       if (!hasUnsaved) return;
       e.preventDefault();
       // Returning a string is the legacy spec; modern browsers ignore
       // the text but require the property to be set + a return value.
-      e.returnValue = "You have an unsaved compound. Save to your library before leaving?";
+      e.returnValue = "You have unsaved compound edits. Save before leaving?";
       return e.returnValue;
     }
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [currentSmiles, loadedCompound]);
+  }, [currentSmiles, loadedCompound, activeCompoundIdx, compounds]);
 
   // (v0.30) Silent autosave loop — debounced 600 ms after the user
   // stops editing. The contract: every meaningful state the user
@@ -1573,6 +1586,15 @@ export default function StudioPage() {
                     // Dock will submit.
                     const isActive = i === activeCompoundIdx;
                     const isEdited = isActive && !!currentSmiles && currentSmiles !== c.smiles;
+                    // (v0.69) When ANOTHER row is mid-edit, clicking THIS
+                    // row would silently discard those edits. Detect that
+                    // case so we can prompt before navigating away.
+                    const otherRowDirty =
+                      !isActive &&
+                      activeCompoundIdx >= 0 &&
+                      activeCompoundIdx < compounds.length &&
+                      !!currentSmiles &&
+                      currentSmiles !== compounds[activeCompoundIdx].smiles;
                     return (
                     <div key={c.id} className={`px-2 py-1.5 flex items-center gap-2 text-[10px] font-mono ${
                       isEdited ? "bg-amber-950/20"
@@ -1582,6 +1604,19 @@ export default function StudioPage() {
                       <button
                         type="button"
                         onClick={() => {
+                          // (v0.69) If the user has uncommitted edits on
+                          // a different staged row, switching loses those
+                          // edits unless they save first. Confirm before
+                          // discarding.
+                          if (otherRowDirty) {
+                            const otherIdx = activeCompoundIdx;
+                            const otherName = compounds[otherIdx]?.name || `compound #${otherIdx + 1}`;
+                            const ok = window.confirm(
+                              `Discard your unsaved edits to "${otherName}"?\n\n` +
+                              `Click Cancel to stay on that compound and use SAVE EDITS or SAVE AS NEW first.`
+                            );
+                            if (!ok) return;
+                          }
                           setActiveCompoundIdx(i);
                           // (v0.68) Pass stagedId + libraryName so the
                           // canonical SMILES Ketcher emits gets folded
@@ -1602,6 +1637,7 @@ export default function StudioPage() {
                         <span className="text-[9px] text-slate-500 truncate min-w-0">{isEdited ? currentSmiles : c.smiles}</span>
                       </button>
                       {isEdited && (
+                        <>
                         <button
                           type="button"
                           onClick={() => {
@@ -1621,6 +1657,49 @@ export default function StudioPage() {
                         >
                           save edits
                         </button>
+                        {/* (v0.69) SAVE AS NEW — fork the edit into a
+                            brand-new staged entry, leaving the original
+                            compound intact in the suite. Capped at
+                            MAX_COMPOUNDS; if full, button is disabled. */}
+                        <button
+                          type="button"
+                          disabled={compounds.length >= MAX_COMPOUNDS}
+                          onClick={() => {
+                            if (compounds.length >= MAX_COMPOUNDS) return;
+                            const newId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+                            const baseName = c.name || `untitled #${i + 1}`;
+                            const variantName = `${baseName} · variant`;
+                            const newC: CompoundEntry = { id: newId, smiles: currentSmiles, name: variantName };
+                            // Insert the new entry right after the
+                            // active row so the user sees the fork
+                            // appear next to its parent.
+                            setCompounds((prev) => {
+                              const next = [...prev];
+                              next.splice(i + 1, 0, newC);
+                              return next;
+                            });
+                            // Make the new entry active and lock the
+                            // canvas to it so further edits target the
+                            // fork, not the original.
+                            setActiveCompoundIdx(i + 1);
+                            setLoadedCompound({ name: variantName, smiles: currentSmiles });
+                            setPromoteToast(`✓ Forked → "${variantName}"`);
+                            window.setTimeout(() => setPromoteToast(null), 2500);
+                          }}
+                          className={`px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wider shrink-0 ${
+                            compounds.length >= MAX_COMPOUNDS
+                              ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                              : "border-cyan-600/60 bg-cyan-950/40 text-cyan-200 hover:bg-cyan-900/50 hover:border-cyan-500"
+                          }`}
+                          title={
+                            compounds.length >= MAX_COMPOUNDS
+                              ? `Suite is full (${MAX_COMPOUNDS}/${MAX_COMPOUNDS}). Remove a compound to fork.`
+                              : `Keep "${c.name || `compound #${i + 1}`}" untouched and add the edited SMILES as a new compound in the suite.`
+                          }
+                        >
+                          save as new
+                        </button>
+                        </>
                       )}
                       <button
                         type="button"
