@@ -235,8 +235,14 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 function Header() {
+  // Header typography matches Studio's control-center aesthetic: monospace,
+  // small caps, and a touch of letter-tracking. This was bolted on after
+  // Studio shipped — the rest of the site still uses the default sans
+  // body font, but having the chrome (header + nav + profile menu) in
+  // mono unifies the brand feel across pages without rewriting every
+  // page's body content.
   const linkCls = ({ isActive }: { isActive: boolean }) =>
-    `text-sm font-medium transition-colors ${
+    `text-[11px] font-mono uppercase tracking-[0.15em] transition-colors ${
       isActive
         ? "text-delta-700 dark:text-delta-300"
         : "text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white"
@@ -247,8 +253,8 @@ function Header() {
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-6 py-3">
         <Link to="/" className="flex items-center gap-2.5 group">
           <LogoMark size={28} className="transition-transform group-hover:rotate-[-4deg]" />
-          <span className="text-lg font-bold tracking-tight text-ink dark:text-white">Liganx</span>
-          <span className="badge bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 dark:bg-delta-900/40 dark:text-delta-300 dark:ring-delta-700">
+          <span className="text-base font-mono font-bold uppercase tracking-[0.18em] text-ink dark:text-white">Liganx</span>
+          <span className="badge font-mono uppercase tracking-wider bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 dark:bg-delta-900/40 dark:text-delta-300 dark:ring-delta-700">
             beta
           </span>
         </Link>
@@ -274,7 +280,7 @@ function Header() {
             />
           ) : (
             <>
-              <Link to="/login" className="text-sm font-medium text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white px-3 py-2">
+              <Link to="/login" className="text-[11px] font-mono uppercase tracking-[0.15em] text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white px-3 py-2">
                 Sign in
               </Link>
               {/* Sign-up button next to Sign in for signed-out users.
@@ -284,13 +290,13 @@ function Header() {
                   redirects to /login?next=/new for unauth visitors. */}
               <Link
                 to="/signup"
-                className="text-sm font-semibold text-delta-700 dark:text-delta-300 border border-delta-300 dark:border-delta-700 rounded-md px-3 py-1.5 hover:bg-delta-50 dark:hover:bg-delta-900/30 transition-colors"
+                className="text-[11px] font-mono uppercase tracking-[0.15em] font-semibold text-delta-700 dark:text-delta-300 border border-delta-300 dark:border-delta-700 rounded-md px-3 py-1.5 hover:bg-delta-50 dark:hover:bg-delta-900/30 transition-colors"
               >
                 Sign up
               </Link>
             </>
           )}
-          <Link to="/new" className="btn-primary btn-sm ml-1">
+          <Link to="/new" className="btn-primary btn-sm ml-1 font-mono uppercase tracking-[0.15em]">
             New job
           </Link>
         </nav>
@@ -345,17 +351,17 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
           className="absolute right-0 mt-2 w-56 rounded-lg border border-slate-200 bg-white shadow-xl py-1 z-30 dark:border-slate-700 dark:bg-slate-800"
         >
           <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700">
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
               Signed in
             </div>
-            <div className="text-sm text-slate-900 dark:text-slate-100 truncate" title={email}>
+            <div className="text-[11px] font-mono text-slate-900 dark:text-slate-100 truncate" title={email}>
               {email}
             </div>
           </div>
           <button
             type="button"
             onClick={() => { setOpen(false); navigate("/settings"); }}
-            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-[0.15em] text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
             role="menuitem"
           >
             Settings
@@ -363,7 +369,7 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
           <button
             type="button"
             onClick={() => { setOpen(false); navigate("/history"); }}
-            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-[0.15em] text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
             role="menuitem"
           >
             My history
@@ -371,7 +377,7 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
           <button
             type="button"
             onClick={() => { setOpen(false); navigate("/compounds"); }}
-            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-[0.15em] text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
             role="menuitem"
           >
             My compounds
@@ -384,7 +390,7 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
             <button
               type="button"
               onClick={() => { setOpen(false); navigate("/admin"); }}
-              className="w-full text-left px-3 py-2 text-sm font-semibold text-delta-700 hover:bg-delta-50 dark:text-delta-300 dark:hover:bg-delta-900/30 border-t border-slate-100 dark:border-slate-700"
+              className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-[0.15em] font-semibold text-delta-700 hover:bg-delta-50 dark:text-delta-300 dark:hover:bg-delta-900/30 border-t border-slate-100 dark:border-slate-700"
               role="menuitem"
             >
               Admin
@@ -393,7 +399,7 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
           <button
             type="button"
             onClick={async () => { setOpen(false); await onSignOut(); navigate("/"); }}
-            className="w-full text-left px-3 py-2 text-sm text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/30 border-t border-slate-100 dark:border-slate-700"
+            className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-[0.15em] text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/30 border-t border-slate-100 dark:border-slate-700"
             role="menuitem"
           >
             Sign out
