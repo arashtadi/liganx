@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.53-2026-05-07-eager-dual-receptor-fetch";
+const LIGANX_BUILD_TAG = "v0.54-2026-05-07-both-mode-fixes";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3078,29 +3078,28 @@ function ProductionViewer3D({
       // user can tell the two ligand poses apart at a glance.
       if (viewVariant === "both" && receptorPdbAlt) {
         const altRecIdx = 2;
-        const altPoseIdx = altPosePdbqt ? 3 : -1;
-        // (v0.52) Alt receptor gets the OPPOSITE color from the primary:
-        // primary WT → alt is mutant amber; primary mutant → alt is WT
-        // slate. Both sit at 0.45 opacity so the primary still reads
-        // as the focus.
+        // (v0.54) Alt receptor color matches the variant convention:
+        // primary mutant → alt = WT slate; primary WT → alt = mutant
+        // amber. Always rendered at 0.45 opacity so the primary stays
+        // dominant. Backbone style mirrors the primary's so they
+        // visually compare apples-to-apples — when the primary is
+        // wireframe, the alt is wireframe too, just in the alt color.
+        // Without this match, primary line + alt cartoon made the alt
+        // ribbon visually drown out the primary and they appeared as
+        // 'one' colored protein.
         const altRecColor = variant === "WT" ? "#f59e0b" : "#94a3b8";
         viewer.setStyle({ model: altRecIdx }, {});
-        viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.45 } });
-        if (altPoseIdx >= 0) {
-          viewer.setStyle({ model: altPoseIdx }, {});
-          // Alt pose color: emerald if alt is WT (variant === "WT" means
-          // primary is mutant, so alt is WT); cyan if alt is mutant.
-          const altPoseColor = variant === "WT" ? "#06b6d4" : "#10b981";  // primary WT → alt is mutant cyan; primary mutant → alt is WT emerald
-          if (poseStyle === "stick") {
-            viewer.setStyle({ model: altPoseIdx }, { stick: { radius: 0.22, color: altPoseColor, opacity: 0.85 } });
-          } else if (poseStyle === "ball") {
-            viewer.setStyle({ model: altPoseIdx }, { stick: { radius: 0.16, color: altPoseColor, opacity: 0.85 }, sphere: { scale: 0.30, color: altPoseColor, opacity: 0.85 } });
-          } else if (poseStyle === "line") {
-            viewer.setStyle({ model: altPoseIdx }, { line: { color: altPoseColor } });
-          } else if (poseStyle === "sphere") {
-            viewer.setStyle({ model: altPoseIdx }, { sphere: { color: altPoseColor, opacity: 0.85 } });
-          }
+        if (backboneStyle === "cartoon") {
+          viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.45 } });
+        } else if (backboneStyle === "line") {
+          viewer.setStyle({ model: altRecIdx }, { line: { color: altRecColor } });
+        } else if (backboneStyle === "surface") {
+          viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.30 } });
         }
+        // (v0.54) Alt pose intentionally NOT rendered — see build
+        // effect comment. Showing two ligand copies looked like a
+        // duplicated compound to the user; the score panel's Δ
+        // already communicates pose-energy difference numerically.
       }
       viewer.render();
     } catch { /* defensive — ignore style errors */ }
@@ -3227,11 +3226,17 @@ function ProductionViewer3D({
           // slate at 0.45 opacity and the alt pose with a flat color
           // (cyan-ish) so it's distinguishable from the Jmol-coloured
           // primary pose.
+          // (v0.54) "Both" mode loads ONLY the alternate receptor —
+          // not the alt pose. Showing two ligand copies (primary +
+          // alt poses) read as a duplicated compound to the user
+          // because the WT and mutant docked-pose centroids are
+          // typically <1Å apart. The biology the user actually wants
+          // to see in 'both' mode is the side-chain shift at the
+          // mutation residue — that's encoded in the receptor, not
+          // the ligand. The score panel's Δ column already conveys
+          // the pose-energy difference numerically.
           if (viewVariant === "both" && receptorPdbAlt) {
             viewer.addModel(receptorPdbAlt, "pdb");
-            if (altPosePdbqt) {
-              viewer.addModel(altPosePdbqt, "pdb");
-            }
           }
           // Camera framing — IMPORTANT 3Dmol API quirks here:
           //   • zoomTo({selection}) fits the camera AND sets the rotation
