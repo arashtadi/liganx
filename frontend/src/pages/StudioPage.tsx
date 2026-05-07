@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.62-2026-05-07-multi-target-mutation-compound";
+const LIGANX_BUILD_TAG = "v0.63-2026-05-07-add-to-suite-clears-canvas";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -877,25 +877,40 @@ export default function StudioPage() {
               {!!currentSmiles && compounds.length < MAX_COMPOUNDS && (
                 <button
                   type="button"
-                  onClick={() => {
-                    // Snapshot the current SMILES into the staged list,
-                    // give it the loadedCompound name if any.
+                  onClick={async () => {
+                    // (v0.63) Snapshot the current SMILES into the
+                    // staged list. CRUCIAL: clear the Ketcher canvas
+                    // afterwards so the user sees an empty editor and
+                    // knows the next sketch will be a new compound.
+                    // Without the clear, Add appeared to do 'nothing'
+                    // because the canvas didn't change.
                     const newCompound: CompoundEntry = {
                       id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
                       smiles: currentSmiles,
                       name: loadedCompound?.name || activeDraft?.name?.replace(/^untitled.*/, "") || undefined,
                     };
                     setCompounds((prev) => [...prev, newCompound]);
-                    setActiveCompoundIdx(compounds.length);  // newly-added is now active
+                    setActiveCompoundIdx(compounds.length + 1);  // index after the next sketch lands
+                    // Clear canvas + reset live SMILES so the user
+                    // can start drawing the next compound. Reset the
+                    // loaded-compound lock too — the staged compound
+                    // owns that name now.
+                    setLoadedCompound(null);
+                    setActiveDraft(null);
+                    setCurrentSmiles("");
+                    try {
+                      const a = getKetcherApi(iframeRef.current);
+                      if (a?.setMolecule) await a.setMolecule("");
+                    } catch { /* ignore */ }
                   }}
-                  className="px-1.5 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider"
-                  title="Stage this compound for the next dock and clear the canvas to sketch the next one. Run Dock will submit all staged compounds in one Full Job."
+                  className="px-2 py-0.5 rounded border border-emerald-500/70 bg-emerald-900/40 text-emerald-100 hover:bg-emerald-800/50 hover:border-emerald-400 font-mono text-[10px] uppercase tracking-wider font-bold"
+                  title={`Save this molecule to the staged list (${compounds.length + 1}/${MAX_COMPOUNDS}) and clear the canvas so you can draw the next one. Run Dock submits all staged compounds in a single Full Job.`}
                 >
-                  + add
+                  + add to suite ({compounds.length + 1}/{MAX_COMPOUNDS})
                 </button>
               )}
               {compounds.length >= MAX_COMPOUNDS && (
-                <span className="text-[9px] text-slate-600 italic">max {MAX_COMPOUNDS} reached</span>
+                <span className="text-[9px] text-amber-400 italic">✓ max {MAX_COMPOUNDS} compounds — ready to dock</span>
               )}
             </div>
           )}
