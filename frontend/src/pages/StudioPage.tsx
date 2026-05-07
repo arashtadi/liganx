@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.55-2026-05-07-side-chain-colors";
+const LIGANX_BUILD_TAG = "v0.56-2026-05-07-fulljob-only-progress";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -471,7 +471,12 @@ export default function StudioPage() {
     return () => { cancelled = true; };
   }, [dockResult, selectedMutation, targetMeta]);
 
-  async function runQuickDock() {
+  // (v0.56) runQuickDock is retained but no longer wired to the UI —
+  // Quick Dock was hidden in favour of Full Job as the sole entry
+  // point. Kept in the file so re-enabling is a one-line button add.
+  // The void-reference at the bottom of the function keeps TS's
+  // noUnusedLocals quiet without disabling the rule globally.
+  async function runQuickDock(): Promise<void> {
     if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (!selectedTarget) { setDockError("Pick a target."); return; }
     setDocking(true);
@@ -582,6 +587,10 @@ export default function StudioPage() {
     if (slug === "validating_poses") return "validating poses";
     return slug.replaceAll("_", " ");
   };
+  // (v0.56) Reference runQuickDock so TS noUnusedLocals doesn't fire
+  // on the dead-but-retained function. void operator returns
+  // undefined, so this is zero-cost at runtime.
+  void runQuickDock;
   async function runFullJob() {
     if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (!selectedTarget) { setDockError("Pick a target."); return; }
@@ -1437,56 +1446,55 @@ export default function StudioPage() {
                   ⚠ {dockResult.mutation_caveat}
                 </div>
               )}
-              {/* (v0.46) Quick Dock + Full Job rendered as equal-weight
-                  peers in a 2-column grid. Same height, same type
-                  scale; the only difference is the accent color (cyan
-                  for the fast GPU path, emerald for the persistent
-                  CPU job path). User picks per run without one
-                  feeling primary or secondary. */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={runQuickDock}
-                  disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
-                  className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
-                    docking
-                      ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 cursor-wait animate-pulse"
-                      : !ketcherReady || !currentSmiles || !selectedTarget
-                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                      : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
-                  }`}
-                  title="Quick Dock — GPU pipeline. ~30 s, results inline in the score panel. Flexibility/MW cap; large scaffolds may be rejected."
-                >
-                  {docking ? (
-                    <span>▶ docking…</span>
-                  ) : (
-                    <>
-                      <div>⏵ Quick Dock</div>
-                      <div className="text-[8px] tracking-[0.2em] text-cyan-400/70 normal-case mt-0.5">gpu · ~30s · inline</div>
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={runFullJob}
-                  disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
-                  className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
-                    submittingFull
-                      ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
-                      : !ketcherReady || !currentSmiles || !selectedTarget
-                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                      : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
-                  }`}
-                  title="Full Job — submits to /jobs queue and opens the persistent results page. ~3 min, no scaffold cap, full exhaustiveness, GNINA & Boltz-2 available."
-                >
-                  {submittingFull ? (
-                    <span>▶ submitting…</span>
-                  ) : (
-                    <>
-                      <div>⇢ Full Job</div>
-                      <div className="text-[8px] tracking-[0.2em] text-emerald-400/70 normal-case mt-0.5">cpu · ~3 min · no caps</div>
-                    </>
-                  )}
-                </button>
-              </div>
+              {/* (v0.56) Quick Dock removed — Full Job is the only path.
+                  The runFullJob handler stays in scope but its peer
+                  button is gone. Single full-width emerald button
+                  plus a prominent in-flight progress banner directly
+                  above it whenever a job is mid-run. */}
+              {/* In-flight progress banner. Renders the moment a Full
+                  Job is submitted and stays until completion/failure.
+                  Big, colored, animated — impossible to miss. */}
+              {(submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")) && (
+                <div className="mb-2 px-3 py-2 rounded border border-emerald-600/60 bg-emerald-950/30 text-[11px] font-mono">
+                  <div className="flex items-center gap-2 text-emerald-200">
+                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="font-bold">Docking in progress…</span>
+                    {fullJobKey && (
+                      <a href={`/jobs/${fullJobKey}?from=studio`} target="_blank" rel="noreferrer"
+                         className="ml-auto text-cyan-300 hover:text-cyan-200 underline-offset-2 hover:underline text-[10px]"
+                         title="Open the persistent results page in a new tab — full progress UI, runner logs, build steps.">
+                        view ↗
+                      </a>
+                    )}
+                  </div>
+                  <div className="mt-1 text-[10px] text-emerald-300/80">
+                    {submittingFull ? "submitting to queue…"
+                      : fullJobStatus === "pending" ? "queued — waiting for runner pickup"
+                      : `▸ ${fullJobStageLabel(fullJobStage)}`}
+                  </div>
+                  <div className="mt-1 text-[9px] text-emerald-400/60 italic">
+                    typical wall time ~3 min for 1 compound. results land in the score panel here AND at /jobs.
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={runFullJob}
+                disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
+                className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
+                  submittingFull
+                    ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
+                    : !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled"
+                    ? "border-emerald-700/40 bg-emerald-950/20 text-emerald-300/60 cursor-wait"
+                    : !ketcherReady || !currentSmiles || !selectedTarget
+                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                    : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
+                }`}
+                title="Submit a Full Job — CPU pipeline. ~3 min, no scaffold cap, results stream in here AND persist at /jobs/{id}."
+              >
+                {submittingFull ? "▶ submitting…"
+                  : !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled" ? "▶ docking in progress…"
+                  : "⇢ Run Dock"}
+              </button>
             </div>
           </div>
         </section>
