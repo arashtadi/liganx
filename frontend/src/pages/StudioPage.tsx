@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.66-2026-05-07-pubchem-checkboxes";
+const LIGANX_BUILD_TAG = "v0.67-2026-05-07-edit-staged-compound";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1519,9 +1519,20 @@ export default function StudioPage() {
                   for inspection/editing; × removes from the suite. */}
               {compounds.length > 0 && (
                 <div className="mt-2 rounded border border-slate-800 divide-y divide-slate-800/60">
-                  {compounds.map((c, i) => (
+                  {compounds.map((c, i) => {
+                    // (v0.67) When this row IS the active compound and
+                    // the canvas SMILES has been edited away from the
+                    // staged version, show an inline 'save changes'
+                    // button that updates the staged entry's SMILES.
+                    // The change is now part of the suite that Run
+                    // Dock will submit.
+                    const isActive = i === activeCompoundIdx;
+                    const isEdited = isActive && !!currentSmiles && currentSmiles !== c.smiles;
+                    return (
                     <div key={c.id} className={`px-2 py-1.5 flex items-center gap-2 text-[10px] font-mono ${
-                      i === activeCompoundIdx ? "bg-cyan-950/20" : "hover:bg-slate-800/30"
+                      isEdited ? "bg-amber-950/20"
+                      : isActive ? "bg-cyan-950/20"
+                      : "hover:bg-slate-800/30"
                     }`}>
                       <button
                         type="button"
@@ -1534,11 +1545,32 @@ export default function StudioPage() {
                         title={`Load ${c.name || `compound #${i + 1}`} into the 2D editor for inspection or editing.`}
                       >
                         <span className="text-[8px] text-slate-600 tabular-nums shrink-0">{i + 1}</span>
-                        <span className={`shrink-0 truncate max-w-[12ch] ${i === activeCompoundIdx ? "text-cyan-200" : "text-slate-200"}`}>
-                          {c.name || `untitled #${i + 1}`}
+                        <span className={`shrink-0 truncate max-w-[12ch] ${isEdited ? "text-amber-200" : isActive ? "text-cyan-200" : "text-slate-200"}`}>
+                          {c.name || `untitled #${i + 1}`}{isEdited && <span className="text-amber-400 ml-1">✎</span>}
                         </span>
-                        <span className="text-[9px] text-slate-500 truncate min-w-0">{c.smiles}</span>
+                        <span className="text-[9px] text-slate-500 truncate min-w-0">{isEdited ? currentSmiles : c.smiles}</span>
                       </button>
+                      {isEdited && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // (v0.67) Update the staged compound's
+                            // SMILES with the canvas edit. The dock
+                            // submission picks this up automatically.
+                            setCompounds((prev) => prev.map((entry, j) => j === i ? { ...entry, smiles: currentSmiles } : entry));
+                            // Clear the loadedCompound lock so the
+                            // fork-on-edit pill stops nagging — the
+                            // compound now matches the staged entry.
+                            setLoadedCompound({ name: c.name || `compound #${i + 1}`, smiles: currentSmiles });
+                            setPromoteToast(`✓ #${i + 1} updated`);
+                            window.setTimeout(() => setPromoteToast(null), 2500);
+                          }}
+                          className="px-1.5 py-0.5 rounded border border-emerald-600/60 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-900/50 hover:border-emerald-500 text-[9px] uppercase tracking-wider shrink-0"
+                          title={`Replace compound #${i + 1}'s SMILES with what's currently in the canvas. The suite Run Dock will use the new structure.`}
+                        >
+                          save edits
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -1549,7 +1581,8 @@ export default function StudioPage() {
                         title="Remove this compound from the suite"
                       >×</button>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
               {/* Inline 'add the canvas sketch' helper — shows when the
