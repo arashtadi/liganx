@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.39-2026-05-07-mutation-popover-on-focus";
+const LIGANX_BUILD_TAG = "v0.40-2026-05-07-mutation-flip-and-done";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -273,14 +273,27 @@ export default function StudioPage() {
   // dropdown so users don't have to click twice).
   const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
   const [mutationDropdownOpen, setMutationDropdownOpen] = useState(false);
-  // (v0.39) Click-outside ref for the mutation popover. Wrapped around
-  // the trigger row + dropdown so a click anywhere else (canvas, 3D
-  // viewer, header, even the COMPOUND section right below) collapses
-  // the popover. Also closes after a selection so the user lands on a
-  // clean state without having to dismiss it manually.
+  // (v0.39) Click-outside ref for the mutation popover.
+  // (v0.40) Plus a "direction" state: when the trigger sits in the
+  // bottom half of the viewport, the dropdown opens UPWARD so it
+  // doesn't push Run Dock off-screen and isn't clipped by the right
+  // rail's overflow-y-auto. Recomputed every time the popover opens.
   const mutationWrapRef = useRef<HTMLDivElement | null>(null);
+  const mutationTriggerRef = useRef<HTMLDivElement | null>(null);
+  const [mutationDropdownDir, setMutationDropdownDir] = useState<"up" | "down">("down");
   useEffect(() => {
     if (!mutationDropdownOpen) return;
+    // Measure trigger position to pick direction. ~320px is the rough
+    // dropdown height (WT + 5 curated rows + Done bar fits in that).
+    const rect = mutationTriggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      const dropdownH = 320;
+      const spaceBelow = window.innerHeight - rect.bottom - 16;
+      const spaceAbove = rect.top - 16;
+      setMutationDropdownDir(
+        spaceBelow >= dropdownH || spaceBelow >= spaceAbove ? "down" : "up"
+      );
+    }
     function onDocMouseDown(e: MouseEvent) {
       if (mutationWrapRef.current && !mutationWrapRef.current.contains(e.target as Node)) {
         setMutationDropdownOpen(false);
@@ -955,10 +968,28 @@ export default function StudioPage() {
                   inside the dropdown to pick a mutation must NOT count
                   as outside. */}
               <div ref={mutationWrapRef}>
+              {/* (v0.40) Dropdown rendered ABOVE the trigger row when
+                  there's not enough space below. Inline rendering
+                  avoids portals; the right rail's overflow-y-auto means
+                  the dropdown can be tall, but flipping direction keeps
+                  it in view in either case. */}
+              {mutationDropdownOpen && mutationDropdownDir === "up" && (
+                <MutationDropdown
+                  availableMutations={availableMutations}
+                  mutationQuery={mutationQuery}
+                  selectedMutation={selectedMutation}
+                  includeWt={includeWt}
+                  setIncludeWt={setIncludeWt}
+                  setSelectedMutation={setSelectedMutation}
+                  setMutationQuery={setMutationQuery}
+                  setOpen={setMutationDropdownOpen}
+                  targetId={targetMeta?.id}
+                />
+              )}
               {/* Trigger row: current mutation chip on the LEFT (or "WT" if
                   none selected), search input on the RIGHT. Pressing Enter
                   on a non-matching query commits it as a custom mutation. */}
-              <div className="flex items-center gap-2 mb-2">
+              <div ref={mutationTriggerRef} className="flex items-center gap-2 mb-2">
                 {/* Trigger shows current selection: "WT", "WT + Q61H",
                     "Q61H", or "—" if user deselected everything. */}
                 <button
@@ -1003,96 +1034,23 @@ export default function StudioPage() {
                   className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-amber-500/60"
                 />
               </div>
-              {/* (v0.39) Rich mutation dropdown — only renders when the
-                  search box (or trigger chip) is focused. Closes on
-                  click-outside via the wrapper ref above, AND on
-                  selecting a mutation row. WT toggles don't close —
-                  user might want to add a mutation in the same gesture. */}
-              {mutationDropdownOpen && (
-                <div className="rounded border border-slate-800 bg-[#070b15] divide-y divide-slate-800/60 max-h-64 overflow-auto">
-                  {/* WT row — always at top, multi-select with the
-                      mutation rows. Distinct visual (slate, "BASELINE"
-                      tag) so it reads as the wild-type baseline rather
-                      than just another mutation pill. */}
-                  <button
-                    onClick={() => setIncludeWt(!includeWt)}
-                    className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
-                      includeWt ? "bg-slate-800/40 hover:bg-slate-800/60" : "hover:bg-slate-800/30"
-                    }`}
-                    title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
-                  >
-                    <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] ${
-                      includeWt ? "border-slate-300 bg-slate-300 text-slate-900" : "border-slate-600"
-                    }`}>
-                      {includeWt ? "✓" : ""}
-                    </span>
-                    <span className="font-mono text-[11px] font-bold text-slate-100">WT</span>
-                    <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/60">baseline</span>
-                    <span className="text-[10px] font-mono text-slate-500 italic">wild-type — always recommended</span>
-                  </button>
-                  {availableMutations
-                    .filter(m =>
-                      !mutationQuery ||
-                      m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                      (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                      (m.significance || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                    )
-                    .map((m) => {
-                      const active = selectedMutation === m.code;
-                      return (
-                        <button
-                          key={m.code}
-                          onClick={() => {
-                            // Single-select among mutations — clicking a
-                            // different one replaces the previous. WT
-                            // selection is independent and stays as-is.
-                            if (selectedMutation === m.code) {
-                              setSelectedMutation("");  // toggle off
-                            } else {
-                              setSelectedMutation(m.code);
-                              setMutationQuery("");
-                            }
-                            // (v0.39) Close after selection so the user
-                            // lands on a clean state ready to dock.
-                            setMutationDropdownOpen(false);
-                          }}
-                          className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
-                            active ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
-                          }`}
-                          title={m.significance || m.label}
-                        >
-                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
-                            active ? "border-amber-400 bg-amber-400 text-slate-900" : "border-slate-600"
-                          }`}>
-                            {active ? "✓" : ""}
-                          </span>
-                          <span className={`font-mono text-[11px] font-bold shrink-0 ${active ? "text-amber-200" : "text-slate-100"}`}>
-                            {m.code}
-                          </span>
-                          {targetMeta?.id && (
-                            <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
-                              {targetMeta.id}
-                            </span>
-                          )}
-                          <span className="text-[10px] font-mono text-slate-400 truncate min-w-0 flex-1" title={m.significance}>
-                            {m.significance || m.label || "—"}
-                          </span>
-                          <span className="text-[8px] uppercase tracking-[0.18em] text-cyan-300/80 px-1.5 py-0.5 rounded border border-cyan-700/40 bg-cyan-950/30 shrink-0">
-                            curated
-                          </span>
-                        </button>
-                      );
-                    })}
-                  {mutationQuery && availableMutations.filter(m =>
-                    m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                    (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase()) ||
-                    (m.significance || "").toLowerCase().includes(mutationQuery.toLowerCase())
-                  ).length === 0 && (
-                    <div className="px-3 py-2 text-[10px] font-mono text-amber-400/80 italic">
-                      no curated match for “{mutationQuery}” — press Enter to use it as a custom mutation
-                    </div>
-                  )}
-                </div>
+              {/* Same dropdown component, rendered BELOW the trigger
+                  when there's enough space (the common case for the
+                  upper half of the rail). v0.40 picks up vs down via
+                  the useEffect above; v0.39 ensures it only renders
+                  when explicitly opened. */}
+              {mutationDropdownOpen && mutationDropdownDir === "down" && (
+                <MutationDropdown
+                  availableMutations={availableMutations}
+                  mutationQuery={mutationQuery}
+                  selectedMutation={selectedMutation}
+                  includeWt={includeWt}
+                  setIncludeWt={setIncludeWt}
+                  setSelectedMutation={setSelectedMutation}
+                  setMutationQuery={setMutationQuery}
+                  setOpen={setMutationDropdownOpen}
+                  targetId={targetMeta?.id}
+                />
               )}
               </div>
               {/* /v0.39 wrapper — closes mutationWrapRef */}
@@ -1405,6 +1363,118 @@ export default function StudioPage() {
  *  than reactive because the autosave loop already owns the source of
  *  truth — pulling on demand avoids a storage-event subscription.)
  */
+/** (v0.40) Mutation dropdown body — shared between the up-direction
+ *  and down-direction render paths in the MUTATIONS section. Same
+ *  visual treatment in both cases; only the relative position to the
+ *  trigger row differs. Click-outside is owned by the parent (via
+ *  mutationWrapRef); this component just handles the rows + the Done
+ *  button. Selecting a row no longer auto-closes — user explicitly
+ *  dismisses via Done or by clicking outside (v0.40 user request).
+ */
+function MutationDropdown({
+  availableMutations, mutationQuery, selectedMutation, includeWt,
+  setIncludeWt, setSelectedMutation, setMutationQuery, setOpen, targetId,
+}: {
+  availableMutations: { code: string; label: string; significance: string }[];
+  mutationQuery: string;
+  selectedMutation: string;
+  includeWt: boolean;
+  setIncludeWt: (v: boolean) => void;
+  setSelectedMutation: (v: string) => void;
+  setMutationQuery: (v: string) => void;
+  setOpen: (v: boolean) => void;
+  targetId?: string;
+}) {
+  const filtered = availableMutations.filter(m =>
+    !mutationQuery ||
+    m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
+    (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase()) ||
+    (m.significance || "").toLowerCase().includes(mutationQuery.toLowerCase())
+  );
+  return (
+    <div className="rounded border border-slate-800 bg-[#070b15] mb-2 shadow-xl flex flex-col" style={{ maxHeight: "min(320px, 60vh)" }}>
+      <div className="overflow-auto divide-y divide-slate-800/60 flex-1 min-h-0">
+        <button
+          onClick={() => setIncludeWt(!includeWt)}
+          className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
+            includeWt ? "bg-slate-800/40 hover:bg-slate-800/60" : "hover:bg-slate-800/30"
+          }`}
+          title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
+        >
+          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
+            includeWt ? "border-slate-300 bg-slate-300 text-slate-900" : "border-slate-600"
+          }`}>
+            {includeWt ? "✓" : ""}
+          </span>
+          <span className="font-mono text-[11px] font-bold text-slate-100">WT</span>
+          <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/60">baseline</span>
+          <span className="text-[10px] font-mono text-slate-500 italic truncate">wild-type — always recommended</span>
+        </button>
+        {filtered.map((m) => {
+          const active = selectedMutation === m.code;
+          return (
+            <button
+              key={m.code}
+              onClick={() => {
+                // Single-select; click again to deselect. (v0.40)
+                // Does NOT auto-close — user can pick / change /
+                // toggle WT freely until they hit Done or click out.
+                if (selectedMutation === m.code) setSelectedMutation("");
+                else { setSelectedMutation(m.code); setMutationQuery(""); }
+              }}
+              className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
+                active ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
+              }`}
+              title={m.significance || m.label}
+            >
+              <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
+                active ? "border-amber-400 bg-amber-400 text-slate-900" : "border-slate-600"
+              }`}>
+                {active ? "✓" : ""}
+              </span>
+              <span className={`font-mono text-[11px] font-bold shrink-0 ${active ? "text-amber-200" : "text-slate-100"}`}>
+                {m.code}
+              </span>
+              {targetId && (
+                <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
+                  {targetId}
+                </span>
+              )}
+              <span className="text-[10px] font-mono text-slate-400 truncate min-w-0 flex-1" title={m.significance}>
+                {m.significance || m.label || "—"}
+              </span>
+              <span className="text-[8px] uppercase tracking-[0.18em] text-cyan-300/80 px-1.5 py-0.5 rounded border border-cyan-700/40 bg-cyan-950/30 shrink-0">
+                curated
+              </span>
+            </button>
+          );
+        })}
+        {mutationQuery && filtered.length === 0 && (
+          <div className="px-3 py-2 text-[10px] font-mono text-amber-400/80 italic">
+            no curated match for “{mutationQuery}” — press Enter to use it as a custom mutation
+          </div>
+        )}
+      </div>
+      {/* (v0.40) Done bar — explicit dismissal so the user can review
+          their pick before closing. Click-outside also still works. */}
+      <div className="px-3 py-1.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] font-mono shrink-0">
+        <span className="text-slate-600">
+          {selectedMutation
+            ? <>selected <span className="text-amber-300">{selectedMutation}</span>{includeWt && <span className="text-slate-500"> + WT</span>}</>
+            : includeWt ? <span className="text-slate-400">WT only</span>
+            : <span className="text-rose-400">none — pick at least one</span>}
+        </span>
+        <button
+          onClick={() => setOpen(false)}
+          className="px-2 py-0.5 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 uppercase tracking-wider"
+        >
+          done
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** (v0.36) Promote / Save-as-new modal — Studio-aesthetic replacement
  *  for the v0.32 window.prompt. One component, two modes:
  *
