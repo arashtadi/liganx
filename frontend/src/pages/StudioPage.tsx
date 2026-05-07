@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.35-2026-05-07-dock-history";
+const LIGANX_BUILD_TAG = "v0.36-2026-05-07-promote-modal";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -172,6 +172,16 @@ export default function StudioPage() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   // (v0.32) Toast for the Promote button result. Auto-clears after 3-5s.
   const [promoteToast, setPromoteToast] = useState<string | null>(null);
+  // (v0.36) Inline Promote modal. When non-null, renders a custom
+  // modal (Studio aesthetic, monospace, dark) instead of the v0.32
+  // window.prompt. The `mode` distinguishes "promote a draft to the
+  // library" from "save a fork as new", which differ only in the
+  // initial name suggestion + button label + post-save behavior.
+  const [promoteDialog, setPromoteDialog] = useState<
+    | { mode: "promote"; initialName: string }
+    | { mode: "fork"; initialName: string; originalName: string }
+    | null
+  >(null);
   // (v0.33) Loaded named compound — set when the user picks something
   // from the library / reference / PubChem (anything that has a name).
   // While set, edits are treated as forks: the user is asked to choose
@@ -1043,25 +1053,11 @@ export default function StudioPage() {
                   {!!currentSmiles && !!activeDraft && (
                     <button
                       type="button"
-                      onClick={async () => {
+                      onClick={() => {
                         const suggested = activeDraft.name?.startsWith("untitled")
                           ? ""
                           : (activeDraft.name || "");
-                        const name = window.prompt(
-                          "Name this compound to save it to your library:",
-                          suggested,
-                        );
-                        if (!name || !name.trim()) return;
-                        try {
-                          await api.saveMyCompound({ name: name.trim(), smiles: currentSmiles });
-                          deleteDraft(activeDraft.id);
-                          setActiveDraft(null);
-                          setPromoteToast(`✓ "${name.trim()}" saved to your library`);
-                          window.setTimeout(() => setPromoteToast(null), 3000);
-                        } catch (e: any) {
-                          setPromoteToast(`✗ ${e?.message || "Save failed"}`);
-                          window.setTimeout(() => setPromoteToast(null), 5000);
-                        }
+                        setPromoteDialog({ mode: "promote", initialName: suggested });
                       }}
                       className="px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 font-mono text-[10px] uppercase tracking-wider transition-colors"
                       title="Save this compound permanently to your library — picks a name now, available across sessions."
@@ -1113,22 +1109,11 @@ export default function StudioPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        const name = window.prompt(
-                          `Save the modified compound as a new entry in your library:`,
-                          `${loadedCompound.name} · variant`,
-                        );
-                        if (!name || !name.trim()) return;
-                        try {
-                          await api.saveMyCompound({ name: name.trim(), smiles: currentSmiles });
-                          setLoadedCompound({ name: name.trim(), smiles: currentSmiles });
-                          setPromoteToast(`✓ "${name.trim()}" saved · "${loadedCompound.name}" preserved`);
-                          window.setTimeout(() => setPromoteToast(null), 4000);
-                        } catch (e: any) {
-                          setPromoteToast(`✗ ${e?.message || "Save failed"}`);
-                          window.setTimeout(() => setPromoteToast(null), 5000);
-                        }
-                      }}
+                      onClick={() => setPromoteDialog({
+                        mode: "fork",
+                        initialName: `${loadedCompound.name} · variant`,
+                        originalName: loadedCompound.name,
+                      })}
                       className="px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 text-[10px] uppercase tracking-wider"
                       title={`Keep "${loadedCompound.name}" untouched and save the modified compound under a new name.`}
                     >
@@ -1247,6 +1232,37 @@ export default function StudioPage() {
         </div>
       )}
 
+      {/* ═══ PROMOTE / SAVE-AS-NEW MODAL (v0.36) ═══
+          Replaces the v0.32 window.prompt with a Studio-aesthetic
+          inline modal. One component handles both the "promote a draft
+          to the library" and "save a fork as new" flows — they differ
+          only in copy and post-save side effects. */}
+      {promoteDialog && (
+        <PromoteDialog
+          mode={promoteDialog.mode}
+          initialName={promoteDialog.initialName}
+          originalName={promoteDialog.mode === "fork" ? promoteDialog.originalName : undefined}
+          smiles={currentSmiles}
+          onClose={() => setPromoteDialog(null)}
+          onSaved={(savedName) => {
+            if (promoteDialog.mode === "promote" && activeDraft) {
+              deleteDraft(activeDraft.id);
+              setActiveDraft(null);
+              setPromoteToast(`✓ "${savedName}" saved to your library`);
+            } else if (promoteDialog.mode === "fork") {
+              setLoadedCompound({ name: savedName, smiles: currentSmiles });
+              setPromoteToast(`✓ "${savedName}" saved · "${promoteDialog.originalName}" preserved`);
+            }
+            setPromoteDialog(null);
+            window.setTimeout(() => setPromoteToast(null), 4000);
+          }}
+          onError={(msg) => {
+            setPromoteToast(`✗ ${msg}`);
+            window.setTimeout(() => setPromoteToast(null), 5000);
+          }}
+        />
+      )}
+
       {/* ═══ COLLAPSIBLE BOTTOM STRIP ═══ */}
       <div className="fixed bottom-0 left-0 right-0 bg-[#0d1422] border-t border-slate-800/70 flex text-[10px] z-20">
         <CollapsibleTab label="Properties" open={showProps} onToggle={() => setShowProps(!showProps)}>
@@ -1331,6 +1347,128 @@ export default function StudioPage() {
  *  than reactive because the autosave loop already owns the source of
  *  truth — pulling on demand avoids a storage-event subscription.)
  */
+/** (v0.36) Promote / Save-as-new modal — Studio-aesthetic replacement
+ *  for the v0.32 window.prompt. One component, two modes:
+ *
+ *    mode="promote" — turn an autosaved draft into a permanent
+ *      library entry. Copy says "Save to library".
+ *
+ *    mode="fork" — the user edited a loaded named compound and is
+ *      branching it. Copy reassures them the original (originalName)
+ *      stays intact.
+ *
+ *  Cancel via Esc or backdrop click. Submit via Return. Empty name
+ *  is rejected client-side. The actual API call lives here so the
+ *  parent can stay declarative — onSaved fires with the chosen name
+ *  on success.
+ */
+function PromoteDialog({
+  mode, initialName, originalName, smiles, onClose, onSaved, onError,
+}: {
+  mode: "promote" | "fork";
+  initialName: string;
+  originalName?: string;
+  smiles: string;
+  onClose: () => void;
+  onSaved: (name: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [submitting, setSubmitting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Focus input on mount so the user can just type.
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+  // Esc closes — same convenience as the CompoundLoader modal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function submit() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSubmitting(true);
+    try {
+      await api.saveMyCompound({ name: trimmed, smiles });
+      onSaved(trimmed);
+    } catch (e: any) {
+      onError(e?.message || "Save failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const title = mode === "promote" ? "Save to library" : "Save fork as new";
+  const subtitle = mode === "promote"
+    ? "Pick a name. The autosaved draft will be cleaned up and replaced by a permanent library entry."
+    : `Pick a name. "${originalName}" will stay untouched in your library and the modified compound will be saved alongside it.`;
+  const submitLabel = submitting
+    ? "▶ saving…"
+    : mode === "promote" ? "⇡ Save to library" : "⇡ Save as new";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md bg-[#0d1422] border border-slate-800/80 rounded shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-2.5 border-b border-slate-800/70 flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-cyan-400">{title}</span>
+          <button onClick={onClose} className="text-slate-600 hover:text-slate-300 text-[14px]" title="Cancel (Esc)">✕</button>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[11px] font-mono text-slate-400 leading-relaxed mb-3">{subtitle}</p>
+          <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">Name</label>
+          <input
+            ref={inputRef}
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+            placeholder="e.g. EGFR-T790M-lead-3 · Erlotinib variant"
+            className="w-full px-3 py-2 text-[12px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60"
+          />
+          <div className="mt-2 text-[10px] font-mono text-slate-600 truncate" title={smiles}>
+            <span className="text-slate-700">SMILES </span>
+            {smiles.length > 56 ? smiles.slice(0, 56) + "…" : smiles}
+          </div>
+        </div>
+        <div className="px-4 py-2.5 border-t border-slate-800/70 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="px-3 py-1 rounded border border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60 font-mono text-[11px] uppercase tracking-wider"
+          >
+            cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !name.trim()}
+            className={`px-3 py-1 rounded border font-mono text-[11px] uppercase tracking-wider transition-colors ${
+              submitting
+                ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 animate-pulse cursor-wait"
+                : !name.trim()
+                ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
+            }`}
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** (v0.35) Session dock-history panel. Lists every Quick Dock that
  *  ran in Studio this session (and across recent sessions, since the
  *  log lives in localStorage). Click a row to restore that run's
