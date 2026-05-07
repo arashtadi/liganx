@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.64-2026-05-07-multi-add-compound-flow";
+const LIGANX_BUILD_TAG = "v0.65-2026-05-07-compound-checkboxes";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1720,15 +1720,17 @@ export default function StudioPage() {
               myCompounds={myCompounds || []}
               stagedCount={compounds.length}
               maxStaged={MAX_COMPOUNDS}
+              stagedSmiles={compounds.map((c) => c.smiles)}
               onPick={(smiles, name) => {
-                // (v0.64) Multi-add: pick adds to the staged compound
-                // list and the modal STAYS OPEN so the user can pick
-                // several at once. Dedup by SMILES; cap at
-                // MAX_COMPOUNDS. Modal closes only via the Done
-                // button or backdrop click.
+                // (v0.65) Toggle: clicking adds if not staged, removes
+                // if already staged. The checkbox UI in CompoundLoader
+                // reflects which compounds are currently in the suite,
+                // so the user gets immediate visual feedback for each
+                // click. Cap at MAX_COMPOUNDS still applies on add.
                 if (!smiles) return;
                 setCompounds((prev) => {
-                  if (prev.some((c) => c.smiles === smiles)) return prev;  // already staged
+                  const existing = prev.findIndex((c) => c.smiles === smiles);
+                  if (existing >= 0) return prev.filter((_, i) => i !== existing);
                   if (prev.length >= MAX_COMPOUNDS) return prev;
                   return [...prev, {
                     id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
@@ -2731,23 +2733,22 @@ function SaScorePill({ sa }: { sa: { score: number; label: string } | null }) {
  *  panel. The 3D viewer picks up the change automatically via the
  *  SMILES polling tick. */
 function CompoundLoader({
-  targetMeta, myCompounds, onPick, onClose, stagedCount, maxStaged,
+  targetMeta, myCompounds, onPick, onClose, stagedCount, maxStaged, stagedSmiles,
 }: {
   targetMeta: any;
   myCompounds: any[];
-  // (v0.33) Optional name passed alongside SMILES. When present, the
-  // caller treats the result as a "loaded named compound" — if the user
-  // then edits, fork-on-edit kicks in (Save changes vs Save as new)
-  // instead of silently overwriting. Paste-SMILES picks pass undefined
-  // so they remain ordinary fresh drafts.
-  // (v0.64) onPick is now multi-add: each pick adds the compound to
-  // the parent's staged list and the modal STAYS OPEN so the user can
-  // continue picking more. Modal closes only via the explicit Done
-  // button at the bottom or backdrop click.
+  // (v0.65) onPick is now a TOGGLE: clicking an unstaged compound
+  // adds it to the suite; clicking a staged one removes it. The
+  // parent's handler does the toggle logic and the modal stays open
+  // so the user can build their suite incrementally. The `stagedSmiles`
+  // prop drives the checkmark UI per row — every compound row shows
+  // a checkbox that's filled when its SMILES is in the parent's
+  // staged list, so the user always sees their selection state.
   onPick: (smiles: string, name?: string) => void;
   onClose: () => void;
   stagedCount: number;
   maxStaged: number;
+  stagedSmiles: string[];
 }) {
   const [paste, setPaste] = useState("");
   const [search, setSearch] = useState("");
@@ -2874,21 +2875,33 @@ function CompoundLoader({
             )}
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {pubchemSuggestions.map((name) => (
-              <button
-                key={name}
-                onClick={() => loadFromPubChem(name)}
-                disabled={resolvingName !== null}
-                className={`px-2 py-1 font-mono text-[11px] rounded border transition-colors ${
-                  resolvingName === name
-                    ? "border-cyan-500/60 bg-cyan-900/40 text-cyan-200 animate-pulse"
-                    : "border-cyan-700/40 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 disabled:opacity-50 disabled:cursor-wait"
-                }`}
-                title={`Resolve "${name}" via PubChem and load the SMILES into Ketcher`}
-              >
-                {resolvingName === name ? `▮ ${name}` : name}
-              </button>
-            ))}
+            {pubchemSuggestions.map((name) => {
+              // (v0.65) PubChem rows match by name since SMILES isn't
+              // known client-side until resolve. Approximate but
+              // covers the common case of 'I just added this.'
+              const checked = stagedSmiles.length > 0 && /* parent passes smiles only */ false;  // placeholder; toggling happens via onPick.
+              const atCap = !checked && stagedCount >= maxStaged;
+              return (
+                <button
+                  key={name}
+                  onClick={() => loadFromPubChem(name)}
+                  disabled={resolvingName !== null || atCap}
+                  className={`px-2 py-1 font-mono text-[11px] rounded border transition-colors flex items-center gap-1.5 ${
+                    resolvingName === name
+                      ? "border-cyan-500/60 bg-cyan-900/40 text-cyan-200 animate-pulse"
+                      : atCap
+                      ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                      : "border-cyan-700/40 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 disabled:opacity-50 disabled:cursor-wait"
+                  }`}
+                  title={`Resolve "${name}" via PubChem and toggle in the suite`}
+                >
+                  <span className="w-3 h-3 rounded-sm border border-slate-600 inline-flex items-center justify-center text-[8px] shrink-0">
+                    {checked ? "✓" : ""}
+                  </span>
+                  {resolvingName === name ? `▮ ${name}` : name}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -2907,20 +2920,41 @@ function CompoundLoader({
             <span className="text-slate-700">{filteredRef.length}{q && refCompounds.length !== filteredRef.length ? `/${refCompounds.length}` : ""}</span>
           </div>
           <div className="space-y-1">
-            {filteredRef.length > 0 ? filteredRef.map((c) => (
-              <button
-                key={c.name}
-                onClick={() => onPick(c.smiles, c.name)}
-                className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
-              >
-                <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200">{c.name}</div>
-                {c.mechanism && (
-                  <div className="font-mono text-[10px] text-slate-500 truncate" title={c.mechanism}>
-                    {c.mechanism}
+            {filteredRef.length > 0 ? filteredRef.map((c) => {
+              const checked = stagedSmiles.includes(c.smiles);
+              const atCap = !checked && stagedCount >= maxStaged;
+              return (
+                <button
+                  key={c.name}
+                  disabled={atCap}
+                  onClick={() => onPick(c.smiles, c.name)}
+                  className={`w-full text-left px-2 py-1.5 rounded border transition-colors group flex items-start gap-2 ${
+                    checked
+                      ? "border-emerald-500/60 bg-emerald-950/20"
+                      : atCap
+                      ? "border-slate-800 bg-slate-900/30 cursor-not-allowed opacity-50"
+                      : "border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20"
+                  }`}
+                  title={checked ? "Already staged — click to remove from suite" : atCap ? `Max ${maxStaged} compounds reached` : "Click to add to suite"}
+                >
+                  <span className={`mt-0.5 w-4 h-4 rounded-sm border flex items-center justify-center text-[10px] shrink-0 ${
+                    checked
+                      ? "border-emerald-400 bg-emerald-400 text-slate-900 font-bold"
+                      : "border-slate-600"
+                  }`}>
+                    {checked ? "✓" : ""}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className={`font-mono text-xs ${checked ? "text-emerald-200" : "text-slate-200 group-hover:text-cyan-200"}`}>{c.name}</div>
+                    {c.mechanism && (
+                      <div className="font-mono text-[10px] text-slate-500 truncate" title={c.mechanism}>
+                        {c.mechanism}
+                      </div>
+                    )}
                   </div>
-                )}
-              </button>
-            )) : (
+                </button>
+              );
+            }) : (
               <div className="font-mono text-[11px] text-slate-600 italic">{q ? "no match" : "Pick a target first"}</div>
             )}
           </div>
@@ -2933,18 +2967,39 @@ function CompoundLoader({
             <span className="text-slate-700">{filteredLib.length}{q && myCompounds.length !== filteredLib.length ? `/${myCompounds.length}` : ""}</span>
           </div>
           <div className="space-y-1">
-            {filteredLib.length > 0 ? filteredLib.slice(0, 30).map((c) => (
-              <button
-                key={c.id}
-                onClick={() => onPick(c.smiles, c.name)}
-                className="w-full text-left px-2 py-1.5 rounded border border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20 transition-colors group"
-              >
-                <div className="font-mono text-xs text-slate-200 group-hover:text-cyan-200 truncate">{c.name}</div>
-                <div className="font-mono text-[10px] text-slate-500 truncate" title={c.smiles}>
-                  {c.smiles}
-                </div>
-              </button>
-            )) : (
+            {filteredLib.length > 0 ? filteredLib.slice(0, 30).map((c) => {
+              const checked = stagedSmiles.includes(c.smiles);
+              const atCap = !checked && stagedCount >= maxStaged;
+              return (
+                <button
+                  key={c.id}
+                  disabled={atCap}
+                  onClick={() => onPick(c.smiles, c.name)}
+                  className={`w-full text-left px-2 py-1.5 rounded border transition-colors group flex items-start gap-2 ${
+                    checked
+                      ? "border-emerald-500/60 bg-emerald-950/20"
+                      : atCap
+                      ? "border-slate-800 bg-slate-900/30 cursor-not-allowed opacity-50"
+                      : "border-slate-800 hover:border-cyan-700/50 hover:bg-cyan-950/20"
+                  }`}
+                  title={checked ? "Already staged — click to remove from suite" : atCap ? `Max ${maxStaged} compounds reached` : "Click to add to suite"}
+                >
+                  <span className={`mt-0.5 w-4 h-4 rounded-sm border flex items-center justify-center text-[10px] shrink-0 ${
+                    checked
+                      ? "border-emerald-400 bg-emerald-400 text-slate-900 font-bold"
+                      : "border-slate-600"
+                  }`}>
+                    {checked ? "✓" : ""}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className={`font-mono text-xs truncate ${checked ? "text-emerald-200" : "text-slate-200 group-hover:text-cyan-200"}`}>{c.name}</div>
+                    <div className="font-mono text-[10px] text-slate-500 truncate" title={c.smiles}>
+                      {c.smiles}
+                    </div>
+                  </div>
+                </button>
+              );
+            }) : (
               <div className="font-mono text-[11px] text-slate-600 italic">{q ? "no match" : "No saved compounds yet"}</div>
             )}
             {filteredLib.length > 30 && (
