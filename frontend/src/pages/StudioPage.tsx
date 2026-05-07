@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.42-2026-05-07-score-panel-clarity";
+const LIGANX_BUILD_TAG = "v0.43-2026-05-07-variant-toggle";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2513,11 +2513,29 @@ function ProductionViewer3D({
   // state lets the user override the default. Resets to "dock" each
   // time a fresh dockResult arrives so the new dock takes the spotlight.
   const [viewMode, setViewMode] = useState<"live" | "dock">("dock");
+  // (v0.43) Variant toggle. When the user ran both a WT and a mutant
+  // dock, this picks which receptor + pose the 3D viewer shows. "mut"
+  // is the default (the new biology); "wt" shows the wild-type pose
+  // for comparison. Auto-resets to "mut" when a fresh mutant dock
+  // result arrives so the new run grabs the spotlight.
+  const [viewVariant, setViewVariant] = useState<"wt" | "mut">("mut");
+  useEffect(() => {
+    // When a new mutant result lands, snap back to mutant view so the
+    // user sees the new biology. WT-only runs default to wt.
+    if (dockResult) setViewVariant("mut");
+    else if (dockResultWt && !dockResult) setViewVariant("wt");
+  }, [dockResult, dockResultWt]);
 
-  const primary = dockResult || dockResultWt;
+  // (v0.43) Pick which dock result drives the scene based on viewVariant.
+  // Falls back gracefully when one of the two slots is empty (single-
+  // variant runs default to whichever slot has a result).
+  const activeDockResult = viewVariant === "wt"
+    ? (dockResultWt || dockResult)
+    : (dockResult || dockResultWt);
+  const primary = activeDockResult;
   const pdbId = primary?.pdb_id || targetMeta?.pdb_id || "";
   const chain = primary?.chain || targetMeta?.chain || "A";
-  const variant = dockResult ? mutation || "WT" : "WT";
+  const variant = viewVariant === "wt" ? "WT" : (mutation || "WT");
   const hasDock = !!primary;
   // Vina returns multiple binding modes in one PDBQT (MODEL 1 ... ENDMDL ·
   // MODEL 2 ... etc — up to 9 by default). 3Dmol's addModel concatenates
@@ -2526,7 +2544,7 @@ function ProductionViewer3D({
   // of all 9 modes, leaving each individual mode tiny in the viewport.
   // Strip everything after the first ENDMDL so only the top-ranked pose
   // (mode 1, the one matching the score) is rendered.
-  const posePdbqtFull = dockResult?.pose_pdbqt_b64 ? atob(dockResult.pose_pdbqt_b64) : "";
+  const posePdbqtFull = activeDockResult?.pose_pdbqt_b64 ? atob(activeDockResult.pose_pdbqt_b64) : "";
   // Convert PDBQT → simplified PDB before passing to 3Dmol. Two reasons:
   //   1. PDBQT contains up to 9 binding modes (MODEL/ENDMDL blocks). We
   //      only want mode 1 — the one whose score matches the panel.
@@ -2577,15 +2595,17 @@ function ProductionViewer3D({
 
   // Hits = pocket-contact residues from the dock result. Used to highlight
   // side chains and to decide whether to enable the Contacts toggle.
+  // (v0.43) Track the ACTIVE dock result so flipping the variant toggle
+  // updates the highlighted contacts to match the displayed pose.
   const contactResnums = useMemo<number[]>(() => {
-    const hits = (dockResult?.hits || []) as string[];
+    const hits = (activeDockResult?.hits || []) as string[];
     const out = new Set<number>();
     for (const h of hits) {
       const m = String(h).match(/(\d+)/);
       if (m) out.add(Number(m[1]));
     }
     return Array.from(out);
-  }, [dockResult?.hits]);
+  }, [activeDockResult?.hits]);
 
   // (v0.29) When a fresh dockResult lands, default the view back to
   // the docked-pose scene. If the user manually flipped to "live"
@@ -3048,6 +3068,30 @@ function ProductionViewer3D({
               </ViewerSegBtn>
               <ViewerSegBtn active={viewMode === "dock"} onClick={() => setViewMode("dock")} title="Show the docked pose with receptor (default after a dock completes).">
                 docked
+              </ViewerSegBtn>
+            </ViewerControlGroup>
+          )}
+          {/* (v0.43) Variant toggle — visible only when BOTH a WT and
+              a mutant result are loaded. Lets the user flip the 3D
+              scene between the two receptor + pose pairs. The pose-
+              contact highlights and the camera framing follow whichever
+              variant is active. */}
+          {!!dockResult && !!dockResultWt && (
+            <ViewerControlGroup label="VARIANT">
+              <ViewerSegBtn
+                active={viewVariant === "wt"}
+                onClick={() => setViewVariant("wt")}
+                title="Show the wild-type receptor and the WT-docked pose."
+              >
+                wt
+              </ViewerSegBtn>
+              <ViewerSegBtn
+                active={viewVariant === "mut"}
+                onClick={() => setViewVariant("mut")}
+                title={`Show the mutant receptor (${mutation || "mut"}) and its docked pose.`}
+                tone="amber"
+              >
+                {mutation ? mutation.toLowerCase() : "mut"}
               </ViewerSegBtn>
             </ViewerControlGroup>
           )}
