@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.54-2026-05-07-both-mode-fixes";
+const LIGANX_BUILD_TAG = "v0.55-2026-05-07-side-chain-colors";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3037,12 +3037,24 @@ function ProductionViewer3D({
         // 'green = the mutation'. Critically, green is distinct from any
         // common atom element color (no element renders green by default
         // except F/Cl), so it can't be confused with the docked ligand.
+        // (v0.55) Mutation-residue side chain — color follows the
+        // MutationOverlayViewer convention so users coming from JobPage
+        // get the same visual mapping:
+        //   • WT residue side chain  → emerald green (#10b981)
+        //   • Mutant residue side chain → blue       (#3b6cf6)
+        // This is what makes wt vs mut visually obvious in the close-
+        // up viewer — the protein chain line color (slate vs amber) is
+        // a wider-context cue, but the user looks at the side chain
+        // because that's where the chemistry is. Without distinct
+        // colors, both views looked 'green' which the user reported
+        // as "WT and Q61H are the same color".
         if (mutation) {
           const m = String(mutation).match(/(\d+)/);
           if (m) {
             const rn = Number(m[1]);
             const sel = { model: 0, resi: rn };
-            try { viewer.addStyle(sel, { stick: { color: "#10b981", radius: 0.32 } }); } catch { /* */ }
+            const sideColor = variant === "WT" ? "#10b981" : "#3b6cf6";
+            try { viewer.addStyle(sel, { stick: { color: sideColor, radius: 0.32 } }); } catch { /* */ }
           }
         }
       }
@@ -3095,6 +3107,20 @@ function ProductionViewer3D({
           viewer.setStyle({ model: altRecIdx }, { line: { color: altRecColor } });
         } else if (backboneStyle === "surface") {
           viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.30 } });
+        }
+        // (v0.55) Alt receptor's mutation-residue side chain. In 'both'
+        // mode this gives the user both WT (emerald) AND mutant (blue)
+        // side chains visible at once — the visual payoff for the mode.
+        // Color is the OPPOSITE of whatever the primary side chain
+        // got, since the alt is by definition the other variant.
+        if (mutation) {
+          const m = String(mutation).match(/(\d+)/);
+          if (m) {
+            const rn = Number(m[1]);
+            const altSel = { model: altRecIdx, resi: rn };
+            const altSideColor = variant === "WT" ? "#3b6cf6" : "#10b981";
+            try { viewer.addStyle(altSel, { stick: { color: altSideColor, radius: 0.32 } }); } catch { /* */ }
+          }
         }
         // (v0.54) Alt pose intentionally NOT rendered — see build
         // effect comment. Showing two ligand copies looked like a
