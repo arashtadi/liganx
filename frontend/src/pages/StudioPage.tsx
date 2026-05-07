@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.43-2026-05-07-variant-toggle";
+const LIGANX_BUILD_TAG = "v0.44-2026-05-07-full-job-submit";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -546,6 +546,43 @@ export default function StudioPage() {
       setDockError(e?.message || "Dock failed.");
     } finally {
       setDocking(false);
+    }
+  }
+
+  // (v0.44) Full Job submission — same /jobs endpoint NewJobPage uses.
+  // Async by design: backend queues the run, returns a job id, the
+  // user lands on /jobs/{id} where the existing JobPage shows live
+  // progress (build mutant → fix structure → dock each compound) and
+  // the persistent results page once it's done. ~3 minutes typical for
+  // 1 compound × 1 mutation, no scaffold flexibility cap, full
+  // exhaustiveness controls. Studio's role here is just "compose the
+  // payload and hand off"; the heavy lifting lives in JobPage.
+  const [submittingFull, setSubmittingFull] = useState(false);
+  async function runFullJob() {
+    if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
+    if (!selectedTarget) { setDockError("Pick a target."); return; }
+    setDockError(null);
+    setSubmittingFull(true);
+    try {
+      const job = await api.createJob({
+        pdb_id: selectedTarget,           // catalog id; backend resolves to PDB
+        chain: targetMeta?.chain || "A",
+        mutations: selectedMutation ? [selectedMutation] : [],
+        compounds: [{
+          name: loadedCompound?.name || activeDraft?.name || "Studio compound",
+          smiles: currentSmiles,
+        }],
+        include_wt: includeWt,
+        title: `Studio · ${selectedTarget?.toUpperCase() || "?"}${selectedMutation ? ` · ${selectedMutation}` : ""}`,
+      });
+      // job.key is the URL-safe id used by /jobs/:key.
+      const jobKey = (job as any).key ?? (job as any).id;
+      if (jobKey) navigate(`/jobs/${jobKey}`);
+      else setDockError("Job created but no id returned — refresh /history to find it.");
+    } catch (e: any) {
+      setDockError(e?.message || "Full Job submission failed.");
+    } finally {
+      setSubmittingFull(false);
     }
   }
 
@@ -1264,7 +1301,7 @@ export default function StudioPage() {
               )}
               <button
                 onClick={runQuickDock}
-                disabled={docking || !ketcherReady || !currentSmiles || !selectedTarget}
+                disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
                 className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
                   docking
                     ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 cursor-wait animate-pulse"
@@ -1272,8 +1309,28 @@ export default function StudioPage() {
                     ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
                     : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
                 }`}
+                title="Quick Dock — GPU pipeline. ~30 s, scores both WT and mutant in parallel. Has a flexibility/MW cap; large scaffolds may be rejected."
               >
-                {docking ? "▶ docking…" : "⏵ Run Dock"}
+                {docking ? "▶ docking…" : "⏵ Quick Dock · GPU · ~30s"}
+              </button>
+              {/* (v0.44) Full Job — submits to /jobs and navigates to
+                  the persistent results page. ~3 min, no scaffold cap,
+                  full exhaustiveness + multi-engine support. Sized
+                  smaller than Quick Dock so it reads as the deliberate
+                  alternative rather than the primary action. */}
+              <button
+                onClick={runFullJob}
+                disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
+                className={`w-full mt-1.5 px-4 py-1.5 rounded border font-mono text-[10px] uppercase tracking-[0.18em] transition-all ${
+                  submittingFull
+                    ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
+                    : !ketcherReady || !currentSmiles || !selectedTarget
+                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                    : "border-emerald-700/50 bg-emerald-950/20 text-emerald-300/90 hover:bg-emerald-900/30 hover:border-emerald-500/60"
+                }`}
+                title="Full Job — submits to /jobs queue and opens the persistent results page. Slower (~3 min) but no scaffold cap, full exhaustiveness, GNINA & Boltz-2 available."
+              >
+                {submittingFull ? "▶ submitting…" : "⇢ Run as Full Job · ~3 min · no caps"}
               </button>
             </div>
           </div>
