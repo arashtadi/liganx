@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.47-2026-05-07-fulljob-inline";
+const LIGANX_BUILD_TAG = "v0.48-2026-05-07-hide-empty-telemetry";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -846,6 +846,14 @@ export default function StudioPage() {
                 instead of overflowing it. (v0.28.1) */}
             <div className="flex-1 min-h-0 overflow-y-auto">
 
+            {/* (v0.48) Hide the Score / Pose / Hits / Misses blocks
+                until there's something to display. Keeping them as
+                empty "—" placeholders before any dock just adds visual
+                noise; the user already knows they need to run a dock.
+                Show only when at least one result has landed OR a
+                run is in flight (so the user sees the dock-pending
+                state instead of the panel jumping in late). */}
+            {(dockResult || dockResultWt || docking || (fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")) && <>
             {/* Score + Pose row — biggest type on the page */}
             <div className="px-4 pt-3 pb-2 grid grid-cols-2 gap-2 border-b border-slate-800/70">
               <div>
@@ -1053,6 +1061,8 @@ export default function StudioPage() {
                 </div>
               </div>
             </div>
+            </>}
+            {/* /v0.48 conditional close */}
 
             {/* ─── TARGET (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
