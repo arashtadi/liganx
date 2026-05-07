@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.41-2026-05-07-gpu-reject-and-variant-fork";
+const LIGANX_BUILD_TAG = "v0.42-2026-05-07-score-panel-clarity";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -690,69 +690,86 @@ export default function StudioPage() {
                     come back. Each slot can show a score, "loading", or
                     "—" so the user always sees what's happening. */}
                 {(includeWt && selectedMutation) ? (
-                  // Always-2-column WT vs mutation panel. Each slot
-                  // shows the score, "loading…" while the dock is in
-                  // flight, or "—" if the dock returned without a
-                  // valid score. User always sees both slots so the
-                  // structure of "WT vs mutation comparison" is
-                  // visible whether or not the data has all arrived.
+                  // (v0.42) Three columns with explicit, color-coded
+                  // header pills above each score so it's unambiguous
+                  // which number belongs to which receptor variant.
+                  // Order: MUTANT (left, amber, primary — the new
+                  // biology), WT (middle, slate, baseline),
+                  // Δ (right, emerald/rose, the selectivity readout).
                   <>
-                    <div className="flex items-baseline gap-3">
-                      {/* Mutant slot (LEFT, primary — this is the new biology).
-                          Score color = scoreTier(): emerald (strong) → cyan
-                          (moderate) → amber (weak). Kd line below gives a
-                          chemistry-familiar number (nM/µM) since Vina ΔG
-                          isn't intuitive for non-computational chemists. */}
+                    <div className="grid grid-cols-3 gap-3 mt-1">
+                      {/* MUTANT column */}
                       <div className="flex flex-col">
-                        <span className={`font-mono text-lg tabular-nums ${
+                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-amber-300 mb-0.5">
+                          ▸ Mutant · {selectedMutation}
+                        </span>
+                        <span className={`font-mono text-lg tabular-nums leading-tight ${
                           dockResult?.score != null ? scoreTier(dockResult.score)
-                          : docking ? "text-cyan-300/40 animate-pulse"
+                          : docking ? "text-amber-300/40 animate-pulse"
                           : "text-slate-600"
-                        }`} title={dockResult?.score != null ? `${fmtScore(dockResult.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResult.score)}` : undefined}>
+                        }`} title={dockResult?.score != null ? `${fmtScore(dockResult.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResult.score)}` : "Mutant docking score (kcal/mol). Lower = stronger binder."}>
                           {dockResult?.score != null ? fmtScore(dockResult.score)
                             : docking ? "▮" : "—.——"}
                         </span>
-                        <span className="text-[8px] font-mono uppercase tracking-wider text-amber-300">
-                          {selectedMutation} {dockResult?.score != null && <span className="text-slate-500 normal-case">· ~{fmtScoreKd(dockResult.score)}</span>}
-                        </span>
+                        {dockResult?.score != null && (
+                          <span className="text-[9px] font-mono text-slate-500 leading-tight">
+                            ~{fmtScoreKd(dockResult.score)}
+                          </span>
+                        )}
                       </div>
-                      {/* WT slot */}
-                      <div className="flex flex-col">
-                        <span className={`font-mono text-lg tabular-nums ${
+                      {/* WT column */}
+                      <div className="flex flex-col border-l border-slate-800 pl-3">
+                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-400 mb-0.5">
+                          ▸ Wild-type
+                        </span>
+                        <span className={`font-mono text-lg tabular-nums leading-tight ${
                           dockResultWt?.score != null ? scoreTier(dockResultWt.score)
                           : docking ? "text-slate-400/40 animate-pulse"
                           : "text-slate-600"
-                        }`} title={dockResultWt?.score != null ? `${fmtScore(dockResultWt.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResultWt.score)}` : undefined}>
+                        }`} title={dockResultWt?.score != null ? `${fmtScore(dockResultWt.score)} kcal/mol · estimated Kd ≈ ${fmtScoreKd(dockResultWt.score)}` : "Wild-type docking score (kcal/mol). Lower = stronger binder."}>
                           {dockResultWt?.score != null ? fmtScore(dockResultWt.score)
                             : docking ? "▮" : "—.——"}
                         </span>
-                        <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
-                          WT {dockResultWt?.score != null && <span>· ~{fmtScoreKd(dockResultWt.score)}</span>}
-                        </span>
+                        {dockResultWt?.score != null && (
+                          <span className="text-[9px] font-mono text-slate-500 leading-tight">
+                            ~{fmtScoreKd(dockResultWt.score)}
+                          </span>
+                        )}
                       </div>
-                      {/* Δ slot — only when BOTH scores are present */}
-                      {dockResult?.score != null && dockResultWt?.score != null && (
-                        <div className="flex flex-col">
-                          {(() => {
-                            const delta = dockResult.score - dockResultWt.score;
-                            const tighter = delta < 0;
-                            return (
-                              <>
-                                <span className={`font-mono text-lg tabular-nums ${
-                                  Math.abs(delta) < 0.3 ? "text-slate-500"
-                                  : tighter ? "text-emerald-300"
-                                  : "text-rose-300"
-                                }`} title="Δ = mutant − WT. Negative = mutant binds tighter (selectivity gain). Positive = mutant binds weaker (resistance).">
-                                  {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
-                                </span>
-                                <span className="text-[8px] font-mono uppercase tracking-wider text-slate-500">
-                                  Δ
-                                </span>
-                              </>
-                            );
-                          })()}
-                        </div>
-                      )}
+                      {/* Δ column — selectivity readout. Negative =
+                          mutant tighter (gain), positive = looser
+                          (resistance). Only renders when both scores
+                          are in. */}
+                      <div className="flex flex-col border-l border-slate-800 pl-3">
+                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-cyan-300 mb-0.5">
+                          ▸ Δ Selectivity
+                        </span>
+                        {dockResult?.score != null && dockResultWt?.score != null ? (() => {
+                          const delta = dockResult.score - dockResultWt.score;
+                          const tighter = delta < 0;
+                          return (
+                            <>
+                              <span className={`font-mono text-lg tabular-nums leading-tight ${
+                                Math.abs(delta) < 0.3 ? "text-slate-500"
+                                : tighter ? "text-emerald-300"
+                                : "text-rose-300"
+                              }`} title="Δ = mutant − WT. Negative = mutant binds tighter (selectivity gain). Positive = mutant binds weaker (potential resistance).">
+                                {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                              </span>
+                              <span className="text-[9px] font-mono leading-tight text-slate-500">
+                                {Math.abs(delta) < 0.3 ? "noise floor"
+                                  : tighter ? "mutant tighter ✓"
+                                  : "mutant looser"}
+                              </span>
+                            </>
+                          );
+                        })() : (
+                          <>
+                            <span className="font-mono text-lg tabular-nums leading-tight text-slate-600">—.——</span>
+                            <span className="text-[9px] font-mono text-slate-600 leading-tight">awaiting both</span>
+                          </>
+                        )}
+                      </div>
                     </div>
                     <div className="text-[10px] font-mono text-slate-500 mt-0.5">
                       kcal/mol · exh=8
