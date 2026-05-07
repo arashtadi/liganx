@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.49-2026-05-07-back-to-studio";
+const LIGANX_BUILD_TAG = "v0.50-2026-05-07-variant-both-overlay";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2691,6 +2691,11 @@ function ProductionViewer3D({
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [receptorPdb, setReceptorPdb] = useState<string | null>(null);
+  // (v0.50) Second receptor slot — used in "both" mode to load the
+  // OTHER variant alongside the primary. When viewVariant === "both"
+  // the primary receptor is mutant (cyan-ish) and the alt is WT
+  // (slate, semi-transparent). When primary is WT, alt is mutant.
+  const [receptorPdbAlt, setReceptorPdbAlt] = useState<string | null>(null);
   const [receptorErr, setReceptorErr] = useState<string | null>(null);
   // Live preview SMILES — set when currentSmiles diverges from the last
   // docked SMILES. Drives the conformer fetch + overlay logic below so
@@ -2733,15 +2738,14 @@ function ProductionViewer3D({
   // state lets the user override the default. Resets to "dock" each
   // time a fresh dockResult arrives so the new dock takes the spotlight.
   const [viewMode, setViewMode] = useState<"live" | "dock">("dock");
-  // (v0.43) Variant toggle. When the user ran both a WT and a mutant
-  // dock, this picks which receptor + pose the 3D viewer shows. "mut"
-  // is the default (the new biology); "wt" shows the wild-type pose
-  // for comparison. Auto-resets to "mut" when a fresh mutant dock
-  // result arrives so the new run grabs the spotlight.
-  const [viewVariant, setViewVariant] = useState<"wt" | "mut">("mut");
+  // (v0.50) Variant toggle. Three states: "wt", "both", "mut". Both
+  // mode overlays the WT and mutant receptors + poses in one scene
+  // with distinct colors and opacity so the user can compare the
+  // side-chain shift and pose differences side-by-side. "mut" is
+  // the default (new biology) and auto-snaps back when a fresh
+  // mutant result lands. WT-only runs default the view to "wt".
+  const [viewVariant, setViewVariant] = useState<"wt" | "both" | "mut">("mut");
   useEffect(() => {
-    // When a new mutant result lands, snap back to mutant view so the
-    // user sees the new biology. WT-only runs default to wt.
     if (dockResult) setViewVariant("mut");
     else if (dockResultWt && !dockResult) setViewVariant("wt");
   }, [dockResult, dockResultWt]);
@@ -2798,6 +2802,31 @@ function ProductionViewer3D({
     return lines.join("\n") + "\nEND\n";
   })();
   const hasPose = hasDock && !!posePdbqt;
+  // (v0.50) Alternate pose for "both" mode — the variant NOT currently
+  // active. Same PDBQT→PDB conversion as the primary so 3Dmol's stable
+  // 'pdb' parser handles all atoms (BRANCH atoms get dropped by the
+  // pdbqt parser). Empty string when "both" isn't active or the alt
+  // dock has no parseable pose.
+  const altDockResult = viewVariant === "both"
+    ? (variant === "WT" ? dockResult : dockResultWt)
+    : null;
+  const altPosePdbqtFull = altDockResult?.pose_pdbqt_b64 ? atob(altDockResult.pose_pdbqt_b64) : "";
+  const altPosePdbqt = (() => {
+    if (!altPosePdbqtFull) return "";
+    const endIdx = altPosePdbqtFull.indexOf("ENDMDL");
+    const mode1 = endIdx >= 0 ? altPosePdbqtFull.slice(0, endIdx) : altPosePdbqtFull;
+    const lines: string[] = [];
+    for (const raw of mode1.split("\n")) {
+      const line = raw.replace(/\r$/, "");
+      if (line.startsWith("ATOM") || line.startsWith("HETATM")) {
+        const trimmed = line.slice(0, 66).padEnd(66, " ");
+        const name = line.slice(12, 16).trim();
+        const element = name.replace(/^[0-9]+/, "")[0] || "C";
+        lines.push(trimmed + "          " + element.padStart(2, " "));
+      }
+    }
+    return lines.join("\n") + "\nEND\n";
+  })();
   // Effective scene flag — drives the data-load effect and the
   // applyStyles branches. When the user has flipped the toolbar to
   // "live" we deliberately downgrade to the conformer-only path so
@@ -2937,6 +2966,26 @@ function ProductionViewer3D({
     return () => { cancelled = true; };
   }, [hasDock, pdbId, chain, variant]);
 
+  // (v0.50) When viewVariant is "both", fetch the OTHER variant's
+  // receptor in parallel so we can overlay it. Skipped otherwise to
+  // avoid wasting bandwidth when the user only cares about one side.
+  useEffect(() => {
+    if (viewVariant !== "both") { setReceptorPdbAlt(null); return; }
+    if (!hasDock || !pdbId || !chain || !mutation || !dockResult || !dockResultWt) return;
+    // Primary variant is whichever activeDockResult resolved to.
+    // Alt is the other one. mutation is e.g. "Q61H".
+    const altVariant = variant === "WT" ? mutation : "WT";
+    let cancelled = false;
+    api
+      .structure(pdbId, chain, altVariant)
+      .then((text) => {
+        if (cancelled) return;
+        if (text && text.length >= 100) setReceptorPdbAlt(text);
+      })
+      .catch(() => { /* alt is best-effort; primary still renders */ });
+    return () => { cancelled = true; };
+  }, [viewVariant, hasDock, pdbId, chain, variant, mutation, dockResult, dockResultWt]);
+
   // Apply visual styles based on toolbar state. This is the single place
   // styles are written to the 3Dmol viewer — both the data-load effect
   // (below) and the toolbar buttons trigger it via dependency.
@@ -3004,6 +3053,34 @@ function ProductionViewer3D({
           viewer.setStyle({ model: poseIdx }, { sphere: { colorscheme: "Jmol" } });
         }
       }
+      // (v0.50) Style the alt receptor + alt pose when in "both" mode.
+      // Models 2 (alt receptor) and 3 (alt pose) live above the primary
+      // receptor=0 + primary pose=1 indices. Alt receptor uses cartoon
+      // with reduced opacity so the primary still reads as the focus
+      // structure; alt pose gets a flat color (variant-specific) so the
+      // user can tell the two ligand poses apart at a glance.
+      if (viewVariant === "both" && receptorPdbAlt) {
+        const altRecIdx = 2;
+        const altPoseIdx = altPosePdbqt ? 3 : -1;
+        const altRecColor = "#64748b";  // slate-500 — distinct from primary's #94a3b8
+        viewer.setStyle({ model: altRecIdx }, {});
+        viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.45 } });
+        if (altPoseIdx >= 0) {
+          viewer.setStyle({ model: altPoseIdx }, {});
+          // Alt pose color: emerald if alt is WT (variant === "WT" means
+          // primary is mutant, so alt is WT); cyan if alt is mutant.
+          const altPoseColor = variant === "WT" ? "#06b6d4" : "#10b981";  // primary WT → alt is mutant cyan; primary mutant → alt is WT emerald
+          if (poseStyle === "stick") {
+            viewer.setStyle({ model: altPoseIdx }, { stick: { radius: 0.22, color: altPoseColor, opacity: 0.85 } });
+          } else if (poseStyle === "ball") {
+            viewer.setStyle({ model: altPoseIdx }, { stick: { radius: 0.16, color: altPoseColor, opacity: 0.85 }, sphere: { scale: 0.30, color: altPoseColor, opacity: 0.85 } });
+          } else if (poseStyle === "line") {
+            viewer.setStyle({ model: altPoseIdx }, { line: { color: altPoseColor } });
+          } else if (poseStyle === "sphere") {
+            viewer.setStyle({ model: altPoseIdx }, { sphere: { color: altPoseColor, opacity: 0.85 } });
+          }
+        }
+      }
       viewer.render();
     } catch { /* defensive — ignore style errors */ }
   }
@@ -3027,6 +3104,11 @@ function ProductionViewer3D({
       posePdbqt ? `p${posePdbqt.length}` : "_",
       conformerSdf ? `c${conformerSdf.length}` : "_",
       smilesEdited && editedConformerSdf ? `e${editedConformerSdf.length}` : "_",
+      // (v0.43) Variant in the key so flipping wt/mut/both forces a rebuild.
+      `v${viewVariant}`,
+      // (v0.50) Alt receptor + alt pose for "both" mode. Empty in other modes.
+      viewVariant === "both" && receptorPdbAlt ? `a${receptorPdbAlt.length}` : "_",
+      viewVariant === "both" && altPosePdbqt ? `q${altPosePdbqt.length}` : "_",
     ].join("|");
     if (buildKey === lastBuildKeyRef.current && viewerRef.current) {
       // Same data, viewer already exists — leave it alone.
@@ -3085,6 +3167,19 @@ function ProductionViewer3D({
             // parser instead.
             viewer.addModel(posePdbqt, "pdb");
           }
+          // (v0.50) "Both" mode — overlay the alternate receptor and
+          // pose. Models added here become indices 2 and 3 (after the
+          // primary receptor=0 and primary pose=1). applyStyles below
+          // detects them via altModels and renders the alt receptor in
+          // slate at 0.45 opacity and the alt pose with a flat color
+          // (cyan-ish) so it's distinguishable from the Jmol-coloured
+          // primary pose.
+          if (viewVariant === "both" && receptorPdbAlt) {
+            viewer.addModel(receptorPdbAlt, "pdb");
+            if (altPosePdbqt) {
+              viewer.addModel(altPosePdbqt, "pdb");
+            }
+          }
           // Camera framing — IMPORTANT 3Dmol API quirks here:
           //   • zoomTo({selection}) fits the camera AND sets the rotation
           //     pivot to the selection's centroid. Critical for keeping
@@ -3125,7 +3220,7 @@ function ProductionViewer3D({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showDockedScene, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited]);
+  }, [showDockedScene, receptorPdb, posePdbqt, conformerSdf, editedConformerSdf, smilesEdited, viewVariant, receptorPdbAlt, altPosePdbqt]);
 
   // Re-apply styles when toolbar state OR the viewer instance changes.
   // viewerVersion bump ensures style re-applies after the data effect
@@ -3304,6 +3399,13 @@ function ProductionViewer3D({
                 title="Show the wild-type receptor and the WT-docked pose."
               >
                 wt
+              </ViewerSegBtn>
+              <ViewerSegBtn
+                active={viewVariant === "both"}
+                onClick={() => setViewVariant("both")}
+                title="Overlay BOTH variants: primary receptor + pose at full opacity, the other variant's receptor (slate, 45% opacity) and pose (flat color, 85% opacity) on top so you can compare side-chain shifts and pose differences in one frame."
+              >
+                both
               </ViewerSegBtn>
               <ViewerSegBtn
                 active={viewVariant === "mut"}
