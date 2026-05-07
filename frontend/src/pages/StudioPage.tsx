@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.33-2026-05-06-fork-on-edit";
+const LIGANX_BUILD_TAG = "v0.34-2026-05-06-ai-variants-panel";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1234,7 +1234,18 @@ export default function StudioPage() {
           <PropertiesPanel smiles={currentSmiles} />
         </CollapsibleTab>
         <CollapsibleTab label="AI Variants" open={showAi} onToggle={() => setShowAi(!showAi)}>
-          <div className="text-slate-500 font-mono text-[11px] p-3">AI variant generation · v0.2 (deferred)</div>
+          <AiVariantsPanel
+            dockResult={dockResult}
+            currentSmiles={currentSmiles}
+            targetPdb={targetMeta?.pdb_id || dockResult?.pdb_id}
+            mutation={selectedMutation || undefined}
+            onUseVariant={(variant) => {
+              loadIntoCanvas(variant.new_smiles);
+              setLoadedCompound(null);  // forked into a new draft
+              setActiveDraft(null);     // start fresh autosave id
+              setShowAi(false);
+            }}
+          />
         </CollapsibleTab>
         <CollapsibleTab label="Drafts" open={showHistory} onToggle={() => setShowHistory(!showHistory)}>
           {/* (v0.31) Drafts panel — shows every autosaved compound. Click
@@ -1279,6 +1290,173 @@ export default function StudioPage() {
  *  than reactive because the autosave loop already owns the source of
  *  truth — pulling on demand avoids a storage-event subscription.)
  */
+/** (v0.34) AI Variants panel — generates 3 AI-suggested compound
+ *  modifications based on the most recent dock result, then displays
+ *  them as cards with score/Δ/SA/contacts and a "use this variant"
+ *  button that loads the variant into Studio.
+ *
+ *  Hard requires a parent dock: the /assist/optimize endpoint needs
+ *  parent score + hits + misses + receptor context to design useful
+ *  modifications. Pre-dock the panel shows a "run a dock first" hint.
+ */
+type AiVariant = {
+  new_smiles: string;
+  rationale: string;
+  score?: number;
+  delta?: number;
+  sa_score?: number;
+  fitness?: number;
+  mutation_contact?: boolean;
+  hits?: string[];
+  misses?: string[];
+  pose_in_pocket?: boolean;
+};
+function AiVariantsPanel({
+  dockResult, currentSmiles, targetPdb, mutation, onUseVariant,
+}: {
+  dockResult: QuickDockResult | null;
+  currentSmiles: string;
+  targetPdb?: string;
+  mutation?: string;
+  onUseVariant: (v: AiVariant) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [variants, setVariants] = useState<AiVariant[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function generate() {
+    if (!dockResult || !currentSmiles || dockResult.score == null) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await api.assistOptimize({
+        smiles: currentSmiles,
+        score: dockResult.score,  // narrowed by guard above
+        hits: dockResult.hits || [],
+        misses: dockResult.misses || [],
+        target_pdb: targetPdb,
+        mutations: mutation,
+        parent_pose_pdbqt_b64: dockResult.pose_pdbqt_b64,
+      });
+      setVariants(res.variants || []);
+    } catch (e: any) {
+      setErr(e?.message || "AI optimize failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!dockResult) {
+    return (
+      <div className="p-3 text-[11px] font-mono text-slate-500">
+        <div className="mb-1">No dock result yet.</div>
+        <div className="text-slate-600 text-[10px]">
+          Run a Quick Dock first — the AI uses the parent score, hits, and pose to design 3 variants
+          aimed at engaging missed pocket residues and the mutation site.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-auto max-h-full">
+      <div className="px-3 py-2 border-b border-slate-800/70 flex items-center justify-between text-[10px] font-mono">
+        <span className="text-slate-500 uppercase tracking-[0.18em]">
+          AI variants {variants ? `· ${variants.length}` : ""}
+        </span>
+        <button
+          type="button"
+          onClick={generate}
+          disabled={loading || !currentSmiles}
+          className={`px-2 py-0.5 rounded border text-[10px] uppercase tracking-wider transition-colors ${
+            loading
+              ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 animate-pulse cursor-wait"
+              : "border-cyan-700/50 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60"
+          }`}
+          title="Generate 3 AI-suggested variants designed to improve binding to the misses + mutation site."
+        >
+          {loading ? "▶ generating…" : variants ? "↻ regenerate" : "✨ generate variants"}
+        </button>
+      </div>
+      {err && (
+        <div className="px-3 py-2 text-[10px] font-mono text-rose-300 bg-rose-950/30 border-b border-rose-900/60">
+          ✗ {err}
+        </div>
+      )}
+      {!variants && !loading && !err && (
+        <div className="p-3 text-[10px] font-mono text-slate-600 italic">
+          Click ✨ generate variants to ask the AI for 3 candidates that engage the {((dockResult.misses || []).length || 0)} missed
+          residues{mutation && mutation !== "WT" ? ` and the ${mutation} mutation site` : ""}.
+        </div>
+      )}
+      {loading && (
+        <div className="p-3 text-[10px] font-mono text-cyan-300/70 animate-pulse">
+          ▮ asking the AI for 3 variants… typical wait 20-40 s (generate → score → filter → dock).
+        </div>
+      )}
+      {variants && variants.length === 0 && (
+        <div className="p-3 text-[10px] font-mono text-slate-600 italic">
+          AI returned no variants for this query.
+        </div>
+      )}
+      {variants && variants.length > 0 && (
+        <div className="divide-y divide-slate-800/60">
+          {variants.map((v, i) => (
+            <div key={i} className="px-3 py-2 text-[11px] font-mono hover:bg-slate-800/30">
+              <div className="flex items-center gap-3 mb-1">
+                <span className="text-[9px] uppercase tracking-[0.18em] text-slate-600">▸ variant {i + 1}</span>
+                {v.score != null && (
+                  <span className="text-cyan-300 tabular-nums" title={`Vina score (kcal/mol) of the docked variant — lower is stronger.`}>
+                    {v.score.toFixed(2)} kcal/mol
+                  </span>
+                )}
+                {v.delta != null && (
+                  <span className={`text-[10px] tabular-nums ${v.delta > 0 ? "text-emerald-400" : "text-rose-400"}`}
+                        title="Δ score versus parent (positive = improvement).">
+                    {v.delta > 0 ? "+" : ""}{v.delta.toFixed(2)} Δ
+                  </span>
+                )}
+                {v.sa_score != null && (
+                  <span className="text-[10px] text-slate-500" title="Synthetic Accessibility (1=easy, 10=impossible).">
+                    SA {v.sa_score.toFixed(1)}
+                  </span>
+                )}
+                {v.mutation_contact && (
+                  <span className="text-[10px] text-emerald-400" title="Variant pose contacts the mutation residue.">
+                    ✓ engages mutation
+                  </span>
+                )}
+                {v.pose_in_pocket === false && (
+                  <span className="text-[10px] text-amber-400" title="Variant pose drifted off-pocket — score is real but pose isn't in the canonical site.">
+                    ⚠ off-pocket
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onUseVariant(v)}
+                  className="ml-auto px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500/60 text-[10px] uppercase tracking-wider"
+                  title="Load this variant into Studio. Becomes a new draft (the original parent is preserved)."
+                >
+                  ⤴ use
+                </button>
+              </div>
+              <div className="text-[10px] text-slate-400 truncate" title={v.new_smiles}>
+                <span className="text-slate-600">SMILES </span>
+                {v.new_smiles.length > 60 ? v.new_smiles.slice(0, 60) + "…" : v.new_smiles}
+              </div>
+              {v.rationale && (
+                <div className="text-[10px] text-slate-500 mt-1 italic" title={v.rationale}>
+                  {v.rationale.length > 140 ? v.rationale.slice(0, 140) + "…" : v.rationale}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DraftsPanel({
   activeDraftId, onRestore, onDelete,
 }: {
