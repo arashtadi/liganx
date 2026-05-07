@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.46.1-2026-05-07-fulljob-pdbid-fix";
+const LIGANX_BUILD_TAG = "v0.47-2026-05-07-fulljob-inline";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -558,6 +558,30 @@ export default function StudioPage() {
   // exhaustiveness controls. Studio's role here is just "compose the
   // payload and hand off"; the heavy lifting lives in JobPage.
   const [submittingFull, setSubmittingFull] = useState(false);
+  // (v0.47) Full Job state — kept in Studio so the user can stay in
+  // the cockpit instead of being thrown to /jobs/{id}. Once submitted,
+  // we poll /jobs/{key} every 3s, surface the runner stage in the
+  // score panel header, and populate dockResult/dockResultWt when the
+  // job completes. A "view full results page" link in the header
+  // gets the user to JobPage when they want the deeper UI.
+  const [fullJobKey, setFullJobKey] = useState<string | null>(null);
+  const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(null);
+  const [fullJobStage, setFullJobStage] = useState<string | null>(null);
+  // Map a runner stage slug to a human label for the progress strip.
+  // Mirrors the labels JobPage uses, condensed for one-line display.
+  const fullJobStageLabel = (slug: string | null | undefined): string => {
+    if (!slug) return "queued";
+    if (slug === "fetching_pdb") return "fetching structure";
+    if (slug === "cleaning_pdb") return "cleaning with PDBFixer";
+    if (slug === "preparing_receptor") return "preparing receptor";
+    if (slug.startsWith("building_mutant_")) return `building mutant (${slug.slice("building_mutant_".length)})`;
+    if (slug === "preparing_compounds") return "preparing compound";
+    if (slug === "extracting_sequence") return "extracting sequence";
+    if (slug.startsWith("predicting_")) return `predicting ${slug.slice("predicting_".length)}`;
+    if (slug.startsWith("docking_")) return `docking ${slug.slice("docking_".length)}`;
+    if (slug === "validating_poses") return "validating poses";
+    return slug.replaceAll("_", " ");
+  };
   async function runFullJob() {
     if (!currentSmiles) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (!selectedTarget) { setDockError("Pick a target."); return; }
@@ -585,16 +609,85 @@ export default function StudioPage() {
         include_wt: includeWt,
         title: `Studio · ${selectedTarget?.toUpperCase() || "?"}${selectedMutation ? ` · ${selectedMutation}` : ""}`,
       });
-      // job.key is the URL-safe id used by /jobs/:key.
-      const jobKey = (job as any).key ?? (job as any).id;
-      if (jobKey) navigate(`/jobs/${jobKey}`);
-      else setDockError("Job created but no id returned — refresh /history to find it.");
+      // (v0.47) Stay in Studio. Use share_id (URL-safe), fall back to
+      // numeric id for legacy. Set status to pending and let the
+      // polling effect take over.
+      const jobKey = (job as any).share_id ?? String((job as any).id ?? "");
+      if (!jobKey) {
+        setDockError("Job created but no id returned — refresh /history to find it.");
+        return;
+      }
+      // Clear previous Quick Dock results so the score panel reflects
+      // the new in-flight Full Job, not stale GPU numbers.
+      setDockResult(null);
+      setDockResultWt(null);
+      setFullJobKey(jobKey);
+      setFullJobStatus(job.status || "pending");
+      setFullJobStage(job.stage || null);
     } catch (e: any) {
       setDockError(e?.message || "Full Job submission failed.");
     } finally {
       setSubmittingFull(false);
     }
   }
+
+  // (v0.47) Polling loop for in-flight Full Jobs. Fires every 3 s
+  // while fullJobKey is set and status is pending/running. On
+  // completion, fans the DockingResult rows out into dockResult /
+  // dockResultWt so the existing TELEMETRY panel + 3D viewer light
+  // up exactly the same way they do for Quick Dock. On failure,
+  // surfaces error_message in dockError. Stops polling either way.
+  useEffect(() => {
+    if (!fullJobKey) return;
+    if (fullJobStatus === "completed" || fullJobStatus === "failed" || fullJobStatus === "cancelled") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const job = await api.getJob(fullJobKey);
+        if (cancelled) return;
+        setFullJobStatus(job.status);
+        setFullJobStage(job.stage || null);
+        if (job.status === "completed") {
+          // Map DockingResult rows back into Studio's dockResult shape.
+          // We only sent ONE compound, so each result corresponds to a
+          // (compound, variant) pair — typically one mutant + one WT.
+          for (const r of (job.results || [])) {
+            const isWt = (r.variant || "").toUpperCase() === "WT";
+            // Try to fetch the pose so the 3D viewer can render it.
+            // Best-effort: if the fetch fails, the score still shows
+            // (without the 3D pose) — user can click the link to
+            // /jobs/{key} for full machinery.
+            let posePdbqtB64: string | undefined;
+            try {
+              const text = await api.pose(fullJobKey, r.compound_id, r.variant);
+              posePdbqtB64 = btoa(unescape(encodeURIComponent(text)));
+            } catch { /* ignore — pose fetch is non-critical */ }
+            const synth: QuickDockResult = {
+              ok: true,
+              score: r.best_score,
+              hits: [],
+              misses: [],
+              pose_pdbqt_b64: posePdbqtB64,
+              pdb_id: job.pdb_id,
+              chain: job.chain,
+              receptor_variant: isWt ? "wt" : "mutant",
+            };
+            if (isWt) setDockResultWt(synth);
+            else setDockResult(synth);
+          }
+        } else if (job.status === "failed") {
+          setDockError(job.error_message || "Full Job failed (no message).");
+        }
+      } catch {
+        // Transient network errors — keep polling.
+      }
+    };
+    // Fire immediately so the user sees the pending → running flip
+    // without a 3 s delay, then settle into the 3 s cadence.
+    tick();
+    const t = window.setInterval(tick, 3000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [fullJobKey, fullJobStatus]);
 
   // Centralised tokens — change here, propagates everywhere
   const TOK = {
@@ -710,13 +803,38 @@ export default function StudioPage() {
 
           {/* KPI panel */}
           <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col flex-1 min-h-0">
-            <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
+            <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px] gap-2">
               <span className={TOK.label}>Telemetry</span>
-              <span className="font-mono text-slate-500">
-                {docking ? <span className="text-cyan-300 animate-pulse">▶ docking…</span>
-                  : dockResult ? `attempt ${dockResult.dock_attempts || 1}`
-                  : "ready"}
-              </span>
+              <div className="flex items-center gap-2 font-mono text-slate-500 min-w-0">
+                {/* (v0.47) Full Job progress takes priority when in
+                    flight so the user sees stage transitions without
+                    having to leave Studio. Falls through to Quick
+                    Dock states + idle. */}
+                {fullJobKey && fullJobStatus && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled" ? (
+                  <>
+                    <span className="text-emerald-300 animate-pulse truncate">⇢ {fullJobStageLabel(fullJobStage)}</span>
+                    <a href={`/jobs/${fullJobKey}`} target="_blank" rel="noreferrer"
+                       className="text-cyan-400 hover:text-cyan-300 underline-offset-2 hover:underline shrink-0"
+                       title="Open the persistent results page in a new tab — full progress UI, runner logs, build steps.">
+                      view ↗
+                    </a>
+                  </>
+                ) : fullJobKey && fullJobStatus === "completed" ? (
+                  <>
+                    <span className="text-emerald-400">✓ full job done</span>
+                    <a href={`/jobs/${fullJobKey}`} target="_blank" rel="noreferrer"
+                       className="text-cyan-400 hover:text-cyan-300 underline-offset-2 hover:underline">
+                      view ↗
+                    </a>
+                  </>
+                ) : docking ? (
+                  <span className="text-cyan-300 animate-pulse">▶ docking…</span>
+                ) : dockResult ? (
+                  <>attempt {dockResult.dock_attempts || 1}</>
+                ) : (
+                  "ready"
+                )}
+              </div>
             </div>
 
             {/* Scrollable middle — Score / Hits / Target / Mutations / Compound.
@@ -1318,7 +1436,7 @@ export default function StudioPage() {
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={runQuickDock}
-                  disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
+                  disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
                   className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
                     docking
                       ? "border-cyan-500/50 bg-cyan-950/40 text-cyan-300 cursor-wait animate-pulse"
@@ -1339,7 +1457,7 @@ export default function StudioPage() {
                 </button>
                 <button
                   onClick={runFullJob}
-                  disabled={docking || submittingFull || !ketcherReady || !currentSmiles || !selectedTarget}
+                  disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
                   className={`px-3 py-2.5 rounded border font-mono text-[11px] uppercase tracking-[0.15em] transition-all ${
                     submittingFull
                       ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
