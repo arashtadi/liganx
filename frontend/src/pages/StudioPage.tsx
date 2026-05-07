@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.34-2026-05-06-ai-variants-panel";
+const LIGANX_BUILD_TAG = "v0.35-2026-05-07-dock-history";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -34,6 +34,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
+import { appendDockHistory, listDockHistory, deleteDockHistoryEntry, clearDockHistory, type DockHistoryEntry } from "../lib/dockHistory";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -250,6 +251,10 @@ export default function StudioPage() {
   const [showProps, setShowProps] = useState(false);
   const [showAi, setShowAi] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  // (v0.35) Session dock history tab — separate from the Drafts tab
+  // because they answer different questions: drafts = "compounds I've
+  // sketched", history = "docks I've run".
+  const [showDockHist, setShowDockHist] = useState(false);
   const [showLoader, setShowLoader] = useState(false);
   // Dropdown open/closed state for target & mutation pickers. Closed
   // by default — current selection shows as a chip with a chevron;
@@ -477,6 +482,20 @@ export default function StudioPage() {
           if (kind === "mut") setDockResult(res);
           else if (wantMutant) setDockResultWt(res);
           else setDockResult(res);  // WT-only run uses the primary slot
+          // (v0.35) Log every successful run into the session dock
+          // history so the user can flick through results without
+          // re-docking. Mutant + WT both get their own row when both
+          // are run.
+          appendDockHistory({
+            smiles: currentSmiles,
+            compoundName: loadedCompound?.name,
+            target: selectedTarget,
+            mutation: kind === "mut" ? (selectedMutation || "") : "WT",
+            score: res.score ?? null,
+            hits: res.hits || [],
+            poseInPocket: res.pose_in_pocket,
+            kdLabel: res.score != null ? fmtScoreKd(res.score) : undefined,
+          });
         } else if (!firstError) {
           firstError = (s.reason as Error)?.message || "Dock failed.";
         }
@@ -1247,6 +1266,28 @@ export default function StudioPage() {
             }}
           />
         </CollapsibleTab>
+        <CollapsibleTab label="Dock History" open={showDockHist} onToggle={() => setShowDockHist(!showDockHist)}>
+          {/* (v0.35) Session dock history. Every successful Quick Dock
+              gets logged here on completion (mutant + WT each get a
+              row). Click a row to restore the SMILES + target +
+              mutation back into Studio. */}
+          <DockHistoryPanel
+            onRestore={(e) => {
+              loadIntoCanvas(e.smiles);
+              setSelectedTarget(e.target);
+              if (e.mutation && e.mutation !== "WT") {
+                setSelectedMutation(e.mutation);
+                setIncludeWt(false);
+              } else {
+                setSelectedMutation("");
+                setIncludeWt(true);
+              }
+              setLoadedCompound(e.compoundName ? { name: e.compoundName, smiles: e.smiles } : null);
+              setActiveDraft(null);
+              setShowDockHist(false);
+            }}
+          />
+        </CollapsibleTab>
         <CollapsibleTab label="Drafts" open={showHistory} onToggle={() => setShowHistory(!showHistory)}>
           {/* (v0.31) Drafts panel — shows every autosaved compound. Click
               a row to restore it (SMILES + target + mutation flow back
@@ -1290,6 +1331,113 @@ export default function StudioPage() {
  *  than reactive because the autosave loop already owns the source of
  *  truth — pulling on demand avoids a storage-event subscription.)
  */
+/** (v0.35) Session dock-history panel. Lists every Quick Dock that
+ *  ran in Studio this session (and across recent sessions, since the
+ *  log lives in localStorage). Click a row to restore that run's
+ *  SMILES + target + mutation back into Studio.
+ */
+function DockHistoryPanel({
+  onRestore,
+}: {
+  onRestore: (e: DockHistoryEntry) => void;
+}) {
+  const [entries, setEntries] = useState<DockHistoryEntry[]>(() => listDockHistory());
+  useEffect(() => {
+    setEntries(listDockHistory());
+    const t = window.setInterval(() => setEntries(listDockHistory()), 5000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  if (entries.length === 0) {
+    return (
+      <div className="p-3 text-[11px] font-mono text-slate-500">
+        <div className="mb-1">No docks run yet this session.</div>
+        <div className="text-slate-600 text-[10px]">
+          Every successful Quick Dock gets logged here. Click a row to restore the SMILES, target, and mutation back into Studio
+          so you can compare runs without re-docking.
+        </div>
+      </div>
+    );
+  }
+
+  const fmtAgo = (iso: string): string => {
+    const dt = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (dt < 60) return `${dt}s`;
+    if (dt < 3600) return `${Math.floor(dt / 60)}m`;
+    if (dt < 86400) return `${Math.floor(dt / 3600)}h`;
+    return `${Math.floor(dt / 86400)}d`;
+  };
+
+  return (
+    <div className="overflow-auto max-h-full">
+      <div className="px-3 py-2 border-b border-slate-800/70 flex items-center justify-between text-[10px] font-mono">
+        <span className="text-slate-500 uppercase tracking-[0.18em]">{entries.length} run{entries.length === 1 ? "" : "s"}</span>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(`Clear all ${entries.length} dock-history entries? This cannot be undone.`)) {
+              clearDockHistory();
+              setEntries([]);
+            }
+          }}
+          className="text-slate-600 hover:text-rose-400 text-[10px]"
+          title="Wipe the entire session dock history. Doesn't affect your /jobs archive."
+        >
+          clear all
+        </button>
+      </div>
+      <div className="divide-y divide-slate-800/60">
+        {entries.map((e) => (
+          <div key={e.id} className="px-3 py-2 flex items-center gap-3 text-[11px] font-mono hover:bg-slate-800/30">
+            <button
+              onClick={() => onRestore(e)}
+              className="flex-1 text-left flex items-center gap-3 min-w-0"
+              title="Restore this run into Studio"
+            >
+              <span className={`tabular-nums shrink-0 ${
+                e.score == null ? "text-slate-500"
+                : e.score <= -9 ? "text-emerald-300"
+                : e.score <= -7 ? "text-emerald-400"
+                : e.score <= -5 ? "text-cyan-300"
+                : "text-amber-300"
+              }`}>
+                {e.score != null ? `${e.score.toFixed(2)}` : "—.——"}
+              </span>
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0">
+                {e.target}{e.mutation && e.mutation !== "WT" ? ` · ${e.mutation}` : " · WT"}
+              </span>
+              {e.compoundName && (
+                <span className="text-cyan-300 truncate min-w-0 max-w-[16ch]">{e.compoundName}</span>
+              )}
+              <span className="text-[10px] text-slate-500 truncate min-w-0" title={e.smiles}>
+                {e.smiles.length > 36 ? e.smiles.slice(0, 36) + "…" : e.smiles}
+              </span>
+              {e.kdLabel && (
+                <span className="text-[10px] text-slate-500 shrink-0" title="Estimated Kd at 298K from ΔG.">~{e.kdLabel}</span>
+              )}
+              {e.poseInPocket === false && (
+                <span className="text-[10px] text-amber-400 shrink-0" title="Pose drifted off-pocket — score is real but pose isn't in the canonical site.">⚠ off</span>
+              )}
+              <span className="text-[10px] text-slate-600 ml-auto shrink-0">{fmtAgo(e.ranAt)} ago</span>
+            </button>
+            <button
+              onClick={(e2) => {
+                e2.stopPropagation();
+                deleteDockHistoryEntry(e.id);
+                setEntries(listDockHistory());
+              }}
+              className="text-slate-600 hover:text-rose-400 px-1 text-[12px] shrink-0"
+              title="Remove this entry from history"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** (v0.34) AI Variants panel — generates 3 AI-suggested compound
  *  modifications based on the most recent dock result, then displays
  *  them as cards with score/Δ/SA/contacts and a "use this variant"
