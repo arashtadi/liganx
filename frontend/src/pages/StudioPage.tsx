@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.40-2026-05-07-mutation-flip-and-done";
+const LIGANX_BUILD_TAG = "v0.41-2026-05-07-gpu-reject-and-variant-fork";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -30,6 +30,7 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
  * downstream impact.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -161,6 +162,7 @@ const MUTATION_OUTSIDE_POCKET_THRESHOLD_A = 12.0;
 
 export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const navigate = useNavigate();
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
   // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
@@ -1182,11 +1184,62 @@ export default function StudioPage() {
                 scrollable middle above shrinks/scrolls instead of pushing
                 this button outside the panel border. */}
             <div className="px-4 py-3 mt-auto border-t border-slate-800/70">
-              {dockError && (
-                <div className="mb-2 px-2 py-1.5 rounded bg-rose-950/40 border border-rose-900/60 text-[11px] text-rose-200 font-mono">
-                  ✗ {dockError}
-                </div>
-              )}
+              {dockError && (() => {
+                // (v0.41) Detect GPU-pipeline rejections. The backend
+                // returns errors mentioning "GPU docker", "too large",
+                // or "flexibility cap" when QuickVina2-GPU bails. We
+                // replace the ambiguous "Promote to Full Job" wording
+                // with our own copy and a real button that pre-fills
+                // /new via location.state.reseed — the same channel
+                // the legacy editor uses to hand off to the CPU path.
+                const isGpuReject = /too large|flexibility|gpu docker/i.test(dockError);
+                if (isGpuReject) {
+                  return (
+                    <div className="mb-2 px-3 py-2 rounded bg-rose-950/40 border border-rose-900/60 text-[11px] font-mono text-rose-200 space-y-1.5">
+                      <div className="flex items-start gap-2">
+                        <span className="text-rose-400">✗</span>
+                        <span>
+                          <strong>Compound exceeds the GPU pipeline's complexity cap</strong>{" "}
+                          (≈MW &lt; 500, ≤32 rotatable bonds). The CPU pipeline at <span className="text-cyan-300">/new</span> has no such cap and handles arbitrary scaffolds.
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigate("/new", {
+                              state: {
+                                reseed: {
+                                  catalog_target_id: selectedTarget || undefined,
+                                  mutations: selectedMutation ? [selectedMutation] : [],
+                                  compounds: [{
+                                    name: loadedCompound?.name || activeDraft?.name || "Studio compound",
+                                    smiles: currentSmiles,
+                                  }],
+                                  include_wt: includeWt,
+                                },
+                              },
+                            });
+                          }}
+                          className="px-2 py-1 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 text-[10px] uppercase tracking-wider"
+                          title="Open NewJobPage with this SMILES + target + mutation pre-filled. CPU path takes minutes (vs ~30s on GPU) but has no scaffold limits."
+                        >
+                          ⇢ run as full job (cpu)
+                        </button>
+                        <span className="text-[10px] text-rose-300/70 italic">
+                          or trim a side chain and try Quick Dock again
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
+                // Generic dock error — original rendering.
+                return (
+                  <div className="mb-2 px-2 py-1.5 rounded bg-rose-950/40 border border-rose-900/60 text-[11px] text-rose-200 font-mono">
+                    ✗ {dockError}
+                  </div>
+                );
+              })()}
               {dockResult?.mutation_caveat && (
                 <div className="mb-2 px-2 py-1.5 rounded bg-amber-950/40 border border-amber-900/60 text-[10px] text-amber-200 font-mono">
                   ⚠ {dockResult.mutation_caveat}
@@ -1291,9 +1344,23 @@ export default function StudioPage() {
             targetPdb={targetMeta?.pdb_id || dockResult?.pdb_id}
             mutation={selectedMutation || undefined}
             onUseVariant={(variant) => {
+              // (v0.41) Treat AI variants as a deliberate fork of
+              // whatever's currently loaded. If the parent had a
+              // name (loadedCompound), we KEEP it set so the
+              // "Modified from <name>" pill appears the moment the
+              // new SMILES lands — user gets the explicit Save
+              // changes / Save as new prompt for the variant.
+              // If the parent was unnamed, mark loadedCompound from
+              // the active draft so the user still gets the pill
+              // and the autosave creates a new fork-draft instead
+              // of mutating the parent draft.
+              const parentName = loadedCompound?.name || activeDraft?.name;
+              const parentSmiles = loadedCompound?.smiles || activeDraft?.smiles || currentSmiles;
+              if (parentName && parentSmiles) {
+                setLoadedCompound({ name: parentName, smiles: parentSmiles });
+              }
+              setActiveDraft(null);  // start a fresh autosave id for the variant
               loadIntoCanvas(variant.new_smiles);
-              setLoadedCompound(null);  // forked into a new draft
-              setActiveDraft(null);     // start fresh autosave id
               setShowAi(false);
             }}
           />
