@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.65-2026-05-07-compound-checkboxes";
+const LIGANX_BUILD_TAG = "v0.66-2026-05-07-pubchem-checkboxes";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1721,6 +1721,7 @@ export default function StudioPage() {
               stagedCount={compounds.length}
               maxStaged={MAX_COMPOUNDS}
               stagedSmiles={compounds.map((c) => c.smiles)}
+              stagedNames={compounds.map((c) => c.name || "")}
               onPick={(smiles, name) => {
                 // (v0.65) Toggle: clicking adds if not staged, removes
                 // if already staged. The checkbox UI in CompoundLoader
@@ -2733,22 +2734,23 @@ function SaScorePill({ sa }: { sa: { score: number; label: string } | null }) {
  *  panel. The 3D viewer picks up the change automatically via the
  *  SMILES polling tick. */
 function CompoundLoader({
-  targetMeta, myCompounds, onPick, onClose, stagedCount, maxStaged, stagedSmiles,
+  targetMeta, myCompounds, onPick, onClose, stagedCount, maxStaged, stagedSmiles, stagedNames,
 }: {
   targetMeta: any;
   myCompounds: any[];
-  // (v0.65) onPick is now a TOGGLE: clicking an unstaged compound
-  // adds it to the suite; clicking a staged one removes it. The
-  // parent's handler does the toggle logic and the modal stays open
-  // so the user can build their suite incrementally. The `stagedSmiles`
-  // prop drives the checkmark UI per row — every compound row shows
-  // a checkbox that's filled when its SMILES is in the parent's
-  // staged list, so the user always sees their selection state.
+  // (v0.65) onPick is a TOGGLE: clicking an unstaged compound adds
+  // it; clicking a staged one removes it. Staged-state UI is driven
+  // by two arrays: stagedSmiles (canonical match for Reference +
+  // My Library rows) and stagedNames (case-insensitive match for
+  // PubChem rows where the SMILES isn't known until /lookup
+  // resolves). v0.66 added stagedNames so PubChem checkboxes light
+  // up the moment a name has been added to the suite.
   onPick: (smiles: string, name?: string) => void;
   onClose: () => void;
   stagedCount: number;
   maxStaged: number;
   stagedSmiles: string[];
+  stagedNames: string[];
 }) {
   const [paste, setPaste] = useState("");
   const [search, setSearch] = useState("");
@@ -2805,6 +2807,15 @@ function CompoundLoader({
   }, [search]);
 
   async function loadFromPubChem(name: string) {
+    // (v0.66) If this PubChem name is already staged, just call
+    // onPick with whatever SMILES the parent has under that name —
+    // the toggle path will remove it. Saves a redundant /lookup.
+    const alreadyStagedIdx = stagedNames.findIndex((n) => n.toLowerCase() === name.toLowerCase());
+    if (alreadyStagedIdx >= 0) {
+      const stagedSmiles_ = stagedSmiles[alreadyStagedIdx];
+      if (stagedSmiles_) onPick(stagedSmiles_, name);
+      return;
+    }
     setResolvingName(name);
     setPubchemErr(null);
     try {
@@ -2876,10 +2887,13 @@ function CompoundLoader({
           </div>
           <div className="flex flex-wrap gap-1.5">
             {pubchemSuggestions.map((name) => {
-              // (v0.65) PubChem rows match by name since SMILES isn't
-              // known client-side until resolve. Approximate but
-              // covers the common case of 'I just added this.'
-              const checked = stagedSmiles.length > 0 && /* parent passes smiles only */ false;  // placeholder; toggling happens via onPick.
+              // (v0.66) PubChem rows match by NAME since SMILES isn't
+              // known client-side until /lookup resolves. The parent
+              // stores compound.name on every staged entry that came
+              // through onPick(smiles, name), so a case-insensitive
+              // name lookup gives us the right answer for PubChem
+              // names that have been added to the suite.
+              const checked = stagedNames.some((n) => n.toLowerCase() === name.toLowerCase());
               const atCap = !checked && stagedCount >= maxStaged;
               return (
                 <button
@@ -2889,13 +2903,17 @@ function CompoundLoader({
                   className={`px-2 py-1 font-mono text-[11px] rounded border transition-colors flex items-center gap-1.5 ${
                     resolvingName === name
                       ? "border-cyan-500/60 bg-cyan-900/40 text-cyan-200 animate-pulse"
+                      : checked
+                      ? "border-emerald-500/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40"
                       : atCap
                       ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
                       : "border-cyan-700/40 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 disabled:opacity-50 disabled:cursor-wait"
                   }`}
-                  title={`Resolve "${name}" via PubChem and toggle in the suite`}
+                  title={checked ? `"${name}" is staged — click to remove` : atCap ? `Max ${maxStaged} compounds reached` : `Resolve "${name}" via PubChem and add to suite`}
                 >
-                  <span className="w-3 h-3 rounded-sm border border-slate-600 inline-flex items-center justify-center text-[8px] shrink-0">
+                  <span className={`w-3 h-3 rounded-sm border inline-flex items-center justify-center text-[8px] shrink-0 ${
+                    checked ? "border-emerald-400 bg-emerald-400 text-slate-900 font-bold" : "border-slate-600"
+                  }`}>
                     {checked ? "✓" : ""}
                   </span>
                   {resolvingName === name ? `▮ ${name}` : name}
