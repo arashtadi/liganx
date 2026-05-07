@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.29-2026-05-06-live-dock-toggle";
+const LIGANX_BUILD_TAG = "v0.30-2026-05-06-autosave-drafts";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -33,6 +33,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
+import { upsertDraft, type StudioDraft } from "../lib/drafts";
 
 const KETCHER_SRC = "/ketcher/index.html";
 
@@ -101,6 +102,17 @@ function fmtClock(d: Date): string {
   return d.toISOString().slice(11, 19) + " UTC";
 }
 
+/** Relative-time helper for the autosave indicator. Driven by the
+ *  existing 1Hz clock tick (which already re-renders the header), so
+ *  the label updates roughly every second without a separate timer. */
+function fmtSavedAgo(nowMs: number, savedMs: number): string {
+  const dt = Math.max(0, Math.floor((nowMs - savedMs) / 1000));
+  if (dt < 5) return "just now";
+  if (dt < 60) return `${dt}s ago`;
+  if (dt < 3600) return `${Math.floor(dt / 60)}m ago`;
+  return `${Math.floor(dt / 3600)}h ago`;
+}
+
 /** Parse the residue number out of a mutation tag like "T790M" or
  *  "L858R" or "G12C". Returns null for malformed inputs. */
 function parseMutationResidue(tag: string): number | null {
@@ -150,6 +162,13 @@ export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
+  // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
+  // recently upserted draft so subsequent edits update the SAME record
+  // (not a fresh draft per keystroke). lastSavedAt drives the tiny
+  // "saved · 3s ago" pill in the status bar so the user has visible
+  // confirmation that their work is on disk.
+  const [activeDraft, setActiveDraft] = useState<StudioDraft | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
   // No default target — user must explicitly pick. The earlier
   // "egfr" default was presumptuous.
@@ -185,6 +204,39 @@ export default function StudioPage() {
 
   const [now, setNow] = useState(new Date());
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
+
+  // (v0.30) Silent autosave loop — debounced 600 ms after the user
+  // stops editing. The contract: every meaningful state the user
+  // touched is on disk. No popup, no friction. Naming is a separate
+  // act handled by an explicit Promote button (v0.31+).
+  //
+  // We watch SMILES + target + mutation because those three together
+  // define "the exploration". Empty SMILES skips — there's nothing
+  // worth persisting until the user has actually drawn something.
+  useEffect(() => {
+    if (!currentSmiles) return;
+    const t = window.setTimeout(() => {
+      const draft = upsertDraft(
+        {
+          smiles: currentSmiles,
+          target: selectedTarget || undefined,
+          mutation: selectedMutation || undefined,
+        },
+        activeDraft?.id,
+      );
+      // Only update React state when the id changed (new draft) so we
+      // don't trigger a re-render on every keystroke. lastSavedAt does
+      // need to update each save though — that's how the indicator
+      // ticks.
+      if (!activeDraft || activeDraft.id !== draft.id) setActiveDraft(draft);
+      setLastSavedAt(Date.now());
+    }, 600);
+    return () => window.clearTimeout(t);
+    // activeDraft is read but not in deps — including it would loop
+    // (we set it inside the effect). The id stays stable across edits
+    // so reading the latest via closure is correct here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSmiles, selectedTarget, selectedMutation]);
 
   const [showProps, setShowProps] = useState(false);
   const [showAi, setShowAi] = useState(false);
@@ -465,6 +517,18 @@ export default function StudioPage() {
           <div className="flex items-center gap-2">{statusDot(ketcherReady)} <span className={TOK.label}>Editor</span></div>
           <div className="flex items-center gap-2">{statusDot(healthOk)} <span className={TOK.label}>Pod</span></div>
           <div className="ml-auto flex items-center gap-4">
+            {/* (v0.30) Autosave indicator. Subtle on purpose — green
+                check + relative time — so it's reassuring without being
+                a UI element the user has to think about. Hidden until
+                the first save lands. */}
+            {lastSavedAt && (
+              <span
+                className="font-mono text-[10px] text-emerald-500/80"
+                title={activeDraft?.name ? `Saved as draft: ${activeDraft.name}` : "Auto-saved as a draft"}
+              >
+                ✓ saved {fmtSavedAgo(now.getTime(), lastSavedAt)}
+              </span>
+            )}
             <span className={TOK.label}>SMILES</span>
             <span className="font-mono text-[10px] text-slate-400 max-w-[40ch] truncate" title={currentSmiles}>
               {currentSmiles || <span className="italic text-slate-600">empty</span>}
@@ -1618,7 +1682,12 @@ function ProductionViewer3D({
   useEffect(() => {
     if (!smiles) return;
     if (hasDock && !smilesEdited && viewMode !== "live") return;  // docked pose is still current
-    if (viewMode === "live" && conformerSdf) return;  // already cached
+    // (v0.30) Only short-circuit live-mode caching if the SMILES is
+    // unchanged since the cached conformer was produced. After an edit
+    // we MUST re-fetch — otherwise the live preview stays glued to the
+    // pre-edit geometry. The smilesEdited flag means "the SMILES has
+    // diverged from dockedSmilesRef", so when it's true we always fetch.
+    if (viewMode === "live" && !smilesEdited && conformerSdf) return;
     const t = window.setTimeout(async () => {
       setLoading(true);
       setConformerErr(null);
@@ -1834,9 +1903,19 @@ function ProductionViewer3D({
           } else {
             viewer.zoomTo();
           }
-        } else if (conformerSdf) {
-          viewer.addModel(conformerSdf, "sdf");
-          viewer.zoomTo();
+        } else {
+          // (v0.30) Live (no-receptor) branch. Render the FRESHEST
+          // conformer we have for the current SMILES — that's
+          // editedConformerSdf when the user has edited since the dock,
+          // otherwise plain conformerSdf. Without this preference, live
+          // mode after a 2D edit would re-render the pre-edit geometry
+          // because the fetch effect routes edited SMILES into
+          // editedConformerSdf rather than overwriting conformerSdf.
+          const liveSdf = (smilesEdited && editedConformerSdf) ? editedConformerSdf : conformerSdf;
+          if (liveSdf) {
+            viewer.addModel(liveSdf, "sdf");
+            viewer.zoomTo();
+          }
         }
         applyStyles(viewer);
       } catch (e) {
