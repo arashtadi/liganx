@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.51-2026-05-07-variant-camera-stable";
+const LIGANX_BUILD_TAG = "v0.52-2026-05-07-variant-color-and-stable-cam";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2997,7 +2997,13 @@ function ProductionViewer3D({
       if (showDockedScene && receptorPdb) {
         viewer.setStyle({ model: 0 }, {});
         try { viewer.removeAllSurfaces(); } catch { /* */ }
-        const recColor = "#94a3b8";
+        // (v0.52) Color-code the receptor so the user can tell at a
+        // glance whether they're looking at WT or the mutant.
+        // - WT  → slate (#94a3b8) — neutral, the baseline.
+        // - Mut → amber (#f59e0b) — warm, matches the score panel's
+        //         amber-accented mutant column. In "both" mode this
+        //         also distinguishes the two receptors when stacked.
+        const recColor = variant === "WT" ? "#94a3b8" : "#f59e0b";
         if (backboneStyle === "cartoon") {
           viewer.setStyle({ model: 0 }, { cartoon: { color: recColor } });
         } else if (backboneStyle === "line") {
@@ -3062,7 +3068,11 @@ function ProductionViewer3D({
       if (viewVariant === "both" && receptorPdbAlt) {
         const altRecIdx = 2;
         const altPoseIdx = altPosePdbqt ? 3 : -1;
-        const altRecColor = "#64748b";  // slate-500 — distinct from primary's #94a3b8
+        // (v0.52) Alt receptor gets the OPPOSITE color from the primary:
+        // primary WT → alt is mutant amber; primary mutant → alt is WT
+        // slate. Both sit at 0.45 opacity so the primary still reads
+        // as the focus.
+        const altRecColor = variant === "WT" ? "#f59e0b" : "#94a3b8";
         viewer.setStyle({ model: altRecIdx }, {});
         viewer.setStyle({ model: altRecIdx }, { cartoon: { color: altRecColor, opacity: 0.45 } });
         if (altPoseIdx >= 0) {
@@ -3093,6 +3103,12 @@ function ProductionViewer3D({
   // rotation/zoom state and continues to render. This is what was causing
   // the 'molecule disappears and comes back' artefact during drag.
   const lastBuildKeyRef = useRef<string>("");
+  // (v0.52) Snapshot refs used to detect "variant-only" rebuilds —
+  // i.e. flips between wt/both/mut where every other input is
+  // unchanged. When that's the case the build effect captures and
+  // restores the user's camera so the scene doesn't jump.
+  const lastInputSnapshotRef = useRef<string>("");
+  const lastViewVariantRef = useRef<typeof viewVariant | null>(null);
   useEffect(() => {
     if (!containerRef.current) return;
     const buildKey = [
@@ -3114,19 +3130,32 @@ function ProductionViewer3D({
       // Same data, viewer already exists — leave it alone.
       return;
     }
-    // (v0.51) Detect "variant-only" rebuilds — i.e. user clicked
-    // wt/both/mut but the underlying receptor/pose for THIS render
-    // is the same as before. In that case we preserve the camera so
-    // the scene doesn't jump on every toggle. We compare the build-
-    // key WITHOUT the variant slot; if the rest is identical we know
-    // the rebuild is purely a variant flip.
-    const prevKey = lastBuildKeyRef.current;
-    const stripVariant = (k: string) => k.split("|").filter((p) => !p.startsWith("v") && !p.startsWith("a") && !p.startsWith("q")).join("|");
-    const variantOnlyChange = !!prevKey && stripVariant(prevKey) === stripVariant(buildKey);
+    // (v0.52) Robust "variant flip" detection. v0.51 stripped only the
+    // variant slot from the buildKey, but flipping variant ALSO swaps
+    // the primary receptor PDB (because `variant` drives the fetch),
+    // so the receptor signature `r...` differed and the heuristic
+    // missed the case. Now: track viewVariant + the IDs of the
+    // upstream inputs (dock result fingerprints, smiles, showDockedScene)
+    // in a snapshot ref. If everything except viewVariant matches the
+    // previous render, treat it as a pure variant flip and preserve
+    // the camera. WT and mutant receptors are essentially the same
+    // protein with one residue different, so reusing the camera is
+    // visually correct.
+    const inputSnapshot = [
+      showDockedScene ? "D" : "_",
+      smiles,
+      dockResult?.pose_pdbqt_b64 || "_",
+      dockResultWt?.pose_pdbqt_b64 || "_",
+      conformerSdf ? `c${conformerSdf.length}` : "_",
+      smilesEdited && editedConformerSdf ? `e${editedConformerSdf.length}` : "_",
+    ].join("|");
+    const variantOnlyChange = lastInputSnapshotRef.current === inputSnapshot && lastViewVariantRef.current !== null && lastViewVariantRef.current !== viewVariant;
     let savedView: any = null;
     if (variantOnlyChange && viewerRef.current && typeof viewerRef.current.getView === "function") {
       try { savedView = viewerRef.current.getView(); } catch { /* no-op */ }
     }
+    lastInputSnapshotRef.current = inputSnapshot;
+    lastViewVariantRef.current = viewVariant;
     lastBuildKeyRef.current = buildKey;
     let cancelled = false;
     (async () => {
