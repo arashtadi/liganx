@@ -68,7 +68,7 @@ export default function App() {
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Main>
-        <Footer />
+        <FooterUnlessStudio />
         {/* First-run tour mascot. Self-gates on route + localStorage —
             renders nothing for users who've seen it or are off the
             tour-eligible pages. Mounted once at app root so the tour
@@ -258,7 +258,7 @@ function Header() {
     }`;
   const { user, signOut } = useAuth();
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
+    <header className="sticky top-0 z-50 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-6 py-3">
         <Link to="/" className="flex items-center gap-2.5 group">
           <LogoMark size={28} className="transition-transform group-hover:rotate-[-4deg]" />
@@ -417,6 +417,21 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
       )}
     </div>
   );
+}
+
+/**
+ * Wrapper that suppresses the Footer on Studio (and any other route that
+ * declares itself a "cockpit" by entering the fullBleedRoutes list and
+ * using the entire viewport). Adding the footer underneath a min-h-screen
+ * Studio caused the body to be slightly taller than 100vh, which was
+ * enough to make the page itself scrollable — and that scroll was hiding
+ * the sticky header behind Studio's content (the "menu bar goes under"
+ * bug). Studio's own bottom strip already provides a logical page bottom.
+ */
+function FooterUnlessStudio() {
+  const { pathname } = useLocation();
+  if (pathname === "/studio") return null;
+  return <Footer />;
 }
 
 function Footer() {

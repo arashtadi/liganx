@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.28-2026-05-06-dark-only";
+const LIGANX_BUILD_TAG = "v0.28.1-2026-05-06-scroll-fixes";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -494,14 +494,11 @@ export default function StudioPage() {
               <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
             </div>
           </div>
-          {showLoader && (
-            <CompoundLoader
-              targetMeta={targetMeta}
-              myCompounds={myCompounds || []}
-              onPick={loadIntoCanvas}
-              onClose={() => setShowLoader(false)}
-            />
-          )}
+          {/* (v0.28.1) CompoundLoader was rendered here — INSIDE the 2D
+              editor section — which made the popover float on top of the
+              Ketcher canvas. Moved it down to the StudioPage root so it
+              renders as a global centered modal regardless of which panel
+              the user came from. */}
           <div className="flex-1 relative bg-white">
             {!ketcherReady && (
               <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs font-mono z-10 bg-[#070b15]">
@@ -541,6 +538,15 @@ export default function StudioPage() {
                   : "ready"}
               </span>
             </div>
+
+            {/* Scrollable middle — Score / Hits / Target / Mutations / Compound.
+                Without this wrapper the right rail's content would push the
+                Run Dock button right out the bottom of the panel border on
+                shorter viewports. flex-1 + min-h-0 makes the wrapper take all
+                remaining height between the header above and the action
+                area below; overflow-y-auto lets it scroll inside the panel
+                instead of overflowing it. (v0.28.1) */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
 
             {/* Score + Pose row — biggest type on the page */}
             <div className="px-4 pt-3 pb-2 grid grid-cols-2 gap-2 border-b border-slate-800/70">
@@ -969,8 +975,13 @@ export default function StudioPage() {
               </div>
             </div>
 
-            {/* Action area */}
-            <div className="px-4 py-3 mt-auto">
+            </div>
+            {/* /scrollable middle — closes the wrapper added in v0.28.1 */}
+
+            {/* Action area — pinned to the bottom of the KPI panel; the
+                scrollable middle above shrinks/scrolls instead of pushing
+                this button outside the panel border. */}
+            <div className="px-4 py-3 mt-auto border-t border-slate-800/70">
               {dockError && (
                 <div className="mb-2 px-2 py-1.5 rounded bg-rose-950/40 border border-rose-900/60 text-[11px] text-rose-200 font-mono">
                   ✗ {dockError}
@@ -998,6 +1009,29 @@ export default function StudioPage() {
           </div>
         </section>
       </main>
+
+      {/* ═══ COMPOUND LOADER (centered modal, v0.28.1) ═══
+          Rendered at the page root with a backdrop so it doesn't appear
+          to be glued to the 2D editor or the right rail. Click the
+          backdrop or press Esc (handled inside CompoundLoader) to close. */}
+      {showLoader && (
+        <div
+          className="fixed inset-0 z-40 flex items-start justify-center pt-20 px-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowLoader(false)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[80vh] bg-[#0d1422] border border-slate-800/70 rounded shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CompoundLoader
+              targetMeta={targetMeta}
+              myCompounds={myCompounds || []}
+              onPick={loadIntoCanvas}
+              onClose={() => setShowLoader(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ═══ COLLAPSIBLE BOTTOM STRIP ═══ */}
       <div className="fixed bottom-0 left-0 right-0 bg-[#0d1422] border-t border-slate-800/70 flex text-[10px] z-20">
@@ -1190,7 +1224,11 @@ function CompoundLoader({
   }
 
   return (
-    <div className="absolute top-[34px] left-0 right-0 z-20 bg-[#0d1422] border-b border-slate-800/70 max-h-[70%] overflow-auto">
+    // (v0.28.1) Outer positioning removed — this component now renders
+    // inside a centered modal panel rendered at the StudioPage root, so
+    // it just needs to fill its container. Caller controls the backdrop
+    // and the close-on-click-outside behaviour.
+    <div className="bg-[#0d1422] flex-1 overflow-auto">
       {/* Search bar — filters both reference + library lists */}
       <div className="px-3 py-2 border-b border-slate-800/70 flex items-center gap-2">
         <span className="text-cyan-400 text-xs">🔍</span>
