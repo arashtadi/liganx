@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.85-2026-05-07-uniprot-enrichment-status";
+const LIGANX_BUILD_TAG = "v0.86-2026-05-08-uniprot-fields-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -996,7 +996,14 @@ export default function StudioPage() {
     // significance annotation in the description so the user gets
     // a focused chip set (P53 has hundreds of raw variants; only the
     // pathogenic ones are useful as docking inputs).
-    const upRes = await fetch(`https://rest.uniprot.org/uniprotkb/${uniprotAcc}.json?fields=features`);
+    // (v0.86) NO ?fields= param. UniProt's API returns 400 for
+    // ?fields=features (the param naming uses prefixed forms like
+    // ft_variant, not bare 'features'), and getting the right name
+    // wrong silently kills enrichment for every PDB. The bare URL
+    // returns the full entry (~50 KB max for typical proteins),
+    // which is small enough not to matter; we filter the variant
+    // features client-side anyway.
+    const upRes = await fetch(`https://rest.uniprot.org/uniprotkb/${uniprotAcc}.json`);
     if (!upRes.ok) {
       setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "failed" }));
       return;
