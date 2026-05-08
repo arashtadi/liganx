@@ -26,9 +26,10 @@ from typing import Any
 
 import httpx
 
-from ..config import settings
+from ..config import get_settings
 
 log = logging.getLogger(__name__)
+settings = get_settings()
 
 GRAPHQL_URL = "https://api.runpod.io/graphql"
 

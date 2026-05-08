@@ -380,10 +380,11 @@ class PodStatusOut(BaseModel):
 async def admin_pod_status(_admin: Annotated[CurrentUser, Depends(admin_user)]) -> PodStatusOut:
     """Live status of the controlled RunPod GPU pod plus the watchdog's
     last-activity timestamp. Drives the Pod Control card in the admin UI."""
-    from ..config import settings as _settings
+    from ..config import get_settings
     from ..services import runpod_client
     from ..services.pod_activity import seconds_since_last_activity
 
+    _settings = get_settings()
     threshold = _settings.runpod_idle_minutes * 60
     if not runpod_client.is_configured():
         return PodStatusOut(

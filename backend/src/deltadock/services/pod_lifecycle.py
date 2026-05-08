@@ -30,9 +30,11 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from ..config import settings
+from ..config import get_settings
 from . import runpod_client
 from .pod_activity import bump_pod_activity
+
+settings = get_settings()
 
 log = logging.getLogger(__name__)
 
