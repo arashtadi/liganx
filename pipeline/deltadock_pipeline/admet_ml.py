@@ -31,12 +31,116 @@ References for the rule sets:
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 RiskLabel = str  # "low" | "medium" | "high"
+
+# ---------------------------------------------------------------
+# admet-ai pod path (added 2026-05-08)
+#
+# When POD_DOCK_URL is set AND POD_ADMET_ENABLED is truthy, we call
+# the pod's /admet/predict endpoint first. The pod runs admet-ai
+# (Chemprop ensemble) on CPU and returns continuous probabilities
+# for ~100 ADMET endpoints. We map the five we care about onto the
+# same {label, evidence} shape the rule-based path returns so the
+# frontend doesn't need to know which path produced the result.
+#
+# We DO NOT wake the pod for ADMET. If the call times out (3 s) or
+# errors, we fall through to the rule-based path silently — the
+# user always gets *some* answer, just possibly the cheaper one.
+# This avoids the brutal UX where opening Studio waits 3-5 min
+# for a pod cold start before showing chips.
+# ---------------------------------------------------------------
+def _pod_url() -> str | None:
+    """Return the pod base URL if both POD_DOCK_URL and admet are
+    enabled; None otherwise. POD_ADMET_ENABLED defaults true so once
+    POD_DOCK_URL is set, ADMET upgrades automatically."""
+    base = (os.environ.get("POD_DOCK_URL") or "").rstrip("/")
+    if not base:
+        return None
+    enabled = (os.environ.get("POD_ADMET_ENABLED", "true") or "").strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return None
+    return base
+
+
+# admet-ai → {label} cutoffs.
+#
+# These follow each endpoint's training dataset's standard binary
+# cutoff (model was trained against), with a 'medium' band added
+# for borderline cases. Sources:
+#   - hERG / DILI: 0.5 = positive (Karim 2021, Liu 2015)
+#   - CYP_Veith inhibition: 0.5 = inhibitor (Veith 2009)
+#   - BBB_Martins: 0.5 = penetrant (Martins 2012)
+#
+# 'high' for hERG/DILI/CYP means *risk*; 'high' for BBB means
+# 'will cross' (interpretation flips depending on whether the user
+# wants CNS penetration or to avoid it — UI handles framing).
+def _admet_label(prob: float, low_max: float = 0.3, med_max: float = 0.6) -> str:
+    if prob is None:
+        return "low"
+    if prob <= low_max:
+        return "low"
+    if prob <= med_max:
+        return "medium"
+    return "high"
+
+
+def _admet_to_extended(props: dict[str, Any]) -> dict[str, Any]:
+    """Map the admet-ai property dict (~100 keys) onto our 5-channel
+    {bbb, herg, cyp3a4, cyp2d6, dili} schema. Each evidence string
+    quotes the raw probability so the user can audit how close to
+    the cutoff a borderline call was."""
+    def field(name: str, prob_key: str) -> dict[str, str]:
+        prob = props.get(prob_key)
+        try:
+            p = float(prob) if prob is not None else None
+        except (TypeError, ValueError):
+            p = None
+        if p is None:
+            return {"label": "low", "evidence": f"{name} prob unavailable"}
+        return {"label": _admet_label(p), "evidence": f"{name} probability {p:.2f}"}
+
+    return {
+        "source": "ml",
+        "bbb": field("BBB penetration", "BBB_Martins"),
+        "herg": field("hERG block", "hERG"),
+        "cyp3a4": field("CYP3A4 inhibition", "CYP3A4_Veith"),
+        "cyp2d6": field("CYP2D6 inhibition", "CYP2D6_Veith"),
+        "dili": field("DILI", "DILI"),
+    }
+
+
+def _predict_admet_extended_pod(smiles: str, pod_url: str, timeout: float = 3.0) -> dict[str, Any] | None:
+    """POST /admet/predict on the pod. Returns the mapped extended dict,
+    or None on any failure (timeout, network, 5xx, malformed payload).
+    The caller should treat None as 'fall back to rule-based'."""
+    try:
+        import httpx  # type: ignore
+    except ImportError:
+        return None
+    url = pod_url + "/admet/predict"
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.post(url, json={"smiles": smiles})
+            if r.status_code != 200:
+                log.info("admet pod returned %d for %s", r.status_code, smiles[:40])
+                return None
+            data = r.json()
+    except Exception as e:  # noqa: BLE001
+        # 3-second timeout means "the pod is asleep or busy" — quietly
+        # fall back to rules; this is expected behaviour when the
+        # watchdog has stopped the pod for cost control.
+        log.info("admet pod call failed (%s) — falling back to rules", type(e).__name__)
+        return None
+    props = data.get("properties")
+    if not isinstance(props, dict):
+        return None
+    return _admet_to_extended(props)
 
 
 def _label_from_score(score: float, low_max: float, med_max: float) -> RiskLabel:
@@ -91,6 +195,19 @@ _DILI_MOTIFS = _compile_smarts([
 def predict_admet_extended(smiles: str) -> dict[str, Any] | None:
     """Compute extended ADMET risks. Returns None on parse failure.
 
+    Two-tier prediction path:
+      1. If POD_DOCK_URL is set, try the pod's /admet/predict endpoint
+         (admet-ai Chemprop ensemble, CPU inference, ~0.3-2 s/molecule
+         + free thereafter via SQLite cache on the pod). Returns
+         source="ml" on success.
+      2. Fall back to the rule-based heuristics below. Returns
+         source="rule-based". Always available, ~10 ms/molecule.
+
+    The pod call uses a tight 3 s timeout — long enough for a warm
+    pod, short enough that a sleeping pod degrades the user to rules
+    without stalling the response. We deliberately do NOT wake the
+    pod for ADMET; cost control wins over sharper predictions.
+
     Output dict keys (each value is `{label: "low"|"medium"|"high",
     evidence: <short string>}`):
       bbb              — BBB penetration likelihood
@@ -98,9 +215,23 @@ def predict_admet_extended(smiles: str) -> dict[str, Any] | None:
       cyp3a4           — CYP3A4 metabolic inhibition risk
       cyp2d6           — CYP2D6 metabolic inhibition risk
       dili             — Drug-induced liver injury risk
-    Plus a top-level "source": "rule-based" tag so the frontend can
-    distinguish from a future ML upgrade.
+    Plus a top-level "source": "ml" | "rule-based" tag.
     """
+    # --- Tier 1: pod admet-ai ---
+    pod = _pod_url()
+    if pod:
+        ml = _predict_admet_extended_pod(smiles, pod)
+        if ml is not None:
+            return ml
+
+    # --- Tier 2: rule-based fallback ---
+    return _predict_admet_extended_rules(smiles)
+
+
+def _predict_admet_extended_rules(smiles: str) -> dict[str, Any] | None:
+    """Rule-based ADMET (RDKit + SMARTS). Always available, instant,
+    pre-existing implementation kept verbatim for stability — only
+    wrapped by the new pod-first dispatch above."""
     try:
         from rdkit import Chem
         from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors
