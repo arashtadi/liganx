@@ -441,7 +441,22 @@ export default function JobPage() {
             // doesn't own the original job state and shouldn't be encouraged
             // to fork from a curated subset). Owners on the full view get
             // the iterate loop.
-            onEditCompound={inSubsetView ? undefined : (c) => setEditingCompound(c)}
+            // (v0.78) When the user arrived from Studio (?from=studio),
+            // skip the in-modal Ketcher detour and navigate straight to
+            // /studio with the compound preloaded as a reseed. Studio
+            // has its own full Ketcher canvas + WT/mutant 3D viewer +
+            // Run Dock — making the user edit in a modal pop-up first
+            // is exactly the "old window" friction the user reported.
+            // /history and direct-link visitors keep the modal flow
+            // (no Studio session to return to).
+            onEditCompound={inSubsetView ? undefined : (c) => {
+              const cameFromStudio = backSearchParamsForReseed.get("from") === "studio";
+              if (cameFromStudio) {
+                navigateToReseed(c.name ?? "", c.smiles);
+              } else {
+                setEditingCompound(c);
+              }
+            }}
           />
 
           {/* Deeper drill-down — interpretation paragraph, ProLIF contacts,

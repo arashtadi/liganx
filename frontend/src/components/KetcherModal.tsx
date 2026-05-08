@@ -1712,7 +1712,16 @@ function AiSidebar({ ketcherReady, getApi, targetPdb, mutations, compoundId, ini
       if (mutations) {
         reseed.mutations = mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
       }
-      navigate("/new", { state: { reseed } });
+      // (v0.78) Belt-and-suspenders /studio routing. JobPage's onPromote
+      // already routes correctly via its navigateToReseed, but if a future
+      // caller drops the onPromote prop and falls through to this legacy
+      // path, we still want Edit & re-dock from a Studio-origin URL to
+      // land back in Studio rather than the legacy /new form. Read the
+      // current ?from= directly from the URL since this component isn't
+      // guaranteed a useSearchParams hook context.
+      const cameFromStudio = typeof window !== "undefined"
+        && new URLSearchParams(window.location.search).get("from") === "studio";
+      navigate(cameFromStudio ? "/studio" : "/new", { state: { reseed } });
     } finally {
       setPromotePending(false);
     }
