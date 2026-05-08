@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.69-2026-05-07-save-as-new-and-discard-prompt";
+const LIGANX_BUILD_TAG = "v0.70-2026-05-07-save-as-new-name-and-library";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -181,7 +181,7 @@ export default function StudioPage() {
   // initial name suggestion + button label + post-save behavior.
   const [promoteDialog, setPromoteDialog] = useState<
     | { mode: "promote"; initialName: string }
-    | { mode: "fork"; initialName: string; originalName: string }
+    | { mode: "fork"; initialName: string; originalName: string; stageAfterIdx?: number }
     | null
   >(null);
   // (v0.33) Loaded named compound — set when the user picks something
@@ -1659,32 +1659,24 @@ export default function StudioPage() {
                         </button>
                         {/* (v0.69) SAVE AS NEW — fork the edit into a
                             brand-new staged entry, leaving the original
-                            compound intact in the suite. Capped at
+                            compound intact in the suite. (v0.70) Now
+                            opens the PromoteDialog so the user names
+                            the variant AND it saves to their library
+                            via api.saveMyCompound, then also stages it
+                            in the suite for this dock run. Capped at
                             MAX_COMPOUNDS; if full, button is disabled. */}
                         <button
                           type="button"
                           disabled={compounds.length >= MAX_COMPOUNDS}
                           onClick={() => {
                             if (compounds.length >= MAX_COMPOUNDS) return;
-                            const newId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
                             const baseName = c.name || `untitled #${i + 1}`;
-                            const variantName = `${baseName} · variant`;
-                            const newC: CompoundEntry = { id: newId, smiles: currentSmiles, name: variantName };
-                            // Insert the new entry right after the
-                            // active row so the user sees the fork
-                            // appear next to its parent.
-                            setCompounds((prev) => {
-                              const next = [...prev];
-                              next.splice(i + 1, 0, newC);
-                              return next;
+                            setPromoteDialog({
+                              mode: "fork",
+                              initialName: `${baseName} · variant`,
+                              originalName: baseName,
+                              stageAfterIdx: i,
                             });
-                            // Make the new entry active and lock the
-                            // canvas to it so further edits target the
-                            // fork, not the original.
-                            setActiveCompoundIdx(i + 1);
-                            setLoadedCompound({ name: variantName, smiles: currentSmiles });
-                            setPromoteToast(`✓ Forked → "${variantName}"`);
-                            window.setTimeout(() => setPromoteToast(null), 2500);
                           }}
                           className={`px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wider shrink-0 ${
                             compounds.length >= MAX_COMPOUNDS
@@ -1694,7 +1686,7 @@ export default function StudioPage() {
                           title={
                             compounds.length >= MAX_COMPOUNDS
                               ? `Suite is full (${MAX_COMPOUNDS}/${MAX_COMPOUNDS}). Remove a compound to fork.`
-                              : `Keep "${c.name || `compound #${i + 1}`}" untouched and add the edited SMILES as a new compound in the suite.`
+                              : `Name the new compound, save it to your library, and stage it next to "${c.name || `compound #${i + 1}`}" for this dock run.`
                           }
                         >
                           save as new
@@ -1928,7 +1920,29 @@ export default function StudioPage() {
               setPromoteToast(`✓ "${savedName}" saved to your library`);
             } else if (promoteDialog.mode === "fork") {
               setLoadedCompound({ name: savedName, smiles: currentSmiles });
-              setPromoteToast(`✓ "${savedName}" saved · "${promoteDialog.originalName}" preserved`);
+              // (v0.70) When SAVE AS NEW from a staged row drove this
+              // dialog, the user wants the new compound BOTH in their
+              // library AND staged for this run. PromoteDialog handled
+              // the library save; we handle the suite insert here so
+              // it lands right after the parent row and becomes active.
+              if (promoteDialog.stageAfterIdx !== undefined) {
+                const insertAt = promoteDialog.stageAfterIdx + 1;
+                const newId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+                const newC: CompoundEntry = { id: newId, smiles: currentSmiles, name: savedName };
+                setCompounds((prev) => {
+                  // Cap-aware insert — if user already filled the suite
+                  // between opening the dialog and submitting, refuse
+                  // gracefully rather than blowing past MAX_COMPOUNDS.
+                  if (prev.length >= MAX_COMPOUNDS) return prev;
+                  const next = [...prev];
+                  next.splice(insertAt, 0, newC);
+                  return next;
+                });
+                setActiveCompoundIdx(insertAt);
+                setPromoteToast(`✓ "${savedName}" saved to library + staged for this run`);
+              } else {
+                setPromoteToast(`✓ "${savedName}" saved · "${promoteDialog.originalName}" preserved`);
+              }
             }
             setPromoteDialog(null);
             window.setTimeout(() => setPromoteToast(null), 4000);
