@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.84-2026-05-07-removable-mutations-uniprot-autopopulate";
+const LIGANX_BUILD_TAG = "v0.85-2026-05-07-uniprot-enrichment-status";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -801,6 +801,13 @@ export default function StudioPage() {
   type PdbHit = { id: string; title: string; resolution: number | null; organism: string | null };
   const [pdbResults, setPdbResults] = useState<PdbHit[]>([]);
   const [pdbSearching, setPdbSearching] = useState(false);
+  // (v0.85) Per-target UniProt enrichment status. Lets the mutation
+  // dropdown show "fetching variants…" / "no clinical variants found"
+  // / a chip count, instead of leaving the user staring at "0 curated"
+  // with no feedback while the UniProt call is in flight or a request
+  // returned an empty/failed result.
+  type EnrichStatus = "pending" | "done-empty" | "done" | "failed";
+  const [enrichmentStatus, setEnrichmentStatus] = useState<Record<string, EnrichStatus>>({});
 
   const targetMeta = useMemo(
     () => mergedCatalog.find((t: any) => t.id === selectedTarget),
@@ -883,6 +890,21 @@ export default function StudioPage() {
     return () => { window.clearTimeout(timer); ctrl.abort(); };
   }, [targetQuery, mergedCatalog]);
 
+  // (v0.85) Auto-fire enrichment for any ad-hoc target that hasn't
+  // been enriched yet — this catches the session-restore case
+  // (target restored from sessionStorage with empty mutations and no
+  // status). Each lookup runs once per (target id, mutations.length=0)
+  // pair to avoid retry loops; manual retry happens via the dropdown
+  // status pill.
+  useEffect(() => {
+    for (const t of adHocTargets) {
+      if (t.mutations.length > 0) continue;
+      if (enrichmentStatus[t.id]) continue; // already pending/done/failed
+      enrichWithUniProtVariants(t.id, t.pdb_id).catch(() => { /* status handled inside */ });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adHocTargets]);
+
   // (v0.83) Pick an RCSB hit → register it as an ad-hoc target and
   // add it to the selected suite. Subsequent lookups treat it like
   // any catalog entry.
@@ -919,7 +941,17 @@ export default function StudioPage() {
   // after pickPdbResult so the user can immediately work with WT while
   // the chips populate. Mutations are merged into the already-registered
   // ad-hoc target via a setAdHocTargets update.
+  // (v0.85) Status is published into enrichmentStatus so the mutation
+  // dropdown can render an honest "fetching…" / "none found" / count.
   async function enrichWithUniProtVariants(targetId: string, pdbId: string): Promise<void> {
+    setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "pending" }));
+    try {
+      await enrichWithUniProtVariantsInner(targetId, pdbId);
+    } catch {
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "failed" }));
+    }
+  }
+  async function enrichWithUniProtVariantsInner(targetId: string, pdbId: string): Promise<void> {
     // Step 1: get UniProt accession for the first polymer entity via
     // RCSB's GraphQL endpoint. One round trip, no need to enumerate
     // entity ids beforehand.
@@ -942,7 +974,10 @@ export default function StudioPage() {
         variables: { id: pdbId },
       }),
     });
-    if (!gqlRes.ok) return;
+    if (!gqlRes.ok) {
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "failed" }));
+      return;
+    }
     const gqlData = await gqlRes.json();
     const entities: any[] = gqlData?.data?.entry?.polymer_entities ?? [];
     let uniprotAcc: string | null = null;
@@ -951,7 +986,10 @@ export default function StudioPage() {
       const hit = refs.find((x) => (x?.database_name || "").toUpperCase() === "UNIPROT");
       if (hit?.database_accession) { uniprotAcc = hit.database_accession; break; }
     }
-    if (!uniprotAcc) return;
+    if (!uniprotAcc) {
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "failed" }));
+      return;
+    }
 
     // Step 2: fetch UniProt entry, extract Natural variant features.
     // We filter to variants that have any disease/cancer/clinical
@@ -959,7 +997,10 @@ export default function StudioPage() {
     // a focused chip set (P53 has hundreds of raw variants; only the
     // pathogenic ones are useful as docking inputs).
     const upRes = await fetch(`https://rest.uniprot.org/uniprotkb/${uniprotAcc}.json?fields=features`);
-    if (!upRes.ok) return;
+    if (!upRes.ok) {
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "failed" }));
+      return;
+    }
     const upData = await upRes.json();
     const features: any[] = upData?.features ?? [];
     const variants = features.filter((f) => {
@@ -991,10 +1032,14 @@ export default function StudioPage() {
       }
       if (chips.length >= 30) break; // hard cap on chip count
     }
-    if (chips.length === 0) return;
+    if (chips.length === 0) {
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "done-empty" }));
+      return;
+    }
     setAdHocTargets((prev) =>
       prev.map((t) => (t.id === targetId ? { ...t, mutations: chips } : t)),
     );
+    setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "done" }));
   }
 
   // Compute mutation-residue-to-pocket-center distance after a dock
@@ -2331,7 +2376,24 @@ export default function StudioPage() {
                       m.code.toLowerCase().includes(mutationQuery.toLowerCase()) ||
                       (m.label || "").toLowerCase().includes(mutationQuery.toLowerCase())
                     ).length;
-                    return mutationQuery ? `${filt}/${all}` : `${all} curated`;
+                    if (mutationQuery) return `${filt}/${all}`;
+                    // (v0.85) For ad-hoc PDB picks the curated list is
+                    // populated asynchronously from UniProt — surface
+                    // the status so users know whether to wait, retry,
+                    // or just type a custom code.
+                    const tMetaAny = targetMeta as any;
+                    const isAdHoc = !!tMetaAny?.isAdHoc;
+                    const status = isAdHoc ? enrichmentStatus[tMetaAny.id] : null;
+                    if (status === "pending") {
+                      return <span className="text-cyan-400/70 italic animate-pulse">⇢ fetching from UniProt…</span>;
+                    }
+                    if (status === "failed") {
+                      return <span className="text-amber-400/70">no UniProt match · type a code</span>;
+                    }
+                    if (status === "done-empty") {
+                      return <span className="text-slate-500">no clinical variants · type a code</span>;
+                    }
+                    return all > 0 ? `${all} ${isAdHoc ? "from UniProt" : "curated"}` : "0 — type a code below";
                   })()}
                 </span>
               </div>
