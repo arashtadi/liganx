@@ -98,6 +98,16 @@ def compute_admet(smiles: str) -> dict[str, Any] | None:
 
         pains_hits = _check_pains(mol)
 
+        # Extended ADMET (hERG, BBB, CYP, DILI). Side module so a future
+        # ML upgrade (admet-ai / Chemprop) is one drop-in. Failure here
+        # is non-fatal — descriptors above are still useful on their own.
+        extended: dict[str, Any] | None = None
+        try:
+            from .admet_ml import predict_admet_extended
+            extended = predict_admet_extended(smiles)
+        except Exception as e:  # noqa: BLE001
+            log.warning("admet_ml extended predict failed for %s: %s", smiles[:40], e)
+
         return {
             "mw": _r(mw, 1),
             "logp": _r(logp, 2),
@@ -117,6 +127,9 @@ def compute_admet(smiles: str) -> dict[str, Any] | None:
             # Truncate to first 3 to keep the JSON compact in the matrix view.
             "pains": pains_hits[:3],
             "pains_count": len(pains_hits),
+            # Extended ADMET risk predictions. Optional — frontend
+            # AdmetChips card renders only when present.
+            "extended": extended,
         }
     except Exception as e:
         log.warning("ADMET compute failed for %s: %s", smiles[:40], e)

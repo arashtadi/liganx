@@ -20,6 +20,25 @@ export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancel
  *  Computed from SMILES via RDKit on the backend, cached. Null when
  *  RDKit isn't available or the SMILES failed to parse — in that case
  *  the UI renders an em-dash for the compound's chip row. */
+/** Extended ADMET risk predictions. Each endpoint returns a label
+ *  ('low' / 'medium' / 'high') and a short evidence string explaining
+ *  the rule that fired. Currently rule-based heuristics (RDKit + SMARTS,
+ *  fast). Future upgrade swaps to admet-ai's Chemprop ensembles for
+ *  the same shape. The 'source' tag distinguishes the two for the UI
+ *  copy ("rule-based heuristic" vs "ML prediction"). */
+export interface AdmetExtendedField {
+  label: "low" | "medium" | "high";
+  evidence: string;
+}
+export interface AdmetExtended {
+  source: "rule-based" | "ml";
+  bbb: AdmetExtendedField;       // Blood-brain barrier penetration
+  herg: AdmetExtendedField;      // hERG cardiac channel risk
+  cyp3a4: AdmetExtendedField;    // CYP3A4 metabolic inhibition
+  cyp2d6: AdmetExtendedField;    // CYP2D6 metabolic inhibition
+  dili: AdmetExtendedField;      // Drug-induced liver injury
+}
+
 export interface Admet {
   mw: number;
   logp: number;
@@ -37,6 +56,8 @@ export interface Admet {
   veber_pass: boolean;
   pains: string[];
   pains_count: number;
+  /** Extended ADMET — present when admet_ml ran successfully. */
+  extended?: AdmetExtended | null;
 }
 
 export interface Compound {

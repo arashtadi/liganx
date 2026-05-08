@@ -75,7 +75,82 @@ export default function AdmetChips({
           </span>
         )}
       </div>
+      {/* Extended ADMET risk predictions — hERG, BBB, CYP, DILI.
+          Rendered only when the backend's admet_ml.predict_admet_extended
+          ran successfully. Each chip is colored by the label tier
+          (low → green, medium → amber, high → rose). The compound's
+          "ADMET decision panel" — Schrödinger charges $50K/seat/year
+          for the equivalent. */}
+      {admet.extended && (
+        <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+          <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500 dark:text-slate-500 flex items-center gap-2">
+            <span>Risk profile</span>
+            <span className="text-[9px] italic text-slate-400 dark:text-slate-600">
+              {admet.extended.source === "rule-based" ? "rule-based heuristic" : "ML prediction"}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            <RiskChip
+              label="BBB"
+              tier={admet.extended.bbb.label}
+              evidence={admet.extended.bbb.evidence}
+              hint="Blood-brain barrier penetration likelihood. High = expected to enter CNS; low = peripheral-only candidate."
+            />
+            <RiskChip
+              label="hERG"
+              tier={admet.extended.herg.label}
+              evidence={admet.extended.herg.evidence}
+              hint="Cardiac potassium-channel binding risk. High = QT prolongation / arrhythmia risk; should be filtered out unless designed against."
+            />
+            <RiskChip
+              label="CYP3A4"
+              tier={admet.extended.cyp3a4.label}
+              evidence={admet.extended.cyp3a4.evidence}
+              hint="CYP3A4 metabolic inhibition risk — drug-drug interaction predictor for the most common metabolizer."
+            />
+            <RiskChip
+              label="CYP2D6"
+              tier={admet.extended.cyp2d6.label}
+              evidence={admet.extended.cyp2d6.evidence}
+              hint="CYP2D6 inhibition risk — second most common metabolizer; matters for CNS / cardiovascular drugs."
+            />
+            <RiskChip
+              label="DILI"
+              tier={admet.extended.dili.label}
+              evidence={admet.extended.dili.evidence}
+              hint="Drug-induced liver injury risk. High = reactive group present (Greene/Liguori structural alert)."
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function RiskChip({
+  label, tier, evidence, hint,
+}: {
+  label: string;
+  tier: "low" | "medium" | "high";
+  evidence: string;
+  hint: string;
+}) {
+  const styles =
+    tier === "low"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40"
+      : tier === "medium"
+      ? "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700/40"
+      : "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:ring-rose-700/40";
+  const symbol = tier === "low" ? "●" : tier === "medium" ? "◐" : "○";
+  return (
+    <span
+      title={`${label} risk: ${tier}\n${evidence}\n\n${hint}`}
+      className={`rounded-md px-2 py-1 font-semibold ring-1 ring-inset ${styles}`}
+    >
+      <span className="opacity-80 mr-1">{symbol}</span>
+      {label}
+      <span className="text-[10px] font-normal opacity-75 ml-1">· {tier}</span>
+    </span>
   );
 }
 
