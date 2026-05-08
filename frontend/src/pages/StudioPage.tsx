@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.81-2026-05-07-protect-prior-snapshot";
+const LIGANX_BUILD_TAG = "v0.82-2026-05-07-truly-empty-by-default";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -250,30 +250,19 @@ export default function StudioPage() {
     | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
     | undefined;
   const restoreRequested = (location.state as any)?.restoreSession === true;
-  // (v0.79-0.80) Conditional rehydration. Auto-restoring on every
-  // mount made a direct visit to /studio show a stale prior setup.
-  // Restore the snapshot only when intent is clear:
+  // (v0.79-0.82) Conditional rehydration — pure empty-by-default.
+  // Restore the snapshot only when intent is EXPLICIT:
   //   1. location.state.restoreSession=true → set by JobPage's Back
   //      to Studio link AND by the in-header Resume pill.
   //   2. location.state.reseed → Edit & re-dock + history rerun.
-  //   3. Browser back/forward navigation → history entry; user
-  //      intends to come back to where they were.
-  // (v0.80) "reload" was dropped — Cmd+R now also gives empty Studio,
-  // matching the user's expectation. Recovery path is the prominent
-  // ↻ Resume pill at the top of the header (which sets
-  // location.state.restoreSession via React Router, then reloads).
-  // Direct URL navigation, header nav clicks, new tabs, AND refresh
-  // all produce an empty workspace; the user opts back in explicitly.
-  const wasNavigatedHistorically = (() => {
-    if (typeof performance === "undefined") return false;
-    try {
-      const entries = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
-      return entries[0]?.type === "back_forward";
-    } catch {
-      return false;
-    }
-  })();
-  const shouldRestoreSession = restoreRequested || !!reseed || wasNavigatedHistorically;
+  // Everything else (direct URL, refresh, browser back/forward,
+  // new tabs, header nav clicks, BFCache-served pages) → empty.
+  // (v0.82) Dropped browser-back/forward auto-restore too. Reason:
+  // Chrome's BFCache can serve a previously-rendered page on what
+  // looks like a fresh address-bar visit, with navType="back_forward",
+  // which kept making Studio look "not empty". The Resume pill is
+  // the single, predictable recovery path; everything else is empty.
+  const shouldRestoreSession = restoreRequested || !!reseed;
   const initialSession = useRef<StudioSessionSnapshot | null>(
     shouldRestoreSession ? readStudioSession() : null,
   ).current;
@@ -704,6 +693,22 @@ export default function StudioPage() {
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  // (v0.82) BFCache eviction. Chrome's back-forward cache can restore
+  // a previously-rendered Studio with all its in-memory state intact
+  // even on a fresh address-bar visit, which made the "empty by
+  // default" rule look broken to the user. The pageshow event with
+  // persisted=true is the standard signal that this happened — we
+  // reload so the next render runs through the v0.79-0.82 empty-
+  // by-default mount logic. The sessionStorage snapshot survives
+  // (v0.81 protects it), so the Resume pill is still available.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) window.location.reload();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
 
   // (v0.76) When Studio mounts with a restored session OR a reseed
