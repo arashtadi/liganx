@@ -394,14 +394,17 @@ function HistoryRow({ job }: { job: Job }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Re-run: navigate to /new with a reseed payload in router state.
-  // NewJobPage detects state.reseed on mount and pre-fills the form so
-  // the user can tweak any field (engine, exhaustiveness, an extra
-  // mutation) and resubmit without re-typing the originals.
+  // Re-run: navigate to /studio with a reseed payload in router state.
+  // (Studio v0.91) Studio replaces NewJobPage as the canonical entry
+  // point for new jobs. Studio reads location.state.reseed on mount
+  // (same shape NewJobPage used) and pre-fills targets, mutations, and
+  // compounds. The engine + exhaustiveness fields are accepted for
+  // payload compatibility but ignored — Studio runs the unified
+  // QuickVina/Full Job pipeline.
   function onRerunClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    navigate("/new", {
+    navigate("/studio", {
       state: {
         reseed: {
           pdb_id: job.pdb_id,

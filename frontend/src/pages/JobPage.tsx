@@ -97,9 +97,12 @@ export default function JobPage() {
   function navigateToReseed(name: string, smiles: string) {
     if (!job) return;
     const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
-    const cameFromStudio = backSearchParamsForReseed.get("from") === "studio";
-    const targetRoute = cameFromStudio ? "/studio" : "/new";
-    editNavigate(targetRoute, {
+    // (Studio v0.91) Always go to /studio regardless of how the user
+    // got to JobPage. The previous from=studio gate left history-
+    // sourced visitors on the legacy /new form even though Studio is
+    // now the canonical edit & re-dock destination. The reseed shape
+    // is preserved for payload compat.
+    editNavigate("/studio", {
       state: {
         reseed: {
           pdb_id: job.pdb_id,
@@ -113,10 +116,11 @@ export default function JobPage() {
       },
     });
   }
-  // (v0.75) Read ?from once at component scope so navigateToReseed
-  // can branch on it without re-parsing the search params per call.
-  // Renamed to avoid colliding with the inner JobHeader hook below.
+  // (v0.75) Used to be needed for the from=studio gate above; kept
+  // around since other code paths may read it later. The reseed
+  // navigation no longer consults it as of v0.91.
   const [backSearchParamsForReseed] = useSearchParams();
+  void backSearchParamsForReseed;
 
   // Ref on the hero banner so a matrix cell click can smooth-scroll the
   // banner into view. Without this, clicking a cell at the bottom of the
@@ -441,21 +445,15 @@ export default function JobPage() {
             // doesn't own the original job state and shouldn't be encouraged
             // to fork from a curated subset). Owners on the full view get
             // the iterate loop.
-            // (v0.78) When the user arrived from Studio (?from=studio),
-            // skip the in-modal Ketcher detour and navigate straight to
-            // /studio with the compound preloaded as a reseed. Studio
-            // has its own full Ketcher canvas + WT/mutant 3D viewer +
-            // Run Dock — making the user edit in a modal pop-up first
-            // is exactly the "old window" friction the user reported.
-            // /history and direct-link visitors keep the modal flow
-            // (no Studio session to return to).
+            // (Studio v0.91) Edit & re-dock now ALWAYS bypasses the
+            // legacy Ketcher modal and lands the user in Studio with
+            // the compound preloaded. The previous from=studio gate
+            // was the source of "I clicked Edit & re-dock from history
+            // and got the old Sketch popup" — Studio is the canonical
+            // edit destination regardless of how the user arrived at
+            // JobPage.
             onEditCompound={inSubsetView ? undefined : (c) => {
-              const cameFromStudio = backSearchParamsForReseed.get("from") === "studio";
-              if (cameFromStudio) {
-                navigateToReseed(c.name ?? "", c.smiles);
-              } else {
-                setEditingCompound(c);
-              }
+              navigateToReseed(c.name ?? "", c.smiles);
             }}
           />
 
