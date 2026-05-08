@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.71-2026-05-07-multi-compound-results";
+const LIGANX_BUILD_TAG = "v0.72-2026-05-07-run-dock-enabled-with-staged";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2005,24 +2005,45 @@ export default function StudioPage() {
                   </div>
                 </div>
               )}
+              {/* (v0.72) Enable when EITHER the canvas has a SMILES OR
+                  the user has at least one compound staged via the
+                  picker. runFullJob already handles both paths (it
+                  prefers staged, falls back to currentSmiles). The old
+                  check required currentSmiles, so users who staged
+                  compounds without ever clicking a row got a stuck
+                  disabled button — they had to click a row just to
+                  warm up the canvas. */}
+              {(() => {
+                const hasCompound = !!currentSmiles || compounds.length > 0;
+                const isDisabled = docking || submittingFull
+                  || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")
+                  || !ketcherReady || !hasCompound || !selectedTarget;
+                const isCoolingOff = !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled";
+                return (
               <button
                 onClick={runFullJob}
-                disabled={docking || submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled") || !ketcherReady || !currentSmiles || !selectedTarget}
+                disabled={isDisabled}
                 className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
                   submittingFull
                     ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
-                    : !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled"
+                    : isCoolingOff
                     ? "border-emerald-700/40 bg-emerald-950/20 text-emerald-300/60 cursor-wait"
-                    : !ketcherReady || !currentSmiles || !selectedTarget
+                    : !ketcherReady || !hasCompound || !selectedTarget
                     ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
                     : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
                 }`}
-                title="Submit a Full Job — CPU pipeline. ~3 min, no scaffold cap, results stream in here AND persist at /jobs/{id}."
+                title={
+                  !selectedTarget ? "Pick a target first."
+                  : !hasCompound ? "Stage at least one compound first."
+                  : "Submit a Full Job — CPU pipeline. ~3 min, no scaffold cap. Results stream in here AND persist at /jobs/{id}."
+                }
               >
                 {submittingFull ? "▶ submitting…"
-                  : !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled" ? "▶ docking in progress…"
+                  : isCoolingOff ? "▶ docking in progress…"
                   : "⇢ Run Dock"}
               </button>
+                );
+              })()}
             </div>
           </div>
         </section>
