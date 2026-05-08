@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.92-2026-05-08-reseed-editable-pod-autoresume";
+const LIGANX_BUILD_TAG = "v0.93-2026-05-08-no-auto-collapse";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1247,11 +1247,13 @@ export default function StudioPage() {
   const [setupCollapsed, setSetupCollapsed] = useState(
     reseed ? false : (initialSession?.setupCollapsed ?? false),
   );
-  useEffect(() => {
-    if (fullJobStatus === "completed" && fullJobRows.length > 0) {
-      setSetupCollapsed(true);
-    }
-  }, [fullJobStatus, fullJobRows.length]);
+  // (v0.93) v0.73's auto-collapse-on-completion was removed — it kept
+  // re-collapsing after every Run Dock, forcing the user to click
+  // 'edit ↗' just to tweak a compound and re-run. The manual ▾ setup
+  // toggle in the panel header is enough; users who want the results-
+  // focused layout can collapse explicitly. The reseed-editable
+  // initial state above (v0.92) still applies on first mount.
+  void fullJobStatus; void fullJobRows; // referenced elsewhere; effect dropped
 
   // (v0.75) Continuous session snapshot. Mirrors the slice of state that
   // makes Studio "the place I left it" into sessionStorage, so the user
