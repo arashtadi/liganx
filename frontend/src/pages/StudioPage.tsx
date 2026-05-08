@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.94-2026-05-08-history-rerun-replaces";
+const LIGANX_BUILD_TAG = "v0.95-2026-05-08-ketcher-timeout-retry";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -585,7 +585,18 @@ export default function StudioPage() {
     obs.observe(root, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
   }, []);
-  const [iframeKey] = useState(0);  // reserved for future remounts
+  // (v0.95) iframeKey now mutable so the retry button can force a
+  // remount of the Ketcher iframe — useful when the bundle download
+  // stalls on a flaky connection. Bumping the key triggers React to
+  // unmount + remount the iframe, which restarts the download from
+  // scratch instead of waiting indefinitely.
+  const [iframeKey, setIframeKey] = useState(0);
+  // (v0.95) Timeout flag for the loading banner. Flips true after
+  // KETCHER_INIT_TIMEOUT_MS without an init message — usually means
+  // the bundle is taking forever to download (slow network) or the
+  // postMessage handshake never landed (rare). Reset on each remount.
+  const [ketcherTimedOut, setKetcherTimedOut] = useState(false);
+  const KETCHER_INIT_TIMEOUT_MS = 30_000;
   const darkFilter = "invert(0.92) hue-rotate(180deg) brightness(1.1) contrast(0.95)";
 
   const { data: catalog } = useQuery({
@@ -708,6 +719,25 @@ export default function StudioPage() {
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
   }, []);
+
+  // (v0.95) Detect Ketcher init timeouts. If the iframe hasn't posted
+  // its 'init' message within KETCHER_INIT_TIMEOUT_MS of a fresh
+  // mount, surface a "taking longer than expected" banner with a
+  // Reload Editor button so the user knows it's not just a forever
+  // spinner. Cleared whenever ketcherReady flips true OR iframeKey
+  // changes (manual retry triggers a fresh window).
+  useEffect(() => {
+    setKetcherTimedOut(false);
+    if (ketcherReady) return;
+    const t = window.setTimeout(() => {
+      // Only surface the timeout if Ketcher STILL isn't ready when
+      // the timer fires. The closure captures the ketcherReady value
+      // at effect-creation time, so we re-check via the state ref to
+      // avoid a stale-flag race.
+      setKetcherTimedOut(true);
+    }, KETCHER_INIT_TIMEOUT_MS);
+    return () => window.clearTimeout(t);
+  }, [iframeKey, ketcherReady]);
 
   // (v0.82) BFCache eviction. Chrome's back-forward cache can restore
   // a previously-rendered Studio with all its in-memory state intact
@@ -1782,8 +1812,45 @@ export default function StudioPage() {
               the user came from. */}
           <div className="flex-1 relative bg-white">
             {!ketcherReady && (
-              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs font-mono z-10 bg-[#070b15]">
-                <span className="animate-pulse">▮ initializing editor</span>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 text-xs font-mono z-10 bg-[#070b15] gap-3 px-4">
+                {ketcherTimedOut ? (
+                  // (v0.95) Past the 30 s timeout — give the user
+                  // actionable options instead of an infinite spinner.
+                  // Reload Editor remounts the iframe with a fresh
+                  // key so the bundle download starts over. Reload
+                  // Page is the nuclear option.
+                  <>
+                    <div className="flex items-center gap-2 text-amber-300">
+                      <span className="text-base">⏱</span>
+                      <span className="font-bold">Editor is taking longer than expected</span>
+                    </div>
+                    <div className="text-slate-500 text-[10px] max-w-md text-center leading-relaxed">
+                      The 2D editor bundle (~5–8 MB) usually loads in 5–10 s, but on slow networks
+                      or stalled CDN edges it can hang. Try the Reload Editor button below first;
+                      if that still doesn't work, your connection may need to be checked.
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIframeKey((k) => k + 1)}
+                        className="px-3 py-1.5 rounded border border-cyan-600/60 bg-cyan-950/40 text-cyan-200 hover:bg-cyan-900/60 hover:border-cyan-500 text-[10px] uppercase tracking-wider"
+                        title="Remount the iframe — restarts the Ketcher bundle download"
+                      >
+                        ↻ Reload editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => window.location.reload()}
+                        className="px-3 py-1.5 rounded border border-slate-700/60 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60 hover:text-slate-100 text-[10px] uppercase tracking-wider"
+                        title="Full page reload"
+                      >
+                        ↻ Reload page
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <span className="animate-pulse">▮ initializing editor</span>
+                )}
               </div>
             )}
             <iframe
