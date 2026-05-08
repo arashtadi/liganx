@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.73-2026-05-07-collapsible-setup-clickable-results";
+const LIGANX_BUILD_TAG = "v0.74-2026-05-07-fix-results-polling-race";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -807,8 +807,15 @@ export default function StudioPage() {
       try {
         const job = await api.getJob(fullJobKey);
         if (cancelled) return;
-        setFullJobStatus(job.status);
-        setFullJobStage(job.stage || null);
+        // (v0.74) Race fix: when the job has just completed, we must
+        // FIRST build + commit fullJobRows, THEN flip fullJobStatus
+        // to "completed". Reason: fullJobStatus is in this effect's
+        // dep array, so flipping it triggers the cleanup (cancelled
+        // = true), which races against the awaits in the pose fetch
+        // loop below — every result-population tick was being
+        // aborted before setFullJobRows ran. Pending/running/failed
+        // paths keep the original "set status first" order since
+        // they don't depend on async pose fetches.
         if (job.status === "completed") {
           // (v0.71) Group all DockingResult rows by compound_id and
           // collect one fullJobRows entry per compound — with both
@@ -898,8 +905,18 @@ export default function StudioPage() {
             if (mut) { setDockResult(mut); setDockResultWt(wt); }
             else { setDockResult(wt); setDockResultWt(null); }
           }
+          // (v0.74) Now safe to flip status — rows are in state, the
+          // cleanup-on-status-change race no longer drops results.
+          setFullJobStatus(job.status);
+          setFullJobStage(job.stage || null);
         } else if (job.status === "failed") {
           setDockError(job.error_message || "Full Job failed (no message).");
+          setFullJobStatus(job.status);
+          setFullJobStage(job.stage || null);
+        } else {
+          // pending / running — fast path, just publish progress
+          setFullJobStatus(job.status);
+          setFullJobStage(job.stage || null);
         }
       } catch {
         // Transient network errors — keep polling.
