@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.00-2026-05-08-studio-inline-admet";
+const LIGANX_BUILD_TAG = "v1.01-2026-05-08-prominent-admet";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -103,6 +103,22 @@ function scoreTier(s: number | undefined | null): string {
 
 function fmtClock(d: Date): string {
   return d.toISOString().slice(11, 19) + " UTC";
+}
+
+/** Tiny risk indicator used in the prominent ADMET pill in Docking
+ *  Results: 1.5×1.5 dot colored emerald (low) / amber (medium) /
+ *  rose (high). Browser tooltip carries the channel name + tier so
+ *  hovering shows e.g. "hERG: low". Defensive against unknown labels
+ *  by falling back to a slate dot — keeps the dot visible even if
+ *  pipeline returns a tier we don't recognize yet. */
+function RiskDot({ tier, title }: { tier: string; title: string }) {
+  const t = (tier || "").toLowerCase();
+  const color =
+    t === "low" ? "bg-emerald-400"
+    : t === "medium" ? "bg-amber-400"
+    : t === "high" ? "bg-rose-400"
+    : "bg-slate-400";
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} title={title} />;
 }
 
 /** Relative-time helper for the autosave indicator. Driven by the
@@ -2193,19 +2209,13 @@ export default function StudioPage() {
               <div className="px-3 py-2 border-b border-slate-800/70">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className={TOK.label}>Docking results</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[9px] text-slate-600">
-                      {fullJobRows.length} · best first
-                    </span>
-                    {fullJobKey && (
-                      <a href={`/jobs/${fullJobKey}?from=studio`}
-                         target="_blank" rel="noreferrer"
-                         className="text-cyan-400 hover:text-cyan-300 text-[9px] uppercase tracking-wider"
-                         title="Open the full-page results view in a new tab — pose viewer, contact maps, runner logs, ADMET, etc.">
-                        full view ↗
-                      </a>
-                    )}
-                  </div>
+                  {/* (v1.01) Removed duplicate "full view ↗" — the same
+                      link already lives in the Telemetry header right
+                      above ('✓ full job done · view ↗'). Two of them
+                      next to each other read as confusion. */}
+                  <span className="font-mono text-[9px] text-slate-600">
+                    {fullJobRows.length} · best first
+                  </span>
                 </div>
                 <div className="rounded border border-slate-800 divide-y divide-slate-800/60 max-h-[260px] overflow-y-auto">
                   {fullJobRows.map((row) => {
@@ -2297,26 +2307,45 @@ export default function StudioPage() {
                             )}
                             <span className="text-slate-600 text-[9px] shrink-0 pl-1">↗</span>
                           </button>
-                          {/* (v1.00) Inline ADMET toggle — drops down the
-                              full chip card below this row when clicked.
-                              Disabled when admet is null (RDKit didn't
-                              produce descriptors for this SMILES). */}
+                          {/* (v1.01) ADMET button — promoted from a
+                              tiny outline chip to a solid violet pill
+                              with an inline risk-summary so users see
+                              the safety profile at a glance without
+                              expanding. Three colored dots represent
+                              hERG / liver (DILI) / CYP risk; users
+                              can scan a column of rows and see "this
+                              compound is amber-amber-green" without
+                              clicking anything. Click expands the full
+                              chip card below for the descriptors +
+                              evidence strings. */}
                           <button
                             type="button"
                             onClick={() => toggleAdmetExpanded(row.compoundId)}
                             disabled={!row.admet}
-                            className={`shrink-0 px-1.5 py-0.5 mx-1 my-0.5 rounded border text-[9px] uppercase tracking-wider transition-colors ${
+                            className={`shrink-0 px-2 py-1 mx-1 my-0.5 rounded font-semibold text-[10px] uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
                               !row.admet
-                                ? "border-slate-800 text-slate-700 cursor-not-allowed"
+                                ? "bg-slate-900/30 text-slate-700 cursor-not-allowed border border-slate-800"
                                 : admetExpanded
-                                ? "border-violet-500/60 bg-violet-950/40 text-violet-200"
-                                : "border-slate-700/60 text-slate-400 hover:text-violet-200 hover:border-violet-500/60"
+                                ? "bg-violet-600 text-white hover:bg-violet-500 shadow-sm shadow-violet-900/50"
+                                : "bg-violet-900/40 text-violet-200 hover:bg-violet-800/60 border border-violet-700/50 hover:border-violet-500/70"
                             }`}
                             title={!row.admet
                               ? "ADMET descriptors unavailable for this SMILES"
                               : admetExpanded ? "Hide ADMET / drug-likeness panel" : "Show ADMET — drug-likeness, hERG, BBB, CYP, DILI risk"}
                           >
-                            {admetExpanded ? "▾ admet" : "▸ admet"}
+                            <span className="text-[11px]">⚕</span>
+                            <span>ADMET</span>
+                            {/* Risk-summary dots — only render when we
+                                actually have extended predictions to
+                                summarize. Three most actionable axes
+                                in priority order. */}
+                            {row.admet?.extended && (
+                              <span className="flex items-center gap-0.5 ml-0.5">
+                                <RiskDot tier={row.admet.extended.herg.label} title={`hERG: ${row.admet.extended.herg.label}`} />
+                                <RiskDot tier={row.admet.extended.dili.label} title={`DILI: ${row.admet.extended.dili.label}`} />
+                                <RiskDot tier={row.admet.extended.cyp3a4.label} title={`CYP3A4: ${row.admet.extended.cyp3a4.label}`} />
+                              </span>
+                            )}
                           </button>
                         </div>
                         {admetExpanded && row.admet && (
