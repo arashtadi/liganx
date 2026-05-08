@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.93-2026-05-08-no-auto-collapse";
+const LIGANX_BUILD_TAG = "v0.94-2026-05-08-history-rerun-replaces";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -252,8 +252,15 @@ export default function StudioPage() {
   // or from HistoryPage), the reseed wins — we want the new compound
   // loaded fresh, not the prior session restored over it.
   const reseed = (location.state as any)?.reseed as
-    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
+    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean }
     | undefined;
+  // (Studio v0.94) When the reseed payload explicitly asks for a clean
+  // replace (HistoryPage Re-run sets this), skip session restoration
+  // entirely — every initializer below pulls from reseed only and any
+  // prior sessionStorage state is ignored. Edit & re-dock from JobPage
+  // does NOT set this flag, so it keeps the merge-with-session
+  // semantics from v0.76.
+  const reseedReplaces = !!reseed?.replaceSession;
   const restoreRequested = (location.state as any)?.restoreSession === true;
   // (v0.79-0.82) Conditional rehydration — pure empty-by-default.
   // Restore the snapshot only when intent is EXPLICIT:
@@ -269,7 +276,9 @@ export default function StudioPage() {
   // the single, predictable recovery path; everything else is empty.
   const shouldRestoreSession = restoreRequested || !!reseed;
   const initialSession = useRef<StudioSessionSnapshot | null>(
-    shouldRestoreSession ? readStudioSession() : null,
+    // (v0.94) reseedReplaces wins over restore — History Re-run wants
+    // a clean Studio with only the rerun's data, not a merge.
+    reseedReplaces ? null : (shouldRestoreSession ? readStudioSession() : null),
   ).current;
   // For the manual resume pill — does sessionStorage contain anything
   // worth resuming? Read it lazily so a fresh visit doesn't pay the

@@ -404,6 +404,14 @@ function HistoryRow({ job }: { job: Job }) {
   function onRerunClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    // (Studio v0.94) replaceSession=true tells Studio to ignore the
+    // current sessionStorage snapshot and load THIS job's data only.
+    // Without it, v0.76's reseed-merges-with-session would keep the
+    // last Studio session's compounds/target/results visible alongside
+    // the rerun, so every History Re-run looked like 'the same job'
+    // regardless of which row was clicked. Edit & re-dock from JobPage
+    // still merges (no replaceSession flag) because that flow is the
+    // user iterating on a compound within a session.
     navigate("/studio", {
       state: {
         reseed: {
@@ -414,6 +422,7 @@ function HistoryRow({ job }: { job: Job }) {
           engine: job.engine ?? "quickvina2_gpu",
           exhaustiveness: (job as { exhaustiveness?: number }).exhaustiveness ?? 8,
           include_wt: (job as { include_wt?: boolean }).include_wt ?? true,
+          replaceSession: true,
         },
       },
     });
