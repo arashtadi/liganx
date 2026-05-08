@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.76-2026-05-07-reseed-merges-with-session";
+const LIGANX_BUILD_TAG = "v0.77-2026-05-07-prominent-docking-banner";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -862,6 +862,11 @@ export default function StudioPage() {
     initialSession?.fullJobStatus ?? null,
   );
   const [fullJobStage, setFullJobStage] = useState<string | null>(initialSession?.fullJobStage ?? null);
+  // (v0.77) Wall-clock start time for the prominent in-flight banner's
+  // elapsed counter. Set on submit, cleared on completion/failure.
+  // Not persisted across navigation — if the user comes back mid-run,
+  // we just don't show the elapsed time (the banner still pulses).
+  const [dockStartedAt, setDockStartedAt] = useState<number | null>(null);
   // (v0.71) Multi-compound result table. job.results contains one row
   // per (compound, variant) pair — for a 7-compound run with WT, that's
   // 14 rows. The legacy dockResult / dockResultWt slots can only hold
@@ -1017,6 +1022,9 @@ export default function StudioPage() {
       setFullJobKey(jobKey);
       setFullJobStatus(primary.job.status || "pending");
       setFullJobStage(primary.job.stage || null);
+      // (v0.77) Stamp the docking start time so the prominent banner
+      // can render an elapsed counter ("⏱ 0:42 elapsed · ~3 min typical").
+      setDockStartedAt(Date.now());
       if (results.length > 1) {
         setPromoteToast(`✓ ${results.filter(r => r.status === "fulfilled").length}/${results.length} jobs submitted — polling first; check /history for the rest`);
         window.setTimeout(() => setPromoteToast(null), 6000);
@@ -1144,10 +1152,12 @@ export default function StudioPage() {
           // cleanup-on-status-change race no longer drops results.
           setFullJobStatus(job.status);
           setFullJobStage(job.stage || null);
+          setDockStartedAt(null);
         } else if (job.status === "failed") {
           setDockError(job.error_message || "Full Job failed (no message).");
           setFullJobStatus(job.status);
           setFullJobStage(job.stage || null);
+          setDockStartedAt(null);
         } else {
           // pending / running — fast path, just publish progress
           setFullJobStatus(job.status);
@@ -1221,6 +1231,86 @@ export default function StudioPage() {
           </div>
         </div>
       </header>
+
+      {/* (v0.77) Prominent docking-in-progress banner. Renders only when
+          a Full Job is in flight. Big, animated, full-width — sits flush
+          under the sticky header so it's always in view, even when the
+          user has scrolled the right rail or is looking at the 2D editor.
+          Three layered cues:
+            1. The pulsing emerald dot + bold uppercase "DOCKING" text —
+               primary attention-grabber.
+            2. Stage label + compound count + elapsed time — gives the
+               user concrete progress info, not just "something happening".
+            3. A shimmering gradient stripe across the bottom edge —
+               continuous motion confirms the system is alive even when
+               the stage label hasn't changed in 30 s. */}
+      {(submittingFull || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")) && (
+        <div className="sticky top-[42px] z-20 bg-gradient-to-r from-emerald-950/90 via-emerald-900/80 to-emerald-950/90 border-b-2 border-emerald-500/60 shadow-lg shadow-emerald-900/40 backdrop-blur-sm">
+          {/* Animated shimmer stripe — runs left-to-right continuously
+              so the eye registers motion even when no other UI changes. */}
+          <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
+            <div
+              className="h-full w-1/3 bg-gradient-to-r from-transparent via-emerald-300 to-transparent"
+              style={{ animation: "studio-dock-shimmer 2s linear infinite" }}
+            />
+          </div>
+          <style>{`
+            @keyframes studio-dock-shimmer {
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(400%); }
+            }
+            @keyframes studio-dock-pulse-ring {
+              0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+              50% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            }
+          `}</style>
+          <div className="px-4 py-2 flex items-center gap-4 font-mono">
+            {/* Pulsing emerald orb. Two animations stacked — the inner
+                dot scales, the outer ring expands & fades. Reads as
+                "live signal" the way an ECG monitor does. */}
+            <div className="relative shrink-0">
+              <span className="block w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+              <span
+                className="absolute inset-0 rounded-full"
+                style={{ animation: "studio-dock-pulse-ring 1.6s ease-out infinite" }}
+              />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-emerald-100 font-bold uppercase tracking-[0.18em] text-sm">
+                Docking in progress
+              </span>
+              <span className="text-emerald-300 text-[11px]">
+                {compounds.length > 0 && (<>· {compounds.length} compound{compounds.length === 1 ? "" : "s"}</>)}
+                {selectedTargets.length > 0 && (<> · {selectedTargets.map(t => t.toUpperCase()).join(" + ")}</>)}
+              </span>
+            </div>
+            <div className="ml-auto flex items-center gap-4 text-[11px]">
+              <span className="text-emerald-200">
+                {submittingFull ? "▸ submitting to queue…"
+                  : fullJobStatus === "pending" ? "▸ queued · waiting for runner"
+                  : `▸ ${fullJobStageLabel(fullJobStage)}`}
+              </span>
+              {dockStartedAt && (() => {
+                const sec = Math.max(0, Math.floor((now.getTime() - dockStartedAt) / 1000));
+                const m = Math.floor(sec / 60);
+                const s = sec % 60;
+                return (
+                  <span className="text-emerald-300/80 tabular-nums">
+                    ⏱ {m}:{s.toString().padStart(2, "0")} <span className="text-emerald-400/50 text-[10px]">/ ~3 min typical</span>
+                  </span>
+                );
+              })()}
+              {fullJobKey && (
+                <a href={`/jobs/${fullJobKey}?from=studio`} target="_blank" rel="noreferrer"
+                   className="px-2 py-0.5 rounded border border-cyan-500/60 bg-cyan-950/40 text-cyan-200 hover:bg-cyan-900/60 hover:border-cyan-400 text-[10px] uppercase tracking-wider"
+                   title="Open the persistent results page in a new tab — full progress UI, runner logs, build steps.">
+                  open ↗
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══ MAIN GRID ═══ */}
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
