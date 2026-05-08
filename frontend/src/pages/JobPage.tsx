@@ -817,7 +817,16 @@ function Header({
   return (
     <header className="card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
       <div>
-        <Link to={backHref} className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1">
+        {/* (v0.79) When the user came from Studio, pass restoreSession
+            in router state so Studio rehydrates the prior workspace
+            on this navigation specifically. Direct visits to /studio
+            (typing the URL or clicking the header nav) keep showing
+            the empty cockpit; only this Back link triggers restore. */}
+        <Link
+          to={backHref}
+          state={backFrom === "studio" ? { restoreSession: true } : undefined}
+          className="text-xs text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-400 inline-flex items-center gap-1"
+        >
           <ArrowRight size={11} className="rotate-180" /> {backLabel}
         </Link>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink dark:text-slate-100 flex flex-wrap items-baseline gap-x-3 gap-y-1">

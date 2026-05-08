@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.78-2026-05-07-edit-redock-direct-to-studio";
+const LIGANX_BUILD_TAG = "v0.79-2026-05-07-empty-by-default";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -249,13 +249,43 @@ export default function StudioPage() {
   const reseed = (location.state as any)?.reseed as
     | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
     | undefined;
-  // (v0.76) Always restore the session if one exists. Reseed is treated
-  // as an OVERLAY (load this compound into the canvas + lock it as the
-  // loadedCompound, merge it into the staged list if absent), not a
-  // replacement. v0.75 suppressed restoration when reseed was present
-  // — that landed users on an empty Studio after Edit & re-dock,
-  // because the staged compounds and prior docking results were gone.
-  const initialSession = useRef<StudioSessionSnapshot | null>(readStudioSession()).current;
+  const restoreRequested = (location.state as any)?.restoreSession === true;
+  // (v0.79) Conditional rehydration. Auto-restoring on every mount made
+  // a direct visit to /studio show a stale prior setup — surprising
+  // because the user expects /studio to be empty unless they came back
+  // via Back to Studio / Edit & re-dock / browser-back / refresh.
+  // Treat the snapshot as restorable only when intent is clear:
+  //   1. location.state.restoreSession=true → set by JobPage's Back
+  //      to Studio link (history-aware return path).
+  //   2. location.state.reseed → Edit & re-dock + history rerun.
+  //   3. Browser back/forward navigation → history entry; user
+  //      intends to come back to where they were.
+  //   4. Explicit reload → mid-work refresh shouldn't wipe state.
+  // Anything else (typing the URL, clicking a header nav link, opening
+  // a new tab) is treated as a fresh entry → empty workspace.
+  // The snapshot is never DELETED on a fresh-entry decision; the user
+  // can still resume via the manual ↻ pill that surfaces when
+  // sessionStorage has stashed data.
+  const wasNavigatedHistorically = (() => {
+    if (typeof performance === "undefined") return false;
+    try {
+      const entries = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+      const t = entries[0]?.type;
+      return t === "back_forward" || t === "reload";
+    } catch {
+      return false;
+    }
+  })();
+  const shouldRestoreSession = restoreRequested || !!reseed || wasNavigatedHistorically;
+  const initialSession = useRef<StudioSessionSnapshot | null>(
+    shouldRestoreSession ? readStudioSession() : null,
+  ).current;
+  // For the manual resume pill — does sessionStorage contain anything
+  // worth resuming? Read it lazily so a fresh visit doesn't pay the
+  // JSON.parse cost unless the pill is actually rendered.
+  const [pendingSnapshot] = useState<StudioSessionSnapshot | null>(() =>
+    !shouldRestoreSession ? readStudioSession() : null,
+  );
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
   // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
@@ -1211,6 +1241,29 @@ export default function StudioPage() {
           <div className="flex items-center gap-2">{statusDot(ketcherReady)} <span className={TOK.label}>Editor</span></div>
           <div className="flex items-center gap-2">{statusDot(healthOk)} <span className={TOK.label}>Pod</span></div>
           <div className="ml-auto flex items-center gap-4">
+            {/* (v0.79) Resume-previous-session pill. Renders only when
+                we DIDN'T auto-restore (fresh entry to /studio) but
+                sessionStorage still holds a prior snapshot worth
+                resuming. One click reloads the page with the explicit
+                resume flag — straightforward, doesn't try to merge
+                live state. */}
+            {pendingSnapshot && compounds.length === 0 && !fullJobKey && (
+              <button
+                type="button"
+                onClick={() => {
+                  // Re-enter via React Router with restoreSession set;
+                  // the next mount will rehydrate from sessionStorage.
+                  navigate("/studio", { state: { restoreSession: true } });
+                  // Force a remount for the state to apply (Studio is
+                  // already at /studio so navigate alone is a no-op).
+                  window.location.reload();
+                }}
+                className="px-2 py-0.5 rounded border border-cyan-700/60 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/50 hover:border-cyan-500 text-[10px] font-mono uppercase tracking-wider"
+                title={`Resume ${pendingSnapshot.compounds.length} compound${pendingSnapshot.compounds.length === 1 ? "" : "s"}${pendingSnapshot.fullJobRows.length > 0 ? ` + ${pendingSnapshot.fullJobRows.length} dock results` : ""} from your last session.`}
+              >
+                ↻ Resume previous
+              </button>
+            )}
             {/* (v0.30) Autosave indicator. Subtle on purpose — green
                 check + relative time — so it's reassuring without being
                 a UI element the user has to think about. Hidden until
