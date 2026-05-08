@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.83-2026-05-07-pdb-search-target-tier";
+const LIGANX_BUILD_TAG = "v0.84-2026-05-07-removable-mutations-uniprot-autopopulate";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -886,6 +886,11 @@ export default function StudioPage() {
   // (v0.83) Pick an RCSB hit → register it as an ad-hoc target and
   // add it to the selected suite. Subsequent lookups treat it like
   // any catalog entry.
+  // (v0.84) After registering, fire-and-forget UniProt enrichment to
+  // auto-populate clinically relevant mutation chips. Two-step: RCSB
+  // GraphQL → UniProt accession, then UniProt REST → variant features.
+  // Failures are silent (catalog mutations stay empty; user can still
+  // type custom codes).
   function pickPdbResult(r: PdbHit) {
     const adHoc: AdHocTarget = {
       id: r.id.toLowerCase(),
@@ -905,6 +910,91 @@ export default function StudioPage() {
     });
     setTargetQuery("");
     setPdbResults([]);
+    // Async: enrich with UniProt variants. Don't await — the target
+    // is already usable; chips just appear when the lookup returns.
+    enrichWithUniProtVariants(adHoc.id, r.id).catch(() => { /* silent */ });
+  }
+
+  // (v0.84) Walk RCSB → UniProt → mutation list. Run in the background
+  // after pickPdbResult so the user can immediately work with WT while
+  // the chips populate. Mutations are merged into the already-registered
+  // ad-hoc target via a setAdHocTargets update.
+  async function enrichWithUniProtVariants(targetId: string, pdbId: string): Promise<void> {
+    // Step 1: get UniProt accession for the first polymer entity via
+    // RCSB's GraphQL endpoint. One round trip, no need to enumerate
+    // entity ids beforehand.
+    const gqlRes = await fetch("https://data.rcsb.org/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `query GetUniProt($id: String!) {
+          entry(entry_id: $id) {
+            polymer_entities {
+              rcsb_polymer_entity_container_identifiers {
+                reference_sequence_identifiers {
+                  database_accession
+                  database_name
+                }
+              }
+            }
+          }
+        }`,
+        variables: { id: pdbId },
+      }),
+    });
+    if (!gqlRes.ok) return;
+    const gqlData = await gqlRes.json();
+    const entities: any[] = gqlData?.data?.entry?.polymer_entities ?? [];
+    let uniprotAcc: string | null = null;
+    for (const e of entities) {
+      const refs: any[] = e?.rcsb_polymer_entity_container_identifiers?.reference_sequence_identifiers ?? [];
+      const hit = refs.find((x) => (x?.database_name || "").toUpperCase() === "UNIPROT");
+      if (hit?.database_accession) { uniprotAcc = hit.database_accession; break; }
+    }
+    if (!uniprotAcc) return;
+
+    // Step 2: fetch UniProt entry, extract Natural variant features.
+    // We filter to variants that have any disease/cancer/clinical
+    // significance annotation in the description so the user gets
+    // a focused chip set (P53 has hundreds of raw variants; only the
+    // pathogenic ones are useful as docking inputs).
+    const upRes = await fetch(`https://rest.uniprot.org/uniprotkb/${uniprotAcc}.json?fields=features`);
+    if (!upRes.ok) return;
+    const upData = await upRes.json();
+    const features: any[] = upData?.features ?? [];
+    const variants = features.filter((f) => {
+      if (f?.type !== "Variant" && f?.type !== "Natural variant") return false;
+      const desc = String(f?.description || "").toLowerCase();
+      // Heuristic clinical filter — keeps the chip count tractable.
+      return /carcinoma|cancer|tumor|tumour|leukemia|lymphoma|melanoma|sarcoma|neoplas|adenocarcinoma|disease|pathogen|resistance|somatic|gain[- ]of[- ]function|loss[- ]of[- ]function/i.test(desc);
+    });
+
+    type ChipShape = { code: string; label: string; significance: string };
+    const chips: ChipShape[] = [];
+    const seen = new Set<string>();
+    for (const v of variants) {
+      const orig = v?.alternativeSequence?.originalSequence
+                ?? v?.location?.start?.modifier === "EXACT" ? v?.location?.start?.value : null;
+      const start = v?.location?.start?.value;
+      const altList: string[] = v?.alternativeSequence?.alternativeSequences || [];
+      if (!start || altList.length === 0) continue;
+      const wt = (typeof orig === "string" && orig.length === 1) ? orig : "";
+      for (const alt of altList) {
+        if (!alt || alt.length !== 1) continue;
+        const code = `${wt}${start}${alt}`;
+        if (seen.has(code)) continue;
+        seen.add(code);
+        // Trim long descriptions; keep the first clause.
+        const rawDesc = String(v?.description || "");
+        const label = rawDesc.length > 80 ? rawDesc.slice(0, 77) + "…" : rawDesc;
+        chips.push({ code, label, significance: "uniprot" });
+      }
+      if (chips.length >= 30) break; // hard cap on chip count
+    }
+    if (chips.length === 0) return;
+    setAdHocTargets((prev) =>
+      prev.map((t) => (t.id === targetId ? { ...t, mutations: chips } : t)),
+    );
   }
 
   // Compute mutation-residue-to-pocket-center distance after a dock
@@ -3072,18 +3162,52 @@ function MutationDropdown({
         )}
       </div>
       {/* (v0.40) Done bar — explicit dismissal so the user can review
-          their pick before closing. Click-outside also still works. */}
-      <div className="px-3 py-1.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] font-mono shrink-0">
-        <span className="text-slate-600">
-          {selectedMutations.length > 0
-            ? <>selected <span className="text-amber-300">{selectedMutations.join(" + ")}</span>{includeWt && <span className="text-slate-500"> + WT</span>}</>
-            : includeWt ? <span className="text-slate-400">WT only</span>
-            : <span className="text-rose-400">none — pick at least one</span>}
-          {selectedMutations.length >= maxMutations && <span className="ml-2 text-slate-700">(max {maxMutations})</span>}
+          their pick before closing. Click-outside also still works.
+          (v0.84) Selected mutations now render as individual removable
+          chips with an × per chip — previously the only "remove" path
+          for custom-typed mutations was clicking the row in the curated
+          list above, which doesn't have a row for free-text additions.
+          Now T315I + Q561Z each have their own × that fires
+          toggleMutation(code) and drops them from selectedMutations. */}
+      <div className="px-3 py-1.5 border-t border-slate-800/70 flex items-center justify-between gap-2 text-[10px] font-mono shrink-0">
+        <span className="text-slate-600 flex items-center gap-1.5 flex-wrap min-w-0">
+          {selectedMutations.length > 0 ? (
+            <>
+              <span>selected</span>
+              {selectedMutations.map((code) => (
+                <span
+                  key={code}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-700/60 bg-amber-950/40 text-amber-200"
+                >
+                  {code}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleMutation(code);
+                    }}
+                    className="text-amber-400/60 hover:text-rose-300 leading-none"
+                    title={`Remove ${code} from the selection`}
+                    aria-label={`Remove ${code}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {includeWt && <span className="text-slate-500">+ WT</span>}
+            </>
+          ) : includeWt ? (
+            <span className="text-slate-400">WT only</span>
+          ) : (
+            <span className="text-rose-400">none — pick at least one</span>
+          )}
+          {selectedMutations.length >= maxMutations && (
+            <span className="text-slate-700">(max {maxMutations})</span>
+          )}
         </span>
         <button
           onClick={() => setOpen(false)}
-          className="px-2 py-0.5 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 uppercase tracking-wider"
+          className="px-2 py-0.5 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 uppercase tracking-wider shrink-0"
         >
           done
         </button>
