@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.86-2026-05-08-uniprot-fields-fix";
+const LIGANX_BUILD_TAG = "v0.87-2026-05-08-mutation-code-parse-fix";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1020,16 +1020,31 @@ export default function StudioPage() {
     type ChipShape = { code: string; label: string; significance: string };
     const chips: ChipShape[] = [];
     const seen = new Set<string>();
+    // (v0.87) Strict format guard: backend's mutation parser expects
+    // <orig><pos><new> like "T790M". Anything else (range deletions,
+    // missing original AA, multi-residue substitutions) is dropped
+    // here so we don't surface chips that the backend will reject at
+    // submit. The previous parser had a precedence bug — orig fell
+    // back to the position NUMBER instead of the AA letter, producing
+    // chips like "428D" that the backend correctly rejected with
+    // value_error · invalid mutation code(s).
+    const codePattern = /^[A-Z]\d+[A-Z]$/;
     for (const v of variants) {
-      const orig = v?.alternativeSequence?.originalSequence
-                ?? v?.location?.start?.modifier === "EXACT" ? v?.location?.start?.value : null;
+      // UniProt variant feature shape: alternativeSequence has
+      // originalSequence (1-letter wild-type residue) and
+      // alternativeSequences (array of 1-letter substitutions).
+      // Some variants encode insertions / deletions instead — skip
+      // those by demanding both sides be single letters.
+      const orig: unknown = v?.alternativeSequence?.originalSequence;
       const start = v?.location?.start?.value;
       const altList: string[] = v?.alternativeSequence?.alternativeSequences || [];
-      if (!start || altList.length === 0) continue;
-      const wt = (typeof orig === "string" && orig.length === 1) ? orig : "";
+      if (typeof start !== "number" || altList.length === 0) continue;
+      if (typeof orig !== "string" || orig.length !== 1) continue;
+      const wt = orig;
       for (const alt of altList) {
         if (!alt || alt.length !== 1) continue;
         const code = `${wt}${start}${alt}`;
+        if (!codePattern.test(code)) continue; // belt-and-suspenders
         if (seen.has(code)) continue;
         seen.add(code);
         // Trim long descriptions; keep the first clause.
