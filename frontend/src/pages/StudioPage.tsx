@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.97-2026-05-08-full-compound-name";
+const LIGANX_BUILD_TAG = "v0.98-2026-05-08-onboarding-5-steps";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -5562,28 +5562,34 @@ function ProductionViewer3D({
                 <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
               </div>
               <div className="text-slate-300 text-xs leading-relaxed font-mono">
-                <div className="mb-2 text-slate-400">Mutation-aware docking in 4 steps:</div>
+                <div className="mb-2 text-slate-400">Mutation-aware docking in 5 steps:</div>
                 <ol className="space-y-1.5">
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">1.</span>
-                    <span><span className="text-slate-200">Pick a target</span> <span className="text-slate-500">— select kinase + mutation, top-left</span></span>
+                    <span><span className="text-slate-200">Pick a target</span> <span className="text-slate-500">— curated catalog, RCSB PDB search, or upload</span></span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">2.</span>
-                    <span><span className="text-slate-200">Draw a compound</span> <span className="text-slate-500">— sketch in the editor or paste SMILES</span></span>
+                    <span><span className="text-slate-200">Choose mutation(s)</span> <span className="text-slate-500">— curated chips or type any code (T790M, V600E…)</span></span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">3.</span>
-                    <span><span className="text-slate-200">Quick Dock</span> <span className="text-slate-500">— ~30 s on GPU, scores both WT and mutant</span></span>
+                    <span><span className="text-slate-200">Choose compound(s)</span> <span className="text-slate-500">— reference, library, PubChem, or sketch (up to 10)</span></span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">4.</span>
-                    <span><span className="text-slate-200">Inspect ΔΔG</span> <span className="text-slate-500">— color-coded score, Kd estimate, 3D pose</span></span>
+                    <span><span className="text-slate-200">Run Dock</span> <span className="text-slate-500">— scores WT + each mutant in parallel</span></span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-cyan-400 tabular-nums">5.</span>
+                    <span><span className="text-slate-200">Inspect &amp; iterate</span> <span className="text-slate-500">— Δ-vs-WT, Kd, 3D pose, AI variants for next round</span></span>
                   </li>
                 </ol>
               </div>
-              <div className="mt-3 pt-3 border-t border-slate-800/50 text-[9px] font-mono text-slate-600 tracking-wider uppercase">
-                live conformer renders here · 3D pose appears after dock
+              <div className="mt-3 pt-3 border-t border-slate-800/50 text-[9px] font-mono text-slate-600 tracking-wider uppercase leading-relaxed space-y-0.5">
+                <div>tip · ai variants suggests 3 pocket-aware redesigns per dock</div>
+                <div>tip · save compounds to your library for next session</div>
+                <div>live conformer renders here · 3D pose appears after dock</div>
               </div>
             </div>
           </div>
