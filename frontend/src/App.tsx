@@ -344,21 +344,25 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
   }, [open]);
 
   const initial = (email[0] || "?").toUpperCase();
+  // (Studio v0.90) Always render a clean monogram — the auto-generated
+  // Supabase / dicebear polyhedron avatars looked busy against the
+  // dark Studio header. A single cyan-tinted initial letter in mono
+  // font matches the brand, stays legible at 32px, and never clashes
+  // with the rest of the nav. avatarUrl from user_metadata is kept
+  // around for the dropdown panel below if it's actually a real
+  // user-set photo, but the trigger button always shows the monogram.
+  void avatarUrl; // intentionally unused — see comment above
   return (
     <div className="relative" ref={wrapRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-center w-8 h-8 rounded-full overflow-hidden bg-delta-100 text-delta-700 font-semibold text-sm hover:bg-delta-200 transition-colors dark:bg-delta-900/40 dark:text-delta-200 dark:hover:bg-delta-900/70"
+        className="flex items-center justify-center w-8 h-8 rounded-full font-mono uppercase tracking-wider text-[12px] font-semibold text-cyan-200 bg-cyan-900/30 border border-cyan-700/50 hover:bg-cyan-900/50 hover:border-cyan-500/60 transition-colors"
         aria-haspopup="menu"
         aria-expanded={open}
         title={email}
       >
-        {avatarUrl ? (
-          <img src={avatarUrl} alt={email} className="w-full h-full object-cover" />
-        ) : (
-          initial
-        )}
+        {initial}
       </button>
       {open && (
         <div
