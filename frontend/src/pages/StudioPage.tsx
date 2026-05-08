@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.72-2026-05-07-run-dock-enabled-with-staged";
+const LIGANX_BUILD_TAG = "v0.73-2026-05-07-collapsible-setup-clickable-results";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -694,6 +694,18 @@ export default function StudioPage() {
   // Which row is currently shown in the 3D viewer + score panel
   // (defaults to the strongest mutant once results land).
   const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(null);
+  // (v0.73) Setup section (Target / Mutation / Compound) collapse state.
+  // Pre-dock, the user is configuring — selectors stay open. Post-dock,
+  // the user is inspecting — selectors auto-collapse to a one-line
+  // summary so the SCORE + per-compound results table take the visual
+  // focus. A header toggle re-opens the selectors when the user wants
+  // to tweak and re-run.
+  const [setupCollapsed, setSetupCollapsed] = useState(false);
+  useEffect(() => {
+    if (fullJobStatus === "completed" && fullJobRows.length > 0) {
+      setSetupCollapsed(true);
+    }
+  }, [fullJobStatus, fullJobRows.length]);
   // Map a runner stage slug to a human label for the progress strip.
   // Mirrors the labels JobPage uses, condensed for one-line display.
   const fullJobStageLabel = (slug: string | null | undefined): string => {
@@ -1056,7 +1068,25 @@ export default function StudioPage() {
           {/* KPI panel */}
           <div className="bg-[#0d1422] border border-slate-800/70 rounded flex flex-col flex-1 min-h-0">
             <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px] gap-2">
-              <span className={TOK.label}>Telemetry</span>
+              <div className="flex items-center gap-2">
+                <span className={TOK.label}>Telemetry</span>
+                {/* (v0.73) Setup show/hide toggle — auto-flips to hide
+                    when a Full Job completes so results take focus.
+                    User can manually re-open to tweak inputs and
+                    re-run without losing the result table. */}
+                {(selectedTargets.length > 0 || compounds.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={() => setSetupCollapsed((v) => !v)}
+                    className="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/40 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 text-[9px] font-mono uppercase tracking-wider"
+                    title={setupCollapsed
+                      ? "Expand the Target / Mutation / Compound selectors to tweak inputs."
+                      : "Collapse the selectors so docking results take focus."}
+                  >
+                    {setupCollapsed ? "▸ setup" : "▾ setup"}
+                  </button>
+                )}
+              </div>
               <div className="flex items-center gap-2 font-mono text-slate-500 min-w-0">
                 {/* (v0.47) Full Job progress takes priority when in
                     flight so the user sees stage transitions without
@@ -1331,80 +1361,113 @@ export default function StudioPage() {
                 score-tier color matches the big SCORE readout, so
                 visual scanning of the column tells you "which
                 compounds are strong binders" at a glance. */}
-            {fullJobRows.length > 1 && (
+            {fullJobRows.length > 0 && (
               <div className="px-3 py-2 border-b border-slate-800/70">
-                <div className="flex items-center justify-between mb-1">
-                  <span className={TOK.label}>Per-compound results</span>
-                  <span className="font-mono text-[9px] text-slate-600">
-                    {fullJobRows.length} · best first
-                  </span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className={TOK.label}>Docking results</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[9px] text-slate-600">
+                      {fullJobRows.length} · best first
+                    </span>
+                    {fullJobKey && (
+                      <a href={`/jobs/${fullJobKey}?from=studio`}
+                         target="_blank" rel="noreferrer"
+                         className="text-cyan-400 hover:text-cyan-300 text-[9px] uppercase tracking-wider"
+                         title="Open the full-page results view in a new tab — pose viewer, contact maps, runner logs, ADMET, etc.">
+                        full view ↗
+                      </a>
+                    )}
+                  </div>
                 </div>
-                <div className="rounded border border-slate-800 divide-y divide-slate-800/60 max-h-[180px] overflow-y-auto">
+                <div className="rounded border border-slate-800 divide-y divide-slate-800/60 max-h-[260px] overflow-y-auto">
                   {fullJobRows.map((row) => {
                     const isSelected = row.compoundId === selectedRowCompoundId;
                     const delta = (row.mutantScore != null && row.wtScore != null)
                       ? row.mutantScore - row.wtScore
                       : null;
+                    // (v0.73) Two click targets per row:
+                    //  - the body (name + scores) navigates to JobPage
+                    //    so the user lands in the full results UI for
+                    //    this run, with this compound's pose preselected
+                    //  - the small ▶ button on the left swaps the inline
+                    //    3D viewer to this compound's pose without
+                    //    leaving Studio (legacy v0.71 behaviour kept
+                    //    for users who want to compare poses quickly)
+                    const loadIn3D = () => {
+                      setSelectedRowCompoundId(row.compoundId);
+                      const mut: QuickDockResult | null = row.mutantScore != null ? {
+                        ok: true,
+                        score: row.mutantScore,
+                        hits: [],
+                        misses: [],
+                        pose_pdbqt_b64: row.mutantPoseB64,
+                        pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
+                        chain: dockResult?.chain || dockResultWt?.chain,
+                        receptor_variant: "mutant",
+                      } : null;
+                      const wt: QuickDockResult | null = row.wtScore != null ? {
+                        ok: true,
+                        score: row.wtScore,
+                        hits: [],
+                        misses: [],
+                        pose_pdbqt_b64: row.wtPoseB64,
+                        pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
+                        chain: dockResult?.chain || dockResultWt?.chain,
+                        receptor_variant: "wt",
+                      } : null;
+                      if (mut) { setDockResult(mut); setDockResultWt(wt); }
+                      else { setDockResult(wt); setDockResultWt(null); }
+                    };
                     return (
-                      <button
+                      <div
                         key={row.compoundId}
-                        type="button"
-                        onClick={() => {
-                          setSelectedRowCompoundId(row.compoundId);
-                          const mut: QuickDockResult | null = row.mutantScore != null ? {
-                            ok: true,
-                            score: row.mutantScore,
-                            hits: [],
-                            misses: [],
-                            pose_pdbqt_b64: row.mutantPoseB64,
-                            pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
-                            chain: dockResult?.chain || dockResultWt?.chain,
-                            receptor_variant: "mutant",
-                          } : null;
-                          const wt: QuickDockResult | null = row.wtScore != null ? {
-                            ok: true,
-                            score: row.wtScore,
-                            hits: [],
-                            misses: [],
-                            pose_pdbqt_b64: row.wtPoseB64,
-                            pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
-                            chain: dockResult?.chain || dockResultWt?.chain,
-                            receptor_variant: "wt",
-                          } : null;
-                          if (mut) { setDockResult(mut); setDockResultWt(wt); }
-                          else { setDockResult(wt); setDockResultWt(null); }
-                        }}
-                        className={`w-full px-2 py-1 flex items-center gap-2 text-[10px] font-mono ${
+                        className={`flex items-center gap-1 text-[10px] font-mono ${
                           isSelected ? "bg-cyan-950/30" : "hover:bg-slate-800/30"
                         }`}
-                        title={`Click to view ${row.name}'s pose in the 3D viewer.`}
                       >
-                        <span className={`shrink-0 w-3 text-[10px] ${isSelected ? "text-cyan-300" : "text-slate-700"}`}>
-                          {isSelected ? "▶" : ""}
-                        </span>
-                        <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
-                          {row.name}
-                        </span>
-                        <span className={`tabular-nums w-12 text-right ${
-                          row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
-                        }`} title="Mutant score (kcal/mol)">
-                          {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
-                        </span>
-                        {includeWt && (
-                          <span className={`tabular-nums w-12 text-right ${
-                            row.wtScore != null ? "text-slate-400" : "text-slate-700"
-                          }`} title="WT score (kcal/mol)">
-                            {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                        <button
+                          type="button"
+                          onClick={loadIn3D}
+                          className={`shrink-0 px-1.5 py-1 ${isSelected ? "text-cyan-300" : "text-slate-600 hover:text-cyan-400"}`}
+                          title="Show this compound's pose in the 3D viewer above (stay in Studio)."
+                        >
+                          ▶
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!fullJobKey) return;
+                            navigate(`/jobs/${fullJobKey}?from=studio`);
+                          }}
+                          disabled={!fullJobKey}
+                          className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={`Open the full-page results view for "${row.name}".`}
+                        >
+                          <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
+                            {row.name}
                           </span>
-                        )}
-                        {delta != null && (
                           <span className={`tabular-nums w-12 text-right ${
-                            delta < -0.3 ? "text-emerald-300" : delta > 0.3 ? "text-rose-300" : "text-slate-500"
-                          }`} title="Δ = mutant − WT · negative ⇒ tighter to mutant">
-                            {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                            row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
+                          }`} title="Mutant score (kcal/mol)">
+                            {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
                           </span>
-                        )}
-                      </button>
+                          {includeWt && (
+                            <span className={`tabular-nums w-12 text-right ${
+                              row.wtScore != null ? "text-slate-400" : "text-slate-700"
+                            }`} title="WT score (kcal/mol)">
+                              {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                            </span>
+                          )}
+                          {delta != null && (
+                            <span className={`tabular-nums w-12 text-right ${
+                              delta < -0.3 ? "text-emerald-300" : delta > 0.3 ? "text-rose-300" : "text-slate-500"
+                            }`} title="Δ = mutant − WT · negative ⇒ tighter to mutant">
+                              {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                            </span>
+                          )}
+                          <span className="text-slate-600 text-[9px] shrink-0 pl-1">↗</span>
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1412,6 +1475,38 @@ export default function StudioPage() {
             )}
             </>}
             {/* /v0.48 conditional close */}
+
+            {/* (v0.73) When the user has run a job and is inspecting
+                results, collapse the setup selectors to a one-line
+                summary so the results panel doesn't have to scroll
+                past three configuration sections. ▸ setup in the
+                header reopens. */}
+            {setupCollapsed ? (
+              <div className="px-4 py-2 border-b border-slate-800/70 flex items-center gap-2 text-[10px] font-mono">
+                <span className={TOK.label}>Setup</span>
+                <span className="text-slate-300 truncate flex-1">
+                  {selectedTargets.length > 0 ? selectedTargets.map(t => t.toUpperCase()).join(", ") : "—"}
+                  <span className="text-slate-600 mx-1">·</span>
+                  <span className="text-cyan-300">
+                    {selectedMutations.length > 0
+                      ? (includeWt ? `WT + ${selectedMutations.join(", ")}` : selectedMutations.join(", "))
+                      : "WT only"}
+                  </span>
+                  <span className="text-slate-600 mx-1">·</span>
+                  <span className="text-slate-400">
+                    {compounds.length} compound{compounds.length === 1 ? "" : "s"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSetupCollapsed(false)}
+                  className="text-cyan-400 hover:text-cyan-300 text-[9px] uppercase tracking-wider shrink-0"
+                  title="Open the selectors to tweak inputs and re-run."
+                >
+                  edit ↗
+                </button>
+              </div>
+            ) : (<>
 
             {/* ─── TARGET (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
@@ -1905,6 +2000,9 @@ export default function StudioPage() {
                 </button>
               )}
             </div>
+
+            </>)}
+            {/* (v0.73) /setupCollapsed ternary close */}
 
             </div>
             {/* /scrollable middle — closes the wrapper added in v0.28.1 */}
