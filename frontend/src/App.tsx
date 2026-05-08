@@ -305,8 +305,14 @@ function Header() {
               </Link>
             </>
           )}
-          <Link to="/new" className="btn-primary btn-sm ml-1 font-mono uppercase tracking-[0.15em]">
-            New job
+          {/* (Studio v0.88) Studio is now the canonical entry point
+              for new jobs — the unified workspace with Ketcher canvas,
+              live 3D viewer, multi-target/multi-mutation/multi-compound
+              support, AI variants, and inline Full Job submission. The
+              legacy /new form is preserved for users with bookmarks,
+              but everyone arriving fresh is routed straight to Studio. */}
+          <Link to="/studio" className="btn-primary btn-sm ml-1 font-mono uppercase tracking-[0.15em]">
+            Studio
           </Link>
         </nav>
       </div>
