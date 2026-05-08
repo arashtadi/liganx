@@ -83,13 +83,70 @@ def _reap_orphan_jobs() -> None:
         log.exception("Orphan-job reaper failed at startup (non-fatal): %s", e)
 
 
+async def _runpod_watchdog():
+    """Cost-control watchdog. Polls services.pod_activity every minute;
+    if no docking traffic for runpod_idle_minutes AND the pod is
+    currently RUNNING, calls runpod_client.stop_pod() to drop the GPU
+    bill. Runs forever as an asyncio task; recovers silently from any
+    transient RunPod API blip.
+
+    Conservative: requires at least one bump_pod_activity() call AFTER
+    startup before considering the pod idle. Prevents auto-stopping
+    immediately after a redeploy when last_activity is None.
+    """
+    import asyncio
+    from .services.pod_activity import seconds_since_last_activity
+    from .services import runpod_client
+
+    if not runpod_client.is_configured():
+        log.info("RunPod watchdog: not configured — skipping")
+        return
+    threshold = settings.runpod_idle_minutes * 60
+    log.info("RunPod watchdog: idle-stop after %d min of no traffic", settings.runpod_idle_minutes)
+    while True:
+        try:
+            await asyncio.sleep(60)
+            elapsed = seconds_since_last_activity()
+            if elapsed is None or elapsed < threshold:
+                continue
+            try:
+                status = await runpod_client.get_pod_status()
+            except Exception as e:  # noqa: BLE001
+                log.warning("RunPod watchdog: status check failed: %s", e)
+                continue
+            if (status.get("desiredStatus") or "").upper() != "RUNNING":
+                continue
+            log.info(
+                "RunPod watchdog: pod idle %ds (>%ds) — stopping",
+                int(elapsed), threshold,
+            )
+            try:
+                await runpod_client.stop_pod()
+            except Exception as e:  # noqa: BLE001
+                log.warning("RunPod watchdog: stop failed: %s", e)
+        except asyncio.CancelledError:
+            log.info("RunPod watchdog: cancelled")
+            return
+        except Exception as e:  # noqa: BLE001
+            log.warning("RunPod watchdog: unexpected: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import asyncio
     log.info("Starting DeltaDock backend %s in %s mode", __version__, settings.app_env)
     init_db()
     _reap_orphan_jobs()
-    yield
-    log.info("Shutting down DeltaDock backend")
+    watchdog_task = asyncio.create_task(_runpod_watchdog())
+    try:
+        yield
+    finally:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        log.info("Shutting down DeltaDock backend")
 
 
 app = FastAPI(

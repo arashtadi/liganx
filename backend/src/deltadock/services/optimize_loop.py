@@ -885,6 +885,10 @@ async def _batch_quick_dock(
     if not pod_url:
         return [_BatchDockOut(ok=False, error="Quick dock pod isn't configured (POD_DOCK_URL missing).") for _ in smiles_list], {"receptor_variant": "wt", "fallback_reason": "POD_DOCK_URL missing"}
 
+    # Mark pod activity so cost-control watchdog doesn't stop mid-AI-loop.
+    from .pod_activity import bump_pod_activity  # local: avoid circular
+    bump_pod_activity()
+
     # Receptor + box from the catalog. Same lookup as quick_dock —
     # accepts catalog ids ('kras') OR RCSB pdb ids ('4OBE').
     target = None

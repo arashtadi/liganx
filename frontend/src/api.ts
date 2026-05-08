@@ -536,6 +536,25 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ job_quota: jobQuota }),
     }),
+  /** Admin-only: live status of the controlled RunPod GPU pod plus the
+   *  watchdog's last-activity timer. Drives the Pod Control card. */
+  adminPodStatus: () =>
+    request<{
+      configured: boolean;
+      pod_id: string | null;
+      name: string | null;
+      desired_status: string | null;
+      uptime_seconds: number | null;
+      last_activity_seconds_ago: number | null;
+      idle_threshold_seconds: number;
+      error: string | null;
+    }>("/admin/pod/status"),
+  /** Admin-only: stop the GPU pod immediately. Idempotent. */
+  adminPodStop: () =>
+    request<{ ok: boolean; result: unknown }>("/admin/pod/stop", { method: "POST" }),
+  /** Admin-only: resume the GPU pod. ~3-5 min to ready. */
+  adminPodStart: () =>
+    request<{ ok: boolean; result: unknown }>("/admin/pod/start", { method: "POST" }),
   /** Admin-only: hard-delete a user and everything they own. */
   adminDeleteUser: async (userId: string): Promise<void> => {
     const r = await fetch(`${BASE}/admin/users/${encodeURIComponent(userId)}`, {

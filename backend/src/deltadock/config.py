@@ -162,6 +162,16 @@ class Settings(BaseSettings):
     # Production setting (2026-04-30):
     #   BOLTZ2_POD_URL=https://yvdrklbbg9qlwa-7862.proxy.runpod.net
     boltz2_pod_url: str = ""
+
+    # RunPod cost control. When all three are set, the backend auto-
+    # stops the pod after `runpod_idle_minutes` of zero docking traffic
+    # to avoid burning $15/day on an idle GPU. Admin endpoints under
+    # /admin/pod/* expose manual start/stop + status. RUNPOD_API_KEY
+    # is a Fly secret; RUNPOD_POD_ID is the pod we're controlling
+    # (currently diqoc6q2lt55mn).
+    runpod_api_key: str = ""
+    runpod_pod_id: str = ""
+    runpod_idle_minutes: int = 30
     # Boltz-2 sampling controls. Defaults match the integration plan:
     # single-sequence (no MSA fetch) for fair WT/mutant comparison, one
     # sample because Boltz is deterministic at temperature=0.

@@ -203,6 +203,11 @@ def quick_dock(
             error="Quick dock pod isn't configured (POD_DOCK_URL missing).",
         )
 
+    # Mark the pod as actively used so the cost-control watchdog
+    # doesn't auto-stop mid-request. See services/pod_activity.py.
+    from .pod_activity import bump_pod_activity  # local import: avoid circular
+    bump_pod_activity()
+
     # Resolve pocket box from the catalog (preferred) or fall back to
     # fpocket auto-detection. The catalog covers our curated targets
     # (EGFR, ABL, BRAF, etc.) — for custom PDBs the user must have

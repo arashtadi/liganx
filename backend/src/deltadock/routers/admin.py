@@ -357,3 +357,89 @@ def list_optimize_attempts(
         )
         for r in rows
     ]
+
+
+# ── /admin/pod ─── RunPod cost control ────────────────────────────────
+# Manual start/stop + status for the GPU pod, plus visibility into the
+# auto-stop watchdog's idle counter. The watchdog itself runs as an
+# asyncio task spawned in main.py's lifespan hook; these endpoints just
+# expose it to the admin UI.
+
+class PodStatusOut(BaseModel):
+    configured: bool
+    pod_id: Optional[str] = None
+    name: Optional[str] = None
+    desired_status: Optional[str] = None  # RUNNING / EXITED / etc.
+    uptime_seconds: Optional[int] = None
+    last_activity_seconds_ago: Optional[float] = None
+    idle_threshold_seconds: int
+    error: Optional[str] = None
+
+
+@router.get("/pod/status", response_model=PodStatusOut, tags=["admin"])
+async def admin_pod_status(_admin: Annotated[CurrentUser, Depends(admin_user)]) -> PodStatusOut:
+    """Live status of the controlled RunPod GPU pod plus the watchdog's
+    last-activity timestamp. Drives the Pod Control card in the admin UI."""
+    from ..config import settings as _settings
+    from ..services import runpod_client
+    from ..services.pod_activity import seconds_since_last_activity
+
+    threshold = _settings.runpod_idle_minutes * 60
+    if not runpod_client.is_configured():
+        return PodStatusOut(
+            configured=False,
+            idle_threshold_seconds=threshold,
+            last_activity_seconds_ago=seconds_since_last_activity(),
+        )
+    try:
+        s = await runpod_client.get_pod_status()
+        return PodStatusOut(
+            configured=True,
+            pod_id=s.get("id"),
+            name=s.get("name"),
+            desired_status=s.get("desiredStatus"),
+            uptime_seconds=s.get("uptimeSeconds"),
+            last_activity_seconds_ago=seconds_since_last_activity(),
+            idle_threshold_seconds=threshold,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("admin_pod_status: %s", e)
+        return PodStatusOut(
+            configured=True,
+            idle_threshold_seconds=threshold,
+            last_activity_seconds_ago=seconds_since_last_activity(),
+            error=str(e),
+        )
+
+
+@router.post("/pod/stop", tags=["admin"])
+async def admin_pod_stop(_admin: Annotated[CurrentUser, Depends(admin_user)]) -> dict:
+    """Stop the GPU pod immediately. /workspace volume persists; cold-
+    start cost on resume is ~3-5 min. Idempotent at the RunPod API."""
+    from ..services import runpod_client
+
+    if not runpod_client.is_configured():
+        raise HTTPException(503, "RunPod not configured (RUNPOD_API_KEY/POD_ID unset)")
+    try:
+        result = await runpod_client.stop_pod()
+        return {"ok": True, "result": result}
+    except Exception as e:  # noqa: BLE001
+        log.exception("admin_pod_stop failed")
+        raise HTTPException(502, f"RunPod stop failed: {e}")
+
+
+@router.post("/pod/start", tags=["admin"])
+async def admin_pod_start(_admin: Annotated[CurrentUser, Depends(admin_user)]) -> dict:
+    """Resume the GPU pod. Returns immediately with desiredStatus=RUNNING;
+    actual readiness for docking takes ~3-5 min more (container provision
+    + start_dock_server.sh). Hit /pod/status to poll."""
+    from ..services import runpod_client
+
+    if not runpod_client.is_configured():
+        raise HTTPException(503, "RunPod not configured (RUNPOD_API_KEY/POD_ID unset)")
+    try:
+        result = await runpod_client.start_pod()
+        return {"ok": True, "result": result}
+    except Exception as e:  # noqa: BLE001
+        log.exception("admin_pod_start failed")
+        raise HTTPException(502, f"RunPod start failed: {e}")

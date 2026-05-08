@@ -191,7 +191,7 @@ function AdminDashboard() {
 
       {/* Stats strip */}
       {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
           <StatCard label="Users" value={stats.total_users} />
           <StatCard label="Jobs total" value={stats.total_jobs} />
           <StatCard label="Jobs · 24h" value={stats.jobs_24h} />
@@ -200,6 +200,9 @@ function AdminDashboard() {
           <StatCard label="Failed · 7d" value={stats.jobs_failed_7d} accent={stats.jobs_failed_7d > 0 ? "rose" : "default"} />
         </div>
       )}
+
+      <PodControl />
+
 
       {/* Users table */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
@@ -454,6 +457,121 @@ function NotAuthorizedCard({ reason }: { reason: "signed-out" | "not-admin" }) {
             : "This page is only available to the Liganx admin."}
         </p>
       </div>
+    </div>
+  );
+}
+
+/* ─── Pod Control ──────────────────────────────────────────────────────
+ *
+ * Live status + manual start/stop of the controlled RunPod GPU pod.
+ * Backed by /admin/pod/{status,start,stop}. Polls every 10s so the
+ * status pill reflects mid-deploy state changes (RUNNING → EXITED on
+ * the watchdog auto-stop, etc.).
+ */
+function PodControl() {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["admin-pod-status"],
+    queryFn: api.adminPodStatus,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const stopMut = useMutation({
+    mutationFn: api.adminPodStop,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-pod-status"] }),
+  });
+  const startMut = useMutation({
+    mutationFn: api.adminPodStart,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-pod-status"] }),
+  });
+
+  const s = statusQuery.data;
+  const desired = (s?.desired_status || "").toUpperCase();
+  const isRunning = desired === "RUNNING";
+  const isStopped = desired === "EXITED" || desired === "STOPPED";
+  const lastActMin = s?.last_activity_seconds_ago != null ? Math.floor(s.last_activity_seconds_ago / 60) : null;
+  const idleMin = Math.floor((s?.idle_threshold_seconds || 0) / 60);
+
+  function fmtUptime(sec: number | null | undefined): string {
+    if (!sec) return "—";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (h >= 24) return `${Math.floor(h/24)}d ${h % 24}h`;
+    return `${h}h ${m}m`;
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 mb-8">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <h2 className="text-sm font-semibold text-ink dark:text-slate-100 flex items-center gap-2">
+          GPU Pod
+          {s?.configured === false && (
+            <span className="text-[10px] font-normal text-amber-600 dark:text-amber-400">
+              · RUNPOD_API_KEY / RUNPOD_POD_ID not set
+            </span>
+          )}
+        </h2>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => stopMut.mutate()}
+            disabled={!s?.configured || !isRunning || stopMut.isPending || startMut.isPending}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed"
+            title="Stop the pod immediately. /workspace volume persists. Cold-start cost on resume is ~3-5 min."
+          >
+            {stopMut.isPending ? "Stopping…" : "⏹ Stop pod"}
+          </button>
+          <button
+            type="button"
+            onClick={() => startMut.mutate()}
+            disabled={!s?.configured || !isStopped || startMut.isPending || stopMut.isPending}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed"
+            title="Resume the pod. ~3-5 min until ready for docking."
+          >
+            {startMut.isPending ? "Starting…" : "▶ Start pod"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Status</div>
+          <div className={`mt-1 font-mono text-sm font-semibold ${
+            isRunning ? "text-emerald-600 dark:text-emerald-400"
+            : isStopped ? "text-slate-500"
+            : "text-amber-600 dark:text-amber-400"
+          }`}>
+            {!s?.configured ? "—"
+              : isRunning ? "● RUNNING ($0.65/hr)"
+              : isStopped ? "○ STOPPED ($0.13/day)"
+              : (s?.desired_status || "unknown")}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Uptime</div>
+          <div className="mt-1 font-mono text-sm text-ink dark:text-slate-100 tabular-nums">
+            {fmtUptime(s?.uptime_seconds)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Last activity</div>
+          <div className="mt-1 font-mono text-sm text-ink dark:text-slate-100 tabular-nums">
+            {lastActMin == null ? "—" : `${lastActMin} min ago`}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Auto-stop after</div>
+          <div className="mt-1 font-mono text-sm text-ink dark:text-slate-100 tabular-nums">
+            {idleMin} min idle
+          </div>
+        </div>
+      </div>
+
+      {s?.error && (
+        <div className="mt-3 text-xs font-mono text-rose-600 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 rounded p-2">
+          {s.error}
+        </div>
+      )}
     </div>
   );
 }

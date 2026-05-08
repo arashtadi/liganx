@@ -1495,6 +1495,10 @@ def _run_real(session: Session, job: Job) -> None:
         # call for that variant, which is exactly what the legacy path does
         # anyway, so reliability is unchanged.
         if pod_batch_on and len(compounds) * len(variants) > 1:
+            # Mark pod activity so cost-control watchdog doesn't auto-stop
+            # mid-job. See services/pod_activity.py.
+            from .pod_activity import bump_pod_activity  # local: avoid circular
+            bump_pod_activity()
             log.info(
                 "Using batched dispatch: %d compounds x %d variants",
                 len(compounds), len(variants),
