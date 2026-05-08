@@ -98,10 +98,16 @@ export default function JobPage() {
     if (!job) return;
     const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
     // (Studio v0.91) Always go to /studio regardless of how the user
-    // got to JobPage. The previous from=studio gate left history-
-    // sourced visitors on the legacy /new form even though Studio is
-    // now the canonical edit & re-dock destination. The reseed shape
-    // is preserved for payload compat.
+    // got to JobPage.
+    // (Studio v0.96) replaceSession=true so Studio loads ONLY this
+    // compound + this job's target/mutations, not a merge with the
+    // user's prior workspace. Without it, every click of Edit &
+    // re-dock added the new compound on top of whatever was already
+    // staged — users hit 4/10 compounds after iterating a few times
+    // even though they only ever wanted one focused edit. The user
+    // who wants "Studio as I left it" uses the Back to Studio link
+    // instead (which still restores the full session via
+    // restoreSession:true).
     editNavigate("/studio", {
       state: {
         reseed: {
@@ -112,6 +118,7 @@ export default function JobPage() {
           engine: job.engine ?? "quickvina2_gpu",
           exhaustiveness: j.exhaustiveness ?? 8,
           include_wt: j.include_wt ?? true,
+          replaceSession: true,
         },
       },
     });
