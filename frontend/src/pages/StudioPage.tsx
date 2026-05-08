@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.87-2026-05-08-mutation-code-parse-fix";
+const LIGANX_BUILD_TAG = "v0.89-2026-05-08-prominent-genai-scoped-applied";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3576,7 +3576,13 @@ function AiVariantsPanel({
   // an ISO timestamp captured at apply time. localStorage-backed so
   // the history survives refreshes.
   const APPLIED_KEY = "liganx-studio-applied-variants";
-  type AppliedVariant = AiVariant & { appliedAt: string };
+  // (v0.89) Stamp each applied variant with the (target_pdb, mutation)
+  // it was generated against, so the panel can scope the displayed
+  // history to the current dock context. Old entries that pre-date
+  // this stamping default to ad-hoc context strings — they keep
+  // showing up under "all" but won't pollute a fresh KRAS Q61H run
+  // when their context was EGFR T790M.
+  type AppliedVariant = AiVariant & { appliedAt: string; targetPdb?: string; mutation?: string };
   const [appliedVariants, setAppliedVariants] = useState<AppliedVariant[]>(() => {
     if (typeof localStorage === "undefined") return [];
     try {
@@ -3584,6 +3590,19 @@ function AiVariantsPanel({
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   });
+  // (v0.89) Filter the displayed applied list to entries matching
+  // the current (target, mutation). Falls through to the unfiltered
+  // list when there's no current target (so you don't lose visibility
+  // entirely on a fresh Studio mount). Toggle via the "show all"
+  // button in the header.
+  const [showAllApplied, setShowAllApplied] = useState(false);
+  const ctxKey = (a: { targetPdb?: string; mutation?: string }) =>
+    `${(a.targetPdb || "").toUpperCase()}|${(a.mutation || "WT").toUpperCase()}`;
+  const currentCtxKey = ctxKey({ targetPdb, mutation });
+  const visibleApplied = showAllApplied || !targetPdb
+    ? appliedVariants
+    : appliedVariants.filter((a) => ctxKey(a) === currentCtxKey);
+  const hiddenAppliedCount = appliedVariants.length - visibleApplied.length;
   // The variant the user just clicked Apply & Dock on — used to
   // show a "applying compound + submitting dock…" mini-state on
   // that specific card while the dock is in flight.
@@ -3666,8 +3685,45 @@ function AiVariantsPanel({
         </div>
       )}
       {loading && (
-        <div className="p-3 text-[10px] font-mono text-cyan-300/70 animate-pulse">
-          ▮ asking the AI for 3 variants… typical wait 20-40 s (generate → score → filter → dock).
+        // (v0.89) Prominent in-panel generation banner — replaces the
+        // tiny pulsing line that the user said wasn't visible enough.
+        // Cyan gradient + pulsing orb + shimmer stripe + a "this may
+        // take 20-40 s" copy line so the user has no doubt the system
+        // is working on their request.
+        <div className="relative px-4 py-3 bg-gradient-to-r from-cyan-950/80 via-cyan-900/60 to-cyan-950/80 border-b-2 border-cyan-500/60 shadow-lg shadow-cyan-900/30 overflow-hidden">
+          <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
+            <div
+              className="h-full w-1/3 bg-gradient-to-r from-transparent via-cyan-300 to-transparent"
+              style={{ animation: "studio-aivar-shimmer 1.8s linear infinite" }}
+            />
+          </div>
+          <style>{`
+            @keyframes studio-aivar-shimmer {
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(400%); }
+            }
+            @keyframes studio-aivar-pulse-ring {
+              0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7); }
+              50% { box-shadow: 0 0 0 6px rgba(34, 211, 238, 0); }
+            }
+          `}</style>
+          <div className="flex items-center gap-3 font-mono">
+            <div className="relative shrink-0">
+              <span className="block w-3 h-3 rounded-full bg-cyan-400 animate-pulse" />
+              <span
+                className="absolute inset-0 rounded-full"
+                style={{ animation: "studio-aivar-pulse-ring 1.6s ease-out infinite" }}
+              />
+            </div>
+            <div className="flex flex-col">
+              <span className="text-cyan-100 font-bold uppercase tracking-[0.18em] text-[12px]">
+                ✨ AI generating 3 variants
+              </span>
+              <span className="text-cyan-300/80 text-[10px]">
+                generate → score → filter → dock · ~20-40 s typical
+              </span>
+            </div>
+          </div>
         </div>
       )}
       {variants && variants.length === 0 && (
@@ -3724,8 +3780,15 @@ function AiVariantsPanel({
                   onClick={async () => {
                     setPendingVariantSmiles(v.new_smiles);
                     onUseVariant(v);
-                    // Persist this as an applied variant with timestamp.
-                    const stamped: AppliedVariant = { ...v, appliedAt: new Date().toISOString() };
+                    // Persist this as an applied variant with timestamp
+                    // AND the (target, mutation) context it ran in so
+                    // the panel can scope the history correctly later.
+                    const stamped: AppliedVariant = {
+                      ...v,
+                      appliedAt: new Date().toISOString(),
+                      targetPdb: targetPdb || "",
+                      mutation: mutation || "WT",
+                    };
                     setAppliedVariants((prev) => {
                       // Move-to-front behavior so newest applied is first
                       // and we don't keep duplicates of the same SMILES.
@@ -3769,28 +3832,54 @@ function AiVariantsPanel({
           they can always go back to a previous experiment. Persists
           across Generate clicks AND across page refreshes via
           localStorage. */}
-      {appliedVariants.length > 0 && (
+      {visibleApplied.length > 0 && (
         <div className="border-t border-slate-800/70">
-          <div className="px-3 py-1.5 flex items-center justify-between text-[10px] font-mono">
+          <div className="px-3 py-1.5 flex items-center justify-between gap-2 text-[10px] font-mono">
             <span className="text-slate-500 uppercase tracking-[0.18em]">
-              ✓ applied ({appliedVariants.length})
+              ✓ applied ({visibleApplied.length}{showAllApplied || !targetPdb ? "" : ` · ${targetPdb}${mutation && mutation !== "WT" ? `·${mutation}` : ""}`})
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm(`Clear all ${appliedVariants.length} applied variants from history?`)) {
-                  setAppliedVariants([]);
-                  try { localStorage.removeItem(APPLIED_KEY); } catch { /* */ }
-                }
-              }}
-              className="text-slate-600 hover:text-rose-400 text-[10px]"
-              title="Wipe the applied history. Doesn't affect any docks already submitted to /jobs."
-            >
-              clear
-            </button>
+            <div className="flex items-center gap-2">
+              {/* (v0.89) Toggle when there are entries from other
+                  (target, mutation) contexts — by default we hide
+                  them so the user only sees variants relevant to the
+                  current dock setup. */}
+              {hiddenAppliedCount > 0 && !showAllApplied && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllApplied(true)}
+                  className="text-cyan-400/80 hover:text-cyan-300 text-[10px]"
+                  title="Show variants applied against other targets/mutations too"
+                >
+                  show all (+{hiddenAppliedCount} other)
+                </button>
+              )}
+              {showAllApplied && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllApplied(false)}
+                  className="text-slate-500 hover:text-slate-300 text-[10px]"
+                  title="Show only variants applied against the current target/mutation"
+                >
+                  current run only
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Clear all ${appliedVariants.length} applied variants from history?`)) {
+                    setAppliedVariants([]);
+                    try { localStorage.removeItem(APPLIED_KEY); } catch { /* */ }
+                  }
+                }}
+                className="text-slate-600 hover:text-rose-400 text-[10px]"
+                title="Wipe the applied history. Doesn't affect any docks already submitted to /jobs."
+              >
+                clear
+              </button>
+            </div>
           </div>
           <div className="divide-y divide-slate-800/60">
-            {appliedVariants.map((a) => {
+            {visibleApplied.map((a) => {
               const isPending = pendingVariantSmiles === a.new_smiles;
               const dt = Math.max(0, Math.floor((Date.now() - new Date(a.appliedAt).getTime()) / 1000));
               const ago = dt < 60 ? `${dt}s` : dt < 3600 ? `${Math.floor(dt/60)}m` : dt < 86400 ? `${Math.floor(dt/3600)}h` : `${Math.floor(dt/86400)}d`;
@@ -3808,6 +3897,22 @@ function AiVariantsPanel({
                     <span className="text-slate-400 truncate min-w-0 flex-1" title={a.new_smiles}>
                       {a.new_smiles.length > 36 ? a.new_smiles.slice(0, 36) + "…" : a.new_smiles}
                     </span>
+                    {/* (v0.89) Show the (target, mutation) context for
+                        each row when we're displaying entries from
+                        multiple runs — gives the user an at-a-glance
+                        reason why this entry is in the list. */}
+                    {showAllApplied && (a.targetPdb || a.mutation) && (
+                      <span
+                        className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded border ${
+                          ctxKey(a) === currentCtxKey
+                            ? "border-cyan-700/50 bg-cyan-950/30 text-cyan-300"
+                            : "border-slate-700/60 bg-slate-900/30 text-slate-500"
+                        }`}
+                        title={`Applied against ${a.targetPdb || "?"}${a.mutation && a.mutation !== "WT" ? ` · ${a.mutation}` : ""}`}
+                      >
+                        {(a.targetPdb || "?").toUpperCase()}{a.mutation && a.mutation !== "WT" ? `·${a.mutation}` : ""}
+                      </span>
+                    )}
                     <span className="text-slate-600 shrink-0" title={a.appliedAt}>{ago} ago</span>
                     <button
                       type="button"
