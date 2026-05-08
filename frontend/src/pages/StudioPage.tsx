@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.75-2026-05-07-session-survives-jobpage-roundtrip";
+const LIGANX_BUILD_TAG = "v0.76-2026-05-07-reseed-merges-with-session";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -249,7 +249,13 @@ export default function StudioPage() {
   const reseed = (location.state as any)?.reseed as
     | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
     | undefined;
-  const initialSession = useRef<StudioSessionSnapshot | null>(reseed ? null : readStudioSession()).current;
+  // (v0.76) Always restore the session if one exists. Reseed is treated
+  // as an OVERLAY (load this compound into the canvas + lock it as the
+  // loadedCompound, merge it into the staged list if absent), not a
+  // replacement. v0.75 suppressed restoration when reseed was present
+  // — that landed users on an empty Studio after Edit & re-dock,
+  // because the staged compounds and prior docking results were gone.
+  const initialSession = useRef<StudioSessionSnapshot | null>(readStudioSession()).current;
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
   // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
@@ -277,9 +283,18 @@ export default function StudioPage() {
   // between "Save changes to <name>" (overwrite) and "Save as new"
   // (keep the original). Cleared when the user explicitly forks or
   // sketches from scratch.
-  const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(
-    initialSession?.loadedCompound ?? null,
-  );
+  // (v0.76) loadedCompound: prefer session restoration (so the prior
+  // fork-on-edit lock survives a JobPage round-trip). Reseed overrides
+  // it only if there was no session — i.e. fresh load from /new-style
+  // history reseed where there's nothing to restore.
+  const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(() => {
+    if (initialSession?.loadedCompound) return initialSession.loadedCompound;
+    if (reseed?.compounds?.[0]) {
+      const c = reseed.compounds[0];
+      return c.name ? { name: c.name, smiles: c.smiles } : null;
+    }
+    return null;
+  });
 
   // (v0.62-0.64) Studio supports up to 2 targets, 2 mutations, and
   // 10 compounds per Full Job. State shape: arrays for all three.
@@ -288,8 +303,9 @@ export default function StudioPage() {
   // helpers below as 'first-of-array' shims. New code should prefer
   // the array forms.
   const [selectedTargets, setSelectedTargets] = useState<string[]>(
-    initialSession?.selectedTargets
-    ?? (reseed?.catalog_target_id ? [reseed.catalog_target_id] : reseed?.pdb_id ? [reseed.pdb_id.toLowerCase()] : []),
+    initialSession?.selectedTargets && initialSession.selectedTargets.length > 0
+      ? initialSession.selectedTargets
+      : (reseed?.catalog_target_id ? [reseed.catalog_target_id] : reseed?.pdb_id ? [reseed.pdb_id.toLowerCase()] : []),
   );
   // Selection model: WT can be ON or OFF, and up to TWO mutation tags.
   // Default is WT-only (the conservative starting point — without a
@@ -298,7 +314,9 @@ export default function StudioPage() {
   // and Run Dock fires all in parallel.
   const [includeWt, setIncludeWt] = useState<boolean>(initialSession?.includeWt ?? reseed?.include_wt ?? true);
   const [selectedMutations, setSelectedMutations] = useState<string[]>(
-    initialSession?.selectedMutations ?? reseed?.mutations ?? [],
+    initialSession?.selectedMutations && initialSession.selectedMutations.length > 0
+      ? initialSession.selectedMutations
+      : (reseed?.mutations ?? []),
   );
   // Singleton shims — every existing reference to selectedTarget /
   // selectedMutation reads the first array entry. Setters that pass a
@@ -319,20 +337,50 @@ export default function StudioPage() {
   // so existing rendering paths (live conformer, score panel, etc.)
   // keep working without touching dozens of call sites.
   type CompoundEntry = { id: string; smiles: string; name?: string };
-  // (v0.75) Reseed compounds from JobPage's Edit & re-dock take precedence
-  // over the prior session — the user is intentionally swapping in a new
-  // structure. Otherwise rehydrate from sessionStorage.
+  // (v0.76) Compounds: restore the session's staged list FIRST, then
+  // overlay the reseed compound if any. The reseed compound either
+  // (a) replaces the existing entry whose name matches (Edit & re-dock
+  //     of an already-staged compound — the modified SMILES updates
+  //     the existing row in place), or
+  // (b) appends as a new staged entry if no name match (Edit & re-dock
+  //     produced a renamed variant we haven't seen before, or there's
+  //     no prior session).
+  // Cap at MAX_COMPOUNDS — never overflow.
   const [compounds, setCompounds] = useState<CompoundEntry[]>(() => {
-    if (reseed?.compounds && reseed.compounds.length > 0) {
-      return reseed.compounds.map((c, i) => ({
-        id: `c_reseed_${Date.now().toString(36)}_${i}`,
-        smiles: c.smiles,
-        name: c.name || undefined,
-      }));
+    const restored = initialSession?.compounds ?? [];
+    if (!reseed?.compounds || reseed.compounds.length === 0) return restored;
+    const merged = [...restored];
+    for (const c of reseed.compounds) {
+      const matchIdx = c.name
+        ? merged.findIndex((m) => (m.name || "").toLowerCase() === c.name!.toLowerCase())
+        : -1;
+      if (matchIdx >= 0) {
+        merged[matchIdx] = { ...merged[matchIdx], smiles: c.smiles };
+      } else if (merged.length < 10) {
+        merged.push({
+          id: `c_reseed_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          smiles: c.smiles,
+          name: c.name || undefined,
+        });
+      }
     }
-    return initialSession?.compounds ?? [];
+    return merged;
   });
-  const [activeCompoundIdx, setActiveCompoundIdx] = useState<number>(initialSession?.activeCompoundIdx ?? 0);
+  // (v0.76) When reseed is present, make the reseeded compound active
+  // so the canvas loads it and the user lands on the row they came
+  // back to edit. Otherwise restore the prior active row.
+  const [activeCompoundIdx, setActiveCompoundIdx] = useState<number>(() => {
+    if (reseed?.compounds?.[0]) {
+      const restored = initialSession?.compounds ?? [];
+      const matchIdx = reseed.compounds[0].name
+        ? restored.findIndex((m) => (m.name || "").toLowerCase() === reseed.compounds![0].name!.toLowerCase())
+        : -1;
+      if (matchIdx >= 0) return matchIdx;
+      // Newly appended at the end of the merged list:
+      return Math.min(restored.length, 9);
+    }
+    return initialSession?.activeCompoundIdx ?? 0;
+  });
   // Typeahead query strings — filter the chip rows live as the user
   // types. Empty string = show all chips (default).
   const [targetQuery, setTargetQuery] = useState("");
@@ -347,10 +395,10 @@ export default function StudioPage() {
   // the mutant pose if available, otherwise WT — that's the "primary"
   // view, with the other surfaced as a secondary readout in the panel.
   const [dockResult, setDockResult] = useState<QuickDockResult | null>(
-    !reseed && initialSession?.dockResult ? initialSession.dockResult : null,
+    initialSession?.dockResult ?? null,
   ); // primary (mutant if selected, else WT)
   const [dockResultWt, setDockResultWt] = useState<QuickDockResult | null>(
-    !reseed && initialSession?.dockResultWt ? initialSession.dockResultWt : null,
+    initialSession?.dockResultWt ?? null,
   ); // WT comparison slot
   // Mutation-residue-to-pocket-center distance. Same semantic as
   // JobPage's outsidePocketA: when a mutation sits far from the
@@ -620,6 +668,35 @@ export default function StudioPage() {
     return () => window.removeEventListener("message", onMsg);
   }, []);
 
+  // (v0.76) When Studio mounts with a restored session OR a reseed
+  // compound, load the active staged compound's SMILES into the
+  // Ketcher canvas as soon as the editor is ready. Without this, the
+  // canvas stays blank after navigation back from JobPage / Edit &
+  // re-dock, even though the staged list and results are restored.
+  // One-shot — runs only on the first ketcherReady=true after mount.
+  const didMountLoadRef = useRef(false);
+  useEffect(() => {
+    if (!ketcherReady || didMountLoadRef.current) return;
+    didMountLoadRef.current = true;
+    // Prefer the reseed compound if present (the user explicitly
+    // came back to edit this one). Otherwise the active staged
+    // compound from the restored session.
+    const reseedSmiles = reseed?.compounds?.[0]?.smiles;
+    const reseedName = reseed?.compounds?.[0]?.name;
+    if (reseedSmiles) {
+      // Pull the staged id of the reseed compound (we either matched
+      // by name or appended at the tail in the compounds initializer).
+      const stagedId = compounds.find((c) => (c.name || "").toLowerCase() === (reseedName || "").toLowerCase())?.id;
+      loadIntoCanvas(reseedSmiles, { stagedId, libraryName: reseedName || undefined });
+      return;
+    }
+    if (compounds.length > 0 && activeCompoundIdx >= 0 && activeCompoundIdx < compounds.length) {
+      const c = compounds[activeCompoundIdx];
+      loadIntoCanvas(c.smiles, { stagedId: c.id, libraryName: c.name });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ketcherReady]);
+
   // SMILES polling
   useEffect(() => {
     if (!ketcherReady) return;
@@ -780,15 +857,11 @@ export default function StudioPage() {
   // score panel header, and populate dockResult/dockResultWt when the
   // job completes. A "view full results page" link in the header
   // gets the user to JobPage when they want the deeper UI.
-  const [fullJobKey, setFullJobKey] = useState<string | null>(
-    !reseed ? (initialSession?.fullJobKey ?? null) : null,
-  );
+  const [fullJobKey, setFullJobKey] = useState<string | null>(initialSession?.fullJobKey ?? null);
   const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(
-    !reseed ? (initialSession?.fullJobStatus ?? null) : null,
+    initialSession?.fullJobStatus ?? null,
   );
-  const [fullJobStage, setFullJobStage] = useState<string | null>(
-    !reseed ? (initialSession?.fullJobStage ?? null) : null,
-  );
+  const [fullJobStage, setFullJobStage] = useState<string | null>(initialSession?.fullJobStage ?? null);
   // (v0.71) Multi-compound result table. job.results contains one row
   // per (compound, variant) pair — for a 7-compound run with WT, that's
   // 14 rows. The legacy dockResult / dockResultWt slots can only hold
@@ -807,12 +880,12 @@ export default function StudioPage() {
     wtPoseB64?: string;
   };
   const [fullJobRows, setFullJobRows] = useState<FullJobRow[]>(
-    !reseed && initialSession?.fullJobRows ? (initialSession.fullJobRows as FullJobRow[]) : [],
+    initialSession?.fullJobRows ? (initialSession.fullJobRows as FullJobRow[]) : [],
   );
   // Which row is currently shown in the 3D viewer + score panel
   // (defaults to the strongest mutant once results land).
   const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(
-    !reseed ? (initialSession?.selectedRowCompoundId ?? null) : null,
+    initialSession?.selectedRowCompoundId ?? null,
   );
   // (v0.73) Setup section (Target / Mutation / Compound) collapse state.
   // Pre-dock, the user is configuring — selectors stay open. Post-dock,
@@ -820,9 +893,11 @@ export default function StudioPage() {
   // summary so the SCORE + per-compound results table take the visual
   // focus. A header toggle re-opens the selectors when the user wants
   // to tweak and re-run.
-  const [setupCollapsed, setSetupCollapsed] = useState(
-    !reseed ? (initialSession?.setupCollapsed ?? false) : false,
-  );
+  // (v0.76) Even when the user lands via Edit & re-dock, the prior
+  // collapsed-setup state is preserved — they came back to inspect/iterate
+  // on results, so keep the results-focused layout. They can ▾ setup to
+  // open if they want to tweak inputs.
+  const [setupCollapsed, setSetupCollapsed] = useState(initialSession?.setupCollapsed ?? false);
   useEffect(() => {
     if (fullJobStatus === "completed" && fullJobRows.length > 0) {
       setSetupCollapsed(true);
