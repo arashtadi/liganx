@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.99-2026-05-08-admet-extended";
+const LIGANX_BUILD_TAG = "v1.00-2026-05-08-studio-inline-admet";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -31,6 +31,7 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import AdmetChips from "../components/AdmetChips";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -1258,6 +1259,10 @@ export default function StudioPage() {
     wtScore: number | null;
     mutantPoseB64?: string;
     wtPoseB64?: string;
+    // (v1.00) ADMET payload from job.compounds[].admet — drug-likeness +
+    // extended risk profile (hERG / BBB / CYP / DILI). Optional; absent
+    // when RDKit failed to parse the SMILES on the backend.
+    admet?: import("../api").Admet | null;
   };
   const [fullJobRows, setFullJobRows] = useState<FullJobRow[]>(
     initialSession?.fullJobRows ? (initialSession.fullJobRows as FullJobRow[]) : [],
@@ -1267,6 +1272,17 @@ export default function StudioPage() {
   const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(
     initialSession?.selectedRowCompoundId ?? null,
   );
+  // (v1.00) Per-row ADMET expand state. Set of compoundIds whose
+  // result row is currently showing the AdmetChips drawer below the
+  // score line. Click the ⓘ ADMET button on any row to toggle.
+  const [admetExpandedIds, setAdmetExpandedIds] = useState<Set<number>>(new Set());
+  const toggleAdmetExpanded = (cid: number) =>
+    setAdmetExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cid)) next.delete(cid);
+      else next.add(cid);
+      return next;
+    });
   // (v0.73) Setup section (Target / Mutation / Compound) collapse state.
   // Pre-dock, the user is configuring — selectors stay open. Post-dock,
   // the user is inspecting — selectors auto-collapse to a one-line
@@ -1482,6 +1498,7 @@ export default function StudioPage() {
               compoundId: c.id,
               name: c.name || `compound #${c.id}`,
               smiles: c.smiles,
+              admet: c.admet ?? null,
               mutantScore: null,
               wtScore: null,
             });
@@ -2229,55 +2246,84 @@ export default function StudioPage() {
                       if (mut) { setDockResult(mut); setDockResultWt(wt); }
                       else { setDockResult(wt); setDockResultWt(null); }
                     };
+                    const admetExpanded = admetExpandedIds.has(row.compoundId);
                     return (
                       <div
                         key={row.compoundId}
-                        className={`flex items-center gap-1 text-[10px] font-mono ${
+                        className={`text-[10px] font-mono ${
                           isSelected ? "bg-cyan-950/30" : "hover:bg-slate-800/30"
                         }`}
                       >
-                        <button
-                          type="button"
-                          onClick={loadIn3D}
-                          className={`shrink-0 px-1.5 py-1 ${isSelected ? "text-cyan-300" : "text-slate-600 hover:text-cyan-400"}`}
-                          title="Show this compound's pose in the 3D viewer above (stay in Studio)."
-                        >
-                          ▶
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!fullJobKey) return;
-                            navigate(`/jobs/${fullJobKey}?from=studio`);
-                          }}
-                          disabled={!fullJobKey}
-                          className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={`Open the full-page results view for "${row.name}".`}
-                        >
-                          <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
-                            {row.name}
-                          </span>
-                          <span className={`tabular-nums w-12 text-right ${
-                            row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
-                          }`} title="Mutant score (kcal/mol)">
-                            {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
-                          </span>
-                          {includeWt && (
-                            <span className={`tabular-nums w-12 text-right ${
-                              row.wtScore != null ? "text-slate-400" : "text-slate-700"
-                            }`} title="WT score (kcal/mol)">
-                              {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={loadIn3D}
+                            className={`shrink-0 px-1.5 py-1 ${isSelected ? "text-cyan-300" : "text-slate-600 hover:text-cyan-400"}`}
+                            title="Show this compound's pose in the 3D viewer above (stay in Studio)."
+                          >
+                            ▶
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!fullJobKey) return;
+                              navigate(`/jobs/${fullJobKey}?from=studio`);
+                            }}
+                            disabled={!fullJobKey}
+                            className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={`Open the full-page results view for "${row.name}".`}
+                          >
+                            <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
+                              {row.name}
                             </span>
-                          )}
-                          {delta != null && (
                             <span className={`tabular-nums w-12 text-right ${
-                              delta < -0.3 ? "text-emerald-300" : delta > 0.3 ? "text-rose-300" : "text-slate-500"
-                            }`} title="Δ = mutant − WT · negative ⇒ tighter to mutant">
-                              {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                              row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
+                            }`} title="Mutant score (kcal/mol)">
+                              {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
                             </span>
-                          )}
-                          <span className="text-slate-600 text-[9px] shrink-0 pl-1">↗</span>
-                        </button>
+                            {includeWt && (
+                              <span className={`tabular-nums w-12 text-right ${
+                                row.wtScore != null ? "text-slate-400" : "text-slate-700"
+                              }`} title="WT score (kcal/mol)">
+                                {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                              </span>
+                            )}
+                            {delta != null && (
+                              <span className={`tabular-nums w-12 text-right ${
+                                delta < -0.3 ? "text-emerald-300" : delta > 0.3 ? "text-rose-300" : "text-slate-500"
+                              }`} title="Δ = mutant − WT · negative ⇒ tighter to mutant">
+                                {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                              </span>
+                            )}
+                            <span className="text-slate-600 text-[9px] shrink-0 pl-1">↗</span>
+                          </button>
+                          {/* (v1.00) Inline ADMET toggle — drops down the
+                              full chip card below this row when clicked.
+                              Disabled when admet is null (RDKit didn't
+                              produce descriptors for this SMILES). */}
+                          <button
+                            type="button"
+                            onClick={() => toggleAdmetExpanded(row.compoundId)}
+                            disabled={!row.admet}
+                            className={`shrink-0 px-1.5 py-0.5 mx-1 my-0.5 rounded border text-[9px] uppercase tracking-wider transition-colors ${
+                              !row.admet
+                                ? "border-slate-800 text-slate-700 cursor-not-allowed"
+                                : admetExpanded
+                                ? "border-violet-500/60 bg-violet-950/40 text-violet-200"
+                                : "border-slate-700/60 text-slate-400 hover:text-violet-200 hover:border-violet-500/60"
+                            }`}
+                            title={!row.admet
+                              ? "ADMET descriptors unavailable for this SMILES"
+                              : admetExpanded ? "Hide ADMET / drug-likeness panel" : "Show ADMET — drug-likeness, hERG, BBB, CYP, DILI risk"}
+                          >
+                            {admetExpanded ? "▾ admet" : "▸ admet"}
+                          </button>
+                        </div>
+                        {admetExpanded && row.admet && (
+                          <div className="px-3 py-2 bg-slate-950/40 border-t border-slate-800/60 text-slate-200">
+                            <AdmetChips admet={row.admet} layout="card" />
+                          </div>
+                        )}
                       </div>
                     );
                   })}
