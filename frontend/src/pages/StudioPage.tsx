@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.79-2026-05-07-empty-by-default";
+const LIGANX_BUILD_TAG = "v0.80-2026-05-07-refresh-also-empty";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -250,28 +250,25 @@ export default function StudioPage() {
     | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
     | undefined;
   const restoreRequested = (location.state as any)?.restoreSession === true;
-  // (v0.79) Conditional rehydration. Auto-restoring on every mount made
-  // a direct visit to /studio show a stale prior setup — surprising
-  // because the user expects /studio to be empty unless they came back
-  // via Back to Studio / Edit & re-dock / browser-back / refresh.
-  // Treat the snapshot as restorable only when intent is clear:
+  // (v0.79-0.80) Conditional rehydration. Auto-restoring on every
+  // mount made a direct visit to /studio show a stale prior setup.
+  // Restore the snapshot only when intent is clear:
   //   1. location.state.restoreSession=true → set by JobPage's Back
-  //      to Studio link (history-aware return path).
+  //      to Studio link AND by the in-header Resume pill.
   //   2. location.state.reseed → Edit & re-dock + history rerun.
   //   3. Browser back/forward navigation → history entry; user
   //      intends to come back to where they were.
-  //   4. Explicit reload → mid-work refresh shouldn't wipe state.
-  // Anything else (typing the URL, clicking a header nav link, opening
-  // a new tab) is treated as a fresh entry → empty workspace.
-  // The snapshot is never DELETED on a fresh-entry decision; the user
-  // can still resume via the manual ↻ pill that surfaces when
-  // sessionStorage has stashed data.
+  // (v0.80) "reload" was dropped — Cmd+R now also gives empty Studio,
+  // matching the user's expectation. Recovery path is the prominent
+  // ↻ Resume pill at the top of the header (which sets
+  // location.state.restoreSession via React Router, then reloads).
+  // Direct URL navigation, header nav clicks, new tabs, AND refresh
+  // all produce an empty workspace; the user opts back in explicitly.
   const wasNavigatedHistorically = (() => {
     if (typeof performance === "undefined") return false;
     try {
       const entries = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
-      const t = entries[0]?.type;
-      return t === "back_forward" || t === "reload";
+      return entries[0]?.type === "back_forward";
     } catch {
       return false;
     }
@@ -1241,27 +1238,29 @@ export default function StudioPage() {
           <div className="flex items-center gap-2">{statusDot(ketcherReady)} <span className={TOK.label}>Editor</span></div>
           <div className="flex items-center gap-2">{statusDot(healthOk)} <span className={TOK.label}>Pod</span></div>
           <div className="ml-auto flex items-center gap-4">
-            {/* (v0.79) Resume-previous-session pill. Renders only when
-                we DIDN'T auto-restore (fresh entry to /studio) but
-                sessionStorage still holds a prior snapshot worth
-                resuming. One click reloads the page with the explicit
-                resume flag — straightforward, doesn't try to merge
-                live state. */}
-            {pendingSnapshot && compounds.length === 0 && !fullJobKey && (
+            {/* (v0.79-0.80) Resume-previous-session pill. Now the
+                only recovery path for refresh + direct URL visits, so
+                bumped in size + cyan glow + emoji to make it the
+                obvious thing to click when returning to a session.
+                Hidden as soon as the user starts working in the fresh
+                cockpit (compounds added or job submitted). */}
+            {pendingSnapshot && compounds.length === 0 && !fullJobKey && (pendingSnapshot.compounds.length > 0 || pendingSnapshot.fullJobRows.length > 0) && (
               <button
                 type="button"
                 onClick={() => {
                   // Re-enter via React Router with restoreSession set;
                   // the next mount will rehydrate from sessionStorage.
+                  // window.location.reload() preserves the history
+                  // state set by navigate(), so on the next render
+                  // location.state.restoreSession is true and
+                  // shouldRestoreSession evaluates true.
                   navigate("/studio", { state: { restoreSession: true } });
-                  // Force a remount for the state to apply (Studio is
-                  // already at /studio so navigate alone is a no-op).
                   window.location.reload();
                 }}
-                className="px-2 py-0.5 rounded border border-cyan-700/60 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/50 hover:border-cyan-500 text-[10px] font-mono uppercase tracking-wider"
-                title={`Resume ${pendingSnapshot.compounds.length} compound${pendingSnapshot.compounds.length === 1 ? "" : "s"}${pendingSnapshot.fullJobRows.length > 0 ? ` + ${pendingSnapshot.fullJobRows.length} dock results` : ""} from your last session.`}
+                className="px-3 py-1 rounded border-2 border-cyan-500/70 bg-cyan-900/40 text-cyan-100 hover:bg-cyan-800/60 hover:border-cyan-400 text-[11px] font-mono uppercase tracking-wider shadow-[0_0_12px_rgba(34,211,238,0.25)] transition-all"
+                title={`Bring back your last session: ${pendingSnapshot.compounds.length} compound${pendingSnapshot.compounds.length === 1 ? "" : "s"}${pendingSnapshot.selectedTargets.length ? ` · ${pendingSnapshot.selectedTargets.join(", ").toUpperCase()}` : ""}${pendingSnapshot.fullJobRows.length > 0 ? ` · ${pendingSnapshot.fullJobRows.length} dock results` : ""}`}
               >
-                ↻ Resume previous
+                ↻ Resume last session
               </button>
             )}
             {/* (v0.30) Autosave indicator. Subtle on purpose — green
