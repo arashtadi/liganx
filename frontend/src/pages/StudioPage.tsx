@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.74-2026-05-07-fix-results-polling-race";
+const LIGANX_BUILD_TAG = "v0.75-2026-05-07-session-survives-jobpage-roundtrip";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -30,7 +30,7 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
  * downstream impact.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -160,9 +160,96 @@ function distance3D(a: [number, number, number], b: [number, number, number]): n
 // account for catalog targets with widened boxes (BRAF 36 Å, EGFR 30 Å).
 const MUTATION_OUTSIDE_POCKET_THRESHOLD_A = 12.0;
 
+// (v0.75) Studio session persistence. The user often clicks "view ↗"
+// to inspect a result on the full /jobs/{id} page, then expects to
+// come back to Studio with the entire workspace intact (compounds,
+// docking results, fullJobKey, dockResult/Wt poses, score panel).
+// React state alone is wiped on navigation, so we mirror the
+// session-relevant slice into sessionStorage on every meaningful
+// state change and rehydrate on mount.
+//
+// Why sessionStorage, not localStorage: the snapshot is tied to the
+// current tab/session. Two Studio tabs in the same browser shouldn't
+// stomp on each other's results. Cleared automatically when the user
+// closes the tab — that's the right TTL for "I'm in the middle of
+// docking".
+//
+// Pose data (PDBQT base64) lives on dockResult/Wt and the per-row
+// pose blobs in fullJobRows. A 7-compound × 2-variant run is roughly
+// 70 KB of pose data — well within sessionStorage's 5 MB cap.
+const STUDIO_SESSION_KEY = "liganx-studio-session-v1";
+
+interface StudioSessionSnapshot {
+  // Schema-versioned so a future shape change can wipe stale snapshots
+  // without surfacing a deserialise error to the user.
+  v: 1;
+  savedAt: number;
+  selectedTargets: string[];
+  selectedMutations: string[];
+  includeWt: boolean;
+  // Compounds + active index — restoring these is the load-bearing part:
+  // the user expects their staged compound list to be exactly as they
+  // left it.
+  compounds: { id: string; smiles: string; name?: string }[];
+  activeCompoundIdx: number;
+  currentSmiles: string;
+  // Job state — when the user "view ↗"s and comes back, this is what
+  // makes the docking-results panel re-appear instantly without re-
+  // polling. dockResult / Wt include pose blobs so the 3D viewer also
+  // restores the previously-shown pose.
+  fullJobKey: string | null;
+  fullJobStatus: "pending" | "running" | "completed" | "failed" | "cancelled" | null;
+  fullJobStage: string | null;
+  fullJobRows: any[];
+  selectedRowCompoundId: number | null;
+  dockResult: any | null;
+  dockResultWt: any | null;
+  setupCollapsed: boolean;
+  loadedCompound: { name: string; smiles: string } | null;
+}
+
+function readStudioSession(): StudioSessionSnapshot | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(STUDIO_SESSION_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw) as StudioSessionSnapshot;
+    if (snap?.v !== 1) return null;
+    // Soft TTL: 24 h. The user could leave Studio open across days and
+    // expect "fresh page" semantics if they nav back; sessionStorage
+    // already clears on tab close so this is just a belt-and-suspenders
+    // guard for unusual browser behaviour.
+    if (Date.now() - snap.savedAt > 24 * 60 * 60 * 1000) return null;
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
+function writeStudioSession(snap: StudioSessionSnapshot): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(STUDIO_SESSION_KEY, JSON.stringify(snap));
+  } catch {
+    // Quota exceeded (very large pose blob set) or private mode —
+    // silently no-op. The user keeps the session in-memory; only the
+    // round-trip-via-JobPage feature degrades.
+  }
+}
+
 export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  // (v0.75) Read the session snapshot ONCE at mount so each useState's
+  // initial-value lambda can pull from the same source. If the user
+  // arrived with a `reseed` payload (e.g. from JobPage's Edit & re-dock
+  // or from HistoryPage), the reseed wins — we want the new compound
+  // loaded fresh, not the prior session restored over it.
+  const reseed = (location.state as any)?.reseed as
+    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean }
+    | undefined;
+  const initialSession = useRef<StudioSessionSnapshot | null>(reseed ? null : readStudioSession()).current;
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
   // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
@@ -190,7 +277,9 @@ export default function StudioPage() {
   // between "Save changes to <name>" (overwrite) and "Save as new"
   // (keep the original). Cleared when the user explicitly forks or
   // sketches from scratch.
-  const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(null);
+  const [loadedCompound, setLoadedCompound] = useState<{ name: string; smiles: string } | null>(
+    initialSession?.loadedCompound ?? null,
+  );
 
   // (v0.62-0.64) Studio supports up to 2 targets, 2 mutations, and
   // 10 compounds per Full Job. State shape: arrays for all three.
@@ -198,14 +287,19 @@ export default function StudioPage() {
   // singleton primary, we derive selectedTarget and selectedMutation
   // helpers below as 'first-of-array' shims. New code should prefer
   // the array forms.
-  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>(
+    initialSession?.selectedTargets
+    ?? (reseed?.catalog_target_id ? [reseed.catalog_target_id] : reseed?.pdb_id ? [reseed.pdb_id.toLowerCase()] : []),
+  );
   // Selection model: WT can be ON or OFF, and up to TWO mutation tags.
   // Default is WT-only (the conservative starting point — without a
   // mutation, dock against wild-type). Adding mutation chips alongside
   // keeps WT selected, so the trigger shows e.g. "WT + Q61H + L597R"
   // and Run Dock fires all in parallel.
-  const [includeWt, setIncludeWt] = useState<boolean>(true);
-  const [selectedMutations, setSelectedMutations] = useState<string[]>([]);
+  const [includeWt, setIncludeWt] = useState<boolean>(initialSession?.includeWt ?? reseed?.include_wt ?? true);
+  const [selectedMutations, setSelectedMutations] = useState<string[]>(
+    initialSession?.selectedMutations ?? reseed?.mutations ?? [],
+  );
   // Singleton shims — every existing reference to selectedTarget /
   // selectedMutation reads the first array entry. Setters that pass a
   // single string (or empty string to clear) are mapped onto the
@@ -225,8 +319,20 @@ export default function StudioPage() {
   // so existing rendering paths (live conformer, score panel, etc.)
   // keep working without touching dozens of call sites.
   type CompoundEntry = { id: string; smiles: string; name?: string };
-  const [compounds, setCompounds] = useState<CompoundEntry[]>([]);
-  const [activeCompoundIdx, setActiveCompoundIdx] = useState<number>(0);
+  // (v0.75) Reseed compounds from JobPage's Edit & re-dock take precedence
+  // over the prior session — the user is intentionally swapping in a new
+  // structure. Otherwise rehydrate from sessionStorage.
+  const [compounds, setCompounds] = useState<CompoundEntry[]>(() => {
+    if (reseed?.compounds && reseed.compounds.length > 0) {
+      return reseed.compounds.map((c, i) => ({
+        id: `c_reseed_${Date.now().toString(36)}_${i}`,
+        smiles: c.smiles,
+        name: c.name || undefined,
+      }));
+    }
+    return initialSession?.compounds ?? [];
+  });
+  const [activeCompoundIdx, setActiveCompoundIdx] = useState<number>(initialSession?.activeCompoundIdx ?? 0);
   // Typeahead query strings — filter the chip rows live as the user
   // types. Empty string = show all chips (default).
   const [targetQuery, setTargetQuery] = useState("");
@@ -240,8 +346,12 @@ export default function StudioPage() {
   // or mutant-only, one slot stays null. The 3D viewer always shows
   // the mutant pose if available, otherwise WT — that's the "primary"
   // view, with the other surfaced as a secondary readout in the panel.
-  const [dockResult, setDockResult] = useState<QuickDockResult | null>(null); // primary (mutant if selected, else WT)
-  const [dockResultWt, setDockResultWt] = useState<QuickDockResult | null>(null); // WT comparison slot
+  const [dockResult, setDockResult] = useState<QuickDockResult | null>(
+    !reseed && initialSession?.dockResult ? initialSession.dockResult : null,
+  ); // primary (mutant if selected, else WT)
+  const [dockResultWt, setDockResultWt] = useState<QuickDockResult | null>(
+    !reseed && initialSession?.dockResultWt ? initialSession.dockResultWt : null,
+  ); // WT comparison slot
   // Mutation-residue-to-pocket-center distance. Same semantic as
   // JobPage's outsidePocketA: when a mutation sits far from the
   // docking box, Vina can't capture geometric effects of that
@@ -670,9 +780,15 @@ export default function StudioPage() {
   // score panel header, and populate dockResult/dockResultWt when the
   // job completes. A "view full results page" link in the header
   // gets the user to JobPage when they want the deeper UI.
-  const [fullJobKey, setFullJobKey] = useState<string | null>(null);
-  const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(null);
-  const [fullJobStage, setFullJobStage] = useState<string | null>(null);
+  const [fullJobKey, setFullJobKey] = useState<string | null>(
+    !reseed ? (initialSession?.fullJobKey ?? null) : null,
+  );
+  const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(
+    !reseed ? (initialSession?.fullJobStatus ?? null) : null,
+  );
+  const [fullJobStage, setFullJobStage] = useState<string | null>(
+    !reseed ? (initialSession?.fullJobStage ?? null) : null,
+  );
   // (v0.71) Multi-compound result table. job.results contains one row
   // per (compound, variant) pair — for a 7-compound run with WT, that's
   // 14 rows. The legacy dockResult / dockResultWt slots can only hold
@@ -690,22 +806,66 @@ export default function StudioPage() {
     mutantPoseB64?: string;
     wtPoseB64?: string;
   };
-  const [fullJobRows, setFullJobRows] = useState<FullJobRow[]>([]);
+  const [fullJobRows, setFullJobRows] = useState<FullJobRow[]>(
+    !reseed && initialSession?.fullJobRows ? (initialSession.fullJobRows as FullJobRow[]) : [],
+  );
   // Which row is currently shown in the 3D viewer + score panel
   // (defaults to the strongest mutant once results land).
-  const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(null);
+  const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(
+    !reseed ? (initialSession?.selectedRowCompoundId ?? null) : null,
+  );
   // (v0.73) Setup section (Target / Mutation / Compound) collapse state.
   // Pre-dock, the user is configuring — selectors stay open. Post-dock,
   // the user is inspecting — selectors auto-collapse to a one-line
   // summary so the SCORE + per-compound results table take the visual
   // focus. A header toggle re-opens the selectors when the user wants
   // to tweak and re-run.
-  const [setupCollapsed, setSetupCollapsed] = useState(false);
+  const [setupCollapsed, setSetupCollapsed] = useState(
+    !reseed ? (initialSession?.setupCollapsed ?? false) : false,
+  );
   useEffect(() => {
     if (fullJobStatus === "completed" && fullJobRows.length > 0) {
       setSetupCollapsed(true);
     }
   }, [fullJobStatus, fullJobRows.length]);
+
+  // (v0.75) Continuous session snapshot. Mirrors the slice of state that
+  // makes Studio "the place I left it" into sessionStorage, so the user
+  // can click view ↗, land on /jobs, click Back to Studio, and find the
+  // workspace exactly as it was. Debounced so we don't thrash on every
+  // SMILES keystroke.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const snap: StudioSessionSnapshot = {
+        v: 1,
+        savedAt: Date.now(),
+        selectedTargets,
+        selectedMutations,
+        includeWt,
+        compounds,
+        activeCompoundIdx,
+        currentSmiles,
+        fullJobKey,
+        fullJobStatus,
+        fullJobStage,
+        fullJobRows,
+        selectedRowCompoundId,
+        dockResult,
+        dockResultWt,
+        setupCollapsed,
+        loadedCompound,
+      };
+      writeStudioSession(snap);
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [
+    selectedTargets, selectedMutations, includeWt,
+    compounds, activeCompoundIdx, currentSmiles,
+    fullJobKey, fullJobStatus, fullJobStage,
+    fullJobRows, selectedRowCompoundId,
+    dockResult, dockResultWt,
+    setupCollapsed, loadedCompound,
+  ]);
   // Map a runner stage slug to a human label for the progress strip.
   // Mirrors the labels JobPage uses, condensed for one-line display.
   const fullJobStageLabel = (slug: string | null | undefined): string => {

@@ -86,13 +86,20 @@ export default function JobPage() {
     // they hit the library manually.
   });
 
-  /** Build the reseed payload + navigate to /new with one compound row.
-   *  Shared by both Overwrite and Save-as-new paths so the navigation
-   *  behaviour stays consistent. */
+  /** Build the reseed payload + navigate to either /studio or /new
+   *  with one compound row, depending on where the user came from.
+   *  When ?from=studio is present in the URL (set by Studio's view ↗
+   *  link in v0.49), the user expects Edit & re-dock to drop them
+   *  back into the Studio cockpit with this compound preloaded for
+   *  iteration — not the legacy /new form. The reseed payload shape
+   *  is identical between the two routes; Studio reads it from
+   *  location.state on mount the same way NewJobPage does. */
   function navigateToReseed(name: string, smiles: string) {
     if (!job) return;
     const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
-    editNavigate("/new", {
+    const cameFromStudio = backSearchParamsForReseed.get("from") === "studio";
+    const targetRoute = cameFromStudio ? "/studio" : "/new";
+    editNavigate(targetRoute, {
       state: {
         reseed: {
           pdb_id: job.pdb_id,
@@ -106,6 +113,10 @@ export default function JobPage() {
       },
     });
   }
+  // (v0.75) Read ?from once at component scope so navigateToReseed
+  // can branch on it without re-parsing the search params per call.
+  // Renamed to avoid colliding with the inner JobHeader hook below.
+  const [backSearchParamsForReseed] = useSearchParams();
 
   // Ref on the hero banner so a matrix cell click can smooth-scroll the
   // banner into view. Without this, clicking a cell at the bottom of the
