@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.82-2026-05-07-truly-empty-by-default";
+const LIGANX_BUILD_TAG = "v0.83-2026-05-07-pdb-search-target-tier";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -187,6 +187,11 @@ interface StudioSessionSnapshot {
   selectedTargets: string[];
   selectedMutations: string[];
   includeWt: boolean;
+  // (v0.83) Ad-hoc targets the user picked from the RCSB PDB search
+  // tier. Persisted so a Back-to-Studio round trip can resolve the
+  // PDB id back into a usable target entry — otherwise selectedTargets
+  // would point to an id that's not in the curated catalog.
+  adHocTargets?: any[];
   // Compounds + active index — restoring these is the load-bearing part:
   // the user expects their staged compound list to be exactly as they
   // left it.
@@ -765,11 +770,142 @@ export default function StudioPage() {
   const liveValidity = useSmilesValidity(currentSmiles);
   const liveSaScore = useSmilesSaScore(currentSmiles);
 
+  // (v0.83) Ad-hoc targets — entries the user picked from the RCSB
+  // PDB search tier rather than the curated catalog. They look like
+  // catalog entries (id / pdb_id / chain / name) but have no curated
+  // pocket box or mutation list. The backend's custom-PDB path
+  // auto-detects the pocket from the bound ligand or fpocket.
+  type AdHocTarget = {
+    id: string;          // lowercased PDB id (matches catalog id convention)
+    pdb_id: string;      // 4-char PDB id, uppercase
+    chain: string;       // defaults to "A"
+    name: string;        // RCSB title
+    mutations: { code: string; label: string; significance: string }[];
+    pocket: null;
+    isAdHoc: true;
+  };
+  const [adHocTargets, setAdHocTargets] = useState<AdHocTarget[]>(
+    (initialSession?.adHocTargets as AdHocTarget[] | undefined) ?? [],
+  );
+  // (v0.83) Merged catalog — curated entries + user-picked PDB hits.
+  // Every downstream lookup (target selection, mutation list, pdb id
+  // resolution at submit time) reads from this combined view so an
+  // ad-hoc target is indistinguishable from a curated one for the
+  // rest of the UI.
+  const mergedCatalog = useMemo(
+    () => [...(catalog || []), ...adHocTargets],
+    [catalog, adHocTargets],
+  );
+  // (v0.83) RCSB search state. Fires on debounce when targetQuery
+  // has no catalog match. Cleared on each new keystroke.
+  type PdbHit = { id: string; title: string; resolution: number | null; organism: string | null };
+  const [pdbResults, setPdbResults] = useState<PdbHit[]>([]);
+  const [pdbSearching, setPdbSearching] = useState(false);
+
   const targetMeta = useMemo(
-    () => catalog?.find((t: any) => t.id === selectedTarget),
-    [catalog, selectedTarget]
+    () => mergedCatalog.find((t: any) => t.id === selectedTarget),
+    [mergedCatalog, selectedTarget]
   );
   const availableMutations = (targetMeta?.mutations ?? []) as { code: string; label: string; significance: string }[];
+
+  // (v0.83) Debounced RCSB full-text search. Only fires when the
+  // current targetQuery has no catalog hit (curated + ad-hoc); we
+  // don't want to spam the API while the user is typing matches
+  // for their existing favorites. Aborts on next keystroke.
+  useEffect(() => {
+    if (!targetQuery || targetQuery.length < 3) {
+      setPdbResults([]);
+      setPdbSearching(false);
+      return;
+    }
+    const q = targetQuery.toLowerCase();
+    const hasLocalMatch = mergedCatalog.some((t: any) =>
+      t.id.toLowerCase().includes(q) || (t.name || "").toLowerCase().includes(q),
+    );
+    if (hasLocalMatch) {
+      setPdbResults([]);
+      setPdbSearching(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setPdbSearching(true);
+      try {
+        // RCSB full-text search → entry IDs. POST JSON body, top 8
+        // hits sorted by relevance score.
+        const searchRes = await fetch("https://search.rcsb.org/rcsbsearch/v2/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            query: {
+              type: "terminal",
+              service: "full_text",
+              parameters: { value: targetQuery },
+            },
+            return_type: "entry",
+            request_options: {
+              paginate: { start: 0, rows: 8 },
+              sort: [{ sort_by: "score", direction: "desc" }],
+            },
+          }),
+        });
+        if (!searchRes.ok) { setPdbResults([]); return; }
+        const searchData = await searchRes.json();
+        const hits: { identifier: string }[] = searchData?.result_set ?? [];
+        if (hits.length === 0) { setPdbResults([]); return; }
+        // Fetch metadata for each hit in parallel — short title,
+        // resolution, source organism — so the chip is informative.
+        const metaResults = await Promise.allSettled(
+          hits.map((h) =>
+            fetch(`https://data.rcsb.org/rest/v1/core/entry/${h.identifier}`, { signal: ctrl.signal })
+              .then((r) => (r.ok ? r.json() : null)),
+          ),
+        );
+        const enriched: PdbHit[] = hits.map((h, i) => {
+          const m = metaResults[i].status === "fulfilled" ? (metaResults[i] as PromiseFulfilledResult<any>).value : null;
+          return {
+            id: h.identifier,
+            title: m?.struct?.title || "",
+            resolution: m?.rcsb_entry_info?.resolution_combined?.[0] ?? null,
+            organism: m?.rcsb_entry_container_identifiers?.entity_source_organism_scientific_name?.[0]
+              ?? m?.rcsb_entity_source_organism?.[0]?.ncbi_scientific_name
+              ?? null,
+          };
+        }).filter((r) => r.title);
+        if (!ctrl.signal.aborted) setPdbResults(enriched);
+      } catch {
+        // AbortError or network — silent. Catalog still works.
+      } finally {
+        if (!ctrl.signal.aborted) setPdbSearching(false);
+      }
+    }, 400);
+    return () => { window.clearTimeout(timer); ctrl.abort(); };
+  }, [targetQuery, mergedCatalog]);
+
+  // (v0.83) Pick an RCSB hit → register it as an ad-hoc target and
+  // add it to the selected suite. Subsequent lookups treat it like
+  // any catalog entry.
+  function pickPdbResult(r: PdbHit) {
+    const adHoc: AdHocTarget = {
+      id: r.id.toLowerCase(),
+      pdb_id: r.id,
+      chain: "A",
+      name: r.title || r.id,
+      mutations: [],
+      pocket: null,
+      isAdHoc: true,
+    };
+    setAdHocTargets((prev) => prev.some((p) => p.id === adHoc.id) ? prev : [...prev, adHoc]);
+    setSelectedTargets((prev) => {
+      if (prev.includes(adHoc.id)) return prev;
+      if (prev.length >= MAX_TARGETS) return prev;
+      if (prev.length === 0) setSelectedMutations([]);
+      return [...prev, adHoc.id];
+    });
+    setTargetQuery("");
+    setPdbResults([]);
+  }
 
   // Compute mutation-residue-to-pocket-center distance after a dock
   // completes. Same semantic as JobPage's outsidePocketA: when a
@@ -983,6 +1119,7 @@ export default function StudioPage() {
         selectedTargets,
         selectedMutations,
         includeWt,
+        adHocTargets,
         compounds,
         activeCompoundIdx,
         currentSmiles,
@@ -1000,7 +1137,7 @@ export default function StudioPage() {
     }, 400);
     return () => window.clearTimeout(t);
   }, [
-    selectedTargets, selectedMutations, includeWt,
+    selectedTargets, selectedMutations, includeWt, adHocTargets,
     compounds, activeCompoundIdx, currentSmiles,
     fullJobKey, fullJobStatus, fullJobStage,
     fullJobRows, selectedRowCompoundId,
@@ -1047,7 +1184,10 @@ export default function StudioPage() {
       // (and link the user to /history for the rest). For 1 target,
       // this is a single createJob call (no behavior change).
       const tasks: Promise<{ tid: string; job: Job; pdbId: string }>[] = selectedTargets.map(async (tid) => {
-        const tMeta = catalog?.find((c: any) => c.id === tid);
+        // (v0.83) mergedCatalog also covers ad-hoc PDB-search picks,
+        // so this lookup resolves both curated targets and user-
+        // searched ones via the same code path.
+        const tMeta = mergedCatalog.find((c: any) => c.id === tid) as any;
         const tPdb = (tMeta?.pdb_id || "").trim();
         if (!tPdb) throw new Error(`Couldn't resolve a PDB id for target "${tid}".`);
         const job = await api.createJob({
@@ -1942,12 +2082,12 @@ export default function StudioPage() {
                 <span className={TOK.label}>Target</span>
                 <span className="font-mono text-[9px] text-slate-600">
                   {(() => {
-                    const all = catalog?.length || 0;
-                    const filt = catalog?.filter((t: any) =>
+                    const all = mergedCatalog.length;
+                    const filt = mergedCatalog.filter((t: any) =>
                       !targetQuery || t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
                       (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
-                    ).length || 0;
-                    return targetQuery ? `${filt}/${all}` : `${all} available`;
+                    ).length;
+                    return targetQuery ? `${filt}/${all}` : `${all} available · search RCSB for more`;
                   })()}
                 </span>
               </div>
@@ -1976,54 +2116,114 @@ export default function StudioPage() {
                   when there's a search query (forces visibility so the
                   user sees what their typing matches). */}
               {(targetDropdownOpen || targetQuery) && (
-                <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto pt-1 border-t border-slate-800/70">
-                  {catalog
-                    ?.filter((t: any) =>
-                      !targetQuery ||
-                      t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
-                      (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
-                    )
-                    .map((t: any) => {
-                      // (v0.63) Multi-target: clicking toggles in/out of
-                      // selectedTargets, capped at MAX_TARGETS=2. Mutations
-                      // also reset only when ADDING the first target (so
-                      // mutations carry across when adding a second).
-                      const active = selectedTargets.includes(t.id);
-                      const atCap = !active && selectedTargets.length >= MAX_TARGETS;
-                      return (
-                        <button
-                          key={t.id}
-                          disabled={atCap}
-                          onClick={() => {
-                            setSelectedTargets((prev) => {
-                              if (prev.includes(t.id)) return prev.filter((x) => x !== t.id);
-                              if (prev.length >= MAX_TARGETS) return prev;
-                              const next = [...prev, t.id];
-                              // Clear mutations when going from empty → 1 target,
-                              // since the mutation list is target-specific.
-                              if (prev.length === 0) setSelectedMutations([]);
-                              return next;
-                            });
-                            setTargetQuery("");
-                          }}
-                          className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
-                            active
-                              ? "border-cyan-500/60 bg-cyan-900/30 text-cyan-200"
-                              : atCap
-                              ? "border-slate-800 text-slate-700 cursor-not-allowed"
-                              : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600"
-                          }`}
-                          title={t.name + (atCap ? ` (max ${MAX_TARGETS} targets)` : "")}
-                        >
-                          {active ? `✓ ${t.id}` : t.id}
-                        </button>
-                      );
-                    })}
-                  {targetQuery && !catalog?.some((t: any) =>
+                <div className="pt-1 border-t border-slate-800/70 space-y-2">
+                  <div className="flex flex-wrap items-center gap-1.5 max-h-32 overflow-auto">
+                    {mergedCatalog
+                      .filter((t: any) =>
+                        !targetQuery ||
+                        t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
+                        (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
+                      )
+                      .map((t: any) => {
+                        // (v0.63) Multi-target: clicking toggles in/out of
+                        // selectedTargets, capped at MAX_TARGETS=2. Mutations
+                        // also reset only when ADDING the first target (so
+                        // mutations carry across when adding a second).
+                        const active = selectedTargets.includes(t.id);
+                        const atCap = !active && selectedTargets.length >= MAX_TARGETS;
+                        // (v0.83) Ad-hoc PDB-search picks render with a
+                        // subtle PDB icon prefix so users can tell them
+                        // apart from the curated catalog at a glance.
+                        const isAdHoc = !!t.isAdHoc;
+                        return (
+                          <button
+                            key={t.id}
+                            disabled={atCap}
+                            onClick={() => {
+                              setSelectedTargets((prev) => {
+                                if (prev.includes(t.id)) return prev.filter((x) => x !== t.id);
+                                if (prev.length >= MAX_TARGETS) return prev;
+                                const next = [...prev, t.id];
+                                // Clear mutations when going from empty → 1 target,
+                                // since the mutation list is target-specific.
+                                if (prev.length === 0) setSelectedMutations([]);
+                                return next;
+                              });
+                              setTargetQuery("");
+                            }}
+                            className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border transition-colors ${
+                              active
+                                ? (isAdHoc ? "border-violet-500/60 bg-violet-900/30 text-violet-200" : "border-cyan-500/60 bg-cyan-900/30 text-cyan-200")
+                                : atCap
+                                ? "border-slate-800 text-slate-700 cursor-not-allowed"
+                                : (isAdHoc ? "border-violet-700/40 text-violet-300/70 hover:text-violet-200 hover:border-violet-500/60" : "border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600")
+                            }`}
+                            title={(isAdHoc ? `[RCSB] ${t.name}` : t.name) + (atCap ? ` (max ${MAX_TARGETS} targets)` : "")}
+                          >
+                            {isAdHoc && <span className="opacity-70 mr-0.5">⌬</span>}
+                            {active ? `✓ ${t.id}` : t.id}
+                          </button>
+                        );
+                      })}
+                  </div>
+                  {/* (v0.83) RCSB PDB search tier — only renders when
+                      the user's query has no local match (catalog +
+                      ad-hoc). Mirrors the PubChem tier in the compound
+                      picker: live search, click a hit to add. Pose
+                      auto-detection runs server-side (fpocket fallback)
+                      since these targets have no curated pocket box. */}
+                  {targetQuery && pdbSearching && (
+                    <div className="text-[10px] font-mono text-cyan-400/70 italic animate-pulse pl-1">
+                      ⇢ searching RCSB PDB…
+                    </div>
+                  )}
+                  {targetQuery && !pdbSearching && pdbResults.length > 0 && (
+                    <div className="rounded border border-violet-900/50 bg-violet-950/20 p-1.5 space-y-1">
+                      <div className="text-[9px] font-mono text-violet-400/70 uppercase tracking-wider px-1">
+                        RCSB PDB · {pdbResults.length} hit{pdbResults.length === 1 ? "" : "s"} · click to use (server auto-detects pocket)
+                      </div>
+                      <div className="max-h-40 overflow-auto space-y-0.5">
+                        {pdbResults.map((r) => {
+                          const alreadyAdded = selectedTargets.includes(r.id.toLowerCase());
+                          const atCap = !alreadyAdded && selectedTargets.length >= MAX_TARGETS;
+                          return (
+                            <button
+                              key={r.id}
+                              disabled={atCap}
+                              onClick={() => pickPdbResult(r)}
+                              className={`w-full text-left px-2 py-1 rounded font-mono text-[10px] transition-colors ${
+                                alreadyAdded
+                                  ? "bg-violet-900/40 text-violet-200 border border-violet-600/50"
+                                  : atCap
+                                  ? "text-slate-600 cursor-not-allowed"
+                                  : "text-slate-300 hover:bg-violet-900/30 hover:text-violet-100"
+                              }`}
+                              title={r.title + (atCap ? ` (max ${MAX_TARGETS} targets)` : "")}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-violet-300 uppercase tracking-wider w-12 shrink-0">{r.id}</span>
+                                <span className="flex-1 truncate text-slate-300">{r.title}</span>
+                                {r.resolution != null && (
+                                  <span className="text-slate-500 tabular-nums shrink-0">{r.resolution.toFixed(1)} Å</span>
+                                )}
+                                {alreadyAdded && <span className="text-emerald-400 shrink-0">✓</span>}
+                              </div>
+                              {r.organism && (
+                                <div className="text-[9px] text-slate-500 italic ml-14 truncate">{r.organism}</div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {targetQuery && !pdbSearching && pdbResults.length === 0 && !mergedCatalog.some((t: any) =>
                     t.id.toLowerCase().includes(targetQuery.toLowerCase()) ||
                     (t.name || "").toLowerCase().includes(targetQuery.toLowerCase())
                   ) && (
-                    <span className="text-[10px] font-mono text-amber-400/80 italic">no match</span>
+                    <span className="text-[10px] font-mono text-amber-400/80 italic pl-1">
+                      no catalog match · {targetQuery.length < 3 ? "type ≥3 chars to search RCSB" : "no RCSB results either"}
+                    </span>
                   )}
                 </div>
               )}
