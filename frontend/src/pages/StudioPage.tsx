@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.91-2026-05-08-history-rerun-to-studio";
+const LIGANX_BUILD_TAG = "v0.92-2026-05-08-reseed-editable-pod-autoresume";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1238,7 +1238,15 @@ export default function StudioPage() {
   // collapsed-setup state is preserved — they came back to inspect/iterate
   // on results, so keep the results-focused layout. They can ▾ setup to
   // open if they want to tweak inputs.
-  const [setupCollapsed, setSetupCollapsed] = useState(initialSession?.setupCollapsed ?? false);
+  // (v0.92) Reseed always lands on an EDITABLE setup. The user came
+  // back to tweak something — collapsing the selectors and forcing
+  // them to click "edit" first is unnecessary friction. Only honour
+  // the saved collapsed state when restoring a session that wasn't
+  // triggered by a reseed (e.g. Back to Studio after viewing a
+  // completed run, where they're inspecting not editing).
+  const [setupCollapsed, setSetupCollapsed] = useState(
+    reseed ? false : (initialSession?.setupCollapsed ?? false),
+  );
   useEffect(() => {
     if (fullJobStatus === "completed" && fullJobRows.length > 0) {
       setSetupCollapsed(true);

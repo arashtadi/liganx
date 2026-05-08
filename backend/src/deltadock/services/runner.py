@@ -763,6 +763,28 @@ def _run_boltz2_dispatch(
 
 
 def _run_real(session: Session, job: Job) -> None:
+    # (Pod auto-resume) If the cost-control watchdog stopped the pod
+    # while idle, wake it now and wait for /health to go green BEFORE
+    # we start any pod-dependent work. The function no-ops when
+    # RUNPOD_API_KEY/POD_ID isn't configured, so dev environments
+    # behave exactly as before. Stage updates are pushed via
+    # set_stage so Studio's polling can show 'pod_resuming /
+    # pod_warming' on the prominent docking-in-progress banner.
+    from .pod_lifecycle import ensure_pod_ready_sync
+    log.info("Job %s: ensuring pod is ready before dispatch", job.id)
+    pod_ready = ensure_pod_ready_sync(
+        timeout_s=300,
+        on_stage_change=lambda slug: set_stage(session, job.id, slug),
+    )
+    if not pod_ready:
+        # Couldn't warm the pod in time. Fall through anyway — the
+        # downstream dock_server HTTP call will fail with its own
+        # error, which the runner already turns into a JOB FAILED
+        # with a clear error_message. Logging the warning here so
+        # the operator can see "auto-resume tried and timed out" in
+        # the logs even if the user-visible failure is generic.
+        log.warning("Job %s: ensure_pod_ready timed out, proceeding anyway", job.id)
+
     # Late import — keeps the placeholder-only path lightweight
     import sys
     pipeline_path = Path(__file__).parents[3].parent / "pipeline"
