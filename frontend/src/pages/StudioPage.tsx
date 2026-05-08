@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.96-2026-05-08-edit-redock-replaces";
+const LIGANX_BUILD_TAG = "v0.97-2026-05-08-full-compound-name";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2785,10 +2785,22 @@ export default function StudioPage() {
                         title={`Load ${c.name || `compound #${i + 1}`} into the 2D editor for inspection or editing.`}
                       >
                         <span className="text-[8px] text-slate-600 tabular-nums shrink-0">{i + 1}</span>
-                        <span className={`shrink-0 truncate max-w-[12ch] ${isEdited ? "text-amber-200" : isActive ? "text-cyan-200" : "text-slate-200"}`}>
+                        {/* (v0.97) Name no longer truncated — long
+                            variant names like "Terolut · variant" got
+                            chopped at 12ch. Now the name takes whatever
+                            width it needs (with title= for the rare
+                            case it overflows the container), and the
+                            SMILES below it is the only thing that
+                            truncates. */}
+                        <span
+                          className={`shrink-0 ${isEdited ? "text-amber-200" : isActive ? "text-cyan-200" : "text-slate-200"}`}
+                          title={c.name || `untitled #${i + 1}`}
+                        >
                           {c.name || `untitled #${i + 1}`}{isEdited && <span className="text-amber-400 ml-1">✎</span>}
                         </span>
-                        <span className="text-[9px] text-slate-500 truncate min-w-0">{isEdited ? currentSmiles : c.smiles}</span>
+                        <span className="text-[9px] text-slate-500 truncate min-w-0" title={isEdited ? currentSmiles : c.smiles}>
+                          {isEdited ? currentSmiles : c.smiles}
+                        </span>
                       </button>
                       {isEdited && (
                         <>
