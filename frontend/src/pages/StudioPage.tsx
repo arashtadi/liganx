@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.70-2026-05-07-save-as-new-name-and-library";
+const LIGANX_BUILD_TAG = "v0.71-2026-05-07-multi-compound-results";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -673,6 +673,27 @@ export default function StudioPage() {
   const [fullJobKey, setFullJobKey] = useState<string | null>(null);
   const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(null);
   const [fullJobStage, setFullJobStage] = useState<string | null>(null);
+  // (v0.71) Multi-compound result table. job.results contains one row
+  // per (compound, variant) pair — for a 7-compound run with WT, that's
+  // 14 rows. The legacy dockResult / dockResultWt slots can only hold
+  // ONE compound's result, so the per-row loop in the polling handler
+  // would overwrite all of them and the user only saw the last one.
+  // This array preserves every row; the score panel renders a table
+  // and clicking a row promotes that compound into dockResult/Wt so
+  // the existing 3D viewer machinery shows that pose.
+  type FullJobRow = {
+    compoundId: number;
+    name: string;
+    smiles: string;
+    mutantScore: number | null;
+    wtScore: number | null;
+    mutantPoseB64?: string;
+    wtPoseB64?: string;
+  };
+  const [fullJobRows, setFullJobRows] = useState<FullJobRow[]>([]);
+  // Which row is currently shown in the 3D viewer + score panel
+  // (defaults to the strongest mutant once results land).
+  const [selectedRowCompoundId, setSelectedRowCompoundId] = useState<number | null>(null);
   // Map a runner stage slug to a human label for the progress strip.
   // Mirrors the labels JobPage uses, condensed for one-line display.
   const fullJobStageLabel = (slug: string | null | undefined): string => {
@@ -744,6 +765,8 @@ export default function StudioPage() {
       }
       setDockResult(null);
       setDockResultWt(null);
+      setFullJobRows([]);
+      setSelectedRowCompoundId(null);
       setFullJobKey(jobKey);
       setFullJobStatus(primary.job.status || "pending");
       setFullJobStage(primary.job.stage || null);
@@ -775,32 +798,93 @@ export default function StudioPage() {
         setFullJobStatus(job.status);
         setFullJobStage(job.stage || null);
         if (job.status === "completed") {
-          // Map DockingResult rows back into Studio's dockResult shape.
-          // We only sent ONE compound, so each result corresponds to a
-          // (compound, variant) pair — typically one mutant + one WT.
+          // (v0.71) Group all DockingResult rows by compound_id and
+          // collect one fullJobRows entry per compound — with both
+          // mutant and (optional) WT scores side-by-side. The legacy
+          // dockResult/Wt slots get filled from the strongest mutant
+          // by default so the 3D viewer + score panel light up the
+          // way they always have for the single-compound case.
+          const byCompound = new Map<number, FullJobRow>();
+          // Seed each row with name/smiles from job.compounds so the
+          // table shows a friendly label ("Aspirin", "compound #3") even
+          // before any pose fetches finish.
+          for (const c of (job.compounds || [])) {
+            byCompound.set(c.id, {
+              compoundId: c.id,
+              name: c.name || `compound #${c.id}`,
+              smiles: c.smiles,
+              mutantScore: null,
+              wtScore: null,
+            });
+          }
           for (const r of (job.results || [])) {
             const isWt = (r.variant || "").toUpperCase() === "WT";
-            // Try to fetch the pose so the 3D viewer can render it.
-            // Best-effort: if the fetch fails, the score still shows
-            // (without the 3D pose) — user can click the link to
-            // /jobs/{key} for full machinery.
+            // Pose fetch is best-effort — if it fails the score still
+            // renders, the row is just non-interactive in 3D.
             let posePdbqtB64: string | undefined;
             try {
               const text = await api.pose(fullJobKey, r.compound_id, r.variant);
               posePdbqtB64 = btoa(unescape(encodeURIComponent(text)));
-            } catch { /* ignore — pose fetch is non-critical */ }
-            const synth: QuickDockResult = {
+            } catch { /* non-critical */ }
+            const row = byCompound.get(r.compound_id) || {
+              compoundId: r.compound_id,
+              name: `compound #${r.compound_id}`,
+              smiles: "",
+              mutantScore: null,
+              wtScore: null,
+            };
+            if (isWt) {
+              row.wtScore = r.best_score;
+              row.wtPoseB64 = posePdbqtB64;
+            } else {
+              row.mutantScore = r.best_score;
+              row.mutantPoseB64 = posePdbqtB64;
+            }
+            byCompound.set(r.compound_id, row);
+          }
+          const rows = Array.from(byCompound.values()).filter(
+            (r) => r.mutantScore != null || r.wtScore != null,
+          );
+          // Strongest mutant first, fall back to strongest WT for
+          // WT-only runs. Ties broken by compound order.
+          rows.sort((a, b) => {
+            const aS = a.mutantScore ?? a.wtScore ?? Infinity;
+            const bS = b.mutantScore ?? b.wtScore ?? Infinity;
+            return aS - bS;
+          });
+          if (cancelled) return;
+          setFullJobRows(rows);
+          // Promote the best row into the legacy dockResult/Wt slots
+          // so the 3D viewer + score-vs panel render exactly as they
+          // did for single-compound runs. The user can click a row in
+          // the table to switch which compound's pose is on display.
+          if (rows.length > 0) {
+            const best = rows[0];
+            setSelectedRowCompoundId(best.compoundId);
+            const mut: QuickDockResult | null = best.mutantScore != null ? {
               ok: true,
-              score: r.best_score,
+              score: best.mutantScore,
               hits: [],
               misses: [],
-              pose_pdbqt_b64: posePdbqtB64,
+              pose_pdbqt_b64: best.mutantPoseB64,
               pdb_id: job.pdb_id,
               chain: job.chain,
-              receptor_variant: isWt ? "wt" : "mutant",
-            };
-            if (isWt) setDockResultWt(synth);
-            else setDockResult(synth);
+              receptor_variant: "mutant",
+            } : null;
+            const wt: QuickDockResult | null = best.wtScore != null ? {
+              ok: true,
+              score: best.wtScore,
+              hits: [],
+              misses: [],
+              pose_pdbqt_b64: best.wtPoseB64,
+              pdb_id: job.pdb_id,
+              chain: job.chain,
+              receptor_variant: "wt",
+            } : null;
+            // Single-target rule: mut → primary slot if any, else WT
+            // takes the primary slot; mirror the prior semantics.
+            if (mut) { setDockResult(mut); setDockResultWt(wt); }
+            else { setDockResult(wt); setDockResultWt(null); }
           }
         } else if (job.status === "failed") {
           setDockError(job.error_message || "Full Job failed (no message).");
@@ -1236,6 +1320,93 @@ export default function StudioPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* (v0.71) Per-compound results table — only renders for
+                multi-compound runs. Shows every compound's mutant +
+                WT score; click a row to load that pose into the 3D
+                viewer (and rest of the score panel above). The
+                score-tier color matches the big SCORE readout, so
+                visual scanning of the column tells you "which
+                compounds are strong binders" at a glance. */}
+            {fullJobRows.length > 1 && (
+              <div className="px-3 py-2 border-b border-slate-800/70">
+                <div className="flex items-center justify-between mb-1">
+                  <span className={TOK.label}>Per-compound results</span>
+                  <span className="font-mono text-[9px] text-slate-600">
+                    {fullJobRows.length} · best first
+                  </span>
+                </div>
+                <div className="rounded border border-slate-800 divide-y divide-slate-800/60 max-h-[180px] overflow-y-auto">
+                  {fullJobRows.map((row) => {
+                    const isSelected = row.compoundId === selectedRowCompoundId;
+                    const delta = (row.mutantScore != null && row.wtScore != null)
+                      ? row.mutantScore - row.wtScore
+                      : null;
+                    return (
+                      <button
+                        key={row.compoundId}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRowCompoundId(row.compoundId);
+                          const mut: QuickDockResult | null = row.mutantScore != null ? {
+                            ok: true,
+                            score: row.mutantScore,
+                            hits: [],
+                            misses: [],
+                            pose_pdbqt_b64: row.mutantPoseB64,
+                            pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
+                            chain: dockResult?.chain || dockResultWt?.chain,
+                            receptor_variant: "mutant",
+                          } : null;
+                          const wt: QuickDockResult | null = row.wtScore != null ? {
+                            ok: true,
+                            score: row.wtScore,
+                            hits: [],
+                            misses: [],
+                            pose_pdbqt_b64: row.wtPoseB64,
+                            pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
+                            chain: dockResult?.chain || dockResultWt?.chain,
+                            receptor_variant: "wt",
+                          } : null;
+                          if (mut) { setDockResult(mut); setDockResultWt(wt); }
+                          else { setDockResult(wt); setDockResultWt(null); }
+                        }}
+                        className={`w-full px-2 py-1 flex items-center gap-2 text-[10px] font-mono ${
+                          isSelected ? "bg-cyan-950/30" : "hover:bg-slate-800/30"
+                        }`}
+                        title={`Click to view ${row.name}'s pose in the 3D viewer.`}
+                      >
+                        <span className={`shrink-0 w-3 text-[10px] ${isSelected ? "text-cyan-300" : "text-slate-700"}`}>
+                          {isSelected ? "▶" : ""}
+                        </span>
+                        <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
+                          {row.name}
+                        </span>
+                        <span className={`tabular-nums w-12 text-right ${
+                          row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
+                        }`} title="Mutant score (kcal/mol)">
+                          {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
+                        </span>
+                        {includeWt && (
+                          <span className={`tabular-nums w-12 text-right ${
+                            row.wtScore != null ? "text-slate-400" : "text-slate-700"
+                          }`} title="WT score (kcal/mol)">
+                            {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                          </span>
+                        )}
+                        {delta != null && (
+                          <span className={`tabular-nums w-12 text-right ${
+                            delta < -0.3 ? "text-emerald-300" : delta > 0.3 ? "text-rose-300" : "text-slate-500"
+                          }`} title="Δ = mutant − WT · negative ⇒ tighter to mutant">
+                            {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
