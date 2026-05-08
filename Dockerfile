@@ -13,12 +13,24 @@
 
 FROM condaforge/miniforge3:24.9.2-0
 
+# Build-time arg: the deploy workflow (.github/workflows/fly-deploy.yml)
+# passes --build-arg GIT_SHA="${GITHUB_SHA::7}" so /health can report
+# which commit is actually live. Without the matching ARG declaration
+# here the build-arg is silently dropped and main.py falls back to
+# "dev" — exactly the regression the Liganx Monitor flagged on
+# 2026-05-06. Default "dev" keeps local docker-build (no --build-arg)
+# working unchanged. Note: fly.toml's [env] block fully overrides any
+# `flyctl deploy --env` flag, so the only reliable path is baking the
+# SHA into the image via ENV here.
+ARG GIT_SHA=dev
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     APP_ENV=production \
-    LOG_LEVEL=info
+    LOG_LEVEL=info \
+    GIT_SHA=$GIT_SHA
 
 # System tools: obabel (PDBQT↔PDB conversion in the pose endpoint), autodock-vina
 # (only used if POD_DOCK_URL is unset — production always has it set, but we
