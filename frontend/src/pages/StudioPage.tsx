@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v0.80-2026-05-07-refresh-also-empty";
+const LIGANX_BUILD_TAG = "v0.81-2026-05-07-protect-prior-snapshot";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -657,7 +657,18 @@ export default function StudioPage() {
   // from EGFR to KRAS leaves the EGFR ribbon + EGFR pose on screen with
   // a stale -6.50 score even though the panel now says KRAS · Q61H.
   // 2026-05-05 user-reported bug.
+  // (v0.81) Skip the first run so a session restore (reseed or
+  // restoreSession) doesn't wipe the dockResult/Wt that we just
+  // initialized from sessionStorage. The deps haven't actually
+  // CHANGED on mount — useEffect just always fires the first time —
+  // and wiping freshly-restored state was the cause of "Edit & re-dock
+  // landed in Studio without docking results".
+  const didMountClearRef = useRef(false);
   useEffect(() => {
+    if (!didMountClearRef.current) {
+      didMountClearRef.current = true;
+      return;
+    }
     setDockResult(null);
     setDockResultWt(null);
     setDockError(null);
@@ -941,8 +952,26 @@ export default function StudioPage() {
   // can click view ↗, land on /jobs, click Back to Studio, and find the
   // workspace exactly as it was. Debounced so we don't thrash on every
   // SMILES keystroke.
+  // (v0.81) Only persist when the user actually has something worth
+  // restoring. After v0.79-0.80, a fresh visit to /studio renders an
+  // empty cockpit by design — but the autosave effect was eagerly
+  // writing that empty state, which clobbered the prior snapshot.
+  // Net effect: Edit & re-dock from JobPage restored an empty session
+  // because the autosave had just wiped the docking results out of
+  // sessionStorage. Skip writes when there's nothing meaningful in
+  // state; the prior snapshot stays intact until the user does
+  // something worth persisting.
   useEffect(() => {
     const t = window.setTimeout(() => {
+      const hasMeaningfulState =
+        compounds.length > 0 ||
+        !!fullJobKey ||
+        fullJobRows.length > 0 ||
+        !!dockResult ||
+        !!dockResultWt ||
+        currentSmiles.length > 0 ||
+        selectedTargets.length > 0;
+      if (!hasMeaningfulState) return;
       const snap: StudioSessionSnapshot = {
         v: 1,
         savedAt: Date.now(),
