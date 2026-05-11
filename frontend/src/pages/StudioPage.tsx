@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.07-2026-05-11-fix-reseed-adhoc-pdb-resolve";
+const LIGANX_BUILD_TAG = "v1.08-2026-05-11-redirect-to-jobpage-on-submit";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1404,6 +1404,11 @@ export default function StudioPage() {
   // focused layout can collapse explicitly. The reseed-editable
   // initial state above (v0.92) still applies on first mount.
   void fullJobStatus; void fullJobRows; // referenced elsewhere; effect dropped
+  // (v1.08) setFullJobKey is no longer called from the submit path
+  // (we redirect to /jobs instead of polling in-Studio) but the
+  // setter is kept on the useState so the variable type stays a tuple
+  // — voiding it silences the strict 'declared but never read' warning.
+  void setFullJobKey;
 
   // (v0.75) Continuous session snapshot. Mirrors the slice of state that
   // makes Studio "the place I left it" into sessionStorage, so the user
@@ -1552,20 +1557,51 @@ export default function StudioPage() {
         setDockError("Job created but no id returned — refresh /history to find it.");
         return;
       }
-      setDockResult(null);
-      setDockResultWt(null);
-      setFullJobRows([]);
-      setSelectedRowCompoundId(null);
-      setFullJobKey(jobKey);
-      setFullJobStatus(primary.job.status || "pending");
-      setFullJobStage(primary.job.stage || null);
-      // (v0.77) Stamp the docking start time so the prominent banner
-      // can render an elapsed counter ("⏱ 0:42 elapsed · ~3 min typical").
-      setDockStartedAt(Date.now());
-      if (results.length > 1) {
-        setPromoteToast(`✓ ${results.filter(r => r.status === "fulfilled").length}/${results.length} jobs submitted — polling first; check /history for the rest`);
-        window.setTimeout(() => setPromoteToast(null), 6000);
-      }
+      // (Studio v1.08) Studio is for compose; JobPage is for analyze.
+      // On submit, hand off to the JobPage so the user sees the
+      // richer in-flight view (engine-aware progress stages, ProLIF
+      // 2D map, PoseBusters, share/report buttons) without us
+      // duplicating that UI inline. The bidirectional flow:
+      //   • Submit here → land on JobPage with ?from=studio
+      //   • JobPage's "Back to Studio" link restores this session
+      //     and the polling effect re-hydrates results
+      //   • JobPage's "Edit & re-dock" carries sourceJobKey (v1.06)
+      //     so Studio comes back with results pre-populated for the
+      //     compound being iterated on
+      // Persist the session snapshot SYNCHRONOUSLY before navigating
+      // because the debounced autosave (400 ms) won't fire before
+      // the unmount on route change. We save the staged setup + the
+      // new fullJobKey so "Back to Studio" lands the user on a
+      // Studio that knows about this job.
+      const snap: StudioSessionSnapshot = {
+        v: 1,
+        savedAt: Date.now(),
+        selectedTargets,
+        selectedMutations,
+        includeWt,
+        adHocTargets,
+        compounds,
+        activeCompoundIdx,
+        currentSmiles,
+        fullJobKey: jobKey,
+        fullJobStatus: primary.job.status || "pending",
+        fullJobStage: primary.job.stage || null,
+        fullJobRows: [],
+        selectedRowCompoundId: null,
+        dockResult: null,
+        dockResultWt: null,
+        setupCollapsed,
+        loadedCompound,
+      };
+      writeStudioSession(snap);
+      // Multi-target submissions: redirect to the first job's page;
+      // the others are submitted and visible in /history. The
+      // in-Studio promoteToast about "polling first; check /history
+      // for the rest" no longer makes sense post-redirect, so we
+      // drop it — the History page is one click from JobPage's
+      // header and lists everything.
+      navigate(`/jobs/${jobKey}?from=studio`);
+      return;
     } catch (e: any) {
       setDockError(e?.message || "Full Job submission failed.");
     } finally {
