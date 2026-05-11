@@ -127,43 +127,120 @@ is fine. No bullet lists unless the question is itemized (e.g. \
 def _summarize_extra(extra: Optional[str]) -> dict[str, Any]:
     """Best-effort parse of the per-cell `extra` field from DockingResult.
 
-    `extra` carries JSON-ish metadata produced by the runner:
-    failure markers, outside-pocket flags, Vinardo refined scores,
-    PoseBusters verdicts, strain values. The frontend has a TS
-    parseExtra; here we replicate just enough to surface the
-    interesting flags in the AI payload without dumping the raw blob
-    (which would just burn tokens).
+    The runner writes pipe-delimited key=value strings (NOT JSON), e.g.:
+
+        pocket=catalog|engine=pod_gpu_batch|vinardo=-4.62|water=6/9|
+        confidence=unknown|strain=mild:1.76|posebusters=passed all 0 checks|
+        contacts=SER17:VdWC:2.6,ASP30:VdWC:2.7|mutation_outside_pocket=19.2A
+
+    Failure rows use a bare prefix (no `=`):
+
+        ligand_prep_failed: <reason>
+        mutant_build_failed:MutateError:Residue ... not found ...|engine=...
+
+    We mirror the frontend's `parseExtra` (lib/parseExtra.ts) so the AI
+    payload sees the same flags the UI surfaces. The first version of
+    this function tried to JSON-parse the field and silently dropped
+    every flag including outside-pocket — caused the Liganx AI Beta
+    panel to confidently say "no outside-pocket flag here" on jobs
+    where the matrix UI was loudly showing it.
     """
     if not extra:
         return {}
     out: dict[str, Any] = {}
-    # Failure markers come as `kind:reason` plain strings; tag them.
-    m = re.match(
-        r"^(ligand_prep_failed|docking_failed|mutant_build_failed):(.+)$",
+
+    # Failure prefix detection — the runner writes these as bare strings
+    # before any `|key=value` block, exactly like the TS parser handles.
+    failure_match = re.match(
+        r"^(ligand_prep_failed|docking_failed|mutant_build_failed):([^|]*)",
         extra,
     )
-    if m:
-        out["failure"] = {"kind": m.group(1).replace("_failed", ""), "reason": m.group(2)}
-        return out
-    # JSON-ish payload — defensive parse.
-    try:
-        # Some runners write multiple JSON objects concatenated; pull
-        # the first one.
-        first_brace = extra.find("{")
-        if first_brace < 0:
+    if failure_match:
+        tag = failure_match.group(1)
+        kind = (
+            "ligand_prep" if tag == "ligand_prep_failed"
+            else "docking" if tag == "docking_failed"
+            else "mutant_build"
+        )
+        out["failure"] = {"kind": kind, "reason": failure_match.group(2).strip()}
+        # For ligand_prep / docking the remainder is meaningless; bail.
+        # For mutant_build the runner may attach engine/vinardo from the
+        # WT-fallback dock, so keep parsing.
+        if kind != "mutant_build":
             return out
-        decoder = json.JSONDecoder()
-        obj, _ = decoder.raw_decode(extra[first_brace:])
-    except (ValueError, json.JSONDecodeError):
-        return out
-    # Cherry-pick only fields that change interpretation. Don't ship
-    # raw pose coordinates etc — they bloat the payload.
-    for key in (
-        "engine", "outsidePocketA", "vinardo", "strain",
-        "confidence", "poseBusters", "hits", "misses",
+
+    for part in extra.split("|"):
+        eq = part.find("=")
+        if eq == -1:
+            continue
+        key = part[:eq].strip()
+        val = part[eq + 1:].strip()
+        if not val:
+            continue
+        if key == "engine":
+            out["engine"] = val
+        elif key == "confidence" and val in ("high", "medium", "low", "unknown"):
+            out["confidence"] = val
+        elif key == "posebusters":
+            out["poseBusters"] = val
+        elif key == "vinardo":
+            try:
+                out["vinardo"] = float(val)
+            except ValueError:
+                pass
+        elif key == "strain":
+            # Format: verdict:kcal — e.g. "mild:1.94"
+            parts = val.split(":", 1)
+            if len(parts) == 2 and parts[0] in ("ok", "mild", "high"):
+                try:
+                    out["strain"] = {"verdict": parts[0], "kcal": float(parts[1])}
+                except ValueError:
+                    pass
+        elif key == "mutation_outside_pocket":
+            # Format: "19.2A" — CA-to-pocket-center distance in Å.
+            m = re.match(r"^([\d.]+)A?$", val)
+            if m:
+                try:
+                    out["outsidePocketA"] = float(m.group(1))
+                except ValueError:
+                    pass
+        elif key == "aff_value":
+            try:
+                out["affValue"] = float(val)
+            except ValueError:
+                pass
+        elif key == "aff_prob":
+            try:
+                out["affProb"] = float(val)
+            except ValueError:
+                pass
+        elif key == "water":
+            m = re.match(r"^(\d+)/(\d+)$", val)
+            if m:
+                out["water"] = {
+                    "displaced": int(m.group(1)),
+                    "pocket_count": int(m.group(2)),
+                }
+        elif key == "contacts":
+            # Comma-separated RES:Type or RES:Type:Å. We don't ship the
+            # full list (could be 20+ residues per cell) — just count
+            # and keep the first few for the model.
+            items = [s.strip() for s in val.split(",") if s.strip()]
+            if items:
+                out["contacts_count"] = len(items)
+                out["contacts_sample"] = [s.split(":")[0] for s in items[:6]]
+
+    # Promote PoseBusters "skipped" exactly like the TS parser does, so
+    # the AI sees the same UX category the matrix shows.
+    pb = out.get("poseBusters")
+    conf = out.get("confidence", "unknown")
+    if (
+        (conf == "unknown" or "confidence" not in out)
+        and pb
+        and (re.search(r"check_skipped", pb, re.I) or re.search(r"passed all 0 checks", pb, re.I))
     ):
-        if key in obj and obj[key] is not None:
-            out[key] = obj[key]
+        out["confidence"] = "skipped"
+
     return out
 
 
