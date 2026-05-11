@@ -7,6 +7,7 @@ import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
+import LiganxAIPanel from "../components/LiganxAIPanel";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
@@ -615,6 +616,13 @@ export default function JobPage() {
           }}
         />
       )}
+      {/* Liganx AI Beta — floating Q&A panel scoped to this job's data.
+          Mounted at the page root (sibling to the grid) so the FAB
+          stays anchored to the viewport rather than scrolling with
+          the content. The backend snapshots whichever results are in
+          the DB at click-time, so partial / streaming jobs answer
+          questions about what's loaded so far. */}
+      <LiganxAIPanel jobKey={jobKey} />
     </div>
   );
 }

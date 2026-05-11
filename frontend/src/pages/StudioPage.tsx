@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.12-2026-05-11-noise-floor-and-outside-pocket-row-flags";
+const LIGANX_BUILD_TAG = "v1.13-2026-05-11-liganx-ai-beta-jobpage-and-studio";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -32,6 +32,7 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import AdmetChips from "../components/AdmetChips";
+import LiganxAIPanel from "../components/LiganxAIPanel";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -3719,6 +3720,10 @@ export default function StudioPage() {
           />
         </CollapsibleTab>
       </div>
+      {/* Liganx AI Beta — only mounts after a Full Job has produced a
+          share key. Pre-dock there's nothing on the page to ask about,
+          so we hide the FAB to avoid a confusing empty-context chat. */}
+      {fullJobKey && <LiganxAIPanel jobKey={fullJobKey} />}
     </div>
   );
 }

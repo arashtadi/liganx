@@ -622,6 +622,24 @@ export const api = {
   getJob: (key: string | number) => request<Job>(`/jobs/${key}`),
   cancelJob: (key: string | number) =>
     request<Job>(`/jobs/${key}/cancel`, { method: "POST" }),
+  /** Liganx AI Beta — Q&A scoped to a job's results page.
+   *
+   *  The backend assembles a structured snapshot of the job (target,
+   *  mutations, selectivity-matrix scores, pose-validation flags,
+   *  outside-pocket markers) and hands it to Claude Haiku along with
+   *  the user's free-form question. Returns the model's plain-text
+   *  answer plus the model id (e.g. "claude-haiku-4-5-...") so the
+   *  panel can show a "powered by …" footer.
+   *
+   *  Requires auth (Anthropic calls cost real money; gating on a
+   *  signed-in user makes the budget predictable). 30 calls per hour
+   *  per IP — RATE_LIMIT_BYPASS_EMAILS lifts the cap for staff/founder
+   *  accounts. */
+  askJob: (key: string | number, question: string) =>
+    request<{ answer: string; model: string; job_key: string }>(
+      `/jobs/${key}/ask`,
+      { method: "POST", body: JSON.stringify({ question }) },
+    ),
   /** AI assistant — natural-language compound edit. Calls Claude Haiku
    *  with the user's instruction + optional pocket context (target PDB
    *  + mutations). Returns the proposed new SMILES, a one-line
