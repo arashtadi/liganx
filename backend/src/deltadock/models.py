@@ -216,3 +216,197 @@ class OptimizeAttempt(SQLModel, table=True):
         default=None,
         sa_column=Column(UUID(as_uuid=False), nullable=True),
     )
+
+
+# -----------------------------------------------------------------------------
+# Virtual screening (added 2026-05-11) — dock ≤1K compounds from a SMILES list
+# against one target. Differentiates Liganx from single-compound docking
+# wrappers; Schrödinger's Glide-VS competitor at scale.
+#
+# Modelled as a separate table from Job (not a subtype) because:
+#   - Job rows are ~6 docks (3 compounds × 2 variants); ScreeningJob rows
+#     are ~1000 docks. Different concurrency + scheduling behaviour, will
+#     diverge further as we add tiered exhaustiveness.
+#   - History page treats them as different UX (one is a matrix, the
+#     other is a ranked hit list with filters).
+# Reuses Compound rows by FK — the same SMILES that's been docked before
+# gets cached/deduped at insert time (see services/screening.py when it
+# lands next session).
+# -----------------------------------------------------------------------------
+
+
+class ScreeningStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScreeningJob(SQLModel, table=True):
+    """A virtual screening run: rank N compounds against one (target, mutations) tuple.
+
+    Unlike Job, which renders as a per-mutation matrix, this renders as a
+    ranked hit list — best score first, with ADMET chips inline. Capped at
+    1000 compounds per submission to stay inside a single pod's reasonable
+    runtime (~30-60 min at 1-3 s/dock on the GPU).
+    """
+
+    __tablename__ = "screening_job"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    share_id: str = Field(
+        default_factory=_new_share_id,
+        index=True,
+        unique=True,
+        max_length=32,
+    )
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Target — same shape as Job. We deliberately don't FK to a target
+    # table because targets are referenced by string identifier (PDB id
+    # or catalog id) throughout the codebase.
+    pdb_id: str = Field(index=True)
+    chain: str = "A"
+
+    # Comma-separated mutations like Job.mutations. Empty = WT only.
+    # Screening typically pins to ONE variant (the cancer mutation of
+    # interest) — multi-variant screening would multiply the dock count
+    # and is left as a future capability.
+    mutations: str = ""
+
+    # Same engine column convention as Job.
+    engine: Optional[str] = Field(default="quickvina2_gpu", index=True)
+
+    # Docking depth. Defaults lower than Job (4 vs 8) because the value
+    # of screening is RANKING the top N, not getting absolute scores
+    # right — re-dock survivors at higher exhaustiveness in a follow-up.
+    exhaustiveness: int = Field(default=4)
+
+    # Total compounds queued + running counters for the progress bar.
+    n_total: int = Field(default=0)
+    n_completed: int = Field(default=0)
+    n_failed: int = Field(default=0)
+
+    # User-supplied label so History shows e.g. "BTK BRENK-filtered DEL".
+    title: Optional[str] = None
+    tags: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(ARRAY(String()), nullable=False, server_default="{}"),
+    )
+
+    status: ScreeningStatus = Field(default=ScreeningStatus.PENDING, index=True)
+    error_message: Optional[str] = None
+
+    user_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), index=True, nullable=True),
+    )
+
+    results: list["ScreeningResult"] = Relationship(back_populates="screening_job")
+
+
+class ScreeningResult(SQLModel, table=True):
+    """One docking score in a screening run.
+
+    Separate from DockingResult because:
+      - We don't want a million screening rows polluting the per-job
+        DockingResult queries (variant matrix loads etc.).
+      - Screening rows can be aged/archived independently — keep top
+        1000 forever, age out the long tail after 30 days.
+      - ADMET predictions cached here too so the results page is a
+        single query, not a join.
+    """
+
+    __tablename__ = "screening_result"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    screening_job_id: int = Field(foreign_key="screening_job.id", index=True)
+    compound_id: int = Field(foreign_key="compound.id", index=True)
+
+    # "WT" or single mutation string. ScreeningJob is pinned to one
+    # variant at a time, but we store it per-row anyway for query
+    # ergonomics.
+    variant: str = Field(index=True)
+
+    # Vina score (kcal/mol, lower = stronger binding). Indexed so the
+    # results page can ORDER BY best_score LIMIT 100 cheaply.
+    best_score: Optional[float] = Field(default=None, index=True)
+
+    # Pose blob (R2 object URI when configured, local path otherwise).
+    # Most screening rows will never have their pose viewed; only the
+    # top ~20-50 will. Lazy-load.
+    pose_uri: Optional[str] = None
+
+    # ADMET prediction blob (JSON: hERG, DILI, BBB, CYP3A4, CYP2D6 +
+    # raw probability). Cached at insert time from admet_ml. Null
+    # means ADMET wasn't run for this row (RDKit parse failed).
+    admet_extended_json: Optional[str] = None
+
+    # Status of this specific cell:
+    #   "ok" | "pending" | "failed" | "skipped"
+    # skipped = compound parsed but never got docked (cancelled run).
+    status: str = Field(default="pending", index=True)
+    error_message: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    screening_job: Optional[ScreeningJob] = Relationship(back_populates="results")
+
+
+# -----------------------------------------------------------------------------
+# Boltz-2 structure prediction (added 2026-05-11) — pod-hosted co-folding
+# of protein + ligand. Wohlwend et al. 2025, MIT Jameel Clinic.
+#
+# A row per /predict_boltz2 call. The actual inference happens on the
+# RunPod GPU (see runpod/BOLTZ2_INSTALL.md); this table records what was
+# requested, the cached output (predicted_pdb_b64 + affinity), and
+# timing for support workflows. ~5 GB model weights live on the pod's
+# /workspace volume, NOT here.
+# -----------------------------------------------------------------------------
+
+
+class Boltz2Status(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class Boltz2Prediction(SQLModel, table=True):
+    """One Boltz-2 prediction record. Persistent cache + audit trail."""
+
+    __tablename__ = "boltz2_prediction"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    user_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), nullable=True, index=True),
+    )
+
+    # Request shape — deterministic input identifier so identical
+    # requests dedupe via a hash index.
+    receptor_sequence: str  # amino-acid string, can be long
+    ligand_smiles: str
+    chain_id: str = "A"
+    use_msa: bool = False
+    num_samples: int = 1
+
+    # Hash of (receptor_sequence + ligand_smiles + chain_id + use_msa)
+    # for cache lookups. Index so /predict_boltz2 can check
+    # "have we computed this before?" in O(log n).
+    request_hash: str = Field(index=True, max_length=64)
+
+    # Output. predicted_pdb is the co-folded complex; affinity_pred_value
+    # is Boltz-2's predicted binding affinity (~log Kd, lower = stronger);
+    # affinity_probability_binary is the binder/non-binder probability.
+    predicted_pdb_b64: Optional[str] = None  # gzipped or raw, fits in TEXT
+    affinity_pred_value: Optional[float] = None
+    affinity_probability_binary: Optional[float] = None
+
+    status: Boltz2Status = Field(default=Boltz2Status.PENDING, index=True)
+    error_message: Optional[str] = None
+    elapsed_ms: Optional[int] = None
