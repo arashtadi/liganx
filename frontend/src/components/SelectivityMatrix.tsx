@@ -117,12 +117,33 @@ export default function SelectivityMatrix({
 
   const enriched = useMemo(() => compounds.map((c) => {
     const scores = scoreOf[c.id] ?? {};
+    const extras = extraOf[c.id] ?? {};
     const wt = scores["WT"] ?? null;
     const mScores = mutations.map((m) => scores[m]).filter((v): v is number => v != null);
     const bestMutant = mScores.length ? Math.min(...mScores) : null;
     const bestDelta = wt != null && bestMutant != null ? bestMutant - wt : null;
-    return { compound: c, scores, wt, bestMutant, bestDelta };
-  }), [compounds, mutations, scoreOf]);
+    // (v1.12) For the row-level bestΔ label we also need to know
+    // whether the best-mutant cell is flagged outside-pocket. When
+    // the pose for the best-mutant variant ended up beyond the
+    // docking box, its score is method noise rather than a real
+    // binding affinity — the row's Δ is therefore unreliable and
+    // the UI should de-emphasise it. Find the mutation that
+    // PRODUCED bestMutant, then check its extras.outsidePocketA.
+    const bestMutantVariant = bestMutant != null
+      ? mutations.find((m) => scores[m] === bestMutant)
+      : undefined;
+    const bestMutantOutsidePocket = bestMutantVariant
+      ? parseExtra(extras[bestMutantVariant]).outsidePocketA != null
+      : false;
+    // (v1.12) Are ALL the mutant variants outside-pocket? If so
+    // even switching to the next-best wouldn't help — the entire
+    // mutation column is uninformative for this compound.
+    const allMutantsOutside = mutations.length > 0 && mutations.every((m) => {
+      if (scores[m] == null) return false;
+      return parseExtra(extras[m]).outsidePocketA != null;
+    });
+    return { compound: c, scores, wt, bestMutant, bestDelta, bestMutantOutsidePocket, allMutantsOutside };
+  }), [compounds, mutations, scoreOf, extraOf]);
 
   const rows = useMemo(() => {
     const sorted = [...enriched];
@@ -301,7 +322,7 @@ export default function SelectivityMatrix({
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ compound, scores, wt, bestDelta }, rowIdx) => (
+            {rows.map(({ compound, scores, wt, bestDelta, bestMutantOutsidePocket, allMutantsOutside }, rowIdx) => (
               <tr
                 key={compound.id}
                 className={`border-b border-slate-100 dark:border-slate-800 transition-colors ${
@@ -318,13 +339,58 @@ export default function SelectivityMatrix({
                     {compound.smiles}
                   </div>
                   {bestDelta != null && (
-                    <div className={`mt-0.5 text-[10px] font-semibold ${
-                      bestDelta < -0.3 ? "text-emerald-600 dark:text-emerald-400"
-                      : bestDelta > 0.3 ? "text-rose-600 dark:text-rose-400"
-                      : "text-slate-400 dark:text-slate-500"
-                    }`}>
-                      best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}
-                    </div>
+                    // (v1.12) Two reliability checks layered onto the row-level
+                    // "best Δ" hint:
+                    //
+                    //   1. allMutantsOutside — every mutant variant for this
+                    //      compound was docked outside Vina's search box. The
+                    //      row Δ is method noise, not a binding signal.
+                    //      Without this guardrail, the user sees a coloured
+                    //      Δ and reads it as biology when the docking can't
+                    //      actually see the residues.
+                    //
+                    //   2. |Δ| < 1.0 kcal/mol — within typical Vina run-to-run
+                    //      noise (exhaustiveness 8, single seed). The user
+                    //      flagged this exact failure mode after two runs of
+                    //      the same compound flipped sign. The label now
+                    //      explicitly calls it out so a borderline number
+                    //      doesn't look like a firm prediction.
+                    //
+                    // The bestMutantOutsidePocket case sits between the two —
+                    // the best mutant cell specifically is outside-pocket, so
+                    // we keep the number but tag it.
+                    allMutantsOutside ? (
+                      <div
+                        className="mt-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title="Every mutant variant for this compound was docked outside Vina's search box — the row Δ is method noise (PDBFixer local relaxation + QuickVina-GPU stochastic search), not a real selectivity or resistance signal. Try a different reference PDB or click 'Edit & re-dock' → Optimize to design variants with linkers reaching toward the mutation residue."
+                      >
+                        best Δ unreliable — mutation outside pocket
+                      </div>
+                    ) : bestMutantOutsidePocket ? (
+                      <div
+                        className="mt-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title="The best-scoring mutant variant for this compound was docked outside Vina's search box. The Δ here reflects search-noise on a mutation residue Vina can't actually see — not a real binding effect."
+                      >
+                        best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}{" "}
+                        <span className="font-normal opacity-70">(outside pocket)</span>
+                      </div>
+                    ) : Math.abs(bestDelta) < 1.0 ? (
+                      <div
+                        className="mt-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400"
+                        title="|Δ| < 1.0 kcal/mol is within typical Vina run-to-run noise (exhaustiveness 8, single seed). Re-running with the same inputs can flip the sign. Treat this as a soft signal — bump exhaustiveness or use the GNINA CNN re-score for a firmer read."
+                      >
+                        best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}{" "}
+                        <span className="italic opacity-80">within noise</span>
+                      </div>
+                    ) : (
+                      <div className={`mt-0.5 text-[10px] font-semibold ${
+                        bestDelta < -0.3 ? "text-emerald-600 dark:text-emerald-400"
+                        : bestDelta > 0.3 ? "text-rose-600 dark:text-rose-400"
+                        : "text-slate-400 dark:text-slate-500"
+                      }`}>
+                        best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}
+                      </div>
+                    )
                   )}
                   {/* Drug-likeness chips — compact strip directly under the SMILES.
                       Lets users triage compounds by chemistry quality (QED, Ro5)
