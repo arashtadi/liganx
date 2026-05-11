@@ -68,6 +68,18 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://liganx.com/blog/braf-v600e-melanoma-colorectal-paradox</loc>
+    <lastmod>2026-05-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/blog/vina-gnina-glide-scoring-function-comparison</loc>
+    <lastmod>2026-05-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://liganx.com/privacy</loc>
     <changefreq>monthly</changefreq>
     <priority>0.4</priority>
