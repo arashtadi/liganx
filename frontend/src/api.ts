@@ -30,6 +30,21 @@ export interface AdmetExtendedField {
   label: "low" | "medium" | "high";
   evidence: string;
 }
+/** One ADMET endpoint from admet-ai's TDC suite. Surfaced in the
+ *  v1.11 expandable "Full ADMET profile" section. Each row is the
+ *  raw probability (0..1) plus a tier (low/medium/high vs 0.3/0.6
+ *  cutoffs) and a `higher_is_better` flag — frontend flips chip
+ *  color when high values are GOOD (e.g. Solubility, Bioavailability)
+ *  vs BAD (CYPs, hERG, AMES).
+ */
+export interface AdmetCategoryRow {
+  key: string;             // admet-ai canonical key, e.g. "BBB_Martins"
+  name: string;            // short display name, e.g. "BBB"
+  probability: number;     // 0..1 from admet-ai
+  tier: "low" | "medium" | "high";
+  higher_is_better: boolean;
+  hint: string;            // hover tooltip text
+}
 export interface AdmetExtended {
   source: "rule-based" | "ml";
   bbb: AdmetExtendedField;       // Blood-brain barrier penetration
@@ -37,6 +52,18 @@ export interface AdmetExtended {
   cyp3a4: AdmetExtendedField;    // CYP3A4 metabolic inhibition
   cyp2d6: AdmetExtendedField;    // CYP2D6 metabolic inhibition
   dili: AdmetExtendedField;      // Drug-induced liver injury
+  /** (v1.11 / #204) Full TDC ADMET endpoint table grouped by
+   *  ADME-T category. ~41 predictions when source='ml' — Schrödinger
+   *  ADMET Predictor charges $50K/seat/year for the equivalent. Only
+   *  present from admet-ai (source='ml'); rule-based path doesn't
+   *  populate this. */
+  categories?: {
+    absorption?: AdmetCategoryRow[];
+    distribution?: AdmetCategoryRow[];
+    metabolism?: AdmetCategoryRow[];
+    excretion?: AdmetCategoryRow[];
+    toxicity?: AdmetCategoryRow[];
+  };
 }
 
 export interface Admet {

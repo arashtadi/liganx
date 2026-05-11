@@ -1,4 +1,5 @@
-import type { Admet } from "../api";
+import { useState } from "react";
+import type { Admet, AdmetCategoryRow } from "../api";
 
 /**
  * Compact ADMET / drug-likeness chip strip.
@@ -121,9 +122,103 @@ export default function AdmetChips({
               hint="Drug-induced liver injury risk. High = reactive group present (Greene/Liguori structural alert)."
             />
           </div>
+          {/* (v1.11 / #204) Full ADMET profile — expandable table of the
+              ~36 additional admet-ai TDC endpoints we previously
+              discarded. Schrödinger's ADMET Predictor charges $50K/
+              seat/year for an equivalent dashboard; we surface it free.
+              Categories that are missing/empty silently collapse so
+              rule-based ADMET (which lacks the categories block)
+              doesn't render a stub. */}
+          {admet.extended.categories && (
+            <FullAdmetProfile categories={admet.extended.categories} />
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+/* (v1.11) Expandable per-category ADMET drawer. Renders one section
+   per ADME-T category, each with a horizontal flex of chips. Hidden
+   behind a click to keep the JobPage's compound column compact for
+   chemists who don't care about the long tail of TDC endpoints. */
+function FullAdmetProfile({
+  categories,
+}: {
+  categories: NonNullable<Admet["extended"]>["categories"];
+}) {
+  const [open, setOpen] = useState(false);
+  if (!categories) return null;
+  const groups: { key: string; label: string; rows: AdmetCategoryRow[] }[] = [
+    { key: "absorption",   label: "Absorption",   rows: categories.absorption ?? [] },
+    { key: "distribution", label: "Distribution", rows: categories.distribution ?? [] },
+    { key: "metabolism",   label: "Metabolism",   rows: categories.metabolism ?? [] },
+    { key: "excretion",    label: "Excretion",    rows: categories.excretion ?? [] },
+    { key: "toxicity",     label: "Toxicity",     rows: categories.toxicity ?? [] },
+  ].filter((g) => g.rows.length > 0);
+  if (groups.length === 0) return null;
+  const totalRows = groups.reduce((n, g) => n + g.rows.length, 0);
+  return (
+    <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full text-left text-[10px] font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1.5 transition-colors"
+        title={open ? "Hide the full ADMET endpoint table" : `Show all ${totalRows} ADMET predictions grouped by ADME-T category`}
+      >
+        <span className={`text-[9px] transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
+        <span>Full ADMET profile</span>
+        <span className="ml-auto text-[9px] font-normal text-slate-400 dark:text-slate-500 normal-case">
+          {open ? "click to hide" : `${totalRows} TDC endpoints · click to expand`}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-3">
+          {groups.map((g) => (
+            <div key={g.key}>
+              <div className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-500 dark:text-slate-500 mb-1.5">
+                {g.label} <span className="text-slate-400 dark:text-slate-600 normal-case font-normal">· {g.rows.length}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {g.rows.map((row) => (
+                  <EndpointChip key={row.key} row={row} />
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="text-[9px] text-slate-400 dark:text-slate-600 italic pt-1 border-t border-slate-200/50 dark:border-slate-800/50">
+            Powered by admet-ai (Swanson et al. 2023) — Chemprop ensemble over the TDC ADMET benchmark suite.
+            ● low risk · ◐ medium · ○ high — color flipped where high values are favourable (e.g. Solubility).
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Per-endpoint chip. Color reads tier + higher_is_better:
+   - tier=low, higher_is_better=false → green (low risk endpoint)
+   - tier=high, higher_is_better=true → green (high probability of good outcome)
+   - tier=high, higher_is_better=false → rose (high probability of bad outcome)
+   The hover surfaces the raw probability and the hint string. */
+function EndpointChip({ row }: { row: AdmetCategoryRow }) {
+  // "Bad" tier is the inverted view of higher_is_better.
+  const isFavourable = row.higher_is_better ? row.tier === "high" : row.tier === "low";
+  const isUnfavourable = row.higher_is_better ? row.tier === "low" : row.tier === "high";
+  const styles = isFavourable
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40"
+    : isUnfavourable
+    ? "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:ring-rose-700/40"
+    : "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700/40";
+  return (
+    <span
+      title={`${row.name}\nprobability ${row.probability.toFixed(2)} · tier ${row.tier}${row.higher_is_better ? " (higher is better)" : ""}\n\n${row.hint}`}
+      className={`rounded px-1.5 py-0.5 font-medium ring-1 ring-inset text-[10px] ${styles}`}
+    >
+      <span className="opacity-70 mr-0.5 text-[9px]">{row.tier === "low" ? "●" : row.tier === "medium" ? "◐" : "○"}</span>
+      {row.name}
+      <span className="font-normal opacity-60 ml-1 tabular-nums">{row.probability.toFixed(2)}</span>
+    </span>
   );
 }
 

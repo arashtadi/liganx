@@ -90,11 +90,88 @@ def _admet_label(prob: float, low_max: float = 0.3, med_max: float = 0.6) -> str
     return "high"
 
 
+# 2026-05-11: Full ADMET endpoint table (#204). admet-ai returns ~41
+# predictions from the TDC ADMET benchmark. We previously surfaced
+# only 5 (BBB/hERG/CYP3A4/CYP2D6/DILI) — every other endpoint was
+# computed and discarded. This table groups the rest by the standard
+# ADME-T categorization so the frontend can render them in an
+# expandable panel without a tonne of bespoke per-endpoint UI.
+# Format: (admet-ai key, display name, hover hint, higher_is_better).
+# higher_is_better=True flips chip color: e.g. high Solubility prob
+# is GOOD (more soluble), high hERG prob is BAD (cardiotoxicity).
+_ADMET_CATALOG: dict[str, list[tuple[str, str, str, bool]]] = {
+    "absorption": [
+        ("HIA_Hou",                       "HIA",                "Human intestinal absorption — probability that >30% of oral dose reaches systemic circulation.", True),
+        ("Bioavailability_Ma",            "Bioavailability",    "Oral bioavailability — probability that F% > 20%.", True),
+        ("Pgp_Broccatelli",               "P-gp inhibition",    "P-glycoprotein inhibition — efflux interference that affects clearance and DDI.", False),
+        ("Solubility_AqSolDB",            "Aq. solubility",     "Aqueous solubility (log mol/L). Lower than -4 is poor; -2 to 0 is typical for orals.", False),
+        ("Lipophilicity_AstraZeneca",     "Lipophilicity",      "Octanol-water logP from AstraZeneca's curated set. Range 0.5–5 is drug-like.", False),
+        ("HydrationFreeEnergy_FreeSolv",  "Hydration ΔG",       "Free energy of hydration (kcal/mol) from FreeSolv. More negative = better solvated.", False),
+        ("Caco2_Wang",                    "Caco-2",             "Caco-2 monolayer permeability (log Papp, cm/s). Higher = better oral absorption.", False),
+        ("PAMPA_NCATS",                   "PAMPA",              "Parallel artificial-membrane permeability. High = passive absorption likely.", True),
+    ],
+    "distribution": [
+        ("BBB_Martins",                   "BBB",                "Blood-brain barrier penetration likelihood — high = expected CNS exposure.", True),
+        ("PPBR_AZ",                       "PPB",                "Plasma protein binding (%). Higher = less free drug, longer half-life but lower potency.", False),
+        ("VDss_Lombardo",                 "VDss",               "Volume of distribution at steady state (L/kg). >0.7 suggests extensive tissue distribution.", False),
+    ],
+    "metabolism": [
+        ("CYP1A2_Veith",                  "CYP1A2 inhib",       "CYP1A2 metabolic inhibition — DDI risk for caffeine, theophylline, etc.", False),
+        ("CYP2C9_Veith",                  "CYP2C9 inhib",       "CYP2C9 inhibition — warfarin/NSAID DDI predictor.", False),
+        ("CYP2C19_Veith",                 "CYP2C19 inhib",      "CYP2C19 inhibition — affects PPIs, clopidogrel activation.", False),
+        ("CYP2D6_Veith",                  "CYP2D6 inhib",       "CYP2D6 inhibition — second-most-common metabolizer; CNS/cardio drugs.", False),
+        ("CYP3A4_Veith",                  "CYP3A4 inhib",       "CYP3A4 inhibition — most common metabolizer; broadest DDI surface.", False),
+        ("CYP2C9_Substrate_CarbonMangels","CYP2C9 substrate",   "Is the compound a CYP2C9 substrate — relevant for clearance prediction.", False),
+        ("CYP2D6_Substrate_CarbonMangels","CYP2D6 substrate",   "Is the compound a CYP2D6 substrate — poor metabolizers will accumulate.", False),
+        ("CYP3A4_Substrate_CarbonMangels","CYP3A4 substrate",   "Is the compound a CYP3A4 substrate — grapefruit-juice / inducer interactions.", False),
+    ],
+    "excretion": [
+        ("Clearance_Hepatocyte_AZ",       "Hepatocyte CL",      "Intrinsic clearance in hepatocytes (μL/min/10⁶ cells). High = rapid metabolism.", False),
+        ("Clearance_Microsome_AZ",        "Microsomal CL",      "Intrinsic clearance in microsomes (μL/min/mg). Pairs with hepatocyte CL.", False),
+        ("Half_Life_Obach",               "Half-life",          "Plasma half-life (hours). Drives dosing frequency.", False),
+    ],
+    "toxicity": [
+        ("hERG",                          "hERG block",         "Cardiac potassium-channel binding — QT prolongation / arrhythmia risk.", False),
+        ("DILI",                          "DILI",               "Drug-induced liver injury — reactive group / hepatotoxic alert.", False),
+        ("AMES",                          "AMES",               "AMES bacterial mutagenicity — short Ames test prediction.", False),
+        ("Carcinogens_Lagunin",           "Carcinogen",         "Carcinogenicity prediction (Lagunin chronic-rodent model).", False),
+        ("LD50_Zhu",                      "LD50 (rat)",         "Acute toxicity — log(1/(mol/kg)). Higher value = lower toxicity.", True),
+        ("ClinTox",                       "Clinical fail",      "Probability the compound fails clinical trials for toxicity reasons.", False),
+        ("Skin_Reaction",                 "Skin",               "Dermal sensitization probability.", False),
+        ("NR-AR",                         "AR",                 "Androgen-receptor binding (Tox21).", False),
+        ("NR-AR-LBD",                     "AR-LBD",             "AR ligand-binding domain (Tox21).", False),
+        ("NR-AhR",                        "AhR",                "Aryl-hydrocarbon receptor binding (Tox21).", False),
+        ("NR-Aromatase",                  "Aromatase",          "Aromatase (CYP19A1) inhibition (Tox21).", False),
+        ("NR-ER",                         "ER",                 "Estrogen-receptor binding (Tox21).", False),
+        ("NR-ER-LBD",                     "ER-LBD",             "ER ligand-binding domain (Tox21).", False),
+        ("NR-PPAR-gamma",                 "PPAR-γ",             "PPAR-γ activation (Tox21).", False),
+        ("SR-ARE",                        "ARE",                "Antioxidant response element activation (Tox21).", False),
+        ("SR-ATAD5",                      "ATAD5",              "Genotoxic stress (Tox21).", False),
+        ("SR-HSE",                        "HSE",                "Heat-shock response element (Tox21).", False),
+        ("SR-MMP",                        "MMP",                "Mitochondrial membrane potential disruption (Tox21).", False),
+        ("SR-p53",                        "p53",                "p53 stress-response activation (Tox21).", False),
+    ],
+}
+
+
 def _admet_to_extended(props: dict[str, Any]) -> dict[str, Any]:
-    """Map the admet-ai property dict (~100 keys) onto our 5-channel
-    {bbb, herg, cyp3a4, cyp2d6, dili} schema. Each evidence string
-    quotes the raw probability so the user can audit how close to
-    the cutoff a borderline call was."""
+    """Map the admet-ai property dict (~41 keys) onto:
+
+    1. The legacy 5-channel {bbb, herg, cyp3a4, cyp2d6, dili} schema
+       that AdmetChips' compact mode renders — unchanged for back-compat
+       so the frontend's pre-#204 chip strip still works on existing data.
+    2. A full `categories` block with all 41 endpoints grouped by ADME-T
+       category (absorption / distribution / metabolism / excretion /
+       toxicity), each with display name, raw probability, tier
+       (low/medium/high vs the 0.3 / 0.6 cutoffs), `higher_is_better`
+       flag for chip-color flipping on the frontend, and a hover hint.
+       Surfaces the ~36 predictions we previously computed and
+       discarded — Schrödinger's ADMET Predictor charges $50K/seat/year
+       for the equivalent table (#204, 2026-05-11).
+
+    Each evidence string quotes the raw probability so the user can
+    audit how close to the cutoff a borderline call was.
+    """
     def field(name: str, prob_key: str) -> dict[str, str]:
         prob = props.get(prob_key)
         try:
@@ -105,6 +182,33 @@ def _admet_to_extended(props: dict[str, Any]) -> dict[str, Any]:
             return {"label": "low", "evidence": f"{name} prob unavailable"}
         return {"label": _admet_label(p), "evidence": f"{name} probability {p:.2f}"}
 
+    # Build the categories table. Endpoints whose admet-ai key isn't
+    # present in `props` (admet-ai version skew, model file missing,
+    # etc.) are silently omitted — frontend renders the surviving rows
+    # rather than empty placeholders.
+    categories: dict[str, list[dict[str, Any]]] = {}
+    for cat, rows in _ADMET_CATALOG.items():
+        out_rows: list[dict[str, Any]] = []
+        for key, name, hint, higher_is_better in rows:
+            raw = props.get(key)
+            try:
+                p = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                p = None
+            if p is None:
+                continue
+            tier = _admet_label(p)
+            out_rows.append({
+                "key": key,
+                "name": name,
+                "probability": round(p, 3),
+                "tier": tier,
+                "higher_is_better": higher_is_better,
+                "hint": hint,
+            })
+        if out_rows:
+            categories[cat] = out_rows
+
     return {
         "source": "ml",
         "bbb": field("BBB penetration", "BBB_Martins"),
@@ -112,6 +216,7 @@ def _admet_to_extended(props: dict[str, Any]) -> dict[str, Any]:
         "cyp3a4": field("CYP3A4 inhibition", "CYP3A4_Veith"),
         "cyp2d6": field("CYP2D6 inhibition", "CYP2D6_Veith"),
         "dili": field("DILI", "DILI"),
+        "categories": categories,
     }
 
 
