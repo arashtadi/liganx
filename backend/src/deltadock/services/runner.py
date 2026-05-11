@@ -232,6 +232,80 @@ def is_cancelled(session: Session, job_id: int) -> bool:
     return bool(fresh and fresh.status == JobStatus.CANCELLED)
 
 
+def _safe_commit(session: Session, job_id: int, *, status: JobStatus,
+                 error_message: str | None = None) -> bool:
+    """Commit a final job status update, surviving a poisoned session.
+
+    Why this helper exists: the runner holds a single Session across the
+    multi-minute dock pipeline. If Postgres drops the idle connection
+    mid-job (Supabase pooler closes idle sockets after a few minutes),
+    SQLAlchemy raises PendingRollbackError on the next commit() and the
+    session refuses to do ANY work until rollback() is called. Without
+    this helper, the failure path itself fails to write FAILED, the
+    runner thread dies, and the job sits in RUNNING forever — exactly
+    the bug that left job #258 hung overnight.
+
+    Strategy:
+      1. Try a normal commit on the existing session.
+      2. If that raises (DBAPIError covers OperationalError, ConnectionError,
+         and the cascade PendingRollbackError), roll back the session to
+         clear its sticky bad state, then retry on the same session.
+      3. If THAT still fails, open a brand-new Session(engine) so we get
+         a fresh checkout from the (pre-pinged) pool, and write the
+         status update there. This is the absolute last-resort path —
+         it bypasses the runner's session entirely.
+
+    Returns True iff the status was written (somewhere). Never raises;
+    the caller already has more important things to do (logging the
+    original failure, sending Telegram, etc.) and shouldn't have to
+    care that the DB write itself was rocky.
+    """
+    from sqlalchemy.exc import DBAPIError, PendingRollbackError
+
+    def _do_write(s: Session) -> None:
+        j = s.get(Job, job_id)
+        if j is None:
+            log.warning("_safe_commit: job %s vanished before status write", job_id)
+            return
+        j.status = status
+        if error_message is not None:
+            j.error_message = error_message[:500]
+        j.updated_at = datetime.utcnow()
+        s.add(j)
+        s.commit()
+
+    # Attempt 1: existing session.
+    try:
+        _do_write(session)
+        return True
+    except (DBAPIError, PendingRollbackError) as e:
+        log.warning("_safe_commit: existing session write failed (%s); rolling back + retrying",
+                    type(e).__name__)
+
+    # Attempt 2: rollback the dead session, retry on the same Session.
+    # rollback() forces SQLAlchemy to invalidate the bad connection and
+    # check out a fresh one from the pool. pool_pre_ping (db.py) ensures
+    # the new checkout is alive.
+    try:
+        session.rollback()
+        _do_write(session)
+        return True
+    except (DBAPIError, PendingRollbackError) as e:
+        log.warning("_safe_commit: rollback+retry also failed (%s); falling back to fresh Session",
+                    type(e).__name__)
+
+    # Attempt 3: brand-new Session, totally bypass the original.
+    try:
+        with Session(engine) as fresh:
+            _do_write(fresh)
+        log.info("_safe_commit: wrote status=%s for job %s via fresh Session", status.name, job_id)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.exception("_safe_commit: every attempt failed for job %s — DB unreachable: %s",
+                      job_id, e)
+        return False
+
+
 def run_job_in_background(job_id: int) -> None:
     """Background entrypoint. Pulls the job, runs docking, writes results."""
     log.info("Running job %s", job_id)
@@ -267,16 +341,24 @@ def run_job_in_background(job_id: int) -> None:
             # which we catch below — but a "natural" completion that
             # raced with cancel would land here. Either way: don't
             # clobber a CANCELLED status with COMPLETED.
-            session.refresh(job)
-            if job.status != JobStatus.CANCELLED:
-                job.status = JobStatus.COMPLETED
-                # NOTE: job.stage = None removed — Job model no longer
-                # declares the stage column until migration 004 lands.
-                # set_stage() is a no-op so nothing to clear.
-                job.updated_at = datetime.utcnow()
-                session.add(job)
-                session.commit()
-                log.info("Job %s completed", job_id)
+            # Use _safe_commit so a Postgres connection drop during the
+            # multi-minute pipeline doesn't strand the job in RUNNING.
+            # We re-fetch via _safe_commit's internal session.get(), so
+            # the previous session.refresh() is no longer needed for
+            # correctness (the helper is the source of truth) but we
+            # keep the cancel check on the in-memory `job` object since
+            # _safe_commit won't tell us about a races-with-cancel case.
+            try:
+                session.refresh(job)
+                terminal_status = JobStatus.COMPLETED if job.status != JobStatus.CANCELLED else JobStatus.CANCELLED
+            except Exception as e:  # noqa: BLE001
+                log.warning("Job %s: refresh failed (%s) — assuming COMPLETED", job_id, type(e).__name__)
+                terminal_status = JobStatus.COMPLETED
+            if terminal_status == JobStatus.COMPLETED:
+                if _safe_commit(session, job_id, status=JobStatus.COMPLETED):
+                    log.info("Job %s completed", job_id)
+                else:
+                    log.error("Job %s: COULD NOT WRITE COMPLETED STATUS (DB unreachable)", job_id)
             else:
                 log.info("Job %s ended in CANCELLED state — preserving it", job_id)
         except JobCancelled:
@@ -285,11 +367,11 @@ def run_job_in_background(job_id: int) -> None:
             # error_message; no need to overwrite.
         except Exception as e:
             log.exception("Job %s failed", job_id)
-            job.status = JobStatus.FAILED
-            job.error_message = str(e)[:500]
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+            # _safe_commit handles the poisoned-session case where a DB
+            # disconnect mid-run made the regular commit fail. Without
+            # this, the runner would crash here trying to write FAILED
+            # and the job would sit in RUNNING forever.
+            _safe_commit(session, job_id, status=JobStatus.FAILED, error_message=str(e))
             # Telegram alert with full triage context. Wrapped in its own
             # try/except so a notification failure (Telegram down,
             # credentials missing, network blip) never re-raises and
