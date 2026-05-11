@@ -30,10 +30,14 @@ export default function LoginPage() {
   const { signInWithPassword, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [search] = useSearchParams();
-  // Where to send the user after sign-in. Defaults to /new — the most common
-  // post-login destination. ?next=/history sends them to history (used when
-  // a protected link redirected them here).
-  const next = search.get("next") || "/new";
+  // Where to send the user after sign-in. Defaults to /studio — the
+  // single workspace users now operate in (NewJobPage was retired
+  // 2026-05-08 in favour of Studio's unified flow). ?next=/history
+  // sends them to history (used when a protected link redirected
+  // them here). Any cached ?next=/new from old links is rewritten
+  // to /studio below so signed-in users never land on the legacy form.
+  const rawNext = search.get("next") || "/studio";
+  const next = rawNext === "/new" ? "/studio" : rawNext;
   // Preserve the `next` param when bouncing to /signup so users who hit a
   // protected page, redirected to login, then chose "Create account" still
   // land back where they wanted to go after verification.

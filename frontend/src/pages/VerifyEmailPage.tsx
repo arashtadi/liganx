@@ -20,12 +20,12 @@ export default function VerifyEmailPage() {
   const [resendMsg, setResendMsg] = useState<string | null>(null);
 
   // If we already have a verified session by the time the page renders,
-  // skip straight to /new. Use a small timeout so the success message is
-  // visible for a moment.
+  // skip straight to /studio (NewJobPage retired 2026-05-08). Small
+  // timeout so the success message is visible for a moment.
   useEffect(() => {
     if (loading) return;
     if (user && emailVerified) {
-      const t = setTimeout(() => navigate("/new", { replace: true }), 1000);
+      const t = setTimeout(() => navigate("/studio", { replace: true }), 1000);
       return () => clearTimeout(t);
     }
   }, [loading, user, emailVerified, navigate]);

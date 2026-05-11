@@ -83,7 +83,7 @@ export default function MutationDockingGuidePage() {
         </p>
         <div className="not-prose flex gap-3 my-6">
           <Link
-            to="/new"
+            to="/studio"
             className="inline-flex items-center gap-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white text-sm font-semibold px-4 py-2 transition-colors"
           >
             Start a docking job <ArrowRight size={14} />
@@ -326,7 +326,7 @@ export default function MutationDockingGuidePage() {
         </p>
         <div className="flex gap-3">
           <Link
-            to="/new"
+            to="/studio"
             className="inline-flex items-center gap-1.5 rounded-md bg-delta-600 hover:bg-delta-700 text-white text-sm font-semibold px-4 py-2 transition-colors"
           >
             Start a docking job <ArrowRight size={14} />

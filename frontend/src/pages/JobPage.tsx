@@ -354,7 +354,7 @@ export default function JobPage() {
         </p>
         <div className="mt-5 flex items-center justify-center gap-2">
           <Link to="/" className="btn-secondary btn-sm">Go home</Link>
-          <Link to="/new" className="btn-primary btn-sm">Start a new job</Link>
+          <Link to="/studio" className="btn-primary btn-sm">Open Studio</Link>
         </div>
       </div>
     );
@@ -655,12 +655,13 @@ function JobErrorCard({ job }: { job: Job }) {
   const [reportErr, setReportErr] = useState<string | null>(null);
 
   function onRerunClick() {
-    // Same reseed shape as HistoryPage so NewJobPage's existing reseed
-    // handler picks it up unchanged. Fields that aren't on Job (e.g.
-    // exhaustiveness, include_wt) are read defensively; cast to a
-    // partial type to satisfy strict TS without a backend round-trip.
+    // Same reseed shape as HistoryPage so Studio's reseed handler
+    // (which the legacy NewJobPage handler was forked into) picks it
+    // up unchanged. Fields that aren't on Job (e.g. exhaustiveness,
+    // include_wt) are read defensively; cast to a partial type to
+    // satisfy strict TS without a backend round-trip.
     const j = job as Job & { exhaustiveness?: number; include_wt?: boolean };
-    navigate("/new", {
+    navigate("/studio", {
       state: {
         reseed: {
           pdb_id: job.pdb_id,

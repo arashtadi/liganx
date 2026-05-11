@@ -2405,7 +2405,7 @@ export default function NewJobPage() {
                   if (promoteCtx.mutations) {
                     reseedPayload.mutations = promoteCtx.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
                   }
-                  navigate("/new", { state: { reseed: reseedPayload } });
+                  navigate("/studio", { state: { reseed: reseedPayload } });
                 }
               }
             : undefined
@@ -2443,7 +2443,7 @@ export default function NewJobPage() {
             if (promoteCtx.mutations) {
               reseedPayload.mutations = promoteCtx.mutations.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
             }
-            navigate("/new", { state: { reseed: reseedPayload } });
+            navigate("/studio", { state: { reseed: reseedPayload } });
           }
         }}
       />

@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.01-2026-05-08-prominent-admet";
+const LIGANX_BUILD_TAG = "v1.02-2026-05-08-kill-new-route";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -3009,7 +3009,14 @@ export default function StudioPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            navigate("/new", {
+                            // Re-seed Studio with the current target + mutation
+                            // + SMILES so the user can fall back to a Full Job
+                            // (CPU path) without losing their setup. Used to
+                            // navigate to /new (legacy NewJobPage) — that
+                            // page is gone since 2026-05-08, so we re-seed
+                            // /studio in place. Studio's reseed handler
+                            // picks up the same payload shape unchanged.
+                            navigate("/studio", {
                               state: {
                                 reseed: {
                                   catalog_target_id: selectedTarget || undefined,
@@ -3024,7 +3031,7 @@ export default function StudioPage() {
                             });
                           }}
                           className="px-2 py-1 rounded border border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500/60 text-[10px] uppercase tracking-wider"
-                          title="Open NewJobPage with this SMILES + target + mutation pre-filled. CPU path takes minutes (vs ~30s on GPU) but has no scaffold limits."
+                          title="Re-seed Studio so you can submit this as a Full Job (CPU path, ~minutes vs ~30 s GPU, but no scaffold limits)."
                         >
                           ⇢ run as full job (cpu)
                         </button>

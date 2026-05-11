@@ -153,7 +153,11 @@ export default function CompoundsPage() {
   }
 
   function useInNewJob(c: UserCompound) {
-    navigate("/new", {
+    // Studio understands the same {state: {reseed: ...}} payload that
+    // NewJobPage used to consume — see Studio's reseed handler. The
+    // function is still called useInNewJob for backwards-compat with
+    // the call sites; renaming is a follow-up if anyone cares.
+    navigate("/studio", {
       state: {
         reseed: { compounds: [{ name: c.name, smiles: c.smiles }] },
       },
@@ -298,11 +302,11 @@ export default function CompoundsPage() {
             No saved compounds yet
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto">
-            Add a compound to a New-job form, give it a name, and it&apos;ll
+            Add a compound in Studio, give it a name, and it&apos;ll
             auto-save here.
           </p>
-          <Link to="/new" className="btn-primary btn-sm mt-4 inline-flex">
-            Start a new job <ArrowRight size={14} />
+          <Link to="/studio" className="btn-primary btn-sm mt-4 inline-flex">
+            Open Studio <ArrowRight size={14} />
           </Link>
         </div>
       )}

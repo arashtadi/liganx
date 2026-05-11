@@ -251,7 +251,7 @@ export default function ContactPage() {
           </p>
           <div className="mt-6 flex items-center justify-center gap-3">
             <Link to="/" className="btn-secondary btn-sm">Back to home</Link>
-            <Link to="/new" className="btn-primary btn-sm">
+            <Link to="/studio" className="btn-primary btn-sm">
               Try a docking job <ArrowRight size={14} />
             </Link>
           </div>

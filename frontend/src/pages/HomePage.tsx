@@ -74,7 +74,7 @@ function Hero() {
               gain selectivity — no PyMOL, FoldX, or AutoDock setup.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link to="/new" className="btn-primary btn-lg">
+              <Link to="/studio" className="btn-primary btn-lg">
                 Start a docking run <ArrowRight size={16} />
               </Link>
               <Link to="/library" className="btn-secondary btn-lg">
@@ -629,7 +629,7 @@ function CTAStrip() {
             </Link>
           )}
           <Link
-            to="/new"
+            to="/studio"
             className={
               user
                 ? "btn bg-white text-delta-700 hover:bg-delta-50 btn-lg shadow-sm"

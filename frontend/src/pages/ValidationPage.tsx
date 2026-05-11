@@ -461,7 +461,7 @@ export default function ValidationPage() {
 
       {/* ── CTA back to product ─────────────────────────────────────── */}
       <section className="text-center">
-        <Link to="/new" className="btn-primary btn-lg inline-flex">
+        <Link to="/studio" className="btn-primary btn-lg inline-flex">
           Run a docking job <ArrowRight size={16} />
         </Link>
       </section>

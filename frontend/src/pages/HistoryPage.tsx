@@ -246,7 +246,7 @@ export default function HistoryPage() {
       <div className="card max-w-xl mx-auto text-center py-16">
         <h1 className="text-2xl font-bold text-ink dark:text-white mb-2">No jobs yet</h1>
         <p className="muted mb-5">Your docking history will appear here once you run your first job.</p>
-        <Link to="/new" className="btn btn-primary">Start a new docking job</Link>
+        <Link to="/studio" className="btn btn-primary">Open Studio</Link>
       </div>
     );
   }

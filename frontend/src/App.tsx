@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, Link, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
 import HomePage from "./pages/HomePage";
-import NewJobPage from "./pages/NewJobPage";
+// NewJobPage import removed 2026-05-08 — /new now redirects to /studio
+// and the page is no longer mounted on any route. The file itself still
+// lives in src/pages/NewJobPage.tsx in case we need to grep its history,
+// but it's no longer in the bundle.
 import JobPage from "./pages/JobPage";
 import LibraryPage from "./pages/LibraryPage";
 import PrivacyPage from "./pages/PrivacyPage";
@@ -41,7 +44,11 @@ export default function App() {
         <Main>
           <Routes>
             <Route path="/" element={<HomePage />} />
-            <Route path="/new" element={<RequireAuth><NewJobPage /></RequireAuth>} />
+            {/* Legacy /new — NewJobPage retired 2026-05-08, all flows
+                consolidated into Studio. Permanent redirect so old
+                bookmarks, email links, and any caller still calling
+                navigate("/new") all land in /studio without a 404. */}
+            <Route path="/new" element={<Navigate to="/studio" replace />} />
             <Route path="/studio" element={<RequireAuth><StudioPage /></RequireAuth>} />
             <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
@@ -483,7 +490,7 @@ function NotFound() {
       </p>
       <div className="mt-5 flex items-center justify-center gap-2">
         <Link to="/" className="btn-secondary btn-sm">Go home</Link>
-        <Link to="/new" className="btn-primary btn-sm">Start a new job</Link>
+        <Link to="/studio" className="btn-primary btn-sm">Open Studio</Link>
       </div>
     </div>
   );

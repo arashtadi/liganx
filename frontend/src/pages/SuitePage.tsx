@@ -104,7 +104,7 @@ export default function SuitePage() {
         <p className="muted mt-2">
           Suite URLs look like <code className="font-mono text-xs">/suite?ids=A,B,C</code>.
           Run a multi-target job from{" "}
-          <Link to="/new" className="text-delta-700 dark:text-delta-400 underline">New job</Link>{" "}
+          <Link to="/studio" className="text-delta-700 dark:text-delta-400 underline">Studio</Link>{" "}
           to land here automatically.
         </p>
       </div>

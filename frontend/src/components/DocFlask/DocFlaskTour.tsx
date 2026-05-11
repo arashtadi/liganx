@@ -177,7 +177,9 @@ export default function DocFlaskTour() {
   const location = useLocation();
   // Only run on the New Job page for now. Other pages can wire their own
   // tour by adding a steps definition + a path check here.
-  const onNewJob = location.pathname === "/new";
+  // Tour now fires on /studio (the unified workspace that replaced
+  // /new on 2026-05-08). Variable name kept for diff readability.
+  const onNewJob = location.pathname === "/studio";
   const [active, setActive] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
 

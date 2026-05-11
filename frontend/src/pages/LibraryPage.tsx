@@ -201,9 +201,9 @@ function TargetCard({ target }: { target: CatalogTarget }) {
           </div>
         </div>
         <Link
-          to={`/new?target=${target.id}`}
+          to={`/studio?target=${target.id}`}
           className="btn-secondary btn-sm shrink-0"
-          title="Pre-fill new job with this target"
+          title="Open Studio with this target pre-filled"
         >
           Use <ArrowRight size={12} />
         </Link>

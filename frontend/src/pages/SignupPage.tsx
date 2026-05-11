@@ -16,10 +16,14 @@ export default function SignupPage() {
   });
   const { signUpWithPassword, signInWithGoogle } = useAuth();
   const [search] = useSearchParams();
-  const next = search.get("next") || "/new";
+  // Default post-signup destination is /studio (NewJobPage retired
+  // 2026-05-08). Stale ?next=/new links rewrite to /studio so saved
+  // bookmarks still land users in the right place.
+  const rawNext = search.get("next") || "/studio";
+  const next = rawNext === "/new" ? "/studio" : rawNext;
   // Round-trip the `next` redirect through the cross-link so users who
   // bounced through Sign in and back land where they started.
-  const loginHref = `/login${next !== "/new" ? `?next=${encodeURIComponent(next)}` : ""}`;
+  const loginHref = `/login${next !== "/studio" ? `?next=${encodeURIComponent(next)}` : ""}`;
 
   // Required + optional sign-up fields. We deliberately only require
   // email + password + full_name (the bare minimum to greet the user
