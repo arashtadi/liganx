@@ -110,11 +110,17 @@ class Settings(BaseSettings):
     # crashes with rc=134 / Aborted, while cnn_scoring=none works
     # fine). cnn_mode=none uses gnina's hand-written CUDA Vina kernels
     # — produces a Vina-fork affinity score (slightly different scoring
-    # function from QuickVina2-GPU, no CNN re-rank). Restore "rescore"
-    # once GNINA upstream ships sm_120-compatible TVM kernels OR the
-    # pod's GNINA is rebuilt from source with CMAKE_CUDA_ARCHITECTURES=120.
+    # function from QuickVina2-GPU, no CNN re-rank).
+    # 2026-05-11: production pod cut over from Blackwell (sm_120) to
+    # RTX 4090 (sm_89), and GNINA v1.3's bundled TVM kernels work on
+    # sm_89 (confirmed via /workspace/gnina --version on the new pod).
+    # Restoring "rescore" so the violet GNINA button (Studio v1.05) does
+    # what it advertises — CNN re-rank, not a Vina-fork passthrough.
+    # If we ever swap GPU back to sm_120+ this needs flipping back to
+    # "none" until the GNINA build catches up (or rebuild from source
+    # with CMAKE_CUDA_ARCHITECTURES=120).
     # Override per-deploy via the GNINA_CNN_MODE env var / Fly secret.
-    gnina_cnn_mode: str = "none"
+    gnina_cnn_mode: str = "rescore"
 
     # Boltz-2 ML pose+affinity engine — third engine option (#104). Defaults
     # off so the engine picker stays inert until the Pod-side
