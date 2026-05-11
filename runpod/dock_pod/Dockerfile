@@ -51,9 +51,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     LC_ALL=C.UTF-8 \
     LANG=C.UTF-8 \
-    # OpenCL: NVIDIA's ICD is at /etc/OpenCL/vendors/nvidia.icd after the
-    # cuda-devel base sets it up. ocl-icd-libopencl1 (installed below)
-    # provides the dispatch library that finds it.
+    # OpenCL: NVIDIA's ICD lives at /etc/OpenCL/vendors/nvidia.icd.
+    # We write it ourselves below — RunPod/NVIDIA's CUDA base images
+    # install libnvidia-opencl.so.1 but DO NOT create the ICD config
+    # file. start_dock_server.sh also self-heals this at boot, so even
+    # a pod started from a different image stays functional.
     OCL_ICD_VENDORS=/etc/OpenCL/vendors
 
 # 1. OS dependencies. boost 1.74 (Ubuntu 22.04's default) is what we
@@ -80,6 +82,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+# 1b. OpenCL ICD config — install_pod.sh and start_dock_server.sh both
+#     self-heal this at runtime too, but baking it into the image means
+#     the very first /dock call doesn't pay the diagnosis cost. Without
+#     this file the loader returns CL_PLATFORM_NOT_FOUND_KHR even when
+#     libnvidia-opencl.so.1 is present (cuda-opencl-12-4 installs the
+#     lib but doesn't drop the .icd manifest). Found the hard way during
+#     the 4090 live-migration cutover 2026-05-11.
+RUN mkdir -p /etc/OpenCL/vendors \
+ && echo '/usr/lib/x86_64-linux-gnu/libnvidia-opencl.so.1' > /etc/OpenCL/vendors/nvidia.icd
 
 # 2. Compile QuickVina2-GPU from source for sm_86 + sm_89.
 #    Source repo: DeltaGroupNJUPT/Vina-GPU-2.1

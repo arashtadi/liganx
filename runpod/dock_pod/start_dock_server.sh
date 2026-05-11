@@ -20,10 +20,31 @@ set -e
 LOG=/workspace/dock_server.log
 mkdir -p /workspace
 
+# Self-heal OpenCL ICD config. RunPod's base CUDA images install
+# libnvidia-opencl.so.1 (via cuda-opencl-12-N) but do NOT create
+# /etc/OpenCL/vendors/nvidia.icd. Without that file the ocl-icd loader
+# can't find any platforms, and Vina-GPU dies with
+# Err-1001:CL_PLATFORM_NOT_FOUND_KHR rc=255 on every /dock call. (Hit
+# this during the 4090 cutover 2026-05-11; spent 30 min chasing it.)
+# Idempotent — only writes the file when missing, then logs the path.
+if [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
+    NV_OCL=$(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so.1 2>/dev/null || echo "")
+    if [ -n "$NV_OCL" ]; then
+        mkdir -p /etc/OpenCL/vendors
+        echo "$NV_OCL" > /etc/OpenCL/vendors/nvidia.icd
+    fi
+fi
+
 # Sanity-log the GPU info so it shows up at the top of every restart's
 # log — handy when chasing "why did this dock fail" questions later.
 {
     echo "=== $(date -u) START dock_server ==="
+    echo "--- OpenCL ICD ---"
+    if [ -f /etc/OpenCL/vendors/nvidia.icd ]; then
+        echo "nvidia.icd → $(cat /etc/OpenCL/vendors/nvidia.icd)"
+    else
+        echo "WARN: /etc/OpenCL/vendors/nvidia.icd missing; Vina-GPU will fail with CL_PLATFORM_NOT_FOUND_KHR"
+    fi
     echo "--- GPU ---"
     nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv 2>&1 || echo "(nvidia-smi failed)"
     echo "--- Python + torch ---"
