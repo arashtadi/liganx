@@ -93,6 +93,19 @@ export default function LiganxAIPanel({ jobKey }: Props) {
     }
   }, [open]);
 
+  // Escape key minimizes the panel. Mirrors the dialog dismissal
+  // pattern every other modal/popover in Liganx uses — chemists
+  // hit Escape to close things and the old FAB-only flow trapped
+  // them with no obvious exit besides the small header X.
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   async function send(question: string) {
     const trimmed = question.trim();
     if (!trimmed || busy) return;
@@ -133,39 +146,61 @@ export default function LiganxAIPanel({ jobKey }: Props) {
 
   return (
     <>
-      {/* ── FAB launcher ───────────────────────────────────────────── */}
-      {/* Position: fixed bottom-right. z-40 so it sits above page
-          content but below modal overlays (which use z-50). The
-          gradient + glow + tiny BETA pill is the "professional + fun"
-          treatment — looks AI-native, doesn't scream chatbot. */}
-      {!open && (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="fixed bottom-6 right-6 z-40 group flex items-center gap-2 pl-3.5 pr-4 py-2.5
+      {/* ── FAB launcher / minimize toggle ───────────────────────── */}
+      {/* Position: fixed bottom-right. z-50 so it sits ABOVE the panel
+          (the panel is z-40) — when the panel is open the FAB acts as
+          a "Minimize" / "Hide" control. This matches the Intercom /
+          Crisp pattern: the launcher is always visible, clicking it
+          toggles. Users were getting trapped in the open panel
+          before — the only way out was a tiny X in the header which
+          most chemists missed. Always-visible FAB fixes that.
+          Gradient + halo only animates when closed so an open panel
+          doesn't feel jittery underneath. */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`fixed bottom-6 z-50 group flex items-center gap-2 pl-3.5 pr-4 py-2.5
                      rounded-full shadow-lg shadow-violet-900/40
                      bg-gradient-to-br from-violet-600 via-fuchsia-600 to-rose-500
                      hover:from-violet-500 hover:via-fuchsia-500 hover:to-rose-400
                      text-white text-sm font-semibold tracking-wide
                      ring-1 ring-white/10 ring-inset
-                     transition-transform hover:-translate-y-0.5 active:translate-y-0
-                     before:absolute before:inset-0 before:rounded-full before:bg-white/10 before:opacity-0
-                     hover:before:opacity-100 before:transition-opacity"
-          aria-label="Open Liganx AI"
-          title="Ask Liganx AI about anything on this page"
-        >
-          <span className="relative flex items-center justify-center w-6 h-6">
-            {/* Pulsing halo — gives the FAB a subtle "I'm alive" cue
-                without animating the whole button. Pure CSS, no JS. */}
+                     transition-all hover:-translate-y-0.5 active:translate-y-0
+                     ${open
+                       // When open on desktop, dock the FAB to the LEFT
+                       // of the 400px-wide panel so it never overlaps the
+                       // composer. On mobile the panel is full-width —
+                       // hide the FAB entirely and let the header X +
+                       // Escape do the closing. Without this trick the
+                       // FAB sat directly on top of the Send button.
+                       ? "hidden sm:flex right-[424px]"
+                       : "flex right-6"}`}
+        aria-label={open ? "Minimize Liganx AI" : "Open Liganx AI"}
+        title={open ? "Minimize (Esc)" : "Ask Liganx AI about anything on this page"}
+      >
+        <span className="relative flex items-center justify-center w-6 h-6">
+          {/* Pulsing halo — only shown when closed; an open panel
+              doesn't need to draw attention to itself. */}
+          {!open && (
             <span className="absolute inset-0 rounded-full bg-white/30 animate-ping opacity-60" />
+          )}
+          {open ? (
+            // Down-chevron — visual cue that the panel will slide
+            // back/down and out of the way.
+            <svg className="relative w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          ) : (
             <SparklesIcon className="relative w-4 h-4" />
-          </span>
-          <span>Liganx AI</span>
+          )}
+        </span>
+        <span>{open ? "Minimize" : "Liganx AI"}</span>
+        {!open && (
           <span className="ml-0.5 rounded-md bg-white/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
             Beta
           </span>
-        </button>
-      )}
+        )}
+      </button>
 
       {/* ── Slide-out panel ─────────────────────────────────────────── */}
       {/* Always rendered (so the transform animation works) but
