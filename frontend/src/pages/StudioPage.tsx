@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.05-2026-05-11-split-rundock-vina-gnina";
+const LIGANX_BUILD_TAG = "v1.06-2026-05-11-hydrate-prior-results-on-reseed";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -269,7 +269,7 @@ export default function StudioPage() {
   // or from HistoryPage), the reseed wins — we want the new compound
   // loaded fresh, not the prior session restored over it.
   const reseed = (location.state as any)?.reseed as
-    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean }
+    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean; sourceJobKey?: string }
     | undefined;
   // (Studio v0.94) When the reseed payload explicitly asks for a clean
   // replace (HistoryPage Re-run sets this), skip session restoration
@@ -1249,7 +1249,31 @@ export default function StudioPage() {
   // score panel header, and populate dockResult/dockResultWt when the
   // job completes. A "view full results page" link in the header
   // gets the user to JobPage when they want the deeper UI.
-  const [fullJobKey, setFullJobKey] = useState<string | null>(initialSession?.fullJobKey ?? null);
+  // (Studio v1.06) On Edit & re-dock and History Re-run, the reseed
+  // payload carries the source job's share_id. Seed fullJobKey from
+  // it so the existing polling loop (line ~1494) re-hydrates the 3D
+  // viewer + score panel + per-compound results from /jobs/{key}.
+  // initialSession wins when both are present (continuing a session
+  // that already had a different fullJobKey takes priority — the user
+  // came back from a JobPage tab, not from a reseed). When reseed has
+  // replaceSession=true initialSession is null, so reseed.sourceJobKey
+  // is what lands.
+  const [fullJobKey, setFullJobKey] = useState<string | null>(
+    initialSession?.fullJobKey ?? reseed?.sourceJobKey ?? null,
+  );
+  // (Studio v1.06) When a reseed names a specific compound (Edit & re-dock
+  // is always single-compound), prefer THAT compound's row when the
+  // polling effect promotes rows into the legacy dockResult slots. Without
+  // this, a multi-compound prior job would show the STRONGEST compound's
+  // pose, not the one the user clicked Edit on. Ref-based so it survives
+  // the polling effect's deps without retriggering, and we clear it after
+  // first use so subsequent Run Docks fall back to the standard "show
+  // strongest" semantics.
+  const reseedFocusCompoundNameRef = useRef<string | null>(
+    reseed?.compounds?.length === 1 && reseed.compounds[0].name
+      ? reseed.compounds[0].name.toLowerCase()
+      : null,
+  );
   const [fullJobStatus, setFullJobStatus] = useState<"pending" | "running" | "completed" | "failed" | "cancelled" | null>(
     initialSession?.fullJobStatus ?? null,
   );
@@ -1571,7 +1595,18 @@ export default function StudioPage() {
           // did for single-compound runs. The user can click a row in
           // the table to switch which compound's pose is on display.
           if (rows.length > 0) {
-            const best = rows[0];
+            // (v1.06) If the user landed via Edit & re-dock with a
+            // specific compound name, prefer THAT row over the
+            // strongest. Falls through to "strongest" semantics
+            // otherwise. Ref is one-shot: cleared after first use so
+            // subsequent Run Docks from this session use the normal
+            // "show strongest" promotion.
+            const focusName = reseedFocusCompoundNameRef.current;
+            const focusedIdx = focusName
+              ? rows.findIndex((r) => (r.name || "").toLowerCase() === focusName)
+              : -1;
+            const best = focusedIdx >= 0 ? rows[focusedIdx] : rows[0];
+            if (focusName) reseedFocusCompoundNameRef.current = null;
             setSelectedRowCompoundId(best.compoundId);
             const mut: QuickDockResult | null = best.mutantScore != null ? {
               ok: true,

@@ -119,6 +119,15 @@ export default function JobPage() {
           exhaustiveness: j.exhaustiveness ?? 8,
           include_wt: j.include_wt ?? true,
           replaceSession: true,
+          // (Studio v1.06) Carry the source job's share_id so Studio
+          // can re-hydrate the 3D viewer + score panel + per-compound
+          // results from the prior docking run. The user clicked Edit
+          // & re-dock specifically to iterate on these results — losing
+          // the 3D pose + scores on transit was a real complaint.
+          // Studio's existing /jobs/{key} polling loop picks up
+          // fullJobKey on mount and populates rows + poses (~100 ms
+          // for a completed job, no UI flicker).
+          sourceJobKey: job.share_id,
         },
       },
     });

@@ -423,6 +423,13 @@ function HistoryRow({ job }: { job: Job }) {
           exhaustiveness: (job as { exhaustiveness?: number }).exhaustiveness ?? 8,
           include_wt: (job as { include_wt?: boolean }).include_wt ?? true,
           replaceSession: true,
+          // (Studio v1.06) Hydrate the 3D viewer + score panel from the
+          // prior run on Re-run too — so clicking Re-run lands the user
+          // in Studio with the previous results visible alongside the
+          // editable setup. Only for completed jobs; pending/failed
+          // jobs still re-hydrate harmlessly (polling effect handles
+          // status=failed by surfacing dockError).
+          sourceJobKey: job.share_id,
         },
       },
     });
