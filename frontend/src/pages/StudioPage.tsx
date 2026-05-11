@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.04-2026-05-08-blog-launched";
+const LIGANX_BUILD_TAG = "v1.05-2026-05-11-split-rundock-vina-gnina";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1401,7 +1401,16 @@ export default function StudioPage() {
   // on the dead-but-retained function. void operator returns
   // undefined, so this is zero-cost at runtime.
   void runQuickDock;
-  async function runFullJob() {
+  async function runFullJob(engine: "quickvina2_gpu" | "gnina" = "quickvina2_gpu") {
+    // (v1.04) Engine is now an explicit parameter passed from the
+    // split RUN DOCK button (Vina | GNINA). Default stays Vina so
+    // any existing call sites that don't pass engine still get the
+    // current behaviour. GNINA dispatches to the pod's /dock_gnina
+    // endpoint; on the current Blackwell pod cnn_mode=none is forced
+    // so the result is sampling-equivalent to Vina with slightly
+    // different log output, but on the planned 4090 deploy GNINA's
+    // CNN rerank will produce genuinely different (better) pose
+    // ranking. UI surfaces this via a tooltip on the GNINA half.
     // (v0.62-0.64) Build the compound list. If the user has staged
     // compounds, use those; otherwise fall back to currentSmiles
     // (the singleton path). Filter out empties.
@@ -1435,7 +1444,8 @@ export default function StudioPage() {
           mutations: selectedMutations,
           compounds: compoundList,
           include_wt: includeWt,
-          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}`,
+          engine,
+          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}${engine === "gnina" ? " · GNINA" : ""}`,
         });
         return { tid, job, pdbId: tPdb };
       });
@@ -3143,29 +3153,78 @@ export default function StudioPage() {
                   || (!!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled")
                   || !ketcherReady || !hasCompound || !selectedTarget;
                 const isCoolingOff = !!fullJobKey && fullJobStatus !== "completed" && fullJobStatus !== "failed" && fullJobStatus !== "cancelled";
+                // (v1.04) Split RUN DOCK into Vina (left) and GNINA (right).
+                // Same disabled/busy logic for both halves — engine choice
+                // doesn't change ready-state. Two distinct colour systems
+                // so users can tell at a glance which engine they're
+                // committing to: emerald for Vina (the steady default,
+                // fast and well-understood), violet for GNINA (the
+                // research-grade rerank option). The GNINA half carries
+                // an honest tooltip about CNN status — on the current
+                // Blackwell pod cnn_mode=none means the rerank itself
+                // is offline; the planned 4090 swap unlocks the CNN.
+                const sharedBusyClasses = submittingFull
+                  ? "cursor-wait animate-pulse"
+                  : isCoolingOff
+                  ? "cursor-wait"
+                  : !ketcherReady || !hasCompound || !selectedTarget
+                  ? "cursor-not-allowed"
+                  : "";
+                const baseLabel = submittingFull ? "▶ submitting…"
+                  : isCoolingOff ? "▶ docking…"
+                  : "⇢ Run Dock";
                 return (
-              <button
-                onClick={runFullJob}
-                disabled={isDisabled}
-                className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
-                  submittingFull
-                    ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300 cursor-wait animate-pulse"
-                    : isCoolingOff
-                    ? "border-emerald-700/40 bg-emerald-950/20 text-emerald-300/60 cursor-wait"
-                    : !ketcherReady || !hasCompound || !selectedTarget
-                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                    : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
-                }`}
-                title={
-                  !selectedTarget ? "Pick a target first."
-                  : !hasCompound ? "Stage at least one compound first."
-                  : "Submit a Full Job — CPU pipeline. ~3 min, no scaffold cap. Results stream in here AND persist at /jobs/{id}."
-                }
-              >
-                {submittingFull ? "▶ submitting…"
-                  : isCoolingOff ? "▶ docking in progress…"
-                  : "⇢ Run Dock"}
-              </button>
+                  <div className="flex w-full gap-2">
+                    {/* Vina half — primary, ~65% width, emerald.
+                        Wider because it's the default and most clicks
+                        land here. */}
+                    <button
+                      onClick={() => runFullJob("quickvina2_gpu")}
+                      disabled={isDisabled}
+                      className={`flex-[1.8] px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
+                        submittingFull
+                          ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300"
+                          : isCoolingOff
+                          ? "border-emerald-700/40 bg-emerald-950/20 text-emerald-300/60"
+                          : !ketcherReady || !hasCompound || !selectedTarget
+                          ? "border-slate-800 bg-slate-900/30 text-slate-600"
+                          : "border-emerald-600/60 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-500"
+                      }`}
+                      title={
+                        !selectedTarget ? "Pick a target first."
+                        : !hasCompound ? "Stage at least one compound first."
+                        : "Dock with QuickVina2-GPU (default). Fast, well-benchmarked, Vina-family physics scoring."
+                      }
+                    >
+                      <span>{baseLabel}</span>
+                      <span className="opacity-60 ml-1.5">· Vina</span>
+                    </button>
+
+                    {/* GNINA half — secondary, ~35% width, violet.
+                        Same disable logic. Tooltip is honest about the
+                        CNN-rerank state on current production. */}
+                    <button
+                      onClick={() => runFullJob("gnina")}
+                      disabled={isDisabled}
+                      className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
+                        submittingFull
+                          ? "border-violet-500/40 bg-violet-950/30 text-violet-300/70"
+                          : isCoolingOff
+                          ? "border-violet-700/30 bg-violet-950/15 text-violet-300/50"
+                          : !ketcherReady || !hasCompound || !selectedTarget
+                          ? "border-slate-800 bg-slate-900/30 text-slate-600"
+                          : "border-violet-600/50 bg-violet-950/25 text-violet-200 hover:bg-violet-900/40 hover:border-violet-500"
+                      }`}
+                      title={
+                        !selectedTarget ? "Pick a target first."
+                        : !hasCompound ? "Stage at least one compound first."
+                        : "Dock with GNINA. CNN re-rank currently OFFLINE (Blackwell sm_120 incompatibility) — produces sampling-only differences from Vina until the planned 4090 deploy ships. Marked as engine=gnina in History."
+                      }
+                    >
+                      <span>{baseLabel}</span>
+                      <span className="opacity-60 ml-1.5">· GNINA</span>
+                    </button>
+                  </div>
                 );
               })()}
             </div>
