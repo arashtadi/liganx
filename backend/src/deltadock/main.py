@@ -131,11 +131,63 @@ async def _runpod_watchdog():
             log.warning("RunPod watchdog: unexpected: %s", e)
 
 
+def _ensure_screening_columns() -> None:
+    """Self-healing migration for #208 screening_result columns.
+
+    Background: migrations/011_screening_selectivity.sql adds wt_score,
+    delta_score, selectivity_index, extra to screening_result. Normally
+    we'd run this via `flyctl ssh console -C python3 .../run_migration_011.py`
+    but Fly's SSH tunnel had a sustained outage on 2026-05-11, blocking
+    the interactive path. Without these columns the runner crashes on
+    every screening with "column does not exist".
+
+    This hook runs the migration SQL idempotently at startup. Every
+    statement is `IF NOT EXISTS` so it's a no-op after the first
+    successful boot. We only enable it when MIGRATE_011_ON_STARTUP is
+    set, so once the migration has run on prod we can drop the env var
+    and the hook quietly does nothing — auto-running migrations at
+    every deploy is a footgun we don't want long-term.
+    """
+    import os
+    if os.environ.get("MIGRATE_011_ON_STARTUP", "").lower() not in ("1", "true", "yes"):
+        return
+    from pathlib import Path
+    import sqlalchemy
+    # Production path per Dockerfile (`COPY backend/ /app/backend/`).
+    sql_path = Path("/app/backend/migrations/011_screening_selectivity.sql")
+    if not sql_path.exists():
+        # Local dev fallback — main.py lives at backend/src/deltadock/main.py
+        # so the repo migrations dir is three .parent steps up + /migrations.
+        sql_path = (
+            Path(__file__).resolve().parent.parent.parent / "migrations"
+            / "011_screening_selectivity.sql"
+        )
+    if not sql_path.exists():
+        log.warning("MIGRATE_011_ON_STARTUP set but SQL file not found at %s", sql_path)
+        return
+    sql_text = sql_path.read_text().replace("BEGIN;", "").replace("COMMIT;", "")
+    try:
+        from .db import engine as db_engine
+        with db_engine.connect() as conn:
+            raw = conn.connection.dbapi_connection
+            cur = raw.cursor()
+            cur.execute(sql_text)
+            cur.close()
+            conn.commit()
+        log.info("Migration 011 applied (idempotent — safe on re-run)")
+    except Exception as e:
+        # Don't crash app boot on a migration error — log loudly and
+        # let the operator see it. The runner already handles missing
+        # columns by failing the screening with a clear error.
+        log.error("Migration 011 failed at startup: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     import asyncio
     log.info("Starting DeltaDock backend %s in %s mode", __version__, settings.app_env)
     init_db()
+    _ensure_screening_columns()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     try:
