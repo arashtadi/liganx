@@ -17,6 +17,8 @@ Allow: /mutation-docking-guide
 Allow: /contact
 Allow: /privacy
 Allow: /terms
+Allow: /blog
+Allow: /blog/
 Disallow: /history
 Disallow: /settings
 Disallow: /compounds

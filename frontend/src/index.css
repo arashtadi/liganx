@@ -122,4 +122,60 @@
   .muted {
     @apply text-sm text-slate-600 dark:text-slate-400;
   }
+
+  /* Blog post body styles. Scoped to .prose-blog so we can keep the
+     mono-font everywhere except inside long-form posts, where readers
+     expect Inter/system-sans for a real article. Mirrors the spacing
+     rhythm the existing .h-section etc. classes establish for cards. */
+  .prose-blog {
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 1.0625rem;
+    line-height: 1.7;
+  }
+  .prose-blog p {
+    @apply my-4;
+  }
+  .prose-blog h2 {
+    @apply text-2xl font-semibold tracking-tight text-ink dark:text-white mt-10 mb-3;
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  }
+  .prose-blog h3 {
+    @apply text-xl font-semibold text-ink dark:text-white mt-7 mb-2;
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  }
+  .prose-blog ul {
+    @apply list-disc pl-6 my-4 space-y-1.5;
+  }
+  .prose-blog ol {
+    @apply list-decimal pl-6 my-4 space-y-1.5;
+  }
+  .prose-blog li {
+    @apply leading-relaxed;
+  }
+  .prose-blog a {
+    @apply text-cyan-700 dark:text-cyan-400 underline underline-offset-2 hover:text-cyan-600 dark:hover:text-cyan-300;
+  }
+  .prose-blog strong {
+    @apply font-semibold text-ink dark:text-white;
+  }
+  .prose-blog em {
+    @apply italic;
+  }
+  .prose-blog blockquote {
+    @apply border-l-2 border-slate-300 dark:border-slate-700 pl-4 italic my-5 text-slate-600 dark:text-slate-400;
+  }
+  .prose-blog code {
+    @apply px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[0.9em] font-mono;
+  }
+  .prose-blog pre {
+    @apply rounded-lg bg-slate-900 text-slate-100 p-4 my-5 overflow-auto text-sm;
+  }
+  .prose-blog pre code {
+    @apply bg-transparent p-0;
+  }
+  /* The lead paragraph at the top of a post — slightly larger + softer
+     so it reads as a deck/standfirst before the body proper. */
+  .prose-blog p.lead {
+    @apply text-lg text-slate-700 dark:text-slate-300 my-6 leading-relaxed;
+  }
 }

@@ -23,6 +23,8 @@ import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
 import ContactPage from "./pages/ContactPage";
 import AdminPage from "./pages/AdminPage";
 import StudioPage from "./pages/StudioPage";
+import BlogIndexPage from "./pages/BlogIndexPage";
+import BlogPostPage from "./pages/BlogPostPage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -66,6 +68,12 @@ export default function App() {
             <Route path="/validation" element={<ValidationPage />} />
             <Route path="/mutation-docking-guide" element={<MutationDockingGuidePage />} />
             <Route path="/contact" element={<ContactPage />} />
+            {/* Blog — public, indexed by Google. /blog is the listing,
+                /blog/:slug renders one post. Posts are .tsx modules
+                under src/blog/posts/, discovered at build time via
+                import.meta.glob (see src/blog/registry.ts). */}
+            <Route path="/blog" element={<BlogIndexPage />} />
+            <Route path="/blog/:slug" element={<BlogPostPage />} />
             <Route path="/admin" element={<AdminPage />} />
             {/* Capital-A alias so /Admin (which is what user typed) works
                 too. Without this React Router would 404 because routes
@@ -280,6 +288,9 @@ function Header() {
           </NavLink>
           <NavLink to="/library" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Library
+          </NavLink>
+          <NavLink to="/blog" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
+            Blog
           </NavLink>
           {user && (
             <NavLink to="/history" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>

@@ -40,6 +40,33 @@
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
+  <!-- Blog index + posts. The scheduled drafter (see scripts/draft-blog-post.mjs)
+       updates this file when it adds a new post; until that's wired up,
+       new posts must be added here by hand. Blog posts are high-SEO long-form
+       content, so they get priority 0.7-0.8. -->
+  <url>
+    <loc>https://liganx.com/blog</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/blog/kras-g12c-clinical-landscape</loc>
+    <lastmod>2026-05-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/blog/t790m-osimertinib-resistance</loc>
+    <lastmod>2026-05-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://liganx.com/blog/herg-silent-killer-kinase-programs</loc>
+    <lastmod>2026-05-06</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
   <url>
     <loc>https://liganx.com/privacy</loc>
     <changefreq>monthly</changefreq>
