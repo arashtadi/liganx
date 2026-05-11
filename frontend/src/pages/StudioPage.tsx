@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.02-2026-05-08-kill-new-route";
+const LIGANX_BUILD_TAG = "v1.03-2026-05-08-removable-target-chips";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2430,6 +2430,50 @@ export default function StudioPage() {
                   className="flex-1 px-2 py-1 text-[10px] font-mono rounded border border-slate-700/60 text-slate-200 placeholder:text-slate-600 bg-[#070b15] focus:outline-none focus:border-cyan-500/60"
                 />
               </div>
+              {/* (v1.03) Selected-targets row with per-target X buttons,
+                  matching the Mutation section's pattern. Always visible
+                  when at least one target is selected so the user can
+                  remove ANY selected target — including ad-hoc PDB IDs
+                  reseeded from history that don't appear in the chip
+                  list below (mergedCatalog only includes catalog +
+                  adHocTargets, so a bare reseed pdb_id has no chip
+                  to toggle). The X here drops the target from
+                  selectedTargets directly, no dropdown roundtrip. */}
+              {selectedTargets.length > 0 && (
+                <div className="mb-2 flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+                  <span className="text-slate-600">selected</span>
+                  {selectedTargets.map((tid) => {
+                    const meta = mergedCatalog.find((t: any) => t.id === tid);
+                    const isAdHoc = !!(meta as any)?.isAdHoc || !meta;
+                    return (
+                      <span
+                        key={tid}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${
+                          isAdHoc
+                            ? "border-violet-700/60 bg-violet-950/40 text-violet-200"
+                            : "border-cyan-700/60 bg-cyan-950/40 text-cyan-200"
+                        }`}
+                        title={meta?.name || (isAdHoc ? `RCSB PDB ${tid.toUpperCase()}` : tid.toUpperCase())}
+                      >
+                        {isAdHoc && <span className="opacity-70">⌬</span>}
+                        {tid.toUpperCase()}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTargets((prev) => prev.filter((x) => x !== tid));
+                          }}
+                          className={`leading-none ${isAdHoc ? "text-violet-400/60 hover:text-rose-300" : "text-cyan-400/60 hover:text-rose-300"}`}
+                          title={`Remove ${tid.toUpperCase()} from the selection`}
+                          aria-label={`Remove ${tid.toUpperCase()}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
               {/* Expanded chip list — visible when dropdown is open OR
                   when there's a search query (forces visibility so the
                   user sees what their typing matches). */}
