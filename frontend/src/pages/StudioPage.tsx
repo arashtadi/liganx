@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.09-2026-05-11-paste-smiles-list-cap-50";
+const LIGANX_BUILD_TAG = "v1.10-2026-05-11-csv-sdf-file-upload";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2990,76 +2990,175 @@ export default function StudioPage() {
                   reference · library · pubchem · sketch
                 </span>
               </button>
-              {/* (v1.09) Paste SMILES list — stepping stone toward full
-                  CSV/SDF library upload. Accepts one SMILES per line,
-                  optional name after a comma or tab. Stages up to
-                  MAX_COMPOUNDS at once. Skips blanks, dedupes against
-                  already-staged SMILES, and shows an inline error per
-                  malformed line. Future #205: parse .sdf via RDKit.js
-                  and accept file drops here. */}
-              <button
-                type="button"
-                onClick={() => {
-                  const blob = window.prompt(
-                    `Paste one SMILES per line (optional name after comma/tab).\nMax ${MAX_COMPOUNDS - compounds.length} more compounds.\n\nExample:\nCC(=O)Oc1ccccc1C(=O)O, aspirin\nCC(C)Cc1ccc(C(C)C(=O)O)cc1\n`,
-                    "",
-                  );
-                  if (!blob) return;
-                  // Parse: split on newline, trim each line, split each by tab/comma.
-                  // First field = SMILES, optional second = name. Drop comments (#).
-                  const lines = blob.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-                  const room = MAX_COMPOUNDS - compounds.length;
-                  const staged: { smiles: string; name?: string }[] = [];
-                  const dups = new Set(compounds.map((c) => c.smiles));
-                  let skippedDup = 0;
-                  for (const line of lines) {
-                    if (staged.length >= room) break;
-                    const parts = line.split(/[\t,]/).map((p) => p.trim());
-                    const smiles = parts[0] || "";
-                    if (!smiles) continue;
-                    if (dups.has(smiles)) { skippedDup++; continue; }
-                    dups.add(smiles);
-                    staged.push({ smiles, name: parts[1] || undefined });
-                  }
-                  if (staged.length === 0) {
-                    setPromoteToast(skippedDup > 0
-                      ? `⚠ All ${skippedDup} pasted SMILES were already staged.`
-                      : "⚠ No valid SMILES found in the pasted text.");
-                    window.setTimeout(() => setPromoteToast(null), 4000);
-                    return;
-                  }
-                  // Bulk-stage. Each gets a unique id; matching named ones
-                  // could be deduped by name later but for v1 we trust the
-                  // user's paste.
-                  setCompounds((prev) => [
-                    ...prev,
-                    ...staged.map((s) => ({
-                      id: `c_paste_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                      smiles: s.smiles,
-                      name: s.name,
-                    })),
-                  ]);
-                  const overflow = lines.length - staged.length - skippedDup;
-                  let msg = `✓ Staged ${staged.length} compound${staged.length === 1 ? "" : "s"}`;
-                  if (skippedDup > 0) msg += ` (skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"})`;
-                  if (overflow > 0) msg += ` — ${overflow} dropped (suite full at ${MAX_COMPOUNDS})`;
-                  setPromoteToast(msg);
-                  window.setTimeout(() => setPromoteToast(null), 6000);
-                }}
-                disabled={compounds.length >= MAX_COMPOUNDS}
-                className={`mt-1.5 w-full px-3 py-1.5 rounded border font-mono text-[10px] flex items-center gap-2 transition-colors ${
-                  compounds.length >= MAX_COMPOUNDS
-                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
-                    : "border-violet-700/50 bg-violet-950/30 text-violet-200 hover:bg-violet-900/40"
-                }`}
-                title="Paste a multi-line SMILES list (one per line, optional name after comma). Great for screening 10-50 compounds at once."
-              >
-                <span className="text-[11px]">📋</span>
-                <span className="uppercase tracking-wider">Paste SMILES list</span>
-                <span className="ml-auto text-[9px] text-violet-400/70 normal-case">
-                  one per line · up to {MAX_COMPOUNDS}
-                </span>
-              </button>
+              {/* (v1.09/v1.10) Bulk-stage compounds — Paste + Upload
+                  share the same parser. CSV/TSV/SMI/.txt: one SMILES
+                  per line, optional name after comma/tab. SDF: rough
+                  parser pulls SMILES from <SMILES> data tags between
+                  $$$$ separators. Full RDKit.js MOL→SMILES conversion
+                  is heavy (3 MB wasm) and deferred to a future v;
+                  most lead-opt teams export SDFs WITH SMILES tags
+                  embedded so the text-based path covers ~80% of real
+                  uploads. */}
+              <div className="mt-1.5 flex gap-1.5">
+                {(() => {
+                  /* Shared parser: text → up to N staged compounds.
+                     Renders a toast summary so the user knows what
+                     landed and what got dropped. */
+                  const stageSmilesText = (text: string, source: "paste" | "csv" | "sdf") => {
+                    const room = MAX_COMPOUNDS - compounds.length;
+                    if (room <= 0) {
+                      setPromoteToast(`⚠ Suite is full at ${MAX_COMPOUNDS} compounds.`);
+                      window.setTimeout(() => setPromoteToast(null), 4000);
+                      return;
+                    }
+                    const dups = new Set(compounds.map((c) => c.smiles));
+                    const staged: { smiles: string; name?: string }[] = [];
+                    let totalCandidates = 0;
+                    let skippedDup = 0;
+                    if (source === "sdf") {
+                      // Split SDF into records on $$$$ and pull out the
+                      // <SMILES> data tag value. Falls back to looking
+                      // for the title line (first non-blank line of a
+                      // record) but that's almost always a name not a
+                      // SMILES, so we skip when the tag is absent.
+                      const records = text.split(/^\$\$\$\$\s*$/m);
+                      for (const rec of records) {
+                        if (!rec.trim()) continue;
+                        totalCandidates++;
+                        // Look for <SMILES> data tag (case-insensitive,
+                        // standard SDF data block convention).
+                        const smiMatch = rec.match(/>\s*<\s*(?:smiles|canonical_smiles)\s*>\s*[\r\n]+([^\r\n]+)/i);
+                        if (!smiMatch) continue;
+                        const smiles = smiMatch[1].trim();
+                        if (!smiles) continue;
+                        // Optional name from <NAME> tag, or the first
+                        // non-blank line of the record (the title line).
+                        let name: string | undefined;
+                        const nameMatch = rec.match(/>\s*<\s*(?:name|title|_name|chembl_id)\s*>\s*[\r\n]+([^\r\n]+)/i);
+                        if (nameMatch) {
+                          name = nameMatch[1].trim();
+                        } else {
+                          const firstLine = rec.split(/\r?\n/).map((l) => l.trim()).find((l) => l);
+                          if (firstLine && firstLine.length < 60 && !/^[A-Z]\s/.test(firstLine)) {
+                            name = firstLine;
+                          }
+                        }
+                        if (dups.has(smiles)) { skippedDup++; continue; }
+                        dups.add(smiles);
+                        staged.push({ smiles, name });
+                        if (staged.length >= room) break;
+                      }
+                    } else {
+                      // paste / csv path — line-based parser with
+                      // comma OR tab separator, optional # comment
+                      // lines, and skip CSV header rows that look like
+                      // "smiles,name" or similar (first row is text
+                      // not chemistry).
+                      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+                      for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        const parts = line.split(/[\t,]/).map((p) => p.trim());
+                        const smiles = parts[0] || "";
+                        if (!smiles) continue;
+                        // Skip header row: a CSV header like
+                        // "smiles,name" or "SMILES\tID" contains only
+                        // letters/underscore/spaces in the first
+                        // field. Real SMILES always have at least one
+                        // non-letter char (digit, parens, =, # etc).
+                        if (i === 0 && /^[A-Za-z_ ]+$/.test(smiles)) continue;
+                        totalCandidates++;
+                        if (dups.has(smiles)) { skippedDup++; continue; }
+                        dups.add(smiles);
+                        staged.push({ smiles, name: parts[1] || undefined });
+                        if (staged.length >= room) break;
+                      }
+                    }
+                    if (staged.length === 0) {
+                      const msg = source === "sdf"
+                        ? "⚠ No SMILES found in the SDF. Records need a <SMILES> data tag — export from RDKit/ChemDraw with that tag enabled."
+                        : skippedDup > 0
+                        ? `⚠ All ${skippedDup} pasted SMILES were already staged.`
+                        : "⚠ No valid SMILES found.";
+                      setPromoteToast(msg);
+                      window.setTimeout(() => setPromoteToast(null), 5000);
+                      return;
+                    }
+                    setCompounds((prev) => [
+                      ...prev,
+                      ...staged.map((s) => ({
+                        id: `c_${source}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                        smiles: s.smiles,
+                        name: s.name,
+                      })),
+                    ]);
+                    const overflow = totalCandidates - staged.length - skippedDup;
+                    let msg = `✓ Staged ${staged.length} compound${staged.length === 1 ? "" : "s"}`;
+                    if (skippedDup > 0) msg += ` (skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"})`;
+                    if (overflow > 0) msg += ` — ${overflow} dropped (suite cap ${MAX_COMPOUNDS})`;
+                    setPromoteToast(msg);
+                    window.setTimeout(() => setPromoteToast(null), 6000);
+                  };
+                  const disabled = compounds.length >= MAX_COMPOUNDS;
+                  return <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const blob = window.prompt(
+                          `Paste one SMILES per line (optional name after comma/tab).\nMax ${MAX_COMPOUNDS - compounds.length} more compounds.\n\nExample:\nCC(=O)Oc1ccccc1C(=O)O, aspirin\nCC(C)Cc1ccc(C(C)C(=O)O)cc1\n`,
+                          "",
+                        );
+                        if (blob) stageSmilesText(blob, "paste");
+                      }}
+                      disabled={disabled}
+                      className={`flex-1 px-3 py-1.5 rounded border font-mono text-[10px] flex items-center gap-2 transition-colors ${
+                        disabled
+                          ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                          : "border-violet-700/50 bg-violet-950/30 text-violet-200 hover:bg-violet-900/40"
+                      }`}
+                      title="Paste a multi-line SMILES list (one per line, optional name after comma). Great for screening 10-50 compounds at once."
+                    >
+                      <span className="text-[11px]">📋</span>
+                      <span className="uppercase tracking-wider">Paste SMILES</span>
+                    </button>
+                    {/* (v1.10) Real file picker — CSV/TSV/SMI/TXT all
+                        share the line parser; SDF uses the per-record
+                        parser. The hidden <input> is triggered by the
+                        button click; the .target.value=null reset lets
+                        the user re-pick the SAME file (common when
+                        they edit it externally and re-upload). */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (disabled) return;
+                        const input = document.createElement("input");
+                        input.type = "file";
+                        input.accept = ".csv,.tsv,.smi,.smiles,.txt,.sdf";
+                        input.onchange = async () => {
+                          const f = input.files?.[0];
+                          if (!f) return;
+                          const text = await f.text();
+                          const isSdf = /\.sdf$/i.test(f.name) || text.includes("$$$$");
+                          stageSmilesText(text, isSdf ? "sdf" : "csv");
+                        };
+                        input.click();
+                      }}
+                      disabled={disabled}
+                      className={`flex-1 px-3 py-1.5 rounded border font-mono text-[10px] flex items-center gap-2 transition-colors ${
+                        disabled
+                          ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                          : "border-violet-700/50 bg-violet-950/30 text-violet-200 hover:bg-violet-900/40"
+                      }`}
+                      title="Upload a CSV/TSV/SMI/SDF file. CSV: one SMILES per row, optional name in column 2. SDF: needs a <SMILES> data tag per record."
+                    >
+                      <span className="text-[11px]">📂</span>
+                      <span className="uppercase tracking-wider">Upload file</span>
+                      <span className="ml-auto text-[9px] text-violet-400/70 normal-case">
+                        csv · sdf · up to {MAX_COMPOUNDS}
+                      </span>
+                    </button>
+                  </>;
+                })()}
+              </div>
               {/* Staged compounds list — newest at the bottom. Each row
                   shows name + SMILES preview; click to load into 2D
                   for inspection/editing; × removes from the suite. */}
