@@ -123,10 +123,16 @@ class Job(SQLModel, table=True):
 
 
 class Compound(SQLModel, table=True):
-    """One ligand to dock — provided as SMILES, optionally with a friendly name."""
+    """One ligand to dock — provided as SMILES, optionally with a friendly name.
+
+    job_id is OPTIONAL (Optional[int]) because the Compound table is shared
+    between Job (where every compound has a parent job_id) and Screening
+    (where compounds are referenced via ScreeningResult.compound_id but have
+    no parent Job). Made nullable in migration 013 — without it the
+    screening submission code path crashed with NotNullViolation."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    job_id: int = Field(foreign_key="job.id", index=True)
+    job_id: Optional[int] = Field(default=None, foreign_key="job.id", index=True)
 
     name: Optional[str] = None
     smiles: str
