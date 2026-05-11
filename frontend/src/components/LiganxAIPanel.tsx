@@ -72,8 +72,55 @@ export default function LiganxAIPanel({ jobKey }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Track whether we've hydrated from server-side persistence yet.
+  // #224 lets the panel pick up where the chemist left off when they
+  // reopen a job — but we don't want to refetch on every open (the
+  // user's in-memory transcript is the source of truth once loaded),
+  // and we don't want to clobber a fresh question that's mid-flight.
+  const [hydrated, setHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Reset hydration + transcript when the user navigates to a
+  // different job without unmounting (e.g. /jobs/A → /jobs/B on
+  // JobPage). Without this, the panel would show stale messages
+  // from the previous job because hydrated=true would block the
+  // re-fetch for the new jobKey.
+  useEffect(() => {
+    setMessages([]);
+    setHydrated(false);
+  }, [jobKey]);
+
+  // Hydrate from saved chat history the first time the panel opens
+  // for this jobKey. We do it on open (not on mount) so the cost is
+  // only paid when the user actually engages with the AI — the
+  // JobPage shouldn't pay this latency in the common case where the
+  // user never opens the panel.
+  useEffect(() => {
+    if (!open || hydrated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await api.getJobAiChat(jobKey);
+        if (cancelled) return;
+        if (resp.messages.length > 0) {
+          setMessages(resp.messages.map((m) => ({
+            role: m.role,
+            text: m.text,
+            modelId: m.model_id ?? undefined,
+          })));
+        }
+      } catch {
+        // Hydration is best-effort. If the user isn't logged in or
+        // the endpoint errors, fall back to the welcome state. The
+        // user can still ask new questions; only the rehydration
+        // failed.
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, hydrated, jobKey]);
 
   // Pin the scroll position to the latest message every time the
   // transcript grows. We use scrollTop = scrollHeight (not

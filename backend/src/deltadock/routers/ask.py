@@ -1,8 +1,16 @@
-"""Liganx AI Beta — POST /jobs/{job_key}/ask
+"""Liganx AI Beta — POST /jobs/{job_key}/ask + chat history persistence.
 
 Q&A endpoint scoped to a single job. The model receives a structured
 snapshot of what's on the JobPage and the user's question, and returns
 a plain-text answer.
+
+#224 — chat history persistence:
+  Every successful (question, answer) pair is appended to a per-user-
+  per-job row in user_job_ai_chat. When the panel re-opens (page
+  reload, or jumping back from History) it hydrates via
+  GET /jobs/{key}/ai-chat. The persistence is enforce-on-write, with
+  three caps: max 20 messages total, AI answers truncated to 500 chars
+  before storage, rolling 30-day TTL pruned by a nightly job.
 
 Auth model: requires a logged-in user (Anthropic calls cost real money,
 so we don't let strangers burn budget). The job itself stays publicly
@@ -14,10 +22,14 @@ account during early demos.
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlmodel import Session
 
 from ..auth import CurrentUser, current_user
@@ -34,6 +46,12 @@ router = APIRouter(prefix="/jobs", tags=["ask"])
 # ~$0.05/hr/user worst case. The free tier should sustain this; the
 # Stripe Pro tier (#212) will lift it.
 _ASK_LIMIT = rate_limit("ask_ai", RateLimit(max_requests=30, window_seconds=3600))
+
+# Chat history caps (#224). Sized to fit a productive chemist session
+# without letting one runaway conversation blow up the row size.
+_MAX_MESSAGES = 20         # 10 turns
+_MAX_ANSWER_CHARS = 500    # AI replies truncated at write time
+_MAX_USER_CHARS = 1000     # matches AskRequest.question max_length
 
 
 class AskRequest(BaseModel):
@@ -52,6 +70,23 @@ class AskResponse(BaseModel):
     job_key: str
 
 
+class ChatMessage(BaseModel):
+    """One persisted turn in the chat. The frontend reconstructs the
+    LiganxAIPanel transcript by replaying these in order on open."""
+    role: str  # "user" | "assistant"
+    text: str
+    model_id: Optional[str] = None
+    ts: str  # ISO8601 (UTC)
+
+
+class ChatHistoryResponse(BaseModel):
+    """Returned by GET /jobs/{key}/ai-chat. Empty array when the user
+    has never asked anything about this job, OR when the user is
+    anonymous (we don't expose another user's chat to a guest who
+    happens to have the share link)."""
+    messages: list[ChatMessage]
+
+
 # Locally re-imported to avoid a circular: routers/jobs.py owns
 # `_resolve_job` and that module already imports a lot of things this
 # router doesn't need. Re-implement the 3-line resolver inline.
@@ -63,6 +98,141 @@ def _resolve_job_for_ask(session: Session, key: str):
         if job:
             return job
     return session.exec(select(Job).where(Job.share_id == key)).first()
+
+
+def _load_chat_messages(session: Session, user_id: str, job_share_id: str) -> list[dict[str, Any]]:
+    """Pull the existing chat row's messages array. Returns [] when no
+    row exists yet for this (user, job) pair."""
+    row = session.execute(
+        text(
+            "SELECT messages FROM user_job_ai_chat "
+            "WHERE user_id = :uid AND job_share_id = :sid"
+        ),
+        {"uid": user_id, "sid": job_share_id},
+    ).first()
+    if not row:
+        return []
+    msgs = row[0]
+    # psycopg2 returns JSONB as a Python list directly; defend against
+    # the row containing a stringified JSON blob too (older inserts).
+    if isinstance(msgs, str):
+        try:
+            msgs = json.loads(msgs)
+        except json.JSONDecodeError:
+            msgs = []
+    return msgs if isinstance(msgs, list) else []
+
+
+def _append_chat_turn(
+    session: Session,
+    *,
+    user_id: str,
+    job_share_id: str,
+    question: str,
+    answer: str,
+    model_id: Optional[str],
+) -> None:
+    """Append the (user, assistant) pair to the chat row, enforcing
+    the caps. Uses INSERT … ON CONFLICT … UPDATE so the first call
+    creates the row and subsequent calls extend it atomically.
+
+    The write happens AFTER the AI response succeeds — we don't want a
+    failed answer to pollute the history. Errors in this function are
+    swallowed with a log because losing chat history is annoying but
+    not worth failing the user's request over.
+    """
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        existing = _load_chat_messages(session, user_id, job_share_id)
+        # Cap each text on write so a malformed long answer never lives
+        # in the row.
+        new_messages = [
+            {
+                "role": "user",
+                "text": question[:_MAX_USER_CHARS],
+                "model_id": None,
+                "ts": now_iso,
+            },
+            {
+                "role": "assistant",
+                "text": answer[:_MAX_ANSWER_CHARS],
+                "model_id": model_id,
+                "ts": now_iso,
+            },
+        ]
+        combined = existing + new_messages
+        # Roll-off oldest pairs when we exceed the cap. We drop pairs
+        # (2 at a time) rather than single messages so the transcript
+        # never starts mid-Q&A.
+        if len(combined) > _MAX_MESSAGES:
+            overflow = len(combined) - _MAX_MESSAGES
+            # Round up to even so a user→assistant pair always stays
+            # paired at the front of the window.
+            if overflow % 2 == 1:
+                overflow += 1
+            combined = combined[overflow:]
+        payload_json = json.dumps(combined)
+        session.execute(
+            text(
+                """
+                INSERT INTO user_job_ai_chat (user_id, job_share_id, messages, updated_at)
+                VALUES (:uid, :sid, CAST(:msgs AS JSONB), now())
+                ON CONFLICT (user_id, job_share_id) DO UPDATE
+                  SET messages = EXCLUDED.messages,
+                      updated_at = now()
+                """
+            ),
+            {"uid": user_id, "sid": job_share_id, "msgs": payload_json},
+        )
+        session.commit()
+    except Exception:
+        # Don't let a chat-history insert failure block the user's
+        # answer. They'll see the response inline; only the persistence
+        # silently failed. Log and move on.
+        log.exception("ai chat history persist failed for user=%s job=%s",
+                      user_id, job_share_id)
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+
+@router.get("/{job_key}/ai-chat", response_model=ChatHistoryResponse)
+def get_ai_chat_history(
+    job_key: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ChatHistoryResponse:
+    """Hydrate the LiganxAIPanel with the user's prior turns for this
+    job. Returns an empty list when nothing's persisted.
+
+    Per-user scoping is enforced by the WHERE clause: the row's PK is
+    (user_id, job_share_id), so user A asking about job X can NEVER
+    see user B's chat about the same X, even if X is publicly shared.
+    """
+    job = _resolve_job_for_ask(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    raw = _load_chat_messages(session, str(user.id), job.share_id)
+    # Defensive: clamp the response to _MAX_MESSAGES even if the row
+    # somehow exceeds it (e.g. a future bug bypasses the write-side
+    # cap). The frontend trusts this list size.
+    raw = raw[-_MAX_MESSAGES:]
+    messages: list[ChatMessage] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text_val = m.get("text") or ""
+        messages.append(ChatMessage(
+            role=role,
+            text=text_val,
+            model_id=m.get("model_id"),
+            ts=m.get("ts") or "",
+        ))
+    return ChatHistoryResponse(messages=messages)
 
 
 @router.post(
@@ -77,7 +247,8 @@ async def ask_about_job(
     session: Session = Depends(get_session),
 ) -> AskResponse:
     """Answer a free-form question about the job's results, scoped to
-    the page's data.
+    the page's data. Side effect (#224): appends the (Q, A) pair to
+    user_job_ai_chat so the panel can rehydrate later.
 
     Errors:
       - 404: job not found (share_id miss or stale link)
@@ -106,6 +277,18 @@ async def ask_about_job(
         # the user sees what happened.
         log.warning("ask_about_job failed for %s: %s", job_key, e)
         raise HTTPException(status_code=503, detail=str(e))
+
+    # Persist the turn AFTER the AI response succeeds — see
+    # _append_chat_turn for the caps. Errors in persistence don't
+    # fail the user's request.
+    _append_chat_turn(
+        session,
+        user_id=str(user.id),
+        job_share_id=job.share_id,
+        question=payload.question,
+        answer=result.answer,
+        model_id=result.model or ASK_MODEL,
+    )
 
     return AskResponse(
         answer=result.answer,

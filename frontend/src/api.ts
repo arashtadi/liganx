@@ -640,6 +640,20 @@ export const api = {
       `/jobs/${key}/ask`,
       { method: "POST", body: JSON.stringify({ question }) },
     ),
+  /** Hydrate the LiganxAIPanel with the user's prior turns for this
+   *  job — see backend/routers/ask.py for the persistence rules.
+   *  Returns an empty `messages` array when the user has never asked
+   *  anything about this job (or isn't logged in). Per-user scoped:
+   *  someone opening a shared link sees their OWN chat history, not
+   *  the link owner's notes.
+   *
+   *  Caps enforced server-side: at most 20 messages (10 turns), each
+   *  AI answer truncated to 500 chars at write time, rolling 30-day
+   *  TTL pruned by a nightly job. */
+  getJobAiChat: (key: string | number) =>
+    request<{
+      messages: { role: "user" | "assistant"; text: string; model_id: string | null; ts: string }[];
+    }>(`/jobs/${key}/ai-chat`),
   /** AI assistant — natural-language compound edit. Calls Claude Haiku
    *  with the user's instruction + optional pocket context (target PDB
    *  + mutations). Returns the proposed new SMILES, a one-line

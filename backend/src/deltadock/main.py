@@ -131,39 +131,26 @@ async def _runpod_watchdog():
             log.warning("RunPod watchdog: unexpected: %s", e)
 
 
-def _ensure_screening_columns() -> None:
-    """Self-healing migration for #208 screening_result columns.
+def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> None:
+    """Idempotent self-healing migration runner.
 
-    Background: migrations/011_screening_selectivity.sql adds wt_score,
-    delta_score, selectivity_index, extra to screening_result. Normally
-    we'd run this via `flyctl ssh console -C python3 .../run_migration_011.py`
-    but Fly's SSH tunnel had a sustained outage on 2026-05-11, blocking
-    the interactive path. Without these columns the runner crashes on
-    every screening with "column does not exist".
-
-    This hook runs the migration SQL idempotently at startup. Every
-    statement is `IF NOT EXISTS` so it's a no-op after the first
-    successful boot. We only enable it when MIGRATE_011_ON_STARTUP is
-    set, so once the migration has run on prod we can drop the env var
-    and the hook quietly does nothing — auto-running migrations at
-    every deploy is a footgun we don't want long-term.
+    Generalised from the #208 version: gated by an env flag so we don't
+    auto-run migrations on every deploy long-term, but provides a way
+    to apply schema changes without needing flyctl SSH (which had a
+    sustained outage on 2026-05-11). Drop the env flag on the deploy
+    AFTER the migration has applied once.
     """
     import os
-    if os.environ.get("MIGRATE_011_ON_STARTUP", "").lower() not in ("1", "true", "yes"):
+    if os.environ.get(env_flag, "").lower() not in ("1", "true", "yes"):
         return
     from pathlib import Path
-    import sqlalchemy
-    # Production path per Dockerfile (`COPY backend/ /app/backend/`).
-    sql_path = Path("/app/backend/migrations/011_screening_selectivity.sql")
+    sql_path = Path("/app/backend/migrations") / sql_filename
     if not sql_path.exists():
-        # Local dev fallback — main.py lives at backend/src/deltadock/main.py
-        # so the repo migrations dir is three .parent steps up + /migrations.
         sql_path = (
-            Path(__file__).resolve().parent.parent.parent / "migrations"
-            / "011_screening_selectivity.sql"
+            Path(__file__).resolve().parent.parent.parent / "migrations" / sql_filename
         )
     if not sql_path.exists():
-        log.warning("MIGRATE_011_ON_STARTUP set but SQL file not found at %s", sql_path)
+        log.warning("%s set but SQL file not found at %s", env_flag, sql_path)
         return
     sql_text = sql_path.read_text().replace("BEGIN;", "").replace("COMMIT;", "")
     try:
@@ -174,12 +161,27 @@ def _ensure_screening_columns() -> None:
             cur.execute(sql_text)
             cur.close()
             conn.commit()
-        log.info("Migration 011 applied (idempotent — safe on re-run)")
+        log.info("%s applied (idempotent — safe on re-run)", label)
     except Exception as e:
-        # Don't crash app boot on a migration error — log loudly and
-        # let the operator see it. The runner already handles missing
-        # columns by failing the screening with a clear error.
-        log.error("Migration 011 failed at startup: %s", e)
+        log.error("%s failed at startup: %s", label, e)
+
+
+def _ensure_screening_columns() -> None:
+    """#208 — wt_score / delta_score / selectivity_index / extra on screening_result."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_011_ON_STARTUP",
+        sql_filename="011_screening_selectivity.sql",
+        label="Migration 011 (screening selectivity)",
+    )
+
+
+def _ensure_chat_history_table() -> None:
+    """#224 — user_job_ai_chat (per-user-per-job Liganx AI Beta conversation history)."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_012_ON_STARTUP",
+        sql_filename="012_user_job_ai_chat.sql",
+        label="Migration 012 (ai chat history)",
+    )
 
 
 @asynccontextmanager
@@ -188,6 +190,7 @@ async def lifespan(_app: FastAPI):
     log.info("Starting DeltaDock backend %s in %s mode", __version__, settings.app_env)
     init_db()
     _ensure_screening_columns()
+    _ensure_chat_history_table()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     try:
