@@ -102,6 +102,53 @@ export interface DockingResult {
   extra?: string | null;  // pipe-separated key=value blob; parsed by lib/parseExtra
 }
 
+/** Per-row result of a virtual screening run. Backend pre-sorts by
+ *  selectivity_index DESC NULLS LAST so the array order IS the
+ *  ranked hit list. WT rows have wt_score/delta_score/selectivity_index
+ *  all null — they're the reference, not a Δ candidate.
+ *
+ *  Compound info is denormalized onto each row so the list renders
+ *  without a separate compound table join.
+ *
+ *  See backend/src/deltadock/schemas.py::ScreeningResultOut for the
+ *  authoritative shape. */
+export interface ScreeningResultOut {
+  compound_id: number;
+  compound_name: string | null;
+  compound_smiles: string;
+  variant: string;
+  best_score: number | null;
+  status: string;                      // "ok" | "pending" | "failed" | "skipped"
+  error_message: string | null;
+  wt_score: number | null;             // paired WT cell's best_score
+  delta_score: number | null;          // mutant - wt
+  selectivity_index: number | null;    // |mutant| * sigmoid(-Δ * 4)
+  admet: Admet | null;
+}
+
+/** Top-level screening job — see backend/src/deltadock/models.py::ScreeningJob.
+ *  Returned by GET /screening/{key}. */
+export interface Screening {
+  id: number;
+  share_id: string;
+  pdb_id: string;
+  chain: string;
+  mutations: string[];
+  engine: string;
+  exhaustiveness: number;
+  n_total: number;
+  n_completed: number;
+  n_failed: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  user_id: string | null;
+  title: string | null;
+  tags: string[];
+  results: ScreeningResultOut[];
+}
+
 /** Cross-docking sanity check — re-docks the bound co-crystal ligand and
  *  reports heavy-atom RMSD vs the original crystal pose. <2 Å = pocket
  *  geometry is well-behaved (typical for any pocket the ligand was
@@ -654,6 +701,19 @@ export const api = {
     request<{
       messages: { role: "user" | "assistant"; text: string; model_id: string | null; ts: string }[];
     }>(`/jobs/${key}/ai-chat`),
+
+  /** Fetch a mutation-aware virtual screening run by its share_id (preferred,
+   *  public) or legacy integer id. Results come pre-sorted server-side by
+   *  selectivity_index DESC NULLS LAST, so the array order IS the ranked hit
+   *  list. WT rows have null wt_score/delta/selectivity_index — they're the
+   *  reference baseline, not a Δ candidate. */
+  getScreening: (key: string | number) =>
+    request<Screening>(`/screening/${key}`),
+  /** Cancel a running or pending screening. Same idempotency rules as
+   *  cancelJob — terminal statuses return their existing state without
+   *  mutating, non-owners get 404 (probe protection). */
+  cancelScreening: (key: string | number) =>
+    request<Screening>(`/screening/${key}/cancel`, { method: "POST" }),
   /** AI assistant — natural-language compound edit. Calls Claude Haiku
    *  with the user's instruction + optional pocket context (target PDB
    *  + mutations). Returns the proposed new SMILES, a one-line

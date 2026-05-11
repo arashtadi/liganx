@@ -6,6 +6,7 @@ import HomePage from "./pages/HomePage";
 // lives in src/pages/NewJobPage.tsx in case we need to grep its history,
 // but it's no longer in the bundle.
 import JobPage from "./pages/JobPage";
+import ScreeningPage from "./pages/ScreeningPage";
 import LibraryPage from "./pages/LibraryPage";
 import PrivacyPage from "./pages/PrivacyPage";
 import TermsPage from "./pages/TermsPage";
@@ -57,6 +58,11 @@ export default function App() {
             <Route path="/welcome" element={<RequireAuth><CompleteProfilePage /></RequireAuth>} />
             <Route path="/compounds" element={<RequireAuth><CompoundsPage /></RequireAuth>} />
             <Route path="/jobs/:id" element={<JobPage />} />
+            {/* Public — anyone with the share_id can view the ranked
+                hit list. Like /jobs/:id, this is read-only and we
+                rely on share_id being a random token, not a sequential
+                int, so guessing isn't tractable. */}
+            <Route path="/screening/:shareId" element={<ScreeningPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/suite" element={<SuitePage />} />
             <Route path="/login" element={<LoginPage />} />
