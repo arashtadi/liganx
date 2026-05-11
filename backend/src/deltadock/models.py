@@ -350,6 +350,31 @@ class ScreeningResult(SQLModel, table=True):
     status: str = Field(default="pending", index=True)
     error_message: Optional[str] = None
 
+    # ── #208: Δ-vs-WT ranking columns ──
+    # The runner denormalizes these onto the MUTANT row after both the
+    # mutant and WT cells for a given compound have completed. The WT
+    # row's own copies remain NULL — only mutant rows carry a Δ. This
+    # makes the results-page ORDER BY selectivity_index work without
+    # any self-join.
+    #
+    # wt_score          The paired WT cell's best_score (kcal/mol).
+    # delta_score       mutant_score - wt_score. NEGATIVE = mutant
+    #                   binds tighter than WT (selectivity gain).
+    # selectivity_index Composite ranking metric:
+    #                     |mutant_score| * sigmoid(-Δ * 4)
+    #                   See screening_runner._selectivity_index for
+    #                   the full rationale. NULL when WT-only or the
+    #                   paired WT hasn't docked yet.
+    wt_score: Optional[float] = Field(default=None)
+    delta_score: Optional[float] = Field(default=None)
+    selectivity_index: Optional[float] = Field(default=None, index=True)
+
+    # Pipe-delimited extras, same format as DockingResult.extra.
+    # Carries outside_pocket_angstroms, vinardo, strain, etc. — anything
+    # the runner / pod want to surface for the UI's parseExtra to
+    # interpret. None when the cell has no metadata beyond best_score.
+    extra: Optional[str] = Field(default=None)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     screening_job: Optional[ScreeningJob] = Relationship(back_populates="results")

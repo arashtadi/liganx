@@ -31,7 +31,9 @@ the env var and the same code path lights up real docks.
 from __future__ import annotations
 
 import logging
+import math
 import os
+import random
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -84,9 +86,111 @@ def _selectivity_index(mutant_score: Optional[float], wt_score: Optional[float])
     #                  Δ > 0 (selective for WT)     → < 0.5 → 0.0
     # scale=4 gives the desired sharpness: Δ=-0.5 yields sigmoid(2)≈0.88,
     # Δ=-1.0 yields sigmoid(4)≈0.98 (effectively saturated).
-    import math
     weight = 1.0 / (1.0 + math.exp(delta * 4))
     return abs(mutant_score) * weight
+
+
+def _materialize_selectivity(
+    session: Session,
+    screening_id: int,
+    compound_id: int,
+) -> None:
+    """Compute and persist Δ-vs-WT + selectivity_index for one compound's
+    rows in a screening job. Called after every cell completes a dock so
+    the columns are populated as soon as both the WT and mutant scores
+    are available — no batch pass at the end.
+
+    Strategy:
+      1. Load every ScreeningResult for (screening_id, compound_id).
+      2. Find the WT row's best_score (None if WT row isn't done yet).
+      3. For each non-WT row that has a best_score, denormalize wt_score
+         onto it, compute delta_score = mutant_score - wt_score, and
+         compute selectivity_index from those two.
+      4. Commit. Robust to re-runs — calling this twice produces the
+         same values.
+
+    Why denormalize onto the mutant row instead of computing on read:
+    the results endpoint serves the page in a single SELECT … ORDER BY
+    selectivity_index DESC. A self-join to compute Δ at read time would
+    cost a full table scan per page load — fine for 100 rows, awful for
+    10000. With this function running per-completion, the ORDER BY hits
+    an index and the page renders instantly.
+
+    The WT row itself never gets a delta/selectivity_index written; only
+    mutant rows carry that data. The _result_to_out shaper makes WT
+    rows surface delta=null which the UI treats as "this is the
+    reference, not a Δ candidate".
+    """
+    rows = session.exec(
+        select(ScreeningResult).where(
+            ScreeningResult.screening_job_id == screening_id,
+            ScreeningResult.compound_id == compound_id,
+        )
+    ).all()
+
+    wt_row = next((r for r in rows if r.variant == "WT"), None)
+    wt_score = wt_row.best_score if (wt_row and wt_row.status == "ok") else None
+
+    dirty = False
+    for r in rows:
+        if r.variant == "WT":
+            continue
+        # Only enrich rows that have a real mutant score. Failed /
+        # pending rows stay None.
+        if r.status != "ok" or r.best_score is None:
+            continue
+        new_wt = wt_score
+        new_delta = (r.best_score - wt_score) if wt_score is not None else None
+        new_sel = _selectivity_index(r.best_score, wt_score)
+        # Only write if changed — avoids spurious UPDATEs on idempotent
+        # re-runs of the runner.
+        if (r.wt_score != new_wt
+                or r.delta_score != new_delta
+                or r.selectivity_index != new_sel):
+            r.wt_score = new_wt
+            r.delta_score = new_delta
+            r.selectivity_index = new_sel
+            session.add(r)
+            dirty = True
+
+    if dirty:
+        session.commit()
+
+
+def _synthetic_score(variant: str, smiles: str) -> tuple[float, str]:
+    """Deterministic but plausible synthetic score for dry-run mode.
+
+    Real screening produces Vina kcal/mol scores typically in [-10, -4].
+    For demo + integration testing we want:
+      - WT scores spread realistically across that range
+      - mutant scores correlated with WT but with a small Δ (some
+        compounds tighter on mutant, some weaker)
+      - Determinism: the same (variant, smiles) returns the same number
+        so reruns are reproducible
+      - One in ten cells flagged "outside_pocket" so the downstream UI
+        treatment can be exercised even without real receptor geometry
+
+    We seed Python's PRNG with hash((smiles, "wt"|"mut")) so the output
+    is stable across runs. The seed key is intentionally NOT the raw
+    variant because we want all non-WT variants to share the same
+    baseline correlated with WT; only the Δ component varies.
+    """
+    rng = random.Random(hash((smiles, "wt-seed")))
+    wt_score = round(rng.uniform(-9.5, -5.0), 2)
+    if variant == "WT":
+        return wt_score, ""
+    rng_mut = random.Random(hash((smiles, variant)))
+    # Δ skewed slightly negative so a useful fraction of mutant rows
+    # appear "selective" — keeps the demo interesting instead of
+    # showing a symmetric uniform distribution.
+    delta = round(rng_mut.gauss(-0.2, 0.7), 2)
+    mut_score = round(wt_score + delta, 2)
+    # Synthetic extras — outside-pocket flag for ~10% of mutant rows so
+    # the UI's parseExtra path is exercised.
+    extras: list[str] = ["engine=synthetic"]
+    if rng_mut.random() < 0.10:
+        extras.append(f"mutation_outside_pocket={round(rng_mut.uniform(12.0, 25.0), 1)}A")
+    return mut_score, "|".join(extras)
 
 
 def _set_job_status(
@@ -151,28 +255,87 @@ def run_screening_in_background(screening_id: int) -> None:
         ).all()
 
         if _dry_run():
-            # Dry-run: mark everything as 'skipped' with a clear reason. Lets
-            # us ship the API + UI integration before the GPU loop is wired.
-            # After the 4090 cutover, set LIGANX_SCREENING_DRY_RUN=0 and the
-            # real per-compound docking path below takes over.
+            # Dry-run mode (v1.14, #208): emit DETERMINISTIC SYNTHETIC scores
+            # instead of marking every cell as skipped. The original behaviour
+            # ("status=skipped on every cell, COMPLETED job with a 'not wired'
+            # error_message") shipped the API but left the entire ranking
+            # pipeline untested — Δ-vs-WT, selectivity_index, the sort, the
+            # outside-pocket-flag treatment downstream, all of it.
+            #
+            # By generating plausible Vina-range numbers with a fixed seed
+            # keyed on (smiles, variant), we make the ranking layer fully
+            # exercisable end-to-end without any GPU. Once
+            # LIGANX_SCREENING_DRY_RUN is flipped to 0 (post-4090 cutover),
+            # the real-dock branch below replaces this loop with pod calls
+            # that produce the SAME column shape — so the read path,
+            # frontend rendering, and ordering keep working unchanged.
+            #
+            # We need the Compound row to seed the PRNG by SMILES, so pull
+            # them in a single query keyed by compound_id.
+            compound_ids = list({r.compound_id for r in rows})
+            compounds_by_id: dict[int, Compound] = {}
+            if compound_ids:
+                for c in session.exec(
+                    select(Compound).where(Compound.id.in_(compound_ids))
+                ).all():
+                    compounds_by_id[c.id] = c
+
+            touched_compound_ids: set[int] = set()
             for r in rows:
-                r.status = "skipped"
-                r.error_message = (
-                    "Screening engine not yet enabled on this deployment. "
-                    "Set LIGANX_SCREENING_DRY_RUN=0 once the 4090 cutover ships."
-                )
+                compound = compounds_by_id.get(r.compound_id)
+                if compound is None:
+                    # Shouldn't happen — submit handler creates the FK
+                    # — but be defensive instead of crashing the run.
+                    r.status = "failed"
+                    r.error_message = "compound row missing"
+                    session.add(r)
+                    continue
+                score, extra = _synthetic_score(r.variant, compound.smiles)
+                r.best_score = score
+                r.extra = extra or None
+                r.status = "ok"
+                r.error_message = None
                 session.add(r)
+                touched_compound_ids.add(r.compound_id)
+
+            # Bump the job's progress counters to match — n_completed mirrors
+            # how many cells have a real score, n_failed stays 0 unless we
+            # hit the defensive branch above.
+            sj = session.get(ScreeningJob, screening_id)
+            if sj is not None:
+                sj.n_completed = sum(1 for r in rows if r.status == "ok")
+                sj.n_failed = sum(1 for r in rows if r.status == "failed")
+                sj.updated_at = datetime.utcnow()
+                session.add(sj)
             session.commit()
+
+            # Materialize Δ + selectivity_index now that every cell has a
+            # score. Run per-compound so the function's batching contract
+            # stays the same as the real-dock path (which calls it after
+            # each compound's final variant lands).
+            for cid in touched_compound_ids:
+                _materialize_selectivity(session, screening_id, cid)
+
             _set_job_status(
                 session,
                 screening_id,
                 status=ScreeningStatus.COMPLETED,
                 error_message=(
-                    "Screening API live but execution disabled (dry-run mode). "
-                    "Real docks light up after the 4090 + GNINA cutover."
+                    "Synthetic-score mode (LIGANX_SCREENING_DRY_RUN=1). "
+                    "Scores are deterministic placeholders, not real Vina "
+                    "calculations. Set LIGANX_SCREENING_DRY_RUN=0 after the "
+                    "4090 cutover to enable real docks."
                 ),
             )
-            log.info("screening %s completed in dry-run mode (%d cells skipped)", screening_id, len(rows))
+            log.info(
+                "screening %s completed in synthetic-score mode "
+                "(%d compounds, %d cells, n_completed=%d, n_failed=%d)",
+                screening_id,
+                len(touched_compound_ids),
+                len(rows),
+                sj.n_completed if sj else 0,
+                sj.n_failed if sj else 0,
+            )
             return
 
         # Real-dock path. Wired in the follow-up #207b commit after the

@@ -66,6 +66,12 @@ def _resolve_screening(session: Session, key: str) -> ScreeningJob | None:
 
 
 def _result_to_out(r: ScreeningResult, compound: Compound | None) -> ScreeningResultOut:
+    # #208: wt_score / delta_score / selectivity_index are now
+    # denormalized onto each mutant row by screening_runner._materialize_selectivity
+    # right after both the WT and mutant cells finish docking. The WT
+    # row's own copies stay NULL — only mutant rows carry a Δ. The
+    # frontend uses this to render the ranked hit list without doing
+    # any client-side cross-row math.
     return ScreeningResultOut(
         compound_id=r.compound_id,
         compound_name=compound.name if compound else None,
@@ -74,14 +80,9 @@ def _result_to_out(r: ScreeningResult, compound: Compound | None) -> ScreeningRe
         best_score=r.best_score,
         status=r.status,
         error_message=r.error_message,
-        # wt_score / delta_score / selectivity_index are denormalized
-        # onto the mutant row by the runner once both mutant + WT have
-        # docked. Persisted in ScreeningResult.extra (JSON) once the
-        # runner ships; v1 returns None and the frontend sorts by
-        # best_score until then.
-        wt_score=None,
-        delta_score=None,
-        selectivity_index=None,
+        wt_score=r.wt_score,
+        delta_score=r.delta_score,
+        selectivity_index=r.selectivity_index,
         admet=None,
     )
 
@@ -98,13 +99,22 @@ def _to_out(sj: ScreeningJob, session: Session) -> ScreeningOut:
     if compound_ids:
         for c in session.exec(select(Compound).where(Compound.id.in_(compound_ids))).all():
             compounds_by_id[c.id] = c
-    # Default sort: best_score ASC nulls last. Once selectivity_index is
-    # wired, the runner pre-sorts the rows it writes back so this default
-    # is meaningful; until then we sort by best_score with None at end.
-    rows_sorted = sorted(
-        rows,
-        key=lambda r: (r.best_score is None, r.best_score if r.best_score is not None else 0.0),
-    )
+    # #208: sort by selectivity_index DESC (higher = more selective for
+    # mutant), then best_score ASC (more-negative = tighter) as a
+    # tiebreaker, then by compound_id for deterministic ordering of
+    # same-score rows. WT rows have selectivity_index=None and float to
+    # the bottom of the ranked list — they're reference data, not
+    # candidates. Cells without a best_score (failed / pending) sit at
+    # the very bottom regardless of variant.
+    def _sort_key(r: ScreeningResult) -> tuple:
+        return (
+            r.best_score is None,                            # failed/pending last
+            r.selectivity_index is None,                     # WT-only rows after mutants
+            -(r.selectivity_index or 0.0),                   # desc by selectivity
+            r.best_score if r.best_score is not None else 0.0,  # asc by score (tighter first)
+            r.compound_id,                                   # stable tiebreaker
+        )
+    rows_sorted = sorted(rows, key=_sort_key)
     return ScreeningOut(
         id=sj.id,
         share_id=sj.share_id,
