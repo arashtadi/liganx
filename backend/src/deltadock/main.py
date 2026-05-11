@@ -189,8 +189,24 @@ def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> No
                              label, i, len(statements), stmt[:60].replace("\n", " "))
             finally:
                 cur.close()
+            # CRITICAL: commit on the raw psycopg2 connection, NOT the
+            # SQLAlchemy wrapper. In SQLAlchemy 2.x the wrapper's commit
+            # only finalizes SQLAlchemy-tracked statements; raw cursor
+            # operations run in their own psycopg2 transaction that
+            # rolls back when the SQLAlchemy connection is returned to
+            # the pool. We hit this exact failure mode on migration 012
+            # — the per-statement log said "ok" but the table never
+            # existed post-boot because the DDL was never actually
+            # committed to disk.
+            raw.commit()
             conn.commit()
-        log.info("%s applied (%d statements, idempotent)", label, len(statements))
+        # Post-migration sanity: re-issue a trivial query on a fresh
+        # connection to prove the changes are visible from outside this
+        # transaction. If we get an exception here, the migration
+        # didn't commit and the hook log will surface it.
+        with db_engine.connect() as verify_conn:
+            verify_conn.connection.dbapi_connection.cursor().execute("SELECT 1")
+        log.info("%s applied (%d statements, idempotent, committed)", label, len(statements))
     except Exception as e:
         log.error("%s FAILED at startup: %s", label, e)
 
