@@ -204,3 +204,121 @@ class HealthOut(BaseModel):
     status: str = "ok"
     version: str
     env: str
+
+
+# -----------------------------------------------------------------------------
+# Screening (virtual screening at library scale) — Tier 3 #2 / Mutation-aware
+# library screening. Submit shape diverges from JobCreate in three ways:
+#   1. compounds list is uncapped here at the schema level (router caps at
+#      1000 per submission — the value of the feature is HUNDREDS of compounds,
+#      not 5; the 1000 ceiling keeps any single screening inside ~30-60 min
+#      of pod time on a 4090).
+#   2. mutations capped at 1 entry. We want clean Δ-vs-WT semantics; multi-
+#      mutation makes the ranking math ambiguous (which Δ do we sort by?).
+#      Multi-variant screening is a future capability.
+#   3. exhaustiveness defaults to 4 (vs 8 for /jobs). Screening is about
+#      RANKING — re-dock the top survivors at higher exhaustiveness in a
+#      follow-up Job submission.
+# -----------------------------------------------------------------------------
+
+
+from .models import ScreeningStatus  # noqa: E402  (avoid top-level circular)
+
+
+class ScreeningCreate(BaseModel):
+    pdb_id: str = Field(..., min_length=4, max_length=12)
+    chain: str = "A"
+    uniprot_id: str | None = Field(default=None, max_length=20)
+    # Empty list = WT-only screening (still useful — ranks affinity against
+    # the wild-type target with no Δ column). 1 mutation = the canonical
+    # mutation-aware library screen.
+    mutations: list[str] = Field(default_factory=list, max_length=1)
+    # Library compounds. Router applies the 1000-cap after validation; the
+    # schema upper-bound here is a defensive 2000 so a typo doesn't OOM
+    # the validator. Pre-loaded libraries (Enamine REAL subset, ChEMBL
+    # approved, etc.) get expanded to a CompoundIn list before this schema
+    # is hit — they're not a server-side magic value.
+    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=2000)
+    # Lower default than JobCreate.exhaustiveness. Screening cares about
+    # the ranking, not absolute scores. Re-dock the top 20-50 survivors
+    # at higher exhaustiveness via the existing /jobs flow.
+    exhaustiveness: int = Field(default=4, ge=4, le=16)
+    engine: str = Field(default="quickvina2_gpu", max_length=32)
+    title: str | None = Field(default=None, max_length=200)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+
+    # Same validators as JobCreate — same regex rules apply.
+    @field_validator("pdb_id")
+    @classmethod
+    def _v_pdb(cls, v: str) -> str:
+        if not PDB_ID_RE.match(v):
+            raise ValueError("pdb_id must be 4 alphanumeric chars or USR_<8 hex>")
+        return v if v.startswith("USR_") else v.upper()
+
+    @field_validator("chain")
+    @classmethod
+    def _v_chain(cls, v: str) -> str:
+        if not CHAIN_RE.match(v):
+            raise ValueError("chain must be 1-2 alphanumeric characters")
+        return v.upper()
+
+    @field_validator("mutations")
+    @classmethod
+    def _v_mutations(cls, v: list[str]) -> list[str]:
+        bad = [m for m in v if not MUTATION_RE.match(m)]
+        if bad:
+            raise ValueError(f"invalid mutation code(s): {', '.join(bad[:3])}")
+        return v
+
+
+class ScreeningResultOut(BaseModel):
+    """One row of a screening run.
+
+    Lean shape — the results page renders hundreds of these in a sortable
+    table, so we keep the per-row payload tight. Pose blob + full ADMET
+    are loaded on demand when the user expands / opens a row.
+    """
+    compound_id: int
+    compound_name: str | None
+    compound_smiles: str
+    variant: str  # "WT" or the mutation code
+    best_score: float | None  # kcal/mol, lower = stronger binding
+    status: str  # ok | pending | failed | skipped
+    error_message: str | None = None
+    # Selectivity components — computed by services/screening_runner when
+    # both a mutant and WT row exist for the same compound. wt_score and
+    # delta_score are denormalized here so the results page can sort by
+    # selectivity without a self-join.
+    wt_score: float | None = None
+    delta_score: float | None = None  # mutant_score - wt_score
+    selectivity_index: float | None = None  # higher = more selective
+    # ADMET tier flags (low / medium / high). Rendered as the same chip
+    # set the JobPage uses, so users have a consistent visual.
+    admet: dict | None = None
+
+
+class ScreeningOut(BaseModel):
+    """Top-level screening job envelope. The results page polls this
+    every 3-5 s while pending/running; once completed it stops polling."""
+    id: int
+    share_id: str
+    pdb_id: str
+    chain: str
+    uniprot_id: str | None = None
+    mutations: list[str]
+    engine: str
+    exhaustiveness: int
+    n_total: int
+    n_completed: int
+    n_failed: int
+    status: ScreeningStatus
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+    user_id: str | None = None
+    title: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    # Results sorted server-side by selectivity_index DESC, then by
+    # best_score ASC. Pagination via query params on the GET endpoint
+    # for very large screens (>500 hits).
+    results: list[ScreeningResultOut] = Field(default_factory=list)

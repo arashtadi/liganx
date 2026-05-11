@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, assist, catalog, contact, jobs, lookup, me, me_compounds, structures, suggest
+from .routers import admin, assist, catalog, contact, jobs, lookup, me, me_compounds, screening, structures, suggest
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -165,6 +165,7 @@ app.add_middleware(
 )
 
 app.include_router(jobs.router)
+app.include_router(screening.router)
 app.include_router(catalog.router)
 app.include_router(structures.router)
 app.include_router(lookup.router)
