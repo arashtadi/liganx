@@ -232,6 +232,48 @@ def is_cancelled(session: Session, job_id: int) -> bool:
     return bool(fresh and fresh.status == JobStatus.CANCELLED)
 
 
+def _commit_retry(session: Session) -> None:
+    """Drop-in replacement for session.commit() that survives a Postgres
+    idle-drop mid-run.
+
+    Why: the runner does ~dozens of per-cell session.add(DockingResult(...))
+    + session.commit() pairs across a multi-minute pipeline. Supabase's
+    pooler closes idle Postgres connections after a few minutes, and the
+    very first commit() after that idle period throws
+    psycopg2.OperationalError("server closed the connection unexpectedly"),
+    SQLAlchemy promotes the session into a PendingRollbackError state,
+    and every subsequent commit() then fails the same way until
+    rollback() is explicitly called. Without recovery, a single transient
+    network blip nukes the entire job — exactly what happened to job
+    #261 on 2026-05-11 (and #258 before it).
+
+    Behavior:
+      1. Try session.commit(). If it works, return.
+      2. On DBAPIError or PendingRollbackError, session.rollback() to
+         clear the sticky bad state (this invalidates the dead connection
+         and the next operation checks out a fresh one — pool_pre_ping
+         in db.py validates it before handing it back).
+      3. Retry session.commit() once. If THAT raises, re-raise — the
+         outer except in run_job_in_background catches it and writes
+         FAILED via _safe_commit (which has its own three-tier recovery
+         including a brand-new Session as a last resort).
+
+    Note: only the rows added in the CURRENT (failed) transaction are
+    lost on rollback. Previously-committed cells are safe. So a retry
+    only loses one cell's row, and the runner's normal flow will simply
+    move on to the next compound/variant.
+    """
+    from sqlalchemy.exc import DBAPIError, PendingRollbackError
+    try:
+        session.commit()
+        return
+    except (DBAPIError, PendingRollbackError) as e:
+        log.warning("_commit_retry: commit failed (%s); rolling back + retrying once",
+                    type(e).__name__)
+    session.rollback()
+    session.commit()  # if this raises, let it — outer handler writes FAILED
+
+
 def _safe_commit(session: Session, job_id: int, *, status: JobStatus,
                  error_message: str | None = None) -> bool:
     """Commit a final job status update, surviving a poisoned session.
@@ -325,7 +367,7 @@ def run_job_in_background(job_id: int) -> None:
         job.status = JobStatus.RUNNING
         job.updated_at = datetime.utcnow()
         session.add(job)
-        session.commit()
+        _commit_retry(session)
 
         try:
             available, reason = _real_pipeline_available()
@@ -519,7 +561,7 @@ def _drain_pending_validations(pending: list[dict], session: Session) -> None:
             for r in session.exec(stmt):
                 r.extra = final_extra
                 session.add(r)
-            session.commit()
+            _commit_retry(session)
     log.info("Deferred validation: done")
 
 
@@ -663,7 +705,7 @@ def _run_boltz2_dispatch(
                         job_id=job.id, compound_id=compound.id, variant=variant,
                         best_score=0.0, extra=fail,
                     ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
 
                 cell_dir = work / f"compound_{compound.id}_{variant}"
@@ -695,7 +737,7 @@ def _run_boltz2_dispatch(
                         best_score=0.0,
                         extra="|".join(parts + [f"boltz2_failed: {str(bde)[:120]}"]),
                     ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
                 except Exception as e:
                     log.exception(
@@ -707,7 +749,7 @@ def _run_boltz2_dispatch(
                         best_score=0.0,
                         extra="|".join(parts + [f"boltz2_err:{type(e).__name__}:{str(e)[:80]}"]),
                     ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
 
                 # Boltz-2 returns the predicted protein-ligand COMPLEX as a
@@ -835,7 +877,7 @@ def _run_boltz2_dispatch(
                     pose_uri=pose_uri,
                     extra="|".join(parts),
                 ))
-                session.commit()
+                _commit_retry(session)
                 log.info(
                     "Boltz-2 c%s × %s: aff=%.3f prob=%.3f",
                     compound.id, variant,
@@ -1627,7 +1669,7 @@ def _run_real(session: Session, job: Job) -> None:
                             job_id=job.id, compound_id=compound.id, variant=variant,
                             best_score=0.0, extra=f"ligand_prep_failed: {e}",
                         ))
-                    session.commit()
+                    _commit_retry(session)
 
             # Phase 2: per-variant batched dispatch.
             for variant in variants:
@@ -1648,7 +1690,7 @@ def _run_real(session: Session, job: Job) -> None:
                                 job_id=job.id, compound_id=c.id, variant=variant,
                                 best_score=0.0, extra=fail_reason,
                             ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
 
                 run_dir = work / f"batch_{variant}"
@@ -1750,7 +1792,7 @@ def _run_real(session: Session, job: Job) -> None:
                                     job_id=job.id, compound_id=c.id, variant=variant,
                                     best_score=0.0, extra=f"docking_failed: {e}",
                                 ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
 
                 # Per-cell post-processing on batch results. The batch call
@@ -1838,7 +1880,7 @@ def _run_real(session: Session, job: Job) -> None:
                             job_id=job.id, compound_id=c.id, variant=variant,
                             best_score=0.0, extra=f"docking_failed: {e}",
                         ))
-                session.commit()
+                _commit_retry(session)
             # Mark COMPLETED *before* validation drain so the user sees
             # the matrix as soon as docking finishes, not after PoseBusters/
             # ProLIF (~30-60s of blocking subprocess work).
@@ -1848,7 +1890,7 @@ def _run_real(session: Session, job: Job) -> None:
                     job.status = JobStatus.COMPLETED
                     job.updated_at = datetime.utcnow()
                     session.add(job)
-                    session.commit()
+                    _commit_retry(session)
                     log.info("Job %s docking phase complete; running validation in background", job.id)
             set_stage(session, job.id, "validating_poses" if pending_validations else None)
             _drain_pending_validations(pending_validations, session)
@@ -1872,7 +1914,7 @@ def _run_real(session: Session, job: Job) -> None:
                         job_id=job.id, compound_id=compound.id, variant=variant,
                         best_score=0.0, extra=f"ligand_prep_failed: {e}",
                     ))
-                session.commit()
+                _commit_retry(session)
                 continue
 
             for variant in variants:
@@ -1890,7 +1932,7 @@ def _run_real(session: Session, job: Job) -> None:
                         job_id=job.id, compound_id=compound.id, variant=variant,
                         best_score=0.0, extra=fail_reason,
                     ))
-                    session.commit()
+                    _commit_retry(session)
                     continue
                 run_dir = work / f"compound_{compound.id}_{variant}"
                 run_dir.mkdir(exist_ok=True)
@@ -2074,7 +2116,7 @@ def _run_real(session: Session, job: Job) -> None:
                         job_id=job.id, compound_id=compound.id, variant=variant,
                         best_score=0.0, extra=f"docking_failed: {e}",
                     ))
-                session.commit()
+                _commit_retry(session)
         # Common drain for both batched and legacy paths. Runs deferred
         # validation (when DEFER_VALIDATION=1) in a thread pool that
         # updates rows in place; tempdir is still alive so pose files
@@ -2087,7 +2129,7 @@ def _run_real(session: Session, job: Job) -> None:
                 job.status = JobStatus.COMPLETED
                 job.updated_at = datetime.utcnow()
                 session.add(job)
-                session.commit()
+                _commit_retry(session)
                 log.info("Job %s docking phase complete; running validation in background", job.id)
         set_stage(session, job.id, "validating_poses" if pending_validations else None)
         _drain_pending_validations(pending_validations, session)
@@ -2123,7 +2165,7 @@ def _run_placeholder(session: Session, job: Job, reason: str | None) -> None:
                 job_id=job.id, compound_id=compound.id, variant=variant,
                 best_score=score, extra=f"placeholder ({reason})",
             ))
-    session.commit()
+    _commit_retry(session)
 
 
 def _placeholder_score(smiles: str, variant: str) -> float:
