@@ -139,6 +139,14 @@ def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> No
     to apply schema changes without needing flyctl SSH (which had a
     sustained outage on 2026-05-11). Drop the env flag on the deploy
     AFTER the migration has applied once.
+
+    Earlier versions of this helper ran the whole multi-statement SQL
+    in a single `cur.execute()` call. That works for run_migration_010
+    but turned out to fail silently on migration 012 — the CREATE TABLE
+    statement never ran (table absent post-boot) yet no exception fired
+    and the "applied" log was printed. The fix is to split on `;` and
+    execute each statement individually so any single-statement failure
+    raises and surfaces in the log.
     """
     import os
     if os.environ.get(env_flag, "").lower() not in ("1", "true", "yes"):
@@ -152,18 +160,39 @@ def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> No
     if not sql_path.exists():
         log.warning("%s set but SQL file not found at %s", env_flag, sql_path)
         return
-    sql_text = sql_path.read_text().replace("BEGIN;", "").replace("COMMIT;", "")
+    sql_text = sql_path.read_text()
+
+    # Strip line-comments + the BEGIN/COMMIT wrappers, then split into
+    # individual statements. Splitting on `;` is naive but adequate for
+    # our migrations (no triggers, no function bodies). Empty fragments
+    # are dropped.
+    cleaned_lines: list[str] = []
+    for line in sql_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        if stripped in ("BEGIN;", "COMMIT;"):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+    statements = [s.strip() for s in cleaned.split(";") if s.strip()]
+
     try:
         from .db import engine as db_engine
         with db_engine.connect() as conn:
             raw = conn.connection.dbapi_connection
             cur = raw.cursor()
-            cur.execute(sql_text)
-            cur.close()
+            try:
+                for i, stmt in enumerate(statements, 1):
+                    cur.execute(stmt)
+                    log.info("%s: statement %d/%d ok (%s…)",
+                             label, i, len(statements), stmt[:60].replace("\n", " "))
+            finally:
+                cur.close()
             conn.commit()
-        log.info("%s applied (idempotent — safe on re-run)", label)
+        log.info("%s applied (%d statements, idempotent)", label, len(statements))
     except Exception as e:
-        log.error("%s failed at startup: %s", label, e)
+        log.error("%s FAILED at startup: %s", label, e)
 
 
 def _ensure_screening_columns() -> None:
