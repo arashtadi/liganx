@@ -6063,7 +6063,7 @@ function ProductionViewer3D({
                   </li>
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">3.</span>
-                    <span><span className="text-slate-200">Choose compound(s)</span> <span className="text-slate-500">— reference, library, PubChem, or sketch (up to 10)</span></span>
+                    <span><span className="text-slate-200">Choose compound(s)</span> <span className="text-slate-500">— sketch, paste a SMILES list, or upload a CSV/SDF (up to 50)</span></span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-cyan-400 tabular-nums">4.</span>
