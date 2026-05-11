@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.08-2026-05-11-redirect-to-jobpage-on-submit";
+const LIGANX_BUILD_TAG = "v1.09-2026-05-11-paste-smiles-list-cap-50";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -376,7 +376,7 @@ export default function StudioPage() {
   const setSelectedMutation = (m: string) => setSelectedMutations(m ? [m] : []);
   const MAX_TARGETS = 2;
   const MAX_MUTATIONS = 2;
-  const MAX_COMPOUNDS = 10;
+  const MAX_COMPOUNDS = 50;
   // (v0.64) Compound list — up to 10 compounds per job. Each entry is
   // a SMILES + optional name + a stable id. activeCompoundIdx is the
   // one currently loaded into the 2D Ketcher canvas. The legacy
@@ -2988,6 +2988,76 @@ export default function StudioPage() {
                 </span>
                 <span className="ml-auto text-[9px] text-cyan-400/70 normal-case">
                   reference · library · pubchem · sketch
+                </span>
+              </button>
+              {/* (v1.09) Paste SMILES list — stepping stone toward full
+                  CSV/SDF library upload. Accepts one SMILES per line,
+                  optional name after a comma or tab. Stages up to
+                  MAX_COMPOUNDS at once. Skips blanks, dedupes against
+                  already-staged SMILES, and shows an inline error per
+                  malformed line. Future #205: parse .sdf via RDKit.js
+                  and accept file drops here. */}
+              <button
+                type="button"
+                onClick={() => {
+                  const blob = window.prompt(
+                    `Paste one SMILES per line (optional name after comma/tab).\nMax ${MAX_COMPOUNDS - compounds.length} more compounds.\n\nExample:\nCC(=O)Oc1ccccc1C(=O)O, aspirin\nCC(C)Cc1ccc(C(C)C(=O)O)cc1\n`,
+                    "",
+                  );
+                  if (!blob) return;
+                  // Parse: split on newline, trim each line, split each by tab/comma.
+                  // First field = SMILES, optional second = name. Drop comments (#).
+                  const lines = blob.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+                  const room = MAX_COMPOUNDS - compounds.length;
+                  const staged: { smiles: string; name?: string }[] = [];
+                  const dups = new Set(compounds.map((c) => c.smiles));
+                  let skippedDup = 0;
+                  for (const line of lines) {
+                    if (staged.length >= room) break;
+                    const parts = line.split(/[\t,]/).map((p) => p.trim());
+                    const smiles = parts[0] || "";
+                    if (!smiles) continue;
+                    if (dups.has(smiles)) { skippedDup++; continue; }
+                    dups.add(smiles);
+                    staged.push({ smiles, name: parts[1] || undefined });
+                  }
+                  if (staged.length === 0) {
+                    setPromoteToast(skippedDup > 0
+                      ? `⚠ All ${skippedDup} pasted SMILES were already staged.`
+                      : "⚠ No valid SMILES found in the pasted text.");
+                    window.setTimeout(() => setPromoteToast(null), 4000);
+                    return;
+                  }
+                  // Bulk-stage. Each gets a unique id; matching named ones
+                  // could be deduped by name later but for v1 we trust the
+                  // user's paste.
+                  setCompounds((prev) => [
+                    ...prev,
+                    ...staged.map((s) => ({
+                      id: `c_paste_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                      smiles: s.smiles,
+                      name: s.name,
+                    })),
+                  ]);
+                  const overflow = lines.length - staged.length - skippedDup;
+                  let msg = `✓ Staged ${staged.length} compound${staged.length === 1 ? "" : "s"}`;
+                  if (skippedDup > 0) msg += ` (skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"})`;
+                  if (overflow > 0) msg += ` — ${overflow} dropped (suite full at ${MAX_COMPOUNDS})`;
+                  setPromoteToast(msg);
+                  window.setTimeout(() => setPromoteToast(null), 6000);
+                }}
+                disabled={compounds.length >= MAX_COMPOUNDS}
+                className={`mt-1.5 w-full px-3 py-1.5 rounded border font-mono text-[10px] flex items-center gap-2 transition-colors ${
+                  compounds.length >= MAX_COMPOUNDS
+                    ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                    : "border-violet-700/50 bg-violet-950/30 text-violet-200 hover:bg-violet-900/40"
+                }`}
+                title="Paste a multi-line SMILES list (one per line, optional name after comma). Great for screening 10-50 compounds at once."
+              >
+                <span className="text-[11px]">📋</span>
+                <span className="uppercase tracking-wider">Paste SMILES list</span>
+                <span className="ml-auto text-[9px] text-violet-400/70 normal-case">
+                  one per line · up to {MAX_COMPOUNDS}
                 </span>
               </button>
               {/* Staged compounds list — newest at the bottom. Each row

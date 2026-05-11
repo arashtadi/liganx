@@ -33,8 +33,13 @@ class JobCreate(BaseModel):
     # server-side guard so direct API callers (curl, scripts) can't exceed
     # it either.
     mutations: list[str] = Field(default_factory=list, max_length=5)
-    # Free-tier cap: max 5 compounds per submit.
-    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=5)
+    # Per-submission cap. 2026-05-11: bumped 5 → 50 to make room for the
+    # CSV/SDF library-upload UI that's landing next in the frontend. The
+    # 4090 cutover gives us enough headroom that 50 compounds × 2 variants
+    # = 100 cells fits in a single Full Job's reasonable runtime budget
+    # (~5-10 min at 1-3 s/dock). Library-scale screening (1000+) lives
+    # in the separate /screening endpoint, capped at 1000 there.
+    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=50)
     # Search depth — Vina-style: 8 fast / 16 balanced / 32 thorough. We cap at
     # 64 because anything higher gives diminishing returns and risks tying up
     # the GPU. Anything below 4 is useless.
