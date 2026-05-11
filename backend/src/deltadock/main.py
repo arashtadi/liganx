@@ -229,6 +229,17 @@ def _ensure_chat_history_table() -> None:
     )
 
 
+def _ensure_compound_job_id_nullable() -> None:
+    """v1.16.1 — DROP NOT NULL on compound.job_id so screening
+    submissions (which create orphan Compound rows with no parent Job)
+    don't crash with NotNullViolation."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_013_ON_STARTUP",
+        sql_filename="013_compound_job_id_nullable.sql",
+        label="Migration 013 (compound.job_id nullable)",
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     import asyncio
@@ -236,6 +247,7 @@ async def lifespan(_app: FastAPI):
     init_db()
     _ensure_screening_columns()
     _ensure_chat_history_table()
+    _ensure_compound_job_id_nullable()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     try:
