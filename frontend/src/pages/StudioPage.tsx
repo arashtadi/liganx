@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.06-2026-05-11-hydrate-prior-results-on-reseed";
+const LIGANX_BUILD_TAG = "v1.07-2026-05-11-fix-reseed-adhoc-pdb-resolve";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -269,7 +269,7 @@ export default function StudioPage() {
   // or from HistoryPage), the reseed wins — we want the new compound
   // loaded fresh, not the prior session restored over it.
   const reseed = (location.state as any)?.reseed as
-    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean; sourceJobKey?: string }
+    | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; chain?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean; sourceJobKey?: string }
     | undefined;
   // (Studio v0.94) When the reseed payload explicitly asks for a clean
   // replace (HistoryPage Re-run sets this), skip session restoration
@@ -946,6 +946,61 @@ export default function StudioPage() {
     return () => { window.clearTimeout(timer); ctrl.abort(); };
   }, [targetQuery, mergedCatalog]);
 
+  // (Studio v1.07) When reseed carries a pdb_id that isn't in the
+  // curated catalog (e.g. Edit & re-dock or History Re-run from a job
+  // run against an ad-hoc PDB like 4OBE), the id lands in
+  // selectedTargets but mergedCatalog has no entry for it — so the
+  // submit-time lookup at runFullJob falls through with "Couldn't
+  // resolve a PDB id for target …". Auto-register an ad-hoc target
+  // row to keep mergedCatalog whole. Fires once after the curated
+  // catalog query resolves, so we know reliably whether the id is
+  // curated. RCSB title is fetched in the background to make the
+  // chip readable; chain defaults to the reseed value or "A".
+  const reseedAdHocAddedRef = useRef(false);
+  useEffect(() => {
+    if (reseedAdHocAddedRef.current) return;
+    if (!catalog) return; // wait for curated catalog to land
+    const pdbStr = reseed?.pdb_id;
+    if (!pdbStr) { reseedAdHocAddedRef.current = true; return; }
+    const lower = pdbStr.toLowerCase();
+    if (catalog.some((c: any) => c.id === lower)) {
+      reseedAdHocAddedRef.current = true; // already curated; nothing to do
+      return;
+    }
+    if (adHocTargets.some((t) => t.id === lower)) {
+      reseedAdHocAddedRef.current = true; // session-restored already
+      return;
+    }
+    reseedAdHocAddedRef.current = true;
+    const upper = pdbStr.toUpperCase();
+    setAdHocTargets((prev) => [
+      ...prev,
+      {
+        id: lower,
+        pdb_id: upper,
+        chain: (reseed?.chain || "A").toUpperCase(),
+        name: upper, // placeholder until RCSB title resolves
+        mutations: [],
+        pocket: null,
+        isAdHoc: true,
+      },
+    ]);
+    // Background-fetch RCSB title so the chip + dropdown show the
+    // protein name instead of just the 4-char id. Best-effort —
+    // failures leave the placeholder, which still works for docking.
+    fetch(`https://data.rcsb.org/rest/v1/core/entry/${upper}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m: any) => {
+        const title: string | undefined = m?.struct?.title;
+        if (!title) return;
+        setAdHocTargets((prev) =>
+          prev.map((t) => (t.id === lower ? { ...t, name: title } : t)),
+        );
+      })
+      .catch(() => { /* silent — placeholder is fine */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog]);
+
   // (v0.85) Auto-fire enrichment for any ad-hoc target that hasn't
   // been enriched yet — this catches the session-restore case
   // (target restored from sessionStorage with empty mutations and no
@@ -1459,7 +1514,16 @@ export default function StudioPage() {
         // so this lookup resolves both curated targets and user-
         // searched ones via the same code path.
         const tMeta = mergedCatalog.find((c: any) => c.id === tid) as any;
-        const tPdb = (tMeta?.pdb_id || "").trim();
+        // (v1.07) Defensive fallback: if mergedCatalog has no entry
+        // for this id (race between catalog query + auto-register
+        // effect, or session restored before catalog hydrated), use
+        // tid as the PDB id directly when it looks like one (4 chars).
+        // Ad-hoc targets always use id = pdb_id.toLowerCase(), so
+        // the conversion is lossless. Without this fallback, a
+        // perfectly-staged target like 4OBE produces the "Couldn't
+        // resolve a PDB id" error even when the answer is obvious.
+        const fallbackPdb = /^[a-z0-9]{4}$/i.test(tid) ? tid.toUpperCase() : "";
+        const tPdb = (tMeta?.pdb_id || fallbackPdb).trim();
         if (!tPdb) throw new Error(`Couldn't resolve a PDB id for target "${tid}".`);
         const job = await api.createJob({
           pdb_id: tPdb,
