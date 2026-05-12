@@ -174,7 +174,14 @@ def _ensure_model_loaded() -> None:
         _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_ID)
         model = AutoModelForMaskedLM.from_pretrained(MODEL_ID)
         model.eval()
-        _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        # Force CPU. Production pod is RTX PRO 6000 / 5090 (sm_120 Blackwell)
+        # but torch 2.4.1 was built before sm_120 was added, so launching any
+        # kernel on the GPU raises "no kernel image is available for execution
+        # on the device". Same constraint as admet_pod.py — we eat the ~5s CPU
+        # inference latency rather than spend a day rebuilding torch from source.
+        # When the pod migrates to a torch with sm_120 support, set _DEVICE
+        # back to "cuda" if torch.cuda.is_available() else "cpu".
+        _DEVICE = "cpu"
         _MODEL = model.to(_DEVICE)
 
 
@@ -207,11 +214,14 @@ def predict_fitness(
     if len(wt) != 1 or len(mut) != 1:
         raise ValueError("wt and mut must be single amino-acid letters")
 
+    # Init the sqlite table BEFORE the cache read — on a fresh pod the table
+    # doesn't exist yet and SELECT raises "no such table: fitness_cache".
+    # _init_db is idempotent (CREATE TABLE IF NOT EXISTS).
+    _init_db()
     cached = _cache_get(uniprot_id, position, wt, mut)
     if cached:
         return cached
 
-    _init_db()
     seq = _fetch_uniprot_sequence(uniprot_id)
     if position < 1 or position > len(seq):
         raise ValueError(f"position {position} out of bounds for {uniprot_id} (len={len(seq)})")
