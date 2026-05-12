@@ -426,24 +426,30 @@ function WhatsNew() {
   const items = [
     {
       tag: "Just shipped",
+      title: "Resistance Atlas — predict the next mutation that breaks a drug",
+      body:
+        "For every FDA-approved targeted cancer drug, the Atlas ranks which mutations will most likely emerge as clinical resistance — before patients hit them. Triangulates docking Δ + ESM-2 protein-language-model fitness, calibrated on 50 published clinical-resistance events (ROC-AUC 0.90 in-sample, 0.81 cross-validated). Every prediction is timestamped, citation-backed, and publicly re-derivable. 15 drugs covered today.",
+      tone: "delta" as const,
+      href: "/atlas",
+      cta: "Open the Atlas",
+    },
+    {
+      tag: "Just shipped",
       title: "Pre-computed FDA-drug screenings — no setup, no GPU wait",
       body:
-        "We pre-ran 30 oncology kinase inhibitors against every resistance mutation in our catalog — KRAS G12C/G12D/Q61H, EGFR T790M/L858R/C797S, BCR-ABL T315I/E255K. Hit a public URL and see ranked selectivity hits in 1 second. Click any compound to see its 3D pose. Every link is its own SEO landing page.",
-      tone: "delta" as const,
+        "We pre-ran 30 oncology kinase inhibitors against every resistance mutation in our catalog — KRAS G12C/G12D/Q61H, EGFR T790M/L858R/C797S, BCR-ABL T315I/E255K. Hit a public URL and see ranked selectivity hits in 1 second. Click any compound to see its 3D pose.",
+      tone: "accent" as const,
+      href: "/library",
+      cta: "Browse pre-computed screenings",
     },
     {
       tag: "Just shipped",
       title: "Mutation-aware virtual screening",
       body:
-        "Submit 10 compounds against a (target, mutation) pair. We dock each against WT and the mutant in parallel, rank by selectivity index, and return a ranked hit list — the same ranking that drives our pre-computed library. Real Vina, real poses, real ADMET. Sieve through a library; pick the top hits.",
-      tone: "accent" as const,
-    },
-    {
-      tag: "Just shipped",
-      title: "Sieve → microscope: promote screening hits to Full Job",
-      body:
-        "Tick the top compounds in a screening ranked list, click Promote, land instantly on the Full Job results page with 3D pose viewer + ADMET + AI Variants — no re-dock, no waiting. The 3-step VS workflow (cast wide / pick winners / deep-dive) is now one continuous flow.",
+        "Submit 10 compounds against a (target, mutation) pair. We dock each against WT and the mutant in parallel, rank by selectivity index, and return a ranked hit list. Real Vina, real poses, real ADMET. Sieve through a library; pick the top hits.",
       tone: "emerald" as const,
+      href: "/studio",
+      cta: "Open Studio",
     },
   ];
   return (
@@ -452,9 +458,10 @@ function WhatsNew() {
         <SectionHead eyebrow="What's new" title="Recently shipped." />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {items.map((it) => (
-          <div
+          <Link
             key={it.title}
-            className="card relative ring-1 ring-slate-200/70 dark:ring-slate-700/60 overflow-hidden"
+            to={it.href}
+            className="card relative ring-1 ring-slate-200/70 dark:ring-slate-700/60 overflow-hidden hover:ring-violet-400 dark:hover:ring-violet-500 transition block group"
           >
             <span
               className={
@@ -471,7 +478,10 @@ function WhatsNew() {
             </span>
             <h3 className="mt-3 font-semibold text-ink dark:text-slate-100">{it.title}</h3>
             <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{it.body}</p>
-          </div>
+            <div className="mt-3 inline-flex items-center text-xs font-semibold text-violet-700 dark:text-violet-300 group-hover:underline">
+              {it.cta} <ArrowRight size={12} className="ml-1" />
+            </div>
+          </Link>
         ))}
         </div>
       </Container>

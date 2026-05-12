@@ -304,6 +304,16 @@ function Header() {
           <NavLink to="/library" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Library
           </NavLink>
+          {/* Resistance Atlas — public per-drug forecast pages. New top-
+              level nav item added 2026-05-12 alongside the multi-signal
+              calibrated model launch; otherwise the only discovery path
+              is the homepage card. NEW badge stripped after 30 days. */}
+          <NavLink to="/atlas" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2 relative`}>
+            <span>Atlas</span>
+            <span className="ml-1 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
+              NEW
+            </span>
+          </NavLink>
           <NavLink to="/blog" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Blog
           </NavLink>

@@ -55,15 +55,18 @@ type AtlasDetail = {
   drug_smiles: string;
   primary_target: string;
   primary_pdb: string;
-  indications: string[];
-  approved_year: number;
+  // Fields below are present on v1 hand-curated atlas files but optional
+  // on v2 auto-generated ones. The detail view must render gracefully
+  // when any of them is missing.
+  indications?: string[];
+  approved_year?: number;
   atlas_version: number;
   generated_at: string;
   data_provenance: string;
   predicted_resistance: Prediction[];
   literature_confirmed_count: number;
-  novel_predictions_count: number;
-  covalent_caveat?: string;
+  novel_predictions_count?: number;
+  covalent_caveat?: string | null;
   ledger_note: string;
 };
 
@@ -300,16 +303,22 @@ function AtlasDetailView({ slug }: { slug: string }) {
         </h1>
         <p className="mt-1 text-slate-600 dark:text-slate-300">
           vs <strong>{data.primary_target}</strong>
-          <span className="ml-2 font-mono text-xs text-slate-500 dark:text-slate-400">
-            {data.primary_pdb}
-          </span>
-          <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
-            approved {data.approved_year}
-          </span>
+          {data.primary_pdb && (
+            <span className="ml-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+              {data.primary_pdb}
+            </span>
+          )}
+          {data.approved_year && (
+            <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
+              approved {data.approved_year}
+            </span>
+          )}
         </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {data.indications.join(" · ")}
-        </p>
+        {data.indications && data.indications.length > 0 && (
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            {data.indications.join(" · ")}
+          </p>
+        )}
       </header>
 
       {data.covalent_caveat && (
@@ -323,8 +332,9 @@ function AtlasDetailView({ slug }: { slug: string }) {
           Top predicted resistance mutations
         </h2>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          {data.literature_confirmed_count} lit-confirmed ·{" "}
-          {data.novel_predictions_count} novel · atlas v{data.atlas_version}
+          {data.literature_confirmed_count} lit-confirmed
+          {data.novel_predictions_count != null && ` · ${data.novel_predictions_count} novel`}
+          {" · "}atlas v{data.atlas_version}
           {" · "}generated {new Date(data.generated_at).toISOString().slice(0, 10)}
         </p>
         <div className="mt-4 space-y-3">
