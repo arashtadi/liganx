@@ -71,20 +71,23 @@ function Hero() {
             <p className="mt-6 text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
               Pick a clinically relevant mutation. Pick your compounds. We dock against
               wild-type <em>and</em> mutant in parallel and show exactly which compounds
-              gain selectivity — no PyMOL, FoldX, or AutoDock setup.
+              gain selectivity — no PyMOL, FoldX, or AutoDock setup. Or skip setup
+              entirely and browse our pre-computed FDA-drug screenings against every
+              catalog mutation.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link to="/studio" className="btn-primary btn-lg">
                 Start a docking run <ArrowRight size={16} />
               </Link>
               <Link to="/library" className="btn-secondary btn-lg">
-                Browse mutation library
+                Browse pre-computed screenings
               </Link>
             </div>
             <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
               <span className="flex items-center gap-1.5"><Check /> Vina + GNINA + Boltz-2 ML</span>
-              <span className="flex items-center gap-1.5"><Check /> Live SMILES validation</span>
+              <span className="flex items-center gap-1.5"><Check /> Mutation-aware virtual screening</span>
+              <span className="flex items-center gap-1.5"><Check /> Ask the AI about your job</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>
           </div>
@@ -267,6 +270,42 @@ function FeatureGrid() {
       body: "N compounds × M mutants in one view. Cells colored by Δ-score so resistance and selectivity gain pop out instantly.",
     },
     {
+      // v1.23 P1.x — the screening engine + pre-computed library snapshots.
+      // Lead with this because it's the wedge buyers care about: a free
+      // public surface that no other free tool ships and that paid tools
+      // make you assemble yourself.
+      icon: <Library />,
+      title: "Pre-computed library screenings",
+      body: "30 FDA-launched oncology kinase inhibitors pre-docked against every catalog resistance mutation (KRAS G12C/G12D/Q61H, EGFR T790M/L858R/C797S, BCR-ABL T315I/E255K, …). Public landing pages, no login. Click any card on /library to see the ranked selectivity hits in 1 second.",
+      isNew: true,
+    },
+    {
+      // v1.20-v1.21.1 — the mutation-aware VS engine + promote flow.
+      icon: <Bolt />,
+      title: "Mutation-aware virtual screening",
+      body: "Pick a target + mutation, drop in up to 1000 compounds, get a ranked hit list scored by selectivity_index (|mutant| × sigmoid(−Δ × 4)). WT and mutant docked in parallel. Tick the top hits, promote to Full Job, land instantly on the deep view — no re-dock thanks to pose cloning.",
+      isNew: true,
+    },
+    {
+      // v1.13 — Liganx AI Beta. A scoped Q&A on a job's results that
+      // companies will care about because it makes a 90-row matrix
+      // legible to a non-computational chemist.
+      icon: <Sparkles />,
+      title: "Liganx AI Beta — ask your results",
+      body: "Pose viewer too dense? Ask the panel. \"Which compounds beat WT for Q61H?\" \"Why does Δ matter here?\" \"Is the C797S row trustworthy?\" Claude Haiku with the full job snapshot as context — per-user chat history that persists across sessions so you can pick up tomorrow.",
+      isNew: true,
+    },
+    {
+      // v1.00 — ADMET-extended already exists, but the homepage cards
+      // talked about "Drug-likeness panel" generically. Make the
+      // explicit hERG/DILI/CYP/BBB list visible because those four
+      // are exactly what a med-chemist filters on first.
+      icon: <Shield />,
+      title: "Inline ADMET safety panel",
+      body: "Every compound shows hERG, BBB penetration, DILI risk, CYP3A4 + CYP2D6 inhibition via admet-ai (Therapeutic Data Commons models, deployed on the same pod as the docker). Color-coded chip set — flag the liver-toxic compound at a glance before promoting it.",
+      isNew: true,
+    },
+    {
       icon: <Bolt />,
       title: "GPU-accelerated docking",
       body: "QuickVina2-GPU on a dedicated RunPod NVIDIA Blackwell GPU with batched dispatch — typical cells finish in seconds, not minutes. Real Vina scoring, not a placeholder.",
@@ -379,30 +418,31 @@ function FeatureGrid() {
  * shipping anything material — keep to ≤4 items so it stays scannable.
  */
 function WhatsNew() {
+  // 2026-05-12: refreshed when v1.20-v1.23 shipped. The three newest
+  // shipping items now lead the page: pre-computed library landing
+  // pages, mutation-aware virtual screening, and the sieve→microscope
+  // promote flow. Older cards (AI Optimize, Quick Dock, library)
+  // remain in the feature grid below.
   const items = [
-    // 2026-05-04: lead card swapped from "Custom compound library" to the
-    // AI Optimize loop ship (Tier 1 #1-4). The library + SMILES validation
-    // + re-run cards moved into the bigger feature grid below; this strip
-    // showcases what's NEWEST so returning users immediately see motion.
     {
       tag: "Just shipped",
-      title: "AI compound design — actually scored",
+      title: "Pre-computed FDA-drug screenings — no setup, no GPU wait",
       body:
-        "Click Optimize and the AI proposes 12 variants targeting your missed residues, then GPU-docks every one of them in a single batch. You get the 3 with the highest composite fitness — better binding × easier to make × actually touches the mutated residue. Catches its own typos via tool use; anchors on real literature precedents (Ponatinib for T315I, Pirtobrutinib for C481S, Vemurafenib for V600E…).",
+        "We pre-ran 30 oncology kinase inhibitors against every resistance mutation in our catalog — KRAS G12C/G12D/Q61H, EGFR T790M/L858R/C797S, BCR-ABL T315I/E255K. Hit a public URL and see ranked selectivity hits in 1 second. Click any compound to see its 3D pose. Every link is its own SEO landing page.",
       tone: "delta" as const,
     },
     {
       tag: "Just shipped",
-      title: "Quick dock inside the sketcher",
+      title: "Mutation-aware virtual screening",
       body:
-        "A 5-second draft Vina score against your selected target+mutation, run from the Ketcher edit modal. Hits and misses listed by residue. Edit the structure, dock again, watch the score move — interactive medchem cycle without ever leaving the editor.",
+        "Submit 10 compounds against a (target, mutation) pair. We dock each against WT and the mutant in parallel, rank by selectivity index, and return a ranked hit list — the same ranking that drives our pre-computed library. Real Vina, real poses, real ADMET. Sieve through a library; pick the top hits.",
       tone: "accent" as const,
     },
     {
       tag: "Just shipped",
-      title: "Custom compound library",
+      title: "Sieve → microscope: promote screening hits to Full Job",
       body:
-        "Name a compound on a job and it auto-saves to your personal library. Re-use it in one click on any future run, color-code with tags, edit in Ketcher with save-as-new or overwrite. Live SMILES preview catches typos before submit.",
+        "Tick the top compounds in a screening ranked list, click Promote, land instantly on the Full Job results page with 3D pose viewer + ADMET + AI Variants — no re-dock, no waiting. The 3-step VS workflow (cast wide / pick winners / deep-dive) is now one continuous flow.",
       tone: "emerald" as const,
     },
   ];
@@ -465,6 +505,26 @@ function Comparison() {
             {[
               ["Mutation-aware",                 false,     true,      true],
               ["WT-vs-mutant matrix",            false,     true,      "partial"],
+              // v1.23 — pre-computed library landing pages. No free server
+              // ships these (would require curating + running a library and
+              // hosting the snapshots). Maestro doesn't ship public
+              // landing pages — it's a local desktop tool, not a web
+              // surface — so "false" is the honest answer here.
+              ["Pre-computed FDA-drug screenings", false,    true,      false],
+              // v1.20 — mutation-aware virtual screening (N×M ranked hit
+              // list). Free servers offer single-compound docking; you
+              // can't bulk-screen against a mutation panel. Maestro has
+              // Glide HTVS but you build the receptor pipeline yourself
+              // for every mutant — partial.
+              ["Bulk VS with selectivity ranking", false,    true,      "partial"],
+              // v1.13 — Liganx AI Beta. Q&A scoped to a job's results.
+              // No comparable feature in free servers or Maestro.
+              ["AI Q&A on your results",         false,     true,      false],
+              // v1.00 + admet-ai 2.0.1 — extended ADMET (hERG, BBB, DILI,
+              // CYP3A4/2D6) inline on every compound. Maestro has QikProp
+              // which covers most of these, but as a separate run, not
+              // inline with the dock score row.
+              ["Inline ADMET (hERG/DILI/CYP/BBB)", false,    true,      "partial"],
               ["No install required",            true,      true,      false],
               ["Plain-English interpretation",   false,     true,      false],
               // Engine-choice row added 2026-04-30 alongside the GNINA
