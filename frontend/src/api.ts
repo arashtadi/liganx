@@ -709,6 +709,18 @@ export const api = {
    *  reference baseline, not a Δ candidate. */
   getScreening: (key: string | number) =>
     request<Screening>(`/screening/${key}`),
+  /** List the current user's screening runs, newest-first. Same
+   *  offset/limit pagination shape as listJobs. Used by /history's
+   *  Screenings tab so users can find their virtual-screening runs
+   *  without memorising share URLs.
+   *
+   *  Note: rows returned by this endpoint include the `results` array
+   *  too. The list page only uses metadata (target, mutations, status,
+   *  n_total) so we ignore the full result blob there — but the type
+   *  is the same `Screening` shape as the detail endpoint so callers
+   *  can reuse it. */
+  listScreenings: (offset = 0, limit = 25) =>
+    request<Screening[]>(`/screening?offset=${offset}&limit=${limit}`),
   /** Cancel a running or pending screening. Same idempotency rules as
    *  cancelJob — terminal statuses return their existing state without
    *  mutating, non-owners get 404 (probe protection). */

@@ -16,7 +16,7 @@ import { useMemo, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Job } from "../api";
+import { api, type Job, type Screening } from "../api";
 import { Close, Spinner } from "../components/Icons";
 import { EnginePill } from "./JobPage";
 import {
@@ -134,11 +134,73 @@ function defaultTitle(j: Job): string {
  *  the initial render slow. Mirrored on the API call. */
 const PAGE_SIZE = 25;
 
+/** Two tabs at the top of /history — Jobs (the original docking results
+ *  matrix) and Screenings (mutation-aware virtual-screening runs). The
+ *  Screenings tab was added in v1.17 because the previous "you have to
+ *  remember the share URL" approach was broken UX (no discovery surface
+ *  for completed screening runs). Both tabs share the same outer page
+ *  chrome; only the body switches. */
+type HistoryTab = "jobs" | "screenings";
+
 export default function HistoryPage() {
   usePageMeta({
-    title: "Job history · Liganx",
-    description: "Your past Liganx docking runs — searchable, taggable, and one-click re-runnable.",
+    title: "History · Liganx",
+    description: "Your past Liganx docking and screening runs.",
   });
+
+  // Tab state lives in sessionStorage so a chemist who opened a job
+  // from the Jobs tab and clicks back gets the same tab they were on.
+  // Not URL-backed (would clutter every share link); just per-tab.
+  const [activeTab, setActiveTab] = useState<HistoryTab>(() => {
+    try {
+      const stored = sessionStorage.getItem("liganx.history.tab");
+      return stored === "screenings" ? "screenings" : "jobs";
+    } catch {
+      return "jobs";
+    }
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem("liganx.history.tab", activeTab); } catch { /* noop */ }
+  }, [activeTab]);
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">My history</h1>
+        <p className="muted mt-1">
+          {activeTab === "jobs"
+            ? "Your past docking runs — searchable, taggable, one-click re-runnable."
+            : "Your virtual-screening runs ranked by selectivity index."}
+        </p>
+      </div>
+
+      {/* Tab strip — pill style. Active tab carries the brand violet
+          accent + white background so it reads as the focused surface
+          even on the dark theme. */}
+      <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-1 text-sm font-semibold">
+        {(["jobs", "screenings"] as HistoryTab[]).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-1.5 rounded-md transition-colors ${
+              activeTab === tab
+                ? "bg-white dark:bg-slate-900 text-violet-700 dark:text-violet-300 shadow-sm"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+            }`}
+          >
+            {tab === "jobs" ? "Docking jobs" : "Virtual screening"}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "jobs" ? <JobsTab /> : <ScreeningsTab />}
+    </div>
+  );
+}
+
+
+function JobsTab() {
   // Cursor-style pagination via useInfiniteQuery. The backend already
   // supports ?offset=N&limit=M; we bump offset by PAGE_SIZE on each "Load
   // more". A page that returns fewer than PAGE_SIZE rows signals end-of-
@@ -252,15 +314,12 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">My history</h1>
-        <p className="muted mt-1">
-          Showing {jobs.length} job{jobs.length === 1 ? "" : "s"}
-          {hasNextPage ? "" : " · end of history"} · click any to open ·
-          tag jobs to color-code and filter them
-        </p>
-      </div>
+    <div className="space-y-5">
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Showing {jobs.length} job{jobs.length === 1 ? "" : "s"}
+        {hasNextPage ? "" : " · end of history"} · click any to open ·
+        tag jobs to color-code and filter them
+      </p>
 
       <input
         type="search"
@@ -847,5 +906,206 @@ function TagPicker({
       )}
     </div>,
     document.body,
+  );
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Screenings tab — list of the current user's virtual-screening runs.        */
+/*                                                                            */
+/* Renders one row per Screening with target + mutations + counts + status,   */
+/* clicking the row deep-links to /screening/:shareId (the results page).     */
+/*                                                                            */
+/* Same useInfiniteQuery pagination shape as the Jobs tab so "Load more"      */
+/* behaviour is consistent. Empty state mirrors the Jobs version's CTA but    */
+/* points at Studio with copy that matches the screening flow (#209 will      */
+/* turn that into a "Run virtual screening" button on Studio itself).         */
+/* -------------------------------------------------------------------------- */
+
+function ScreeningsTab() {
+  const {
+    data,
+    isLoading,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["screenings"],
+    queryFn: ({ pageParam = 0 }) => api.listScreenings(pageParam, PAGE_SIZE),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      if (lastPage.length < PAGE_SIZE) return undefined;
+      return allPages.length * PAGE_SIZE;
+    },
+    refetchOnWindowFocus: true,
+  });
+
+  const screenings = useMemo(() => data?.pages.flat() ?? [], [data]);
+
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    if (!q.trim()) return screenings;
+    const needle = q.trim().toLowerCase();
+    return screenings.filter((s) => {
+      const hay = [
+        s.title || "",
+        s.pdb_id,
+        s.chain,
+        ...s.mutations,
+        ...s.tags,
+        s.engine || "",
+      ].join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [screenings, q]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-24 text-slate-500 dark:text-slate-400">
+        <Spinner size={18} className="mr-2" /> Loading your screenings…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="card max-w-xl mx-auto">
+        <h2 className="text-lg font-semibold text-rose-700 dark:text-rose-300 mb-2">
+          Couldn't load screenings
+        </h2>
+        <p className="text-slate-700 dark:text-slate-300">{(error as Error).message}</p>
+      </div>
+    );
+  }
+  if (screenings.length === 0) {
+    return (
+      <div className="card max-w-xl mx-auto text-center py-16">
+        <h2 className="text-2xl font-bold text-ink dark:text-white mb-2">
+          No screenings yet
+        </h2>
+        <p className="muted mb-5">
+          Virtual screening runs against mutant protein panels will appear here.
+        </p>
+        <Link to="/studio" className="btn btn-primary">Open Studio</Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Showing {screenings.length} screening{screenings.length === 1 ? "" : "s"}
+        {hasNextPage ? "" : " · end of list"} · click any to open the ranked hit list
+      </p>
+
+      <input
+        type="search"
+        className="input"
+        placeholder="Search by title, target, mutation, or engine…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden dark:border-slate-700 dark:bg-slate-900">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
+            No screenings match the current search.
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+            {filtered.map((s) => (
+              <ScreeningRow key={s.id} s={s} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {screenings.length > 0 && hasNextPage && (
+        <div className="flex flex-col items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="btn btn-secondary btn-sm"
+          >
+            {isFetchingNextPage ? (
+              <><Spinner size={14} className="mr-1.5" /> Loading…</>
+            ) : (
+              <>Load {PAGE_SIZE} more</>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ScreeningRow({ s }: { s: Screening }) {
+  const created = parseUtcDate(s.created_at);
+  const dateLabel = created
+    ? created.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+    : "";
+  const progressPct = s.n_total > 0
+    ? Math.min(100, Math.round((s.n_completed / s.n_total) * 100))
+    : 0;
+
+  return (
+    <li>
+      <Link
+        to={`/screening/${s.share_id}`}
+        className="block px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
+      >
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="badge bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200 text-[10px]">
+                SCREENING
+              </span>
+              <span className="font-semibold text-ink dark:text-slate-100 truncate">
+                {s.title || `${s.pdb_id} screening`}
+              </span>
+              {statusPill(s.status)}
+            </div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>Target: <span className="font-mono">{s.pdb_id}</span><span className="text-slate-400">/{s.chain}</span></span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span>
+                {s.mutations.length === 0
+                  ? "WT only"
+                  : <>Mutations: {s.mutations.map((m) => <span key={m} className="font-mono mr-1">{m}</span>)}</>
+                }
+              </span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span>{s.n_total} cell{s.n_total === 1 ? "" : "s"}</span>
+              {s.n_failed > 0 && (
+                <>
+                  <span className="text-slate-300 dark:text-slate-600">·</span>
+                  <span className="text-rose-600 dark:text-rose-400">{s.n_failed} failed</span>
+                </>
+              )}
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="font-mono text-[10px]">{s.engine}</span>
+            </div>
+            {(s.status === "pending" || s.status === "running") && s.n_total > 0 && (
+              <div className="mt-2 flex items-center gap-2 max-w-[320px]">
+                <div className="flex-1 h-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all"
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                  {progressPct}%
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="text-right text-xs text-slate-500 dark:text-slate-400 shrink-0">
+            {dateLabel}
+          </div>
+        </div>
+      </Link>
+    </li>
   );
 }
