@@ -149,6 +149,27 @@ export interface Screening {
   results: ScreeningResultOut[];
 }
 
+/** v1.23: summary shape for the /library/precomputed list endpoint.
+ *  Used by the precomputed-screenings landing page to render its card
+ *  grid without shipping the full per-cell results array (which can be
+ *  100s of rows per snapshot). */
+export interface PrecomputedSummary {
+  slug: string;
+  library_id: string;
+  library_name: string;
+  library_compound_count: number;
+  pdb_id: string;
+  chain: string;
+  mutations: string[];
+  n_total: number;
+  n_completed: number;
+  n_failed: number;
+  n_hits: number;                    // rows with selectivity_index >= 1.0
+  top_hit_name: string | null;
+  top_hit_selectivity: number | null;
+  computed_at: string | null;
+}
+
 /** Cross-docking sanity check — re-docks the bound co-crystal ligand and
  *  reports heavy-atom RMSD vs the original crystal pose. <2 Å = pocket
  *  geometry is well-behaved (typical for any pocket the ligand was
@@ -775,6 +796,21 @@ export const api = {
       throw new ApiError(r.status, `${r.status} ${r.statusText}`);
     }
   },
+  /** v1.23: list every precomputed library screening. Public endpoint
+   *  (no auth). Returns lean summaries — slug, library name, target,
+   *  mutations, n_hits, top hit preview — for the /library/precomputed
+   *  landing-page card grid. */
+  listPrecomputed: () =>
+    request<PrecomputedSummary[]>("/library/precomputed"),
+  /** v1.23: fetch one precomputed library screening by slug. Returns a
+   *  Screening-shaped payload with an extra `precomputed: true` marker
+   *  that the frontend ScreeningPage uses to hide cancel / delete /
+   *  promote-to-Full-Job buttons. id is synthesized to -1; share_id
+   *  equals the slug. */
+  getPrecomputed: (slug: string) =>
+    request<Screening & { precomputed: boolean; library_id: string; library_name: string; library_compound_count: number }>(
+      `/library/precomputed/${slug}`,
+    ),
   /** AI assistant — natural-language compound edit. Calls Claude Haiku
    *  with the user's instruction + optional pocket context (target PDB
    *  + mutations). Returns the proposed new SMILES, a one-line

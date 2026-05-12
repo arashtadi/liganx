@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, type CatalogTarget } from "../api";
+import { api, type CatalogTarget, type PrecomputedSummary } from "../api";
 import { ArrowRight, Spinner, Target } from "../components/Icons";
 import { usePageMeta } from "../lib/usePageMeta";
 
@@ -35,6 +35,16 @@ export default function LibraryPage() {
   });
 
   const { data, isLoading } = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+
+  // v1.23 P1.4: precomputed library screenings. The list endpoint is
+  // cheap (lean summary shape) and public. Returns [] gracefully when
+  // P1.5 hasn't run the matrix yet, so we don't need a separate error
+  // state — the section just hides itself in that case.
+  const { data: precomputed } = useQuery({
+    queryKey: ["library", "precomputed"],
+    queryFn: api.listPrecomputed,
+    staleTime: 60_000,
+  });
 
   // Pull the validation snapshot so we can offer a "see the proof" featured
   // row at the top of the library — anyone browsing for a target sees the
@@ -71,6 +81,15 @@ export default function LibraryPage() {
           compounds — so you're docking real chemistry against the right pockets in seconds.
         </p>
       </header>
+
+      {/* v1.23 P1.4: precomputed library screenings hero section.
+          Above the validation panel and the catalog grid because the
+          immediate-result UX ("click and see hits, no setup") is the
+          strongest hook for a new visitor. Hidden when no snapshots
+          have shipped yet so the page doesn't render an empty section. */}
+      {precomputed && precomputed.length > 0 && (
+        <PrecomputedSection rows={precomputed} />
+      )}
 
       {validation && validation.cases.length > 0 && (
         <ValidationFeatureRow data={validation} />
@@ -177,6 +196,93 @@ function ValidationCaseChip({ c }: { c: ValidationCase }) {
     </Link>
   ) : (
     inner
+  );
+}
+
+// v1.23 P1.4: pre-computed screenings landing-section. Renders a grid
+// of cards, one per snapshot file in backend/data/precomputed_screenings/.
+// Each card links to /library/precomputed/<slug> which reuses
+// ScreeningPage in read-only mode for the actual ranked-hit-list view.
+//
+// The pitch we want a first-time visitor to see: "These screenings are
+// already done. Click and see the top hits — no setup, no GPU wait."
+function PrecomputedSection({ rows }: { rows: PrecomputedSummary[] }) {
+  return (
+    <section className="rounded-xl border border-violet-200 dark:border-violet-800/60 bg-violet-50/60 dark:bg-violet-950/30 p-5 sm:p-6">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+        <div>
+          <div className="eyebrow text-violet-700 dark:text-violet-300">
+            Ready to explore · pre-computed
+          </div>
+          <h2 className="mt-1 text-xl font-bold tracking-tight text-ink dark:text-white">
+            Curated library screened — top hits in one click.
+          </h2>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
+            We already ran 30 FDA-launched kinase inhibitors against every
+            resistance mutation in our catalog. Pick a mutation and see
+            ranked selectivity hits — no setup, no GPU wait.
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {rows.map((r) => (
+          <PrecomputedCard key={r.slug} r={r} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PrecomputedCard({ r }: { r: PrecomputedSummary }) {
+  const mutLabel =
+    r.mutations.length > 0 ? r.mutations.join(" + ") : "WT only";
+  return (
+    <Link
+      to={`/library/precomputed/${r.slug}`}
+      className="block rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 hover:border-violet-400 dark:hover:border-violet-600 transition px-4 py-3"
+    >
+      <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        {r.pdb_id} · chain {r.chain}
+      </div>
+      <div className="mt-1 text-base font-bold text-ink dark:text-slate-100 leading-tight">
+        {mutLabel}
+      </div>
+      <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
+        vs {r.library_name} ({r.library_compound_count} cmpds)
+      </div>
+      <div className="mt-3 flex items-center justify-between text-[11px]">
+        <div className="flex items-center gap-2">
+          <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+            {r.n_completed}/{r.n_total} cells
+          </span>
+          {r.n_failed > 0 && (
+            <span className="font-mono tabular-nums text-rose-500">
+              · {r.n_failed} failed
+            </span>
+          )}
+        </div>
+        {r.n_hits > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-md bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+            {r.n_hits} hit{r.n_hits === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <span className="text-slate-400 dark:text-slate-600 text-[10px]">
+            no selectivity hits
+          </span>
+        )}
+      </div>
+      {r.top_hit_name && r.top_hit_selectivity != null && (
+        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+          <span className="text-slate-500 dark:text-slate-400">Top hit</span>
+          <span className="font-mono text-slate-700 dark:text-slate-200 truncate ml-2">
+            {r.top_hit_name}{" "}
+            <span className="text-violet-600 dark:text-violet-400 font-semibold">
+              sel {r.top_hit_selectivity.toFixed(2)}
+            </span>
+          </span>
+        </div>
+      )}
+    </Link>
   );
 }
 

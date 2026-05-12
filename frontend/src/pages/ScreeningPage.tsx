@@ -62,7 +62,15 @@ type SortKey = "selectivity" | "best-score" | "delta" | "compound";
 type VariantFilter = "all" | "mutant" | "wt";
 
 export default function ScreeningPage() {
-  const { shareId = "" } = useParams<{ shareId: string }>();
+  // v1.23 P1.4: same component serves two routes —
+  //   /screening/:shareId           live, owner-runs (existing)
+  //   /library/precomputed/:slug    public, read-only snapshot (new)
+  // useParams covers both; we use whichever is present. The
+  // `isPrecomputed` flag drives the fetcher choice + disables the
+  // promote/cancel/delete actions that don't apply to snapshots.
+  const params = useParams<{ shareId?: string; slug?: string }>();
+  const isPrecomputed = !!params.slug;
+  const shareId = params.slug || params.shareId || "";
   const navigate = useNavigate();
   const [sortKey, setSortKey] = useState<SortKey>("selectivity");
   const [filter, setFilter] = useState<VariantFilter>("all");
@@ -99,14 +107,17 @@ export default function ScreeningPage() {
   }
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["screening", shareId],
-    queryFn: () => api.getScreening(shareId),
+    queryKey: [isPrecomputed ? "precomputed" : "screening", shareId],
+    queryFn: () =>
+      isPrecomputed
+        ? api.getPrecomputed(shareId).then((p) => p as Screening)
+        : api.getScreening(shareId),
     enabled: !!shareId,
-    // Same polling shape as JobPage — keeps refetching while
-    // pending/running, stops on terminal status. `jobPollingInterval`
-    // takes the last data + a base interval and returns
-    // `false`/number-of-ms.
-    refetchInterval: (q) => screeningPollingInterval(q.state.data, 1500),
+    // Polling only applies to live screenings — precomputed snapshots
+    // are already complete and never change, so we set refetchInterval
+    // to false unconditionally for them.
+    refetchInterval: (q) =>
+      isPrecomputed ? false : screeningPollingInterval(q.state.data, 1500),
     refetchIntervalInBackground: false,
   });
 
@@ -276,9 +287,12 @@ export default function ScreeningPage() {
         filter={filter}
         setFilter={setFilter}
         visible={visible}
-        selected={selected}
-        onClearSelection={clearSelection}
-        onPromoteSelected={() => promoteToFullJob(Array.from(selected))}
+        // v1.23 P1.4: snapshot mode — no selection, no promote button.
+        // Pass an empty selection so the Promote toolbar action stays
+        // hidden, and a no-op handler so the Clear button never fires.
+        selected={isPrecomputed ? new Set<number>() : selected}
+        onClearSelection={isPrecomputed ? () => {} : clearSelection}
+        onPromoteSelected={isPrecomputed ? () => {} : () => promoteToFullJob(Array.from(selected))}
         promoteCap={PROMOTE_CAP}
         submitting={submitting}
       />
@@ -300,11 +314,16 @@ export default function ScreeningPage() {
       <ResultsTable
         data={data}
         rows={visible}
-        selected={selected}
-        onToggleSelected={toggleSelected}
-        onPromoteOne={(compoundId) => promoteToFullJob([compoundId])}
+        // v1.23 P1.4: snapshot mode — disable per-row checkbox + Promote
+        // button by passing an empty selection set and no-op handlers.
+        // The Row component already disables selection on non-ok rows;
+        // we extend that to "every row is non-selectable" here.
+        selected={isPrecomputed ? new Set<number>() : selected}
+        onToggleSelected={isPrecomputed ? () => {} : toggleSelected}
+        onPromoteOne={isPrecomputed ? () => {} : (compoundId) => promoteToFullJob([compoundId])}
         promoteCap={PROMOTE_CAP}
         submitting={submitting}
+        readOnly={isPrecomputed}
       />
     </div>
   );
@@ -576,6 +595,7 @@ function ResultsTable({
   onPromoteOne,
   promoteCap,
   submitting,
+  readOnly = false,
 }: {
   data: Screening;
   rows: ScreeningResultOut[];
@@ -584,6 +604,7 @@ function ResultsTable({
   onPromoteOne: (compoundId: number) => void;
   promoteCap: number;
   submitting: boolean;
+  readOnly?: boolean;
 }) {
   // Empty state: screening is still pending and no rows have docked yet.
   if (rows.length === 0) {
@@ -632,10 +653,14 @@ function ResultsTable({
               {/* v1.21: selection column. No header label — the cap
                   ("up to N") would clutter the row count display in
                   the toolbar. The visible empty header keeps column
-                  alignment clean across thead/tbody. */}
-              <th className="text-center py-2 px-2 w-8" title={`Select up to ${promoteCap} compounds to promote to Full Job`}>
-                <span className="sr-only">Select</span>
-              </th>
+                  alignment clean across thead/tbody. v1.23: hidden
+                  in readOnly mode (precomputed snapshots — no selection
+                  + no promote possible). */}
+              {!readOnly && (
+                <th className="text-center py-2 px-2 w-8" title={`Select up to ${promoteCap} compounds to promote to Full Job`}>
+                  <span className="sr-only">Select</span>
+                </th>
+              )}
               <th className="text-left py-2 px-3 w-10">#</th>
               <th className="text-left py-2 px-3">Compound</th>
               <th className="text-right py-2 px-3 w-24">Variant</th>
@@ -644,10 +669,13 @@ function ResultsTable({
               <th className="text-right py-2 px-3 w-24">Δ vs WT</th>
               <th className="text-right py-2 px-3 w-28">Selectivity</th>
               <th className="text-right py-2 px-3 w-24">Status</th>
-              {/* v1.21: per-row Promote button column. */}
-              <th className="text-right py-2 px-3 w-28">
-                <span className="sr-only">Promote</span>
-              </th>
+              {/* v1.21: per-row Promote button column. Hidden in
+                  readOnly mode for the same reason as the checkbox. */}
+              {!readOnly && (
+                <th className="text-right py-2 px-3 w-28">
+                  <span className="sr-only">Promote</span>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -681,6 +709,7 @@ function ResultsTable({
                   onToggle={() => onToggleSelected(r.compound_id)}
                   onPromote={() => onPromoteOne(r.compound_id)}
                   submitting={submitting}
+                  readOnly={readOnly}
                 />
               );
             })}
@@ -701,6 +730,7 @@ function Row({
   onToggle,
   onPromote,
   submitting = false,
+  readOnly = false,
 }: {
   r: ScreeningResultOut;
   rank: number;
@@ -711,6 +741,7 @@ function Row({
   onToggle?: () => void;
   onPromote?: () => void;
   submitting?: boolean;
+  readOnly?: boolean;
 }) {
   // Failure path — show the row but mark it inert. The cell-level
   // `error_message` from the backend gets the tooltip treatment.
@@ -753,7 +784,10 @@ function Row({
     >
       {/* v1.21: selection checkbox. Disabled when the row hasn't
           actually docked yet (status != ok) or when promote cap is
-          reached. Tooltip explains why on disabled state. */}
+          reached. Tooltip explains why on disabled state.
+          v1.23 P1.4: hidden entirely in readOnly mode — precomputed
+          snapshots have nothing to select. */}
+      {!readOnly && (
       <td className="py-2 px-2 text-center">
         <input
           type="checkbox"
@@ -777,6 +811,7 @@ function Row({
           className="h-3.5 w-3.5 rounded accent-violet-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
         />
       </td>
+      )}
       <td className="py-2 px-3 text-slate-400 dark:text-slate-500 font-mono text-xs tabular-nums">
         {rank}
       </td>
@@ -864,7 +899,11 @@ function Row({
       {/* v1.21: per-row Promote button. Shortcut for "tick this one
           and click Promote in the toolbar" — one click instead of two
           when the user already knows which hit they want to validate.
-          Only enabled on ok rows. */}
+          Only enabled on ok rows.
+          v1.23 P1.4: hidden in readOnly mode — promoting a precomputed
+          row is a different flow (the snapshot has no live screening
+          to promote FROM) and would need its own endpoint. */}
+      {!readOnly && (
       <td className="py-2 px-3 text-right">
         {isSelectable ? (
           <button
@@ -880,6 +919,7 @@ function Row({
           <span className="text-slate-300 dark:text-slate-700">—</span>
         )}
       </td>
+      )}
     </tr>
   );
 }

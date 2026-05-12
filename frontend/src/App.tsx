@@ -64,6 +64,12 @@ export default function App() {
                 int, so guessing isn't tractable. */}
             <Route path="/screening/:shareId" element={<ScreeningPage />} />
             <Route path="/library" element={<LibraryPage />} />
+            {/* v1.23 P1.4: public landing pages for pre-computed library
+                screenings. Same ScreeningPage component renders these in
+                read-only mode (no Promote / Cancel buttons); fetcher is
+                /library/precomputed/{slug} instead of /screening/{id}.
+                SEO-friendly URLs — every snapshot has its own page. */}
+            <Route path="/library/precomputed/:slug" element={<ScreeningPage />} />
             <Route path="/suite" element={<SuitePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
