@@ -31,12 +31,18 @@
  * backend's _materialize_selectivity already encodes that semantics.
  */
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, type Screening, type ScreeningResultOut } from "../api";
 import { Spinner } from "../components/Icons";
 import AdmetChips from "../components/AdmetChips";
 import { usePageMeta } from "../lib/usePageMeta";
+
+// v1.21: Full Job caps at 5 compounds per submission (see backend
+// MAX_COMPOUNDS_PER_JOB). The promote-to-Full-Job flow enforces the
+// same cap client-side so we never stage more than the job endpoint
+// will accept.
+const PROMOTE_CAP = 5;
 
 /** Screening-specific polling — simpler than jobPollingInterval because
  *  Screening has no async per-cell validation pass. When status is
@@ -57,8 +63,33 @@ type VariantFilter = "all" | "mutant" | "wt";
 
 export default function ScreeningPage() {
   const { shareId = "" } = useParams<{ shareId: string }>();
+  const navigate = useNavigate();
   const [sortKey, setSortKey] = useState<SortKey>("selectivity");
   const [filter, setFilter] = useState<VariantFilter>("all");
+  // v1.21: per-compound selection for the "promote to Full Job" flow.
+  // We track compound_id (not row id) because a compound may have
+  // multiple rows (WT + N mutants); a tick on any of its rows means
+  // "promote this compound." Hard cap = PROMOTE_CAP (matches /jobs).
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  function toggleSelected(compoundId: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(compoundId)) {
+        next.delete(compoundId);
+      } else if (next.size < PROMOTE_CAP) {
+        next.add(compoundId);
+      }
+      // At cap: silently ignore the click. The checkbox is also
+      // disabled at cap (rendered un-pressable). Toast would be
+      // overkill — the disabled state communicates the cap.
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+  }
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["screening", shareId],
@@ -130,6 +161,55 @@ export default function ScreeningPage() {
     return rows;
   }, [data, sortKey, filter]);
 
+  /** Navigate to /studio with the chosen compounds + this screening's
+   *  target/mutations staged. Studio's existing `location.state.reseed`
+   *  flow handles the rest (same shape History Re-run uses), so we
+   *  don't duplicate the staging logic. `replaceSession: true` mirrors
+   *  History Re-run so the user lands in a clean Studio workspace
+   *  built from THESE compounds, not merged with whatever they were
+   *  sketching before. */
+  function promoteToFullJob(compoundIds: number[]) {
+    if (!data || compoundIds.length === 0) return;
+    // Order matters — preserve the table's current ranking order so
+    // the user lands in Studio with their top hit first.
+    const ordered = visible
+      .map((r) => r.compound_id)
+      .filter((cid, i, arr) => arr.indexOf(cid) === i && compoundIds.includes(cid))
+      .slice(0, PROMOTE_CAP);
+    const compounds = ordered
+      .map((cid) => {
+        // Prefer a row with a real score so we know we're promoting
+        // a compound that actually docked. Fall back to any row.
+        const row =
+          data.results.find((r) => r.compound_id === cid && r.status === "ok") ??
+          data.results.find((r) => r.compound_id === cid);
+        if (!row) return null;
+        return { name: row.compound_name ?? "", smiles: row.compound_smiles };
+      })
+      .filter(Boolean) as { name: string; smiles: string }[];
+    if (compounds.length === 0) return;
+
+    navigate("/studio", {
+      state: {
+        reseed: {
+          pdb_id: data.pdb_id,
+          chain: data.chain,
+          mutations: data.mutations,
+          compounds,
+          // Full Job defaults — same as the existing Studio submit
+          // form when started fresh.
+          engine: "quickvina2_gpu",
+          exhaustiveness: 8,
+          include_wt: true,
+          replaceSession: true,
+          // Trace marker so the resulting Job can carry a
+          // "Promoted from Screening #X" reference downstream.
+          promotedFromScreeningId: data.share_id,
+        },
+      },
+    });
+  }
+
   // ── Error states ─────────────────────────────────────────────
   if (isError) {
     const status = error instanceof ApiError ? error.status : 0;
@@ -169,8 +249,19 @@ export default function ScreeningPage() {
         filter={filter}
         setFilter={setFilter}
         visible={visible}
+        selected={selected}
+        onClearSelection={clearSelection}
+        onPromoteSelected={() => promoteToFullJob(Array.from(selected))}
+        promoteCap={PROMOTE_CAP}
       />
-      <ResultsTable data={data} rows={visible} />
+      <ResultsTable
+        data={data}
+        rows={visible}
+        selected={selected}
+        onToggleSelected={toggleSelected}
+        onPromoteOne={(compoundId) => promoteToFullJob([compoundId])}
+        promoteCap={PROMOTE_CAP}
+      />
     </div>
   );
 }
@@ -297,6 +388,10 @@ function ResultsToolbar({
   filter,
   setFilter,
   visible,
+  selected,
+  onClearSelection,
+  onPromoteSelected,
+  promoteCap,
 }: {
   data: Screening;
   sortKey: SortKey;
@@ -304,7 +399,15 @@ function ResultsToolbar({
   filter: VariantFilter;
   setFilter: (f: VariantFilter) => void;
   visible: ScreeningResultOut[];
+  selected: Set<number>;
+  onClearSelection: () => void;
+  onPromoteSelected: () => void;
+  promoteCap: number; // surfaced for tooltip parity; cap enforced upstream
 }) {
+  // promoteCap accessor — keeps the prop in the public API even though
+  // the toolbar copy doesn't render the number directly. Future i18n
+  // string could read "Promote up to {promoteCap}".
+  void promoteCap;
   function downloadCsv() {
     const headers = [
       "rank", "variant", "compound", "smiles", "best_score_kcal_mol",
@@ -359,6 +462,31 @@ function ResultsToolbar({
         </div>
       </div>
       <div className="flex items-center gap-2">
+        {/* v1.21: Promote-to-Full-Job action. Hidden when nothing
+            selected; takes over visually when ≥1 selected so it's
+            the obvious next step. Caps at promoteCap (matches the
+            Full Job backend limit). */}
+        {selected.size > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={onClearSelection}
+              className="rounded-md px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              title="Clear selection"
+            >
+              Clear ({selected.size})
+            </button>
+            <button
+              type="button"
+              onClick={onPromoteSelected}
+              className="rounded-md bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 text-xs font-semibold shadow-sm inline-flex items-center gap-1.5"
+              title={`Send ${selected.size} compound${selected.size > 1 ? "s" : ""} to a Full Job (deep dock + pose + ADMET)`}
+            >
+              <span aria-hidden>→</span>
+              Promote {selected.size} to Full Job
+            </button>
+          </>
+        )}
         <select
           className="input !w-auto !py-1.5 text-xs"
           value={sortKey}
@@ -383,7 +511,21 @@ function ResultsToolbar({
   );
 }
 
-function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOut[] }) {
+function ResultsTable({
+  data,
+  rows,
+  selected,
+  onToggleSelected,
+  onPromoteOne,
+  promoteCap,
+}: {
+  data: Screening;
+  rows: ScreeningResultOut[];
+  selected: Set<number>;
+  onToggleSelected: (compoundId: number) => void;
+  onPromoteOne: (compoundId: number) => void;
+  promoteCap: number;
+}) {
   // Empty state: screening is still pending and no rows have docked yet.
   if (rows.length === 0) {
     if (data.status === "pending" || data.status === "running") {
@@ -428,6 +570,13 @@ function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOu
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {/* v1.21: selection column. No header label — the cap
+                  ("up to N") would clutter the row count display in
+                  the toolbar. The visible empty header keeps column
+                  alignment clean across thead/tbody. */}
+              <th className="text-center py-2 px-2 w-8" title={`Select up to ${promoteCap} compounds to promote to Full Job`}>
+                <span className="sr-only">Select</span>
+              </th>
               <th className="text-left py-2 px-3 w-10">#</th>
               <th className="text-left py-2 px-3">Compound</th>
               <th className="text-right py-2 px-3 w-24">Variant</th>
@@ -436,6 +585,10 @@ function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOu
               <th className="text-right py-2 px-3 w-24">Δ vs WT</th>
               <th className="text-right py-2 px-3 w-28">Selectivity</th>
               <th className="text-right py-2 px-3 w-24">Status</th>
+              {/* v1.21: per-row Promote button column. */}
+              <th className="text-right py-2 px-3 w-28">
+                <span className="sr-only">Promote</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -447,12 +600,27 @@ function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOu
               // changes (or there is no next row).
               const next = rows[i + 1];
               const isGroupEnd = !next || next.compound_id !== r.compound_id;
+              // v1.21: a compound is promotable when at least one of
+              // its rows finished docking ("ok"). Failed/pending rows
+              // on their own block selection (we have no real score to
+              // promote). For mutant-only views (default) this means
+              // r.status === "ok" suffices. The atCap flag disables
+              // unchecked boxes once promoteCap is reached so the
+              // user can't blow past the /jobs limit.
+              const isSelectable = r.status === "ok";
+              const isChecked = selected.has(r.compound_id);
+              const atCap = selected.size >= promoteCap && !isChecked;
               return (
                 <Row
                   key={`${r.compound_id}-${r.variant}`}
                   r={r}
                   rank={i + 1}
                   isGroupEnd={isGroupEnd}
+                  isSelectable={isSelectable}
+                  isChecked={isChecked}
+                  atCap={atCap}
+                  onToggle={() => onToggleSelected(r.compound_id)}
+                  onPromote={() => onPromoteOne(r.compound_id)}
                 />
               );
             })}
@@ -467,10 +635,20 @@ function Row({
   r,
   rank,
   isGroupEnd = false,
+  isSelectable = false,
+  isChecked = false,
+  atCap = false,
+  onToggle,
+  onPromote,
 }: {
   r: ScreeningResultOut;
   rank: number;
   isGroupEnd?: boolean;
+  isSelectable?: boolean;
+  isChecked?: boolean;
+  atCap?: boolean;
+  onToggle?: () => void;
+  onPromote?: () => void;
 }) {
   // Failure path — show the row but mark it inert. The cell-level
   // `error_message` from the backend gets the tooltip treatment.
@@ -511,6 +689,32 @@ function Row({
         isFailure ? "opacity-60" : ""
       }`}
     >
+      {/* v1.21: selection checkbox. Disabled when the row hasn't
+          actually docked yet (status != ok) or when promote cap is
+          reached. Tooltip explains why on disabled state. */}
+      <td className="py-2 px-2 text-center">
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => onToggle && onToggle()}
+          disabled={!isSelectable || atCap}
+          aria-label={
+            isSelectable
+              ? `Select ${r.compound_name || "compound"} for Full Job promotion`
+              : `${r.compound_name || "Compound"} not promotable — status is ${r.status}`
+          }
+          title={
+            !isSelectable
+              ? `Can't promote — row status is "${r.status}"`
+              : atCap
+                ? "At Full Job cap. Uncheck another row to swap."
+                : isChecked
+                  ? "Unselect"
+                  : "Select for Full Job"
+          }
+          className="h-3.5 w-3.5 rounded accent-violet-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+        />
+      </td>
       <td className="py-2 px-3 text-slate-400 dark:text-slate-500 font-mono text-xs tabular-nums">
         {rank}
       </td>
@@ -593,6 +797,24 @@ function Row({
           <span className="badge bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200 text-[10px]">
             ok
           </span>
+        )}
+      </td>
+      {/* v1.21: per-row Promote button. Shortcut for "tick this one
+          and click Promote in the toolbar" — one click instead of two
+          when the user already knows which hit they want to validate.
+          Only enabled on ok rows. */}
+      <td className="py-2 px-3 text-right">
+        {isSelectable ? (
+          <button
+            type="button"
+            onClick={() => onPromote && onPromote()}
+            className="inline-flex items-center gap-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors"
+            title="Send this compound to a Full Job — opens Studio with the target, mutation, and compound pre-staged"
+          >
+            Full job →
+          </button>
+        ) : (
+          <span className="text-slate-300 dark:text-slate-700">—</span>
         )}
       </td>
     </tr>
