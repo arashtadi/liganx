@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.22-2026-05-12-promote-import-no-redock";
+const LIGANX_BUILD_TAG = "v1.22.1-2026-05-12-studio-row-stays-in-studio";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -2460,14 +2460,21 @@ export default function StudioPage() {
                     const delta = (row.mutantScore != null && row.wtScore != null)
                       ? row.mutantScore - row.wtScore
                       : null;
-                    // (v0.73) Two click targets per row:
-                    //  - the body (name + scores) navigates to JobPage
-                    //    so the user lands in the full results UI for
-                    //    this run, with this compound's pose preselected
-                    //  - the small ▶ button on the left swaps the inline
-                    //    3D viewer to this compound's pose without
-                    //    leaving Studio (legacy v0.71 behaviour kept
-                    //    for users who want to compare poses quickly)
+                    // (v1.22.1) Click targets reshuffled. v0.73 had the
+                    // body navigate to JobPage and a tiny ▶ button stay
+                    // in Studio — which is backwards for the workflow:
+                    // 99% of in-Studio clicks are "show this pose in
+                    // the 3D viewer above", not "yank me to a different
+                    // page." User feedback explicitly called this out.
+                    //
+                    // New layout:
+                    //   - body click → loadIn3D, stays in Studio.
+                    //   - explicit "Full job →" mini-button on the right
+                    //     side navigates to /jobs/{key}.
+                    // The ▶ glyph stays as a visual selection indicator
+                    // (filled when active) — no longer a separate click
+                    // target. ↗ removed from the body since the body
+                    // doesn't navigate anymore.
                     const loadIn3D = () => {
                       setSelectedRowCompoundId(row.compoundId);
                       const mut: QuickDockResult | null = row.mutantScore != null ? {
@@ -2502,23 +2509,21 @@ export default function StudioPage() {
                         }`}
                       >
                         <div className="flex items-center gap-1">
+                          {/* (v1.22.1) ▶ is now a passive selection
+                              indicator, not a click target. The whole
+                              row body clicks to load the pose; this
+                              glyph just shows which compound is active. */}
+                          <span
+                            className={`shrink-0 px-1.5 py-1 ${isSelected ? "text-cyan-300" : "text-slate-700"}`}
+                            aria-hidden
+                          >
+                            ▶
+                          </span>
                           <button
                             type="button"
                             onClick={loadIn3D}
-                            className={`shrink-0 px-1.5 py-1 ${isSelected ? "text-cyan-300" : "text-slate-600 hover:text-cyan-400"}`}
-                            title="Show this compound's pose in the 3D viewer above (stay in Studio)."
-                          >
-                            ▶
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!fullJobKey) return;
-                              navigate(`/jobs/${fullJobKey}?from=studio`);
-                            }}
-                            disabled={!fullJobKey}
-                            className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={`Open the full-page results view for "${row.name}".`}
+                            className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 transition-colors"
+                            title={`Load ${row.name}'s pose into the 3D viewer above (stays in Studio).`}
                           >
                             <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
                               {row.name}
@@ -2542,7 +2547,23 @@ export default function StudioPage() {
                                 {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
                               </span>
                             )}
-                            <span className="text-slate-600 text-[9px] shrink-0 pl-1">↗</span>
+                          </button>
+                          {/* (v1.22.1) Explicit "Full job →" mini-button.
+                              The only thing in this row that navigates
+                              away from Studio. Compact + clearly
+                              labelled so users don't trigger it
+                              accidentally while scanning the table. */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!fullJobKey) return;
+                              navigate(`/jobs/${fullJobKey}?from=studio`);
+                            }}
+                            disabled={!fullJobKey}
+                            className="shrink-0 inline-flex items-center gap-1 rounded border border-violet-700/60 text-violet-300 hover:bg-violet-900/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                            title={`Open the full Job results page for "${row.name}" (pose viewer + ADMET + AI Variants).`}
+                          >
+                            Full job →
                           </button>
                           {/* (v1.01) ADMET button — promoted from a
                               tiny outline chip to a solid violet pill
