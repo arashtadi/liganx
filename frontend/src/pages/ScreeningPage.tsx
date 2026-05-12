@@ -86,11 +86,28 @@ export default function ScreeningPage() {
   // score, Δ, or compound name. Filter ALSO happens client-side so
   // toggling between "all / mutant only / WT only" is instant — these
   // datasets are bounded at <=1000 rows in v1 so the cost is trivial.
+  //
+  // v1.20.2: standalone WT rows are redundant under filter="all" —
+  // each mutant row already shows its paired WT score in the "WT
+  // score" column. Showing the WT as a separate row just doubles the
+  // table length (3 cmpd → 6 rows) and forces the user to scroll past
+  // duplicate data. Default view = mutants only when mutations exist;
+  // WT-only screenings (no mutations) still render their WT rows since
+  // there's nothing else to show. Users can still see standalone WT
+  // rows via the "WT ONLY" filter.
   const visible: ScreeningResultOut[] = useMemo(() => {
     if (!data) return [];
     let rows = data.results.slice();
-    if (filter === "mutant") rows = rows.filter((r) => r.variant !== "WT");
-    if (filter === "wt") rows = rows.filter((r) => r.variant === "WT");
+    const hasMutants = rows.some((r) => r.variant !== "WT");
+    if (filter === "mutant") {
+      rows = rows.filter((r) => r.variant !== "WT");
+    } else if (filter === "wt") {
+      rows = rows.filter((r) => r.variant === "WT");
+    } else if (hasMutants) {
+      // filter="all" with mutations present: hide standalone WT rows.
+      // WT data still surfaces via wt_score/delta_score on each mutant.
+      rows = rows.filter((r) => r.variant !== "WT");
+    }
 
     rows.sort((a, b) => {
       switch (sortKey) {
@@ -422,9 +439,23 @@ function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOu
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
-              <Row key={`${r.compound_id}-${r.variant}`} r={r} rank={i + 1} />
-            ))}
+            {rows.map((r, i) => {
+              // v1.20.2: mark the last row of each compound group so we
+              // can draw a heavier divider beneath it. This makes the
+              // mutant/WT pairing read as visual clusters even at 50+
+              // compounds. A group ends when the next row's compound_id
+              // changes (or there is no next row).
+              const next = rows[i + 1];
+              const isGroupEnd = !next || next.compound_id !== r.compound_id;
+              return (
+                <Row
+                  key={`${r.compound_id}-${r.variant}`}
+                  r={r}
+                  rank={i + 1}
+                  isGroupEnd={isGroupEnd}
+                />
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -432,7 +463,15 @@ function ResultsTable({ data, rows }: { data: Screening; rows: ScreeningResultOu
   );
 }
 
-function Row({ r, rank }: { r: ScreeningResultOut; rank: number }) {
+function Row({
+  r,
+  rank,
+  isGroupEnd = false,
+}: {
+  r: ScreeningResultOut;
+  rank: number;
+  isGroupEnd?: boolean;
+}) {
   // Failure path — show the row but mark it inert. The cell-level
   // `error_message` from the backend gets the tooltip treatment.
   const isFailure = r.status === "failed";
@@ -459,9 +498,16 @@ function Row({ r, rank }: { r: ScreeningResultOut; rank: number }) {
     return "text-slate-500 dark:text-slate-400";
   })();
 
+  // v1.20.2: heavier bottom border on the last row of each compound
+  // group so the WT/mutant pairing reads as visual clusters. Within a
+  // group, rows share a thin border (mutant -> WT belong together).
+  const borderClass = isGroupEnd
+    ? "border-b-2 border-slate-200 dark:border-slate-700"
+    : "border-b border-slate-100 dark:border-slate-800";
+
   return (
     <tr
-      className={`border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
+      className={`${borderClass} hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
         isFailure ? "opacity-60" : ""
       }`}
     >
