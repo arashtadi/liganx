@@ -157,6 +157,45 @@ def create_screening(
             ),
         )
 
+    # Pre-flight SMILES validation. Reject any unparseable rows BEFORE
+    # we create the ScreeningJob shell — otherwise we'd burn pod minutes
+    # only to fail per-cell with cryptic ligand-prep errors, AND we'd
+    # leave a half-populated job row behind. RDKit is the source of
+    # truth; without it we fall back to a basic non-empty + length
+    # check (good enough for a sanity gate on direct API calls).
+    try:
+        from rdkit import Chem  # type: ignore
+        _rdkit_ok = True
+    except Exception:  # noqa: BLE001
+        _rdkit_ok = False
+    smiles_errors: list[dict] = []
+    for i, c in enumerate(payload.compounds):
+        smi = (c.smiles or "").strip()
+        if not smi:
+            smiles_errors.append({"index": i, "name": c.name, "reason": "empty SMILES"})
+            continue
+        if len(smi) > 500:
+            smiles_errors.append({"index": i, "name": c.name, "reason": f"SMILES too long ({len(smi)} chars, max 500)"})
+            continue
+        if _rdkit_ok:
+            try:
+                mol = Chem.MolFromSmiles(smi)
+                if mol is None:
+                    smiles_errors.append({"index": i, "name": c.name, "reason": "RDKit could not parse SMILES"})
+            except Exception as e:  # noqa: BLE001
+                smiles_errors.append({"index": i, "name": c.name, "reason": f"RDKit error: {e}"})
+    if smiles_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"{len(smiles_errors)} compound(s) have invalid SMILES — "
+                    "fix or remove them and resubmit."
+                ),
+                "smiles_errors": smiles_errors,
+            },
+        )
+
     # Pre-flight mutation check — same as /jobs. Catches "T790M on a PDB
     # that doesn't model residue 790" before we waste GPU minutes.
     if payload.mutations:

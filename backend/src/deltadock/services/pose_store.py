@@ -37,9 +37,25 @@ def _default_local_dir() -> Path:
 
 class PoseStore(Protocol):
     """Interface every backend implements. Just two operations — write the
-    final PDBQT for a (job, compound, variant), and read it back as bytes."""
+    final PDBQT for a (job, compound, variant), and read it back as bytes.
 
-    def write(self, job_id: int, compound_id: int, variant: str, src_path: Path) -> str:
+    The `kind` parameter on write/clone namespaces the underlying file or
+    object key. Defaults to "job" so existing /jobs paths keep their
+    historical key shape (`job{id}_c{cid}_{variant}.pdbqt`); the screening
+    runner passes "screening" so a Job and a ScreeningJob that happen to
+    share the same numeric primary key can't overwrite each other's
+    poses. Discovered as a silent-data-loss risk in the May 2026 audit
+    (#252) — pre-fix the namespaces collided.
+    """
+
+    def write(
+        self,
+        job_id: int,
+        compound_id: int,
+        variant: str,
+        src_path: Path,
+        kind: str = "job",
+    ) -> str:
         """Persist `src_path` and return the URI to record on the DocResult."""
 
     def read(self, pose_uri: str) -> bytes:
@@ -49,7 +65,12 @@ class PoseStore(Protocol):
         """Cheap probe — does the underlying object/file still exist?"""
 
     def clone(
-        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+        self,
+        src_uri: str,
+        new_job_id: int,
+        compound_id: int,
+        variant: str,
+        kind: str = "job",
     ) -> str:
         """Copy an existing pose under a new (job_id, compound_id, variant)
         key and return the new URI. Used by the screening→Job import flow
@@ -66,9 +87,19 @@ class LocalDiskPoseStore:
     def __init__(self, base_dir: Path | None = None) -> None:
         self.base_dir = base_dir or _default_local_dir()
 
-    def write(self, job_id: int, compound_id: int, variant: str, src_path: Path) -> str:
+    def write(
+        self,
+        job_id: int,
+        compound_id: int,
+        variant: str,
+        src_path: Path,
+        kind: str = "job",
+    ) -> str:
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        target = self.base_dir / f"job{job_id}_c{compound_id}_{variant}.pdbqt"
+        # kind is sanitised — only [a-z0-9] is allowed so a caller can't
+        # smuggle a path-separator into the namespace.
+        safe_kind = "".join(c for c in kind.lower() if c.isalnum()) or "job"
+        target = self.base_dir / f"{safe_kind}{job_id}_c{compound_id}_{variant}.pdbqt"
         # Write atomically — copy to a sibling tmp file, then rename — so a
         # half-written pose never gets read by a concurrent /poses GET.
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -101,7 +132,12 @@ class LocalDiskPoseStore:
             return False
 
     def clone(
-        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+        self,
+        src_uri: str,
+        new_job_id: int,
+        compound_id: int,
+        variant: str,
+        kind: str = "job",
     ) -> str:
         """Copy a local pose file under a new key. Path-validates the source
         the same way `read()` does so a malformed URI can't escape the
@@ -117,7 +153,8 @@ class LocalDiskPoseStore:
         if not src.is_file():
             raise FileNotFoundError(f"pose not found: {src_uri}")
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        target = self.base_dir / f"job{new_job_id}_c{compound_id}_{variant}.pdbqt"
+        safe_kind = "".join(c for c in kind.lower() if c.isalnum()) or "job"
+        target = self.base_dir / f"{safe_kind}{new_job_id}_c{compound_id}_{variant}.pdbqt"
         # Same atomic write contract as write() so the import endpoint can
         # be retried safely if it crashes mid-loop.
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -159,10 +196,18 @@ class R2PoseStore:
         )
         self._bucket = s.r2_bucket
 
-    def _key_for(self, job_id: int, compound_id: int, variant: str) -> str:
-        # Same naming convention as the local store so we can ls a bucket and
-        # immediately pattern-match to a job/compound/variant.
-        return f"job{job_id}_c{compound_id}_{variant}.pdbqt"
+    def _key_for(
+        self,
+        job_id: int,
+        compound_id: int,
+        variant: str,
+        kind: str = "job",
+    ) -> str:
+        # Same naming convention as the local store so we can ls a bucket
+        # and immediately pattern-match to a job/compound/variant.
+        # kind is sanitised so a caller can't inject "/" into the key.
+        safe_kind = "".join(c for c in kind.lower() if c.isalnum()) or "job"
+        return f"{safe_kind}{job_id}_c{compound_id}_{variant}.pdbqt"
 
     @staticmethod
     def _parse_uri(pose_uri: str) -> tuple[str, str]:
@@ -174,8 +219,15 @@ class R2PoseStore:
             raise ValueError(f"malformed r2:// URI: {pose_uri!r}")
         return bucket, key
 
-    def write(self, job_id: int, compound_id: int, variant: str, src_path: Path) -> str:
-        key = self._key_for(job_id, compound_id, variant)
+    def write(
+        self,
+        job_id: int,
+        compound_id: int,
+        variant: str,
+        src_path: Path,
+        kind: str = "job",
+    ) -> str:
+        key = self._key_for(job_id, compound_id, variant, kind)
         with open(src_path, "rb") as fh:
             self._client.put_object(
                 Bucket=self._bucket,
@@ -199,14 +251,19 @@ class R2PoseStore:
             return False
 
     def clone(
-        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+        self,
+        src_uri: str,
+        new_job_id: int,
+        compound_id: int,
+        variant: str,
+        kind: str = "job",
     ) -> str:
         """Server-side S3 CopyObject — pose bytes never leave R2. No egress
         cost, sub-100ms per call. The new key follows the same job-keyed
         convention as write() so the existing read path resolves it
         without translation."""
         src_bucket, src_key = self._parse_uri(src_uri)
-        new_key = self._key_for(new_job_id, compound_id, variant)
+        new_key = self._key_for(new_job_id, compound_id, variant, kind)
         self._client.copy_object(
             Bucket=self._bucket,
             Key=new_key,

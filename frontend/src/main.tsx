@@ -6,6 +6,33 @@ import App from "./App";
 import "./index.css";
 import { tryReloadOnChunkError } from "./lib/chunkReload";
 
+// Sentry — opt-in via VITE_SENTRY_DSN. When the env var is unset (local
+// dev, preview deploys), the init code is a no-op. We dynamic-import so
+// the @sentry/react bundle never ships to clients we don't have a DSN
+// for. Documented in the May 2026 platform audit (#256).
+if (import.meta.env.VITE_SENTRY_DSN) {
+  // @ts-expect-error — @sentry/react is an optional runtime dep. We
+  // dynamic-import it only when VITE_SENTRY_DSN is set; without that
+  // env var the import never runs and the package doesn't need to be
+  // installed for the rest of the app to build.
+  import("@sentry/react").then((Sentry) => {
+    Sentry.init({
+      dsn: import.meta.env.VITE_SENTRY_DSN,
+      environment: import.meta.env.MODE,
+      // Conservative: 10% traces, 100% errors. Bump tracesSampleRate
+      // higher if performance work needs more data.
+      tracesSampleRate: 0.1,
+      // Don't capture replays by default — costs a lot of bandwidth and
+      // we haven't reviewed for PII yet.
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
+  }).catch(() => {
+    // Soft-fail: missing dependency or network error shouldn't break the
+    // app. Sentry is observability, not a critical path.
+  });
+}
+
 // Stale-chunk recovery. Vite emits hashed chunk names (`3Dmol-CXDV6TS_.js`)
 // and references them from the deployed `index.html`. After a redeploy, the
 // chunk hashes change — but a user whose browser already cached the old

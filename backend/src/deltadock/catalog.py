@@ -140,9 +140,18 @@ KRAS = Target(
         Mutation("Q61H", "Q61H — switch-II",         "Resistance-associated"),
     ],
     compounds=[
-        ReferenceCompound("Sotorasib",   "Cc1ncc(F)c(-c2c(Cl)cccc2O)c1C(=O)N1CCN(C(=O)C=C)CC1c2nc(C(C)C)cn2C",
+        # Verified 2026-05-12 against Wikipedia / DrugBank / PubChem CID
+        # 137278711 (Sotorasib) and CID 138611145 (Adagrasib). Prior
+        # strings here AND in the library JSON parsed cleanly with RDKit
+        # but produced the wrong molecules (MW off by 100+ g/mol) — the
+        # 2D viewer rendered something Sotorasib-shaped that wasn't
+        # actually Sotorasib. Found in the May 2026 audit (#240).
+        # Both InChI keys also re-checked: Sotorasib NXQKSXLFSAEQCZ.
+        ReferenceCompound("Sotorasib",
+                          "CC(C)c1nccc(C)c1N2C(=O)N=C(N3CCN(C[C@@H]3C)C(=O)C=C)c4cc(F)c(nc24)c5c(O)cccc5F",
                           "Approved G12C-selective covalent (AMG 510)"),
-        ReferenceCompound("Adagrasib",   "Cc1cnc2c(c1Cl)c(O)c(C)c(C)c2C(=O)N1CCN(C(=O)C=C)CC1Cn1cc(F)cn1",
+        ReferenceCompound("Adagrasib",
+                          "O=C(C(F)=C)N([C@@H](CC#N)C1)CCN1C2=NC(OC[C@H]3N(C)CCC3)=NC4=C2CCN(C5=CC=CC6=C5C(Cl)=CC=C6)C4",
                           "Approved G12C-selective (MRTX849)"),
     ],
 )
@@ -298,7 +307,13 @@ HER2 = Target(
         Mutation("V842I", "V842I — activating",      "Less common activating"),
     ],
     compounds=[
-        ReferenceCompound("Tucatinib", "Cn1c(=O)c2[nH]nc(-c3ccc4c(c3)oc(=O)n4-c3ccc(NCc4cccc(C(F)(F)F)c4)cc3)c2n(C)c1=O",
+        # Verified 2026-05-12 against PubChem CID 51039094. Prior SMILES
+        # contained CF3 (Tucatinib has none) and an N-methylated
+        # pyrimidinedione scaffold instead of the quinazoline +
+        # triazolopyridine + 4,4-dimethyloxazoline that Tucatinib
+        # actually has. C26H24N8O2, MW 480.52.
+        ReferenceCompound("Tucatinib",
+                          "CC1=CC(NC2=C3C=C(NC4=NC(C)(C)CO4)C=CC3=NC=N2)=CC=C1OC5=CC6=NC=NN6C=C5",
                           "HER2-selective, brain-penetrant"),
         ReferenceCompound("Lapatinib", "CS(=O)(=O)CCNCc1oc(-c2ccc3ncnc(Nc4ccc(OCc5cccc(F)c5)c(Cl)c4)c3c2)cc1",
                           "Dual HER2/EGFR TKI"),

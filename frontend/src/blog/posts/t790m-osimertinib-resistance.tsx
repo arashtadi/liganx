@@ -70,11 +70,27 @@ export default function Post() {
       <p>
         Osimertinib (Tagrisso, AZD9291) is the answer to both problems.
         It&rsquo;s a covalent inhibitor — irreversibly bonds to Cys797 in the
-        ATP pocket — but it has ~200x higher affinity for T790M-mutant
-        EGFR than for wild-type. The selectivity comes from a single
-        methoxy substituent that reaches into a hydrophobic cavity
-        opened by the T790M sidechain. WT EGFR doesn&rsquo;t have that cavity
-        (T790 is small), so the drug doesn&rsquo;t fit as well.
+        ATP pocket — and it&rsquo;s engineered to retain potency against the
+        T790M gatekeeper that broke the first-gen drugs. In the cellular
+        assays from Cross et al. (Cancer Discovery, 2014), osimertinib
+        held a sub-nanomolar IC50 against T790M-mutant EGFR while
+        first-gen TKIs lost roughly two orders of magnitude — closing the
+        resistance gap rather than introducing wild-type-disadvantaging
+        selectivity. The structural basis: a methoxy substituent reaches
+        into a hydrophobic cavity opened by the T790M sidechain, so the
+        mutant pocket fits the drug a little better than wild-type. WT
+        EGFR doesn&rsquo;t have that cavity (T790 is small) and the same
+        substituent is solvent-exposed there.
+      </p>
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Note on the &ldquo;~200×&rdquo; figure that gets quoted: that&rsquo;s the
+        biochemical IC50 ratio against the recombinant T790M-mutant
+        enzyme vs. the wild-type enzyme in cell-free kinase assays,
+        which doesn&rsquo;t translate one-for-one to the cellular potency
+        shift NSCLC patients experience. Cellular selectivity is closer
+        to 5–10× (Cross et al. 2014; reviewed in Janne et al., NEJM
+        2015). We surface this distinction here because docking Δ-scores
+        track cellular geometry, not isolated-enzyme kinetics.
       </p>
       <p>
         This is the kind of rational selectivity design a docking workflow

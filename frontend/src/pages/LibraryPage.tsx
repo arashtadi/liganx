@@ -287,8 +287,27 @@ function PrecomputedCard({ r }: { r: PrecomputedSummary }) {
           </span>
         </div>
       )}
+      {r.computed_at && (
+        <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500 text-right">
+          updated {formatRelativeDate(r.computed_at)}
+        </div>
+      )}
     </Link>
   );
+}
+
+// "x days ago" with sensible thresholds. We surface absolute date past
+// the week mark so a stale snapshot reads as "May 4" instead of "47 days
+// ago" which is harder to anchor.
+function formatRelativeDate(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso.slice(0, 10);
+  const ageMs = Date.now() - then;
+  const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+  if (ageDays < 1) return "today";
+  if (ageDays === 1) return "yesterday";
+  if (ageDays < 7) return `${ageDays} days ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function TargetCard({ target }: { target: CatalogTarget }) {

@@ -79,8 +79,14 @@ def _selectivity_index(mutant_score: Optional[float], wt_score: Optional[float])
     if mutant_score is None:
         return None
     if wt_score is None:
-        # WT-only screen — no Δ available, fall back to absolute affinity.
-        return abs(mutant_score)
+        # WT dock failed (or this is a WT-only screen) — there is no Δ to
+        # compute, so no honest selectivity ranking is possible. Returning
+        # None tells the results page to sort these rows to the bottom and
+        # surface a "WT failed" badge instead of inventing a number from
+        # |mut_score| alone. Older builds returned abs(mutant_score) here,
+        # which inflated rankings for one-sided rows — found in the May
+        # 2026 audit; see #245.
+        return None
     delta = mutant_score - wt_score
     # sigmoid(-Δ * 4) — Δ < 0 (selective for mutant) → > 0.5 → 1.0
     #                  Δ > 0 (selective for WT)     → < 0.5 → 0.0
@@ -696,8 +702,13 @@ def _run_real_screening(
                     # /screening/:share_id/pose endpoint.
                     try:
                         from .pose_store import get_pose_store
+                        # kind="screening" namespaces this file separately
+                        # from /jobs writes. Otherwise Job.id=N and
+                        # ScreeningJob.id=N collide on the same pose key
+                        # — silent data loss, found in May 2026 audit #252.
                         pose_uri = get_pose_store().write(
                             sj.id, compound.id, variant, Path(dock_result.pose_pdbqt),
+                            kind="screening",
                         )
                     except Exception as e:
                         log.warning("screening %s: pose store write failed for %s/%s: %s",

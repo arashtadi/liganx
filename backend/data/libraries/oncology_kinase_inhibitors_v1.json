@@ -8,14 +8,14 @@
   "compounds": [
     {
       "name": "Sotorasib",
-      "smiles": "CC1=CC(=C(N=C1N1CCN(CC1C)C(=O)C=C)C1=C(C(=NC2=C1N(C(=O)N=C2N1CCC(CC1)F)C1=C(C=CC=C1F)F)O)C(F)(F)F)C",
+      "smiles": "CC(C)c1nccc(C)c1N2C(=O)N=C(N3CCN(C[C@@H]3C)C(=O)C=C)c4cc(F)c(nc24)c5c(O)cccc5F",
       "class": "KRAS G12C inhibitor",
       "primary_targets": ["KRAS"],
       "drug_year": 2021
     },
     {
       "name": "Adagrasib",
-      "smiles": "CC1CN(CCN1C2=NC=C3C(=N2)N(C(=N3)C#N)C4CCCN(C4)C(=O)C=C)C5CCCC(C5)O",
+      "smiles": "O=C(C(F)=C)N([C@@H](CC#N)C1)CCN1C2=NC(OC[C@H]3N(C)CCC3)=NC4=C2CCN(C5=CC=CC6=C5C(Cl)=CC=C6)C4",
       "class": "KRAS G12C inhibitor",
       "primary_targets": ["KRAS"],
       "drug_year": 2022

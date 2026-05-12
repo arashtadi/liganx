@@ -62,9 +62,9 @@ export default function ValidationPage() {
   // here. Description name-checks our highest-impact wins (BRAF V600E,
   // Imatinib resistance) so the snippet pre-qualifies the click.
   usePageMeta({
-    title: "Scientific validation — 8 literature-anchored docking benchmarks · Liganx",
+    title: "Scientific validation — 11 literature-anchored docking benchmarks · Liganx",
     description:
-      "Eight published kinase-mutation cases (Imatinib·ABL T315I, Vemurafenib·BRAF V600E, Gefitinib·EGFR T790M, more) re-run live through Liganx with verdicts. Verify our docking accuracy.",
+      "Eleven published kinase-mutation cases (Imatinib·ABL T315I, Vemurafenib·BRAF V600E, Gefitinib·EGFR T790M, Sotorasib·KRAS G12C, Osimertinib·EGFR C797S, more) re-run live through Liganx with verdicts. Verify our docking accuracy.",
   });
 
   const [data, setData] = useState<ValidationData | null>(null);
@@ -114,7 +114,7 @@ export default function ValidationPage() {
         <p className="mt-3 text-slate-600 dark:text-slate-300 max-w-3xl leading-relaxed">
           We compete with closed proprietary platforms on transparency. This page
           is where a sceptical reader can verify Liganx's scientific claims
-          end-to-end — the docking-pocket coordinates we use, the eight
+          end-to-end — the docking-pocket coordinates we use, the eleven
           literature-anchored mutation/drug pairs we run as positive controls,
           and the open-source scripts that re-derive both. Every number below is
           regenerable from the linked code, and the cases where our pipeline
@@ -299,7 +299,7 @@ export default function ValidationPage() {
           Positive-control validation
         </h2>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400 max-w-3xl leading-relaxed">
-          Eight (target, mutation, drug) pairs whose mutation-driven binding
+          Eleven (target, mutation, drug) pairs whose mutation-driven binding
           shifts are published in the clinical and pharmacology literature. We
           submit each to the live Liganx pipeline at exhaustiveness=16
           (2× the product default — tighter sampling for a tighter noise
@@ -415,11 +415,16 @@ export default function ValidationPage() {
         </h2>
         <div className="mt-3 text-sm text-slate-700 dark:text-slate-300 leading-relaxed space-y-2.5">
           <p>
-            Six of the eight cases above return a Δ smaller than ±1 kcal/mol —
+            Five of the eleven cases above return a Δ smaller than ±1 kcal/mol —
             below the reproducibility floor of Vina scoring at default
             exhaustiveness. The direction is usually correct but the magnitude
             is sub-noise, so we report them honestly as NOISE rather than
-            claiming a confident answer.
+            claiming a confident answer. A sixth case (EGFR L858R + Gefitinib)
+            returns the wrong direction at above-noise magnitude — a true FAIL
+            we surface here because L858R's selectivity is conformational and
+            rigid-receptor docking against a static crystal pocket cannot
+            capture state-equilibrium effects. Documented method limit, not a
+            pipeline regression.
           </p>
           <p>
             The dominant cause is that our default mutant-receptor builder

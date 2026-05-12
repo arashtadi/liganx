@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     # start/stop + status. Currently controlling pod diqoc6q2lt55mn.
     runpod_pod_id: str = ""
     runpod_idle_minutes: int = 30
+    # Hard ceiling on pod uptime regardless of activity. The activity-based
+    # watchdog above can theoretically loop forever if new jobs keep
+    # arriving, which on RunPod is real money: an RTX 4090 is ~$0.40/hour
+    # but an A100 or higher leaves real damage if a runaway pod sits
+    # idle-but-handed-one-request-every-29-minutes. This is a defence-
+    # in-depth ceiling — once a pod has been up for `max_uptime_minutes`
+    # the watchdog stops it regardless. The next /jobs submission will
+    # auto-resume via pod_lifecycle.ensure_pod_warm, so user impact is a
+    # one-time cold-start cost. Default 240 (4 hours) lines up with our
+    # typical batch-run windows. Override per-deploy via Fly secret.
+    runpod_max_uptime_minutes: int = 240
     # Boltz-2 sampling controls. Defaults match the integration plan:
     # single-sequence (no MSA fetch) for fair WT/mutant comparison, one
     # sample because Boltz is deterministic at temperature=0.
@@ -221,6 +232,21 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+
+    @model_validator(mode="after")
+    def _no_default_secret_in_prod(self) -> "Settings":
+        """Belt-and-suspenders: refuse to boot in production with the default
+        app_secret. The default `change-me` is fine for unit tests and dev,
+        but if a Fly secret-load fails and the env var is missing, we'd
+        silently fall back to a public-by-design string and sign every JWT
+        with `change-me`. Better to crash on startup than to ship that.
+        """
+        if self.app_env == "production" and self.app_secret == "change-me":
+            raise RuntimeError(
+                "Refusing to start: app_secret is the default 'change-me' "
+                "but APP_ENV=production. Set APP_SECRET via Fly secrets."
+            )
+        return self
 
     @field_validator("cors_origins", mode="before")
     @classmethod

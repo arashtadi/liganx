@@ -313,7 +313,7 @@ function FeatureGrid() {
     {
       icon: <Sparkles />,
       title: "Three scoring engines",
-      body: "QuickVina2-GPU (fast Vina-family), GNINA (Vina + CNN pose rescoring trained on PDBbind), and Boltz-2 (full ML co-folding from sequence + SMILES — no docking box needed). Three genuinely different methods, side-by-side on the same job. Most free tools give you one.",
+      body: "QuickVina2-GPU (fast Vina-family, default), GNINA (Vina + CNN pose rescoring trained on PDBbind — CNN rescoring requires sm_89 / RTX 4090; on other GPUs GNINA falls back to its Vina-fork score), and Boltz-2 (full ML co-folding from sequence + SMILES — no docking box needed). Three genuinely different methods, side-by-side on the same job. Most free tools give you one.",
       isNew: true,
     },
     // 2026-05-04: added after the Tier 1 AI Optimize loop shipped.
@@ -624,14 +624,14 @@ function Comparison() {
             <Link
               to="/validation"
               className="text-[11px] text-delta-700 dark:text-delta-300 font-semibold hover:underline"
-              title="Live scientific-validation page — 5/8 PASS, 2/8 documented method limits, 1/8 explained-FAIL across the literature-anchored suite"
+              title="Live scientific-validation page — 5/11 PASS, 5/11 documented method limits (NOISE), 1/11 explained-FAIL across the literature-anchored suite"
             >
               See full validation report →
             </Link>
           </div>
           <ul className="list-disc pl-5 space-y-1.5">
             <li>
-              <strong>Eight literature-anchored controls, public verdict.</strong> ABL T315I, EGFR T790M, BRAF V600E, KIT D816V, BTK C481S — five of eight PASS at above-noise magnitude in the published direction. Two NOISE results sit in documented method-limit territory (covalent acrylamides, active-conformation selectivity). One FAIL is explained candidly with the structural reason. The full per-case verdict and the open-source script that re-derives it are public.
+              <strong>Eleven literature-anchored controls, public verdict.</strong> ABL T315I, EGFR T790M, BRAF V600E, KIT D816V, BTK C481S, KRAS G12C, EGFR C797S, EGFR L858R — five of eleven PASS at above-noise magnitude in the published direction. Five NOISE results sit in documented method-limit territory (covalent acrylamides, active-conformation selectivity, conformational activation). One FAIL (EGFR L858R + Gefitinib) is explained candidly with the structural reason — rigid-receptor docking can't capture L858R's conformational activation. The full per-case verdict and the open-source script that re-derives it are public.
             </li>
             <li>
               <strong>Vina noise floor.</strong> Vina/QuickVina2 scoring has roughly ±1 kcal/mol noise at default exhaustiveness. We surface a "within-noise" badge for any Δ inside that band so a reader doesn't over-interpret 0.3 kcal/mol shifts.

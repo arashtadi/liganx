@@ -240,6 +240,16 @@ def create_job(
     # (pending, running, completed). Lowercase comparisons hit
     # "invalid input value for enum jobstatus" — discovered the hard way
     # when /jobs went 500 the first time after this check shipped.
+    #
+    # Quota check + Job insert run inside this request's implicit
+    # transaction. We hold an advisory lock keyed on user_id for the
+    # transaction's duration so two concurrent POST /jobs from the same
+    # user serialise instead of both seeing "under quota" and both
+    # inserting — TOCTOU race called out in the May 2026 audit (#251).
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:uid::text)::bigint)"),
+        {"uid": user.id},
+    )
     quota_row = session.execute(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
@@ -509,9 +519,14 @@ def create_job_from_screening(
     ).first()
     if sj is None:
         raise HTTPException(status_code=404, detail="Screening not found")
-    if sj.user_id and sj.user_id != user.id:
-        # Hide existence from non-owners so screening share_ids can't
-        # be enumerated. Same pattern as the /screening endpoint.
+    # Ownership gate. Two cases that must BOTH reject:
+    #   (a) Screening has a real owner that isn't the caller — clear leak path.
+    #   (b) Screening has NO owner (user_id IS NULL) — these are pre-auth
+    #       orphans from the v1.20 era. Without a positive ownership claim,
+    #       any logged-in user could promote anyone else's anonymous
+    #       screening. Treat as 404 so share_ids can't be enumerated; admins
+    #       can adopt orphans via a separate admin tool if needed.
+    if sj.user_id is None or sj.user_id != user.id:
         raise HTTPException(status_code=404, detail="Screening not found")
 
     # 2. Pull the screening's result rows for the requested compounds.
@@ -542,6 +557,17 @@ def create_job_from_screening(
 
     # 3. Per-user lifetime job quota — same logic as create_job. Imported
     #    Jobs DO count: they create a real Job row that shows in History.
+    # Hold a Postgres transactional advisory lock keyed on the user_id
+    # for the duration of THIS request's transaction. Two concurrent
+    # promotes from the same user serialise behind it instead of both
+    # reading "under quota" + inserting (the TOCTOU race called out in
+    # the May 2026 audit, #251). hashtext(uuid::text) collapses the
+    # UUID to a bigint key — collisions across users only cost a
+    # negligible amount of serialisation, never correctness.
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:uid::text)::bigint)"),
+        {"uid": user.id},
+    )
     quota_row = session.execute(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"

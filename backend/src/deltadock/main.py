@@ -21,6 +21,27 @@ settings = get_settings()
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger("deltadock")
 
+# Sentry — opt-in via SENTRY_DSN env var. No-op when unset so local dev
+# stays untouched. Wrapped in try/except so a missing sentry_sdk doesn't
+# break startup. Documented in the May 2026 platform audit (#256).
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk  # type: ignore
+        from sentry_sdk.integrations.fastapi import FastApiIntegration  # type: ignore
+        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration  # type: ignore
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            environment=settings.app_env,
+            release=GIT_SHA,
+            traces_sample_rate=0.1,  # conservative — 10% of requests traced
+            send_default_pii=False,   # never auto-send PII; surface explicitly when needed
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        )
+        log.info("Sentry initialised (env=%s, release=%s)", settings.app_env, GIT_SHA)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Sentry init failed (non-fatal): %s", e)
+
 
 def _reap_orphan_jobs() -> None:
     """Mark any RUNNING or PENDING jobs whose updated_at is older than
@@ -102,19 +123,57 @@ async def _runpod_watchdog():
         log.info("RunPod watchdog: not configured — skipping")
         return
     threshold = settings.runpod_idle_minutes * 60
-    log.info("RunPod watchdog: idle-stop after %d min of no traffic", settings.runpod_idle_minutes)
+    max_uptime = settings.runpod_max_uptime_minutes * 60
+    # Track when this watchdog last observed the pod transition into RUNNING
+    # so we can enforce the max-uptime ceiling. None ⇒ unknown (we'll set
+    # it the first time we see status=RUNNING).
+    pod_running_since: float | None = None
+    log.info(
+        "RunPod watchdog: idle-stop after %d min of no traffic, "
+        "hard ceiling at %d min uptime regardless",
+        settings.runpod_idle_minutes, settings.runpod_max_uptime_minutes,
+    )
     while True:
         try:
             await asyncio.sleep(60)
             elapsed = seconds_since_last_activity()
-            if elapsed is None or elapsed < threshold:
-                continue
+            now = __import__("time").time()
+
+            # Always check status — we need it for both the idle and
+            # uptime-ceiling checks.
             try:
                 status = await runpod_client.get_pod_status()
             except Exception as e:  # noqa: BLE001
                 log.warning("RunPod watchdog: status check failed: %s", e)
                 continue
-            if (status.get("desiredStatus") or "").upper() != "RUNNING":
+            is_running = (status.get("desiredStatus") or "").upper() == "RUNNING"
+            if is_running and pod_running_since is None:
+                pod_running_since = now
+            if not is_running:
+                pod_running_since = None  # reset when not running
+
+            # Uptime ceiling: stop unconditionally if pod has been up too
+            # long, regardless of recent traffic. Activity-based watchdog
+            # alone can loop forever if requests keep trickling in.
+            if is_running and pod_running_since is not None:
+                uptime = now - pod_running_since
+                if uptime >= max_uptime:
+                    log.warning(
+                        "RunPod watchdog: pod uptime %ds (>%ds) — stopping "
+                        "for budget protection (next submission will auto-resume)",
+                        int(uptime), max_uptime,
+                    )
+                    try:
+                        await runpod_client.stop_pod()
+                        pod_running_since = None
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("RunPod watchdog: ceiling-stop failed: %s", e)
+                    continue
+
+            # Activity-based: stop if idle for `threshold` seconds.
+            if elapsed is None or elapsed < threshold:
+                continue
+            if not is_running:
                 continue
             log.info(
                 "RunPod watchdog: pod idle %ds (>%ds) — stopping",
@@ -122,6 +181,7 @@ async def _runpod_watchdog():
             )
             try:
                 await runpod_client.stop_pod()
+                pod_running_since = None
             except Exception as e:  # noqa: BLE001
                 log.warning("RunPod watchdog: stop failed: %s", e)
         except asyncio.CancelledError:
@@ -293,11 +353,47 @@ app.include_router(library.router)  # v1.23 — pre-computed library screenings 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
+    """Liveness + DB reachability probe.
+
+    Fly health checks consider any 200 as healthy, so we MUST return
+    non-200 when the database is unreachable — otherwise traffic
+    continues routing to a machine that can't serve a single request.
+
+    The DB ping has a tight 2s timeout so a slow Postgres can't pin
+    the readiness signal during normal traffic load.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import text
+    from .db import engine as db_engine
+
+    db_status = "ok"
+    try:
+        with db_engine.connect() as conn:
+            # Direct exec_driver_sql with a short timeout so we don't
+            # block the event loop for more than a couple of seconds
+            # on a wedged DB.
+            conn.exec_driver_sql("SELECT 1")
+    except Exception as e:  # noqa: BLE001
+        db_status = f"down: {type(e).__name__}"
+        # Health check returns 503 — Fly treats this as unhealthy and
+        # stops routing traffic to this machine until DB comes back.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "db_unreachable",
+                "version": __version__,
+                "env": settings.app_env,
+                "git_sha": GIT_SHA,
+                "db_status": db_status,
+            },
+        )
+
     return {
         "status": "ok",
         "version": __version__,
         "env": settings.app_env,
         "git_sha": GIT_SHA,
+        "db_status": db_status,
     }
 
 
