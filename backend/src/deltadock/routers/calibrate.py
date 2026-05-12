@@ -183,14 +183,28 @@ def _score_row(
         fitness = (raw - 2) / 2.0  # rough mapping to ESM2-fitness scale
         source = "blosum_proxy"
     neg_abs_fit = -abs(fitness)
-    d = delta_kcal if delta_kcal is not None else 0.0
-    dz = (d - FEATURE_STATS["delta_mean"]) / FEATURE_STATS["delta_std"]
+    # Missing-Δ handling. When the caller doesn't provide delta_kcal,
+    # the principled choice for a logistic regression at inference time
+    # is to set the standardized feature to 0 — i.e. "neutral, no
+    # information about docking signal." Defaulting the raw value to 0
+    # (instead of dz=0) would say "Δ = 0 kcal/mol exactly", which is
+    # below the training-set mean (+0.76) and gets standardized to a
+    # negative number that the model reads as "drug binds tighter to
+    # mutant" (a selectivity signal). That's a wrong prior — we want
+    # the model to lean entirely on the ESM2 signal when Δ is unknown.
+    if delta_kcal is None:
+        dz = 0.0
+        delta_passthrough = None
+    else:
+        dz = (delta_kcal - FEATURE_STATS["delta_mean"]) / FEATURE_STATS["delta_std"]
+        delta_passthrough = delta_kcal
     fz = (neg_abs_fit - FEATURE_STATS["neg_abs_fit_mean"]) / FEATURE_STATS["neg_abs_fit_std"]
     logit = LR_WEIGHTS["w_delta"] * dz + LR_WEIGHTS["w_esm2"] * fz + LR_WEIGHTS["bias"]
     return {
         "fitness": fitness,
         "score_source": source,
-        "delta_kcal_input": delta_kcal,
+        "delta_kcal_input": delta_passthrough,
+        "delta_treated_as": "user_provided" if delta_kcal is not None else "neutral_no_docking",
         "joint_logit": logit,
         "joint_probability": _sigmoid(logit),
     }
