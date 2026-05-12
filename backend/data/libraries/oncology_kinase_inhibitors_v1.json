@@ -1,0 +1,220 @@
+{
+  "id": "oncology_kinase_inhibitors_v1",
+  "name": "Oncology Kinase Inhibitors",
+  "description": "Hand-curated set of 30 FDA-launched small-molecule kinase inhibitors used in oncology, with documented resistance mutations across KRAS / EGFR / BCR-ABL / MET / ALK / FLT3 / BTK targets. Designed for mutation-aware virtual screening demos: a successful Liganx run should show a target-matched inhibitor (e.g., sotorasib vs KRAS G12C) with measurable selectivity over WT.",
+  "version": 1,
+  "curated_at": "2026-05-12",
+  "license": "Compound names + SMILES are public-domain chemical identifiers; this curation is offered as-is without medical claim.",
+  "compounds": [
+    {
+      "name": "Sotorasib",
+      "smiles": "CC1=CC(=C(N=C1N1CCN(CC1C)C(=O)C=C)C1=C(C(=NC2=C1N(C(=O)N=C2N1CCC(CC1)F)C1=C(C=CC=C1F)F)O)C(F)(F)F)C",
+      "class": "KRAS G12C inhibitor",
+      "primary_targets": ["KRAS"],
+      "drug_year": 2021
+    },
+    {
+      "name": "Adagrasib",
+      "smiles": "CC1CN(CCN1C2=NC=C3C(=N2)N(C(=N3)C#N)C4CCCN(C4)C(=O)C=C)C5CCCC(C5)O",
+      "class": "KRAS G12C inhibitor",
+      "primary_targets": ["KRAS"],
+      "drug_year": 2022
+    },
+    {
+      "name": "Erlotinib",
+      "smiles": "C#Cc1cccc(c1)Nc1ncnc2cc(OCCOC)c(OCCOC)cc12",
+      "class": "EGFR inhibitor (1st gen)",
+      "primary_targets": ["EGFR"],
+      "drug_year": 2004
+    },
+    {
+      "name": "Gefitinib",
+      "smiles": "COc1cc2ncnc(Nc3ccc(F)c(Cl)c3)c2cc1OCCCN1CCOCC1",
+      "class": "EGFR inhibitor (1st gen)",
+      "primary_targets": ["EGFR"],
+      "drug_year": 2003
+    },
+    {
+      "name": "Osimertinib",
+      "smiles": "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
+      "class": "EGFR inhibitor (3rd gen, T790M-active)",
+      "primary_targets": ["EGFR"],
+      "drug_year": 2015
+    },
+    {
+      "name": "Afatinib",
+      "smiles": "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1",
+      "class": "EGFR inhibitor (2nd gen, irreversible)",
+      "primary_targets": ["EGFR", "ERBB2"],
+      "drug_year": 2013
+    },
+    {
+      "name": "Dacomitinib",
+      "smiles": "CN1CCC(CC1)CNC(=O)/C=C/c1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1OC",
+      "class": "EGFR inhibitor (2nd gen)",
+      "primary_targets": ["EGFR", "ERBB2", "ERBB4"],
+      "drug_year": 2018
+    },
+    {
+      "name": "Imatinib",
+      "smiles": "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1",
+      "class": "BCR-ABL inhibitor (1st gen)",
+      "primary_targets": ["ABL1", "KIT", "PDGFRA"],
+      "drug_year": 2001
+    },
+    {
+      "name": "Nilotinib",
+      "smiles": "Cc1cn(-c2cc(NC(=O)c3ccc(C)c(Nc4nccc(-c5cccnc5)n4)c3)cc(C(F)(F)F)c2)cn1",
+      "class": "BCR-ABL inhibitor (2nd gen)",
+      "primary_targets": ["ABL1"],
+      "drug_year": 2007
+    },
+    {
+      "name": "Dasatinib",
+      "smiles": "Cc1nc(Nc2ncc(s2)C(=O)Nc2c(C)cccc2Cl)cc(N2CCN(CCO)CC2)n1",
+      "class": "BCR-ABL/Src inhibitor (2nd gen)",
+      "primary_targets": ["ABL1", "SRC"],
+      "drug_year": 2006
+    },
+    {
+      "name": "Bosutinib",
+      "smiles": "COc1cc(Nc2ncnc3cc(OCCCN4CCN(C)CC4)c(OC)cc23)c(Cl)cc1Cl",
+      "class": "BCR-ABL/Src inhibitor (2nd gen)",
+      "primary_targets": ["ABL1", "SRC"],
+      "drug_year": 2012
+    },
+    {
+      "name": "Ponatinib",
+      "smiles": "Cc1ccc(C(=O)Nc2ccc(CN3CCN(C)CC3)c(C(F)(F)F)c2)cc1C#Cc1cnc2cccnn12",
+      "class": "BCR-ABL inhibitor (3rd gen, T315I-active)",
+      "primary_targets": ["ABL1"],
+      "drug_year": 2012
+    },
+    {
+      "name": "Asciminib",
+      "smiles": "Cn1cc(-c2cncc(NC(=O)c3ccc(F)cc3O[C@H](C)c3cnc(N4CCC(O)CC4)cn3)c2)cn1",
+      "class": "BCR-ABL allosteric inhibitor (myristoyl-pocket)",
+      "primary_targets": ["ABL1"],
+      "drug_year": 2021
+    },
+    {
+      "name": "Crizotinib",
+      "smiles": "C[C@@H](c1ccccc1Cl)Nc1ncnc(c1Cl)Nc1cc(c(cn1)c1ccc(s1)C(F)(F)F)F",
+      "class": "ALK/ROS1/MET inhibitor",
+      "primary_targets": ["ALK", "ROS1", "MET"],
+      "drug_year": 2011
+    },
+    {
+      "name": "Capmatinib",
+      "smiles": "CC1=NN(C2=C1C=C(C=C2)C(=O)NCC#N)C3=NC(=C4N3C=CC=C4)C5=CC=C(C=C5)F",
+      "class": "MET inhibitor",
+      "primary_targets": ["MET"],
+      "drug_year": 2020
+    },
+    {
+      "name": "Tepotinib",
+      "smiles": "COc1ccc(CN2CCN(C(=O)c3cc(-c4ncc(c5ccccc5)c(=O)n4C)c(C#N)cc3)CC2)cn1",
+      "class": "MET inhibitor",
+      "primary_targets": ["MET"],
+      "drug_year": 2021
+    },
+    {
+      "name": "Cabozantinib",
+      "smiles": "COc1cc2nccc(Oc3ccc(NC(=O)C4(c5ccc(F)cc5)CC4C(=O)Nc4ccc(F)cc4)cc3)c2cc1OC",
+      "class": "MET/VEGFR2/RET inhibitor",
+      "primary_targets": ["MET", "VEGFR2", "RET"],
+      "drug_year": 2012
+    },
+    {
+      "name": "Alectinib",
+      "smiles": "CCc1cc2c(cc1C#N)c1cc(C3CCN(C)CC3)c(C(C)(C)C)cc1c(=O)n2C",
+      "class": "ALK inhibitor (2nd gen)",
+      "primary_targets": ["ALK"],
+      "drug_year": 2014
+    },
+    {
+      "name": "Brigatinib",
+      "smiles": "COc1cc(Nc2ncc(Cl)c(Nc3ccccc3P(C)(C)=O)n2)cc(N2CCC(N3CCN(C)CC3)CC2)c1OC",
+      "class": "ALK inhibitor (2nd gen, T1151-active)",
+      "primary_targets": ["ALK", "EGFR"],
+      "drug_year": 2017
+    },
+    {
+      "name": "Lorlatinib",
+      "smiles": "Cn1cc(C(F)(F)F)c2c1OCC[C@H](C)NC(=O)c1cc(C#N)cnc1-2",
+      "class": "ALK/ROS1 inhibitor (3rd gen, broad mutation)",
+      "primary_targets": ["ALK", "ROS1"],
+      "drug_year": 2018
+    },
+    {
+      "name": "Ibrutinib",
+      "smiles": "C=CC(=O)N1CCC[C@@H](C1)n1nc(-c2ccc(Oc3ccccc3)cc2)c2c(N)ncnc21",
+      "class": "BTK inhibitor (1st gen, irreversible)",
+      "primary_targets": ["BTK"],
+      "drug_year": 2013
+    },
+    {
+      "name": "Acalabrutinib",
+      "smiles": "CC#CC(=O)N1CCC[C@@H]1c1nc(-c2ccc(C(=O)Nc3ccccn3)cc2)c2cnnn2c1",
+      "class": "BTK inhibitor (2nd gen, irreversible)",
+      "primary_targets": ["BTK"],
+      "drug_year": 2017
+    },
+    {
+      "name": "Gilteritinib",
+      "smiles": "CCC1(CC)CCC(N(C)C2CCN(c3ncc4nc(Nc5ccc(N6CCC(N(C)C)CC6)c(OC)c5)oc4n3)CC2)CC1",
+      "class": "FLT3 inhibitor (FLT3-ITD active)",
+      "primary_targets": ["FLT3"],
+      "drug_year": 2018
+    },
+    {
+      "name": "Midostaurin",
+      "smiles": "CN[C@H]1C[C@@H]2O[C@@](C)([C@@H]1OC)n1c3ccccc3c3c4c(c5c6ccccc6n2c5c31)C(=O)NC4",
+      "class": "FLT3/PKC inhibitor (multi-kinase)",
+      "primary_targets": ["FLT3", "KIT"],
+      "drug_year": 2017
+    },
+    {
+      "name": "Quizartinib",
+      "smiles": "Cc1nc(NC(=O)Nc2ccc(-c3csc4cc(OCCN5CCOCC5)ccc34)cc2C(C)(C)C)no1",
+      "class": "FLT3 inhibitor",
+      "primary_targets": ["FLT3"],
+      "drug_year": 2023
+    },
+    {
+      "name": "Sunitinib",
+      "smiles": "CCN(CC)CCNC(=O)c1c(C)[nH]c(/C=C2\\C(=O)Nc3ccc(F)cc23)c1C",
+      "class": "Multi-kinase inhibitor (VEGFR/PDGFR/KIT)",
+      "primary_targets": ["KIT", "VEGFR2", "PDGFRA"],
+      "drug_year": 2006
+    },
+    {
+      "name": "Pazopanib",
+      "smiles": "Cc1ccc(Nc2nccc(N(C)c3ccc4c(C)n(C)nc4c3)n2)cc1S(N)(=O)=O",
+      "class": "Multi-kinase inhibitor (VEGFR/PDGFR)",
+      "primary_targets": ["VEGFR2", "PDGFRA", "KIT"],
+      "drug_year": 2009
+    },
+    {
+      "name": "Lenvatinib",
+      "smiles": "COc1cc2nccc(Oc3ccc(NC(=O)NC4CC4)c(Cl)c3)c2cc1C(N)=O",
+      "class": "Multi-kinase inhibitor (VEGFR/FGFR/RET)",
+      "primary_targets": ["VEGFR2", "FGFR1", "RET"],
+      "drug_year": 2015
+    },
+    {
+      "name": "Selpercatinib",
+      "smiles": "COc1cc(C2CCN(Cc3cnc4cc(C#N)ccn34)CC2)cc2[nH]c(C(C)(C)O)nc12",
+      "class": "RET inhibitor (selective)",
+      "primary_targets": ["RET"],
+      "drug_year": 2020
+    },
+    {
+      "name": "Pralsetinib",
+      "smiles": "COc1cc(N2CCN(C)CC2)nc(c1)Nc1ncc(c2cnn(C(C)C)c2)c(C(=O)NC2CCC(N)CC2)n1",
+      "class": "RET inhibitor (selective, V804M-active)",
+      "primary_targets": ["RET"],
+      "drug_year": 2020
+    }
+  ]
+}
