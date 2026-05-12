@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.18-2026-05-11-studio-screening-submit-and-row-actions";
+const LIGANX_BUILD_TAG = "v1.19-2026-05-12-screening-two-mutations";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1652,15 +1652,16 @@ export default function StudioPage() {
         pdb_id: tPdb,
         chain: tMeta?.chain || "A",
         uniprot_id: tMeta?.uniprot,
-        // Backend caps screening at 1 mutation in v1 — clamp here so
-        // the user sees a clear error if they have 2 mutations staged
-        // rather than a 422 from the server.
-        mutations: selectedMutations.slice(0, 1),
+        // Backend caps screening at 2 mutations (matches the Studio
+        // multi-mutation picker). Slice as a defensive guard against
+        // future picker bumps so the server validation stays the
+        // contract.
+        mutations: selectedMutations.slice(0, 2),
         compounds: compoundList,
         include_wt: includeWt,
         engine: "quickvina2_gpu",
         exhaustiveness: 4,
-        title: `Studio screen · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations[0]}` : ""} · ${compoundList.length} cmpd`,
+        title: `Studio screen · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.slice(0, 2).join("+")}` : ""} · ${compoundList.length} cmpd`,
       });
       const screeningKey = (screening as any).share_id ?? String((screening as any).id ?? "");
       if (!screeningKey) {
@@ -3637,7 +3638,7 @@ export default function StudioPage() {
                   : currentSmiles ? 1 : 0;
                 const isDisabled = docking || submittingFull
                   || !ketcherReady || !hasCompound || !selectedTarget;
-                const variantCount = (includeWt ? 1 : 0) + Math.min(1, selectedMutations.length);
+                const variantCount = (includeWt ? 1 : 0) + Math.min(2, selectedMutations.length);
                 const cellCount = compoundCount * Math.max(1, variantCount);
                 return (
                   <button

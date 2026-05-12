@@ -235,9 +235,13 @@ class ScreeningCreate(BaseModel):
     chain: str = "A"
     uniprot_id: str | None = Field(default=None, max_length=20)
     # Empty list = WT-only screening (still useful — ranks affinity against
-    # the wild-type target with no Δ column). 1 mutation = the canonical
-    # mutation-aware library screen.
-    mutations: list[str] = Field(default_factory=list, max_length=1)
+    # the wild-type target with no Δ column). 1-2 mutations = the canonical
+    # mutation-aware library screen, with each mutant getting its own
+    # ranked-row set in the results page. The frontend Studio dropdown
+    # already allows up to 2 mutations; this schema mirrors that cap.
+    # Higher caps later, once we know real screenings on the 4090 pod
+    # don't drag too long with M variants × N compounds.
+    mutations: list[str] = Field(default_factory=list, max_length=2)
     # Library compounds. Router applies the 1000-cap after validation; the
     # schema upper-bound here is a defensive 2000 so a typo doesn't OOM
     # the validator. Pre-loaded libraries (Enamine REAL subset, ChEMBL

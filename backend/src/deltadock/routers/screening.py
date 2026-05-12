@@ -232,8 +232,8 @@ def create_screening(
 
     # Pre-create ScreeningResult rows so the progress bar has its
     # denominator from the first poll. One per (compound, variant) pair.
-    # Variants list = ["WT", *mutations] (mutations is capped at 1 by
-    # the schema).
+    # Variants list = ["WT", *mutations] — mutations capped at 2 by
+    # the schema. Each compound becomes 1+len(mutations) cells.
     variants = ["WT"] + list(payload.mutations)
     n_total = 0
     for compound in canon_to_compound.values():
