@@ -1,0 +1,80 @@
+{
+  "drug_slug": "dasatinib",
+  "drug_name": "Dasatinib",
+  "drug_smiles": "Cc1nc(Nc2ncc(s2)C(=O)Nc2c(C)cccc2Cl)cc(N2CCN(CCO)CC2)n1",
+  "primary_target": "BCR-ABL",
+  "primary_pdb": "2HYY",
+  "atlas_version": 2,
+  "model": {
+    "name": "Liganx 2-signal calibrated forecast (\u0394 + ESM2)",
+    "in_sample_auc": 0.8958333333333334,
+    "oof_5fold_auc": 0.8125,
+    "oof_95pct_ci": [
+      0.6180555555555556,
+      0.961038961038961
+    ],
+    "lr_weights_standardized": {
+      "w_delta": 1.4734461801375394,
+      "w_esm2": 0.919956242415361,
+      "bias": 0.8966144349696004
+    },
+    "feature_stats": {
+      "delta_mean": 0.7560000000000002,
+      "delta_std": 1.3172941964496772,
+      "neg_abs_fit_mean": -3.412528388053179,
+      "neg_abs_fit_std": 1.5454914680853782
+    }
+  },
+  "generated_at": "2026-05-12T17:22:25Z",
+  "data_provenance": "Forecasts auto-generated from the live calibration model. \u0394 from Liganx rigid-receptor Vina (exhaustiveness=8); ESM2 from facebook/esm2_t12_35M_UR50D masked-LM; joint probability from a logistic regression cross-validated on 25 published clinical-resistance events.",
+  "covalent_caveat": null,
+  "predicted_resistance": [
+    {
+      "mutation": "F317L",
+      "target": "ABL1",
+      "position": 317,
+      "mechanism": "gatekeeper_adjacent",
+      "delta_kcal": 1.2,
+      "wt_score": -8.9,
+      "mut_score": -7.7,
+      "esm2_fitness": 0.035888671875,
+      "codon_distance": 1,
+      "wt_codon": "TTC",
+      "mut_codon": "CTC",
+      "joint_logit": 3.403196306491627,
+      "joint_probability": 0.9678042785729737,
+      "verdict": "high_confidence_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "17409424",
+      "citation_short": "Shah et al., J Clin Invest 2007",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +1.20 kcal/mol, ESM2 fitness = +0.04, mechanism = gatekeeper_adjacent. Joint calibrated probability = 0.97. Shah et al., J Clin Invest 2007",
+      "rank": 1
+    },
+    {
+      "mutation": "T315I",
+      "target": "ABL1",
+      "position": 315,
+      "mechanism": "gatekeeper",
+      "delta_kcal": 0.8,
+      "wt_score": -9.1,
+      "mut_score": -8.3,
+      "esm2_fitness": -2.900852084159851,
+      "codon_distance": 1,
+      "wt_codon": "ACT",
+      "mut_codon": "ATT",
+      "joint_logit": 1.2504063223381539,
+      "joint_probability": 0.7773701895913973,
+      "verdict": "high_confidence_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "17483411",
+      "citation_short": "Cortes et al., Blood 2007",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +0.80 kcal/mol, ESM2 fitness = -2.90, mechanism = gatekeeper. Joint calibrated probability = 0.78. Cortes et al., Blood 2007",
+      "rank": 2
+    }
+  ],
+  "n_predictions": 2,
+  "literature_confirmed_count": 2,
+  "ledger_note": "Atlas v2 forecasts are computed live from the multi-signal model. Re-runs against new clinical reports compound the credibility ledger: a prediction that pre-dates the first clinical observation of the mutation becomes a confirmed forecast on the next regeneration."
+}

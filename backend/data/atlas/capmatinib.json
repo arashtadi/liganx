@@ -1,0 +1,80 @@
+{
+  "drug_slug": "capmatinib",
+  "drug_name": "Capmatinib",
+  "drug_smiles": "CC1=NN(C2=C1C=C(C=C2)C(=O)NCC#N)C3=NC(=C4N3C=CC=C4)C5=CC=C(C=C5)F",
+  "primary_target": "MET",
+  "primary_pdb": "2WGJ",
+  "atlas_version": 2,
+  "model": {
+    "name": "Liganx 2-signal calibrated forecast (\u0394 + ESM2)",
+    "in_sample_auc": 0.8958333333333334,
+    "oof_5fold_auc": 0.8125,
+    "oof_95pct_ci": [
+      0.6180555555555556,
+      0.961038961038961
+    ],
+    "lr_weights_standardized": {
+      "w_delta": 1.4734461801375394,
+      "w_esm2": 0.919956242415361,
+      "bias": 0.8966144349696004
+    },
+    "feature_stats": {
+      "delta_mean": 0.7560000000000002,
+      "delta_std": 1.3172941964496772,
+      "neg_abs_fit_mean": -3.412528388053179,
+      "neg_abs_fit_std": 1.5454914680853782
+    }
+  },
+  "generated_at": "2026-05-12T17:22:25Z",
+  "data_provenance": "Forecasts auto-generated from the live calibration model. \u0394 from Liganx rigid-receptor Vina (exhaustiveness=8); ESM2 from facebook/esm2_t12_35M_UR50D masked-LM; joint probability from a logistic regression cross-validated on 25 published clinical-resistance events.",
+  "covalent_caveat": null,
+  "predicted_resistance": [
+    {
+      "mutation": "D1228V",
+      "target": "MET",
+      "position": 1228,
+      "mechanism": "dfg_motif",
+      "delta_kcal": 0.3,
+      "wt_score": -9.0,
+      "mut_score": -8.7,
+      "esm2_fitness": -1.150700330734253,
+      "codon_distance": 1,
+      "wt_codon": "GAT",
+      "mut_codon": "GTT",
+      "joint_logit": 1.7329169502225374,
+      "joint_probability": 0.8497851500016727,
+      "verdict": "high_confidence_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "26993175",
+      "citation_short": "Bahcall et al., Cancer Discov 2016",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +0.30 kcal/mol, ESM2 fitness = -1.15, mechanism = dfg_motif. Joint calibrated probability = 0.85. Bahcall et al., Cancer Discov 2016",
+      "rank": 1
+    },
+    {
+      "mutation": "Y1230H",
+      "target": "MET",
+      "position": 1230,
+      "mechanism": "dfg_motif",
+      "delta_kcal": -0.9,
+      "wt_score": -8.6,
+      "mut_score": -9.5,
+      "esm2_fitness": -5.268646314740181,
+      "codon_distance": 1,
+      "wt_codon": "TAT",
+      "mut_codon": "CAT",
+      "joint_logit": -2.0605448501042725,
+      "joint_probability": 0.11299121139195775,
+      "verdict": "low_probability_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "32034073",
+      "citation_short": "Recondo et al., Clin Cancer Res 2020",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = -0.90 kcal/mol, ESM2 fitness = -5.27, mechanism = dfg_motif. Joint calibrated probability = 0.11. Recondo et al., Clin Cancer Res 2020",
+      "rank": 2
+    }
+  ],
+  "n_predictions": 2,
+  "literature_confirmed_count": 2,
+  "ledger_note": "Atlas v2 forecasts are computed live from the multi-signal model. Re-runs against new clinical reports compound the credibility ledger: a prediction that pre-dates the first clinical observation of the mutation becomes a confirmed forecast on the next regeneration."
+}

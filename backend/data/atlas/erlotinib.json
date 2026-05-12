@@ -1,0 +1,80 @@
+{
+  "drug_slug": "erlotinib",
+  "drug_name": "Erlotinib",
+  "drug_smiles": "C#Cc1cccc(c1)Nc1ncnc2cc(OCCOC)c(OCCOC)cc12",
+  "primary_target": "EGFR",
+  "primary_pdb": "2ITY",
+  "atlas_version": 2,
+  "model": {
+    "name": "Liganx 2-signal calibrated forecast (\u0394 + ESM2)",
+    "in_sample_auc": 0.8958333333333334,
+    "oof_5fold_auc": 0.8125,
+    "oof_95pct_ci": [
+      0.6180555555555556,
+      0.961038961038961
+    ],
+    "lr_weights_standardized": {
+      "w_delta": 1.4734461801375394,
+      "w_esm2": 0.919956242415361,
+      "bias": 0.8966144349696004
+    },
+    "feature_stats": {
+      "delta_mean": 0.7560000000000002,
+      "delta_std": 1.3172941964496772,
+      "neg_abs_fit_mean": -3.412528388053179,
+      "neg_abs_fit_std": 1.5454914680853782
+    }
+  },
+  "generated_at": "2026-05-12T17:22:25Z",
+  "data_provenance": "Forecasts auto-generated from the live calibration model. \u0394 from Liganx rigid-receptor Vina (exhaustiveness=8); ESM2 from facebook/esm2_t12_35M_UR50D masked-LM; joint probability from a logistic regression cross-validated on 25 published clinical-resistance events.",
+  "covalent_caveat": null,
+  "predicted_resistance": [
+    {
+      "mutation": "T790M",
+      "target": "EGFR",
+      "position": 790,
+      "mechanism": "gatekeeper",
+      "delta_kcal": 0.4,
+      "wt_score": -6.7,
+      "mut_score": -6.3,
+      "esm2_fitness": -2.45715868473053,
+      "codon_distance": 1,
+      "wt_codon": "ACG",
+      "mut_codon": "ATG",
+      "joint_logit": 1.0670995419434004,
+      "joint_probability": 0.7440449376962432,
+      "verdict": "high_confidence_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "15737014",
+      "citation_short": "Kobayashi et al., NEJM 2005",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +0.40 kcal/mol, ESM2 fitness = -2.46, mechanism = gatekeeper. Joint calibrated probability = 0.74. Kobayashi et al., NEJM 2005",
+      "rank": 1
+    },
+    {
+      "mutation": "G719S",
+      "target": "EGFR",
+      "position": 719,
+      "mechanism": "conformational_activation",
+      "delta_kcal": 0.5,
+      "wt_score": -6.6,
+      "mut_score": -6.1,
+      "esm2_fitness": -4.968906367197633,
+      "codon_distance": 1,
+      "wt_codon": "GGT",
+      "mut_codon": "AGT",
+      "joint_logit": -0.31616824671020827,
+      "joint_probability": 0.421609858271632,
+      "verdict": "drug_designed_for_this",
+      "literature_confirmed": true,
+      "citation_pmid": "24033824",
+      "citation_short": "Yasuda et al., Lancet Oncol 2013",
+      "expected_direction": "selectivity",
+      "rationale": "\u0394 = +0.50 kcal/mol, ESM2 fitness = -4.97, mechanism = conformational_activation. Joint calibrated probability = 0.42. Yasuda et al., Lancet Oncol 2013",
+      "rank": 2
+    }
+  ],
+  "n_predictions": 2,
+  "literature_confirmed_count": 2,
+  "ledger_note": "Atlas v2 forecasts are computed live from the multi-signal model. Re-runs against new clinical reports compound the credibility ledger: a prediction that pre-dates the first clinical observation of the mutation becomes a confirmed forecast on the next regeneration."
+}

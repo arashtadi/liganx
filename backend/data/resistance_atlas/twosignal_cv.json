@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "model": "\u0394_kcal + (\u2212|ESM2_fitness|) \u2192 logistic regression",
+  "n_events": 25,
+  "n_positive": 16,
+  "n_negative": 9,
+  "in_sample_auc": 0.8958333333333334,
+  "oof_5fold_auc": 0.8125,
+  "per_fold_aucs": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5
+  ],
+  "oof_95pct_ci": [
+    0.6180555555555556,
+    0.961038961038961
+  ],
+  "lr_weights": {
+    "w_delta": 1.4734461801375394,
+    "w_esm2": 0.919956242415361,
+    "bias": 0.8966144349696004
+  }
+}

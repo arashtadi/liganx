@@ -1,0 +1,80 @@
+{
+  "drug_slug": "crizotinib",
+  "drug_name": "Crizotinib",
+  "drug_smiles": "C[C@@H](c1ccccc1Cl)Nc1ncnc(c1Cl)Nc1cc(c(cn1)c1ccc(s1)C(F)(F)F)F",
+  "primary_target": "ALK / ROS1 / MET",
+  "primary_pdb": "2XP2",
+  "atlas_version": 2,
+  "model": {
+    "name": "Liganx 2-signal calibrated forecast (\u0394 + ESM2)",
+    "in_sample_auc": 0.8958333333333334,
+    "oof_5fold_auc": 0.8125,
+    "oof_95pct_ci": [
+      0.6180555555555556,
+      0.961038961038961
+    ],
+    "lr_weights_standardized": {
+      "w_delta": 1.4734461801375394,
+      "w_esm2": 0.919956242415361,
+      "bias": 0.8966144349696004
+    },
+    "feature_stats": {
+      "delta_mean": 0.7560000000000002,
+      "delta_std": 1.3172941964496772,
+      "neg_abs_fit_mean": -3.412528388053179,
+      "neg_abs_fit_std": 1.5454914680853782
+    }
+  },
+  "generated_at": "2026-05-12T17:22:25Z",
+  "data_provenance": "Forecasts auto-generated from the live calibration model. \u0394 from Liganx rigid-receptor Vina (exhaustiveness=8); ESM2 from facebook/esm2_t12_35M_UR50D masked-LM; joint probability from a logistic regression cross-validated on 25 published clinical-resistance events.",
+  "covalent_caveat": null,
+  "predicted_resistance": [
+    {
+      "mutation": "L1196M",
+      "target": "ALK",
+      "position": 1196,
+      "mechanism": "gatekeeper",
+      "delta_kcal": 0.2,
+      "wt_score": -7.9,
+      "mut_score": -7.7,
+      "esm2_fitness": -1.185880422592163,
+      "codon_distance": 1,
+      "wt_codon": "CTG",
+      "mut_codon": "ATG",
+      "joint_logit": 1.600121950206051,
+      "joint_probability": 0.8320354286670404,
+      "verdict": "high_confidence_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "20979469",
+      "citation_short": "Choi et al., NEJM 2010",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +0.20 kcal/mol, ESM2 fitness = -1.19, mechanism = gatekeeper. Joint calibrated probability = 0.83. Choi et al., NEJM 2010",
+      "rank": 1
+    },
+    {
+      "mutation": "G2032R",
+      "target": "ROS1",
+      "position": 2032,
+      "mechanism": "solvent_front",
+      "delta_kcal": 1.5,
+      "wt_score": -7.8,
+      "mut_score": -6.3,
+      "esm2_fitness": -6.717512373812497,
+      "codon_distance": 1,
+      "wt_codon": "GGT",
+      "mut_codon": "CGT",
+      "joint_logit": -0.23848879306504767,
+      "joint_probability": 0.44065879746448394,
+      "verdict": "low_probability_resistance",
+      "literature_confirmed": true,
+      "citation_pmid": "23598171",
+      "citation_short": "Awad et al., NEJM 2013",
+      "expected_direction": "resistance",
+      "rationale": "\u0394 = +1.50 kcal/mol, ESM2 fitness = -6.72, mechanism = solvent_front. Joint calibrated probability = 0.44. Awad et al., NEJM 2013",
+      "rank": 2
+    }
+  ],
+  "n_predictions": 2,
+  "literature_confirmed_count": 2,
+  "ledger_note": "Atlas v2 forecasts are computed live from the multi-signal model. Re-runs against new clinical reports compound the credibility ledger: a prediction that pre-dates the first clinical observation of the mutation becomes a confirmed forecast on the next regeneration."
+}
