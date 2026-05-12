@@ -87,6 +87,7 @@ function Hero() {
               <span className="flex items-center gap-1.5"><Check /> No install</span>
               <span className="flex items-center gap-1.5"><Check /> Vina + GNINA + Boltz-2 ML</span>
               <span className="flex items-center gap-1.5"><Check /> Mutation-aware virtual screening</span>
+              <span className="flex items-center gap-1.5"><Check /> Resistance Atlas + calibrate your own data</span>
               <span className="flex items-center gap-1.5"><Check /> Ask the AI about your job</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>
@@ -296,6 +297,17 @@ function FeatureGrid() {
       isNew: true,
     },
     {
+      // Resistance Atlas + Calibrate-your-own-data. The Atlas is the
+      // public-facing surface; the calibrate flow lets a user score their
+      // own (drug, mutation) cases against the same 2-signal model. Now
+      // backed by real ESM-2 inference on the GPU pod for novel mutations
+      // — previously fell back to a BLOSUM62 proxy.
+      icon: <Target />,
+      title: "Resistance Atlas + Calibrate-your-own-data",
+      body: "Public per-drug atlas ranking the most likely emergent clinical-resistance mutations (15 drugs covered, ROC-AUC 0.81 cross-validated on 50 events). Upload your own (drug, mutation) CSV at /atlas/calibrate to score against the same model — novel (gene, position, mutant) tuples get real ESM-2 fitness from our GPU pod, not a substitution-matrix proxy.",
+      isNew: true,
+    },
+    {
       // v1.00 — ADMET-extended already exists, but the homepage cards
       // talked about "Drug-likeness panel" generically. Make the
       // explicit hERG/DILI/CYP/BBB list visible because those four
@@ -418,20 +430,28 @@ function FeatureGrid() {
  * shipping anything material — keep to ≤4 items so it stays scannable.
  */
 function WhatsNew() {
-  // 2026-05-12: refreshed when v1.20-v1.23 shipped. The three newest
-  // shipping items now lead the page: pre-computed library landing
-  // pages, mutation-aware virtual screening, and the sieve→microscope
-  // promote flow. Older cards (AI Optimize, Quick Dock, library)
-  // remain in the feature grid below.
+  // 2026-05-12: 4-card layout after the ESM2-pod deploy. Calibrate-your-own
+  // -data went from "BLOSUM proxy demo" to a real Pro-beta feature now that
+  // the pod serves live ESM-2 for novel mutations. Atlas card text updated
+  // accordingly. v1.20-v1.23 cards (library, VS) still here.
   const items = [
     {
       tag: "Just shipped",
       title: "Resistance Atlas — predict the next mutation that breaks a drug",
       body:
-        "For every FDA-approved targeted cancer drug, the Atlas ranks which mutations will most likely emerge as clinical resistance — before patients hit them. Triangulates docking Δ + ESM-2 protein-language-model fitness, calibrated on 50 published clinical-resistance events (ROC-AUC 0.90 in-sample, 0.81 cross-validated). Every prediction is timestamped, citation-backed, and publicly re-derivable. 15 drugs covered today.",
+        "For every FDA-approved targeted cancer drug, the Atlas ranks which mutations will most likely emerge as clinical resistance — before patients hit them. Triangulates docking Δ + ESM-2 protein-language-model fitness, calibrated on 50 published clinical-resistance events (ROC-AUC 0.90 in-sample, 0.81 cross-validated). 15 drugs covered today. Novel (gene, position, mutant) lookups now run real ESM-2 on our GPU pod on demand.",
       tone: "delta" as const,
       href: "/atlas",
       cta: "Open the Atlas",
+    },
+    {
+      tag: "Pro beta",
+      title: "Calibrate your own (drug, mutation) data against our model",
+      body:
+        "Upload up to 10 (gene, position, wt, mutant, drug) rows as CSV. We score each through the same 2-signal model the Atlas uses — real ESM-2 inference for novel mutations, instant cache hits for the 49 calibration events — and return joint probability, verdict, and AUC if you provide ground truth. Free tier: 10 rows / day.",
+      tone: "violet" as const,
+      href: "/atlas/calibrate",
+      cta: "Calibrate your data",
     },
     {
       tag: "Just shipped",
@@ -456,7 +476,7 @@ function WhatsNew() {
     <section className="bg-slate-50 dark:bg-slate-900/40 border-y border-slate-200/80 dark:border-slate-800/60">
       <Container className="py-16 sm:py-20">
         <SectionHead eyebrow="What's new" title="Recently shipped." />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {items.map((it) => (
           <Link
             key={it.title}
@@ -470,7 +490,9 @@ function WhatsNew() {
                   ? "bg-delta-50 text-delta-700 ring-1 ring-inset ring-delta-200 dark:bg-delta-900/30 dark:text-delta-300 dark:ring-delta-700/40"
                   : it.tone === "accent"
                     ? "bg-accent-50 text-accent-700 ring-1 ring-inset ring-accent-200 dark:bg-accent-900/30 dark:text-accent-300 dark:ring-accent-700/40"
-                    : "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40")
+                    : it.tone === "violet"
+                      ? "bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:ring-violet-700/40"
+                      : "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-700/40")
               }
             >
               <span className="w-1.5 h-1.5 rounded-full bg-current" />
@@ -515,6 +537,16 @@ function Comparison() {
             {[
               ["Mutation-aware",                 false,     true,      true],
               ["WT-vs-mutant matrix",            false,     true,      "partial"],
+              // Resistance Atlas — public, per-drug, calibrated forecast of
+              // which mutations will most likely break a given drug. No
+              // free server ships this; Maestro doesn't ship a public
+              // surface (it's a local desktop tool).
+              ["Public resistance-mutation atlas", false,    true,      false],
+              // Calibrate-your-own-data — upload (drug, mutation) CSV, get
+              // joint-probability + verdict scored through the same model
+              // the Atlas uses (real ESM-2 inference for novel positions).
+              // No comparable external API in free servers or Maestro.
+              ["Score your own (drug, mutation) cases", false, true,    false],
               // v1.23 — pre-computed library landing pages. No free server
               // ships these (would require curating + running a library and
               // hosting the snapshots). Maestro doesn't ship public
