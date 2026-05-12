@@ -11,11 +11,19 @@ import { tryReloadOnChunkError } from "./lib/chunkReload";
 // the @sentry/react bundle never ships to clients we don't have a DSN
 // for. Documented in the May 2026 platform audit (#256).
 if (import.meta.env.VITE_SENTRY_DSN) {
-  // @ts-expect-error — @sentry/react is an optional runtime dep. We
-  // dynamic-import it only when VITE_SENTRY_DSN is set; without that
-  // env var the import never runs and the package doesn't need to be
-  // installed for the rest of the app to build.
-  import("@sentry/react").then((Sentry) => {
+  // @sentry/react is an optional runtime dep. We dynamic-import it
+  // only when VITE_SENTRY_DSN is set; without that env var the import
+  // never runs and the package doesn't need to be installed for the
+  // rest of the app to build.
+  //
+  // The module specifier goes through a variable so Rollup can't
+  // statically resolve it at build time. Without that indirection the
+  // build fails with "Rollup failed to resolve import '@sentry/react'"
+  // whenever the package isn't installed, even though the runtime
+  // code path is gated on the DSN env var. The catch block below
+  // handles the case where the package is missing at runtime.
+  const sentryModuleId = "@sentry/react";
+  import(/* @vite-ignore */ sentryModuleId).then((Sentry) => {
     Sentry.init({
       dsn: import.meta.env.VITE_SENTRY_DSN,
       environment: import.meta.env.MODE,

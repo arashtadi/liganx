@@ -409,39 +409,91 @@ def _prep_receptor_for_variant(
         clean_for_variant = clean_wt
         return receptor_path, clean_for_variant, foldx_ddg
 
-    # Mutant path — build via FoldX if the PDBQT is missing.
+    # Mutant path — try FoldX first (gives ΔΔG), fall back to PDBFixer
+    # when FoldX is unavailable or fails. The production pod runs without
+    # FoldX (academic-only licence), so the PDBFixer branch is the de-facto
+    # production path. Mirrors the /jobs runner's `_foldx_available()` +
+    # `build_mutant_pdbfixer` fallback in services/runner.py.
+    #
+    # Pre-fix (May 2026 audit / RA spike #5): FoldX was called directly
+    # with no fallback, so every screening on the prod pod hit
+    #   "FoldX build failed for X: FoldX binary not on PATH"
+    # and 24 / 50 events failed at the mutant-build step — exactly the
+    # pattern reported by the Resistance Atlas baseline (HER2 / FLT3 /
+    # PI3Kα / IDH1 + second-tier ABL mutants).
     if not receptor_path.exists():
         FOLDX_CACHE.mkdir(parents=True, exist_ok=True)
-        try:
-            from deltadock_pipeline.foldx import build_mutant, FoldXError
+        clean_mutant = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{variant}.clean.pdb"
+
+        # Probe whether FoldX is callable BEFORE trying it. The probe is
+        # the same shape /jobs uses in runner._foldx_available().
+        def _foldx_callable() -> bool:
             from ..config import get_settings
-            settings = get_settings()
-            foldx_path = settings.foldx_path
-            mutant = build_mutant(
-                pdb_path=clean_wt,
-                chain=chain,
-                mutation_code=variant,
-                out_dir=FOLDX_CACHE,
-                foldx_path=foldx_path,
-                cache_dir=FOLDX_CACHE,
-            )
-            # build_mutant returns FoldXResult (dataclass), not dict.
-            # Attribute access — see foldx.py lines 36-41 for the shape.
-            # Runner.py line 1505+ uses the same access pattern.
-            mutant_pdb = Path(mutant.mutant_pdb)
-            foldx_ddg = mutant.ddg_kcal_mol
-            clean_mutant = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{variant}.clean.pdb"
-            fix_pdb(mutant_pdb, clean_mutant, chain=chain)
-            prepare_receptor(clean_mutant, receptor_path)
-            clean_for_variant = clean_mutant
-        except FoldXError as e:
-            # FoldX can fail when the residue isn't in the structure —
-            # surface a clear error so the runner can mark the cells
-            # for this variant as "failed" rather than crashing the whole
-            # screening.
-            raise RuntimeError(f"FoldX build failed for {variant}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Mutant prep failed for {variant}: {e}") from e
+            fp = (get_settings().foldx_path or "").strip()
+            if not fp:
+                return False
+            try:
+                from pathlib import Path as _P
+                return _P(fp).is_file()
+            except Exception:
+                return False
+
+        used_foldx = False
+        if _foldx_callable():
+            try:
+                from deltadock_pipeline.foldx import build_mutant, FoldXError
+                from ..config import get_settings
+                foldx_path = get_settings().foldx_path
+                mutant = build_mutant(
+                    pdb_path=clean_wt,
+                    chain=chain,
+                    mutation_code=variant,
+                    out_dir=FOLDX_CACHE,
+                    foldx_path=foldx_path,
+                    cache_dir=FOLDX_CACHE,
+                )
+                mutant_pdb = Path(mutant.mutant_pdb)
+                foldx_ddg = mutant.ddg_kcal_mol
+                fix_pdb(mutant_pdb, clean_mutant, chain=chain)
+                prepare_receptor(clean_mutant, receptor_path)
+                clean_for_variant = clean_mutant
+                used_foldx = True
+            except FoldXError as e:
+                # FoldX-side failure — fall through to PDBFixer rather
+                # than failing the whole cell. The clinical-resistance
+                # signal we care about doesn't depend on FoldX's ΔΔG
+                # number (Vina docking against the mutated receptor is
+                # what carries the load), so degrading is the right call.
+                log.warning(
+                    "screening: FoldX failed for %s on %s/%s (%s) — trying PDBFixer",
+                    variant, pdb_id, chain, e,
+                )
+            except Exception as e:
+                log.warning(
+                    "screening: FoldX raised unexpected error for %s (%s) — trying PDBFixer",
+                    variant, e,
+                )
+
+        if not used_foldx and not receptor_path.exists():
+            # PDBFixer fallback — produces the mutant cleaned PDB +
+            # mutant PDBQT receptor. No ΔΔG (foldx_ddg stays None) but
+            # the rigid-receptor Δ-score from Vina is still meaningful.
+            try:
+                from deltadock_pipeline.mutate import build_mutant_pdbfixer
+                build_mutant_pdbfixer(
+                    pdb_path=clean_wt,
+                    chain=chain,
+                    mutation_code=variant,
+                    out_path=clean_mutant,
+                )
+                if not clean_mutant.exists() or clean_mutant.stat().st_size == 0:
+                    raise RuntimeError("build_mutant_pdbfixer produced no file")
+                prepare_receptor(clean_mutant, receptor_path)
+                clean_for_variant = clean_mutant
+            except Exception as e:
+                raise RuntimeError(
+                    f"Mutant prep failed for {variant} via both FoldX and PDBFixer: {e}"
+                ) from e
     else:
         clean_for_variant = RECEPTOR_CACHE / f"{pdb_id}_{chain}_{variant}.clean.pdb"
         if not clean_for_variant.exists():

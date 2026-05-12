@@ -26,6 +26,7 @@ import AdminPage from "./pages/AdminPage";
 import StudioPage from "./pages/StudioPage";
 import BlogIndexPage from "./pages/BlogIndexPage";
 import BlogPostPage from "./pages/BlogPostPage";
+import AtlasPage from "./pages/AtlasPage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -86,6 +87,8 @@ export default function App() {
                 import.meta.glob (see src/blog/registry.ts). */}
             <Route path="/blog" element={<BlogIndexPage />} />
             <Route path="/blog/:slug" element={<BlogPostPage />} />
+            <Route path="/atlas" element={<AtlasPage />} />
+            <Route path="/atlas/:slug" element={<AtlasPage />} />
             <Route path="/admin" element={<AdminPage />} />
             {/* Capital-A alias so /Admin (which is what user typed) works
                 too. Without this React Router would 404 because routes
