@@ -203,27 +203,26 @@ export default function ScreeningPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Auto-title so this Job is traceable back to its parent
-      // screening in History. Keeps the relationship visible
-      // without needing a new DB column for now.
+      // v1.22: server clones the screening's pose files + copies the
+      // scores into a new Job in COMPLETED state — no re-dock. The
+      // user lands on the deep view (3D pose + ADMET) in ~1s instead
+      // of waiting 3-8 min for Vina to re-run on numbers we already
+      // have. Server enforces the same 5-compound cap, ownership
+      // check, and quota as POST /jobs. The `compounds` we computed
+      // above is unused for the request itself but kept for the
+      // empty-set guard.
       const mutLabel = data.mutations.length
         ? data.mutations.join("+")
         : "WT";
       const title = `Promoted from Screening · ${data.pdb_id} · ${mutLabel} · ${compounds.length} cmpd`;
-      const job = await api.createJob({
-        pdb_id: data.pdb_id,
-        chain: data.chain,
-        mutations: data.mutations,
-        compounds,
-        // Full Job defaults — exhaustiveness 8 matches Studio's default
-        // for the deep-dive use case (vs screening's lighter exh=4).
-        engine: "quickvina2_gpu",
-        exhaustiveness: 8,
-        include_wt: true,
+      const job = await api.createJobFromScreening({
+        screening_share_id: data.share_id,
+        compound_ids: ordered,
         title,
       });
-      // Land on the Full Job results page — polling kicks in
-      // immediately so the user sees docking progress in real time.
+      // Land on the Full Job results page. Job is already COMPLETED
+      // so the pose viewer + ADMET load immediately — no polling
+      // wait, no progress bar.
       navigate(`/jobs/${job.share_id}`);
     } catch (err) {
       const msg =

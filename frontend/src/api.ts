@@ -663,6 +663,23 @@ export const api = {
   },
   createJob: (payload: JobCreatePayload) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify(payload) }),
+  /** v1.22: Promote-from-screening. Server-side imports the screening's
+   *  existing dock results into a brand-new Full Job in COMPLETED state
+   *  (no re-dock — pose files are cloned, scores copied). Lets the user
+   *  jump from a screening ranked list to the deep view (3D pose +
+   *  ADMET) in ~1 second instead of waiting for a fresh Vina run.
+   *
+   *  Same auth + quota + rate-limit as POST /jobs (this still consumes
+   *  one Job slot in the user's quota since it produces a real Job row). */
+  createJobFromScreening: (payload: {
+    screening_share_id: string;
+    compound_ids: number[];
+    title?: string;
+  }) =>
+    request<Job>("/jobs/from-screening", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves
   // either form. Typed as `string | number` so callers can pass whichever
   // they have on hand without a manual coerce.

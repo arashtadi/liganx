@@ -18,7 +18,7 @@ from ..auth import CurrentUser, current_user, current_user_or_none, profile_comp
 from ..celery_app import dispatch_job
 from ..config import get_settings
 from ..db import get_session
-from ..models import Compound, DockingResult, Job, JobStatus
+from ..models import Compound, DockingResult, Job, JobStatus, ScreeningJob, ScreeningResult
 from ..schemas import (
     CompoundOut,
     DockingResultOut,
@@ -26,6 +26,7 @@ from ..schemas import (
     JobOut,
     JobUpdate,
 )
+from ..services.pose_store import get_pose_store
 from ..services.rate_limit import JOBS_LIMIT
 
 # Same shape used in structures.py: variant must look like "WT" or "T790M"
@@ -438,6 +439,239 @@ def create_job(
     # this site again. See docs/celery_redis_migration_plan.md.
     dispatch_job(job.id, background_tasks=background)
 
+    return _to_out(job)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Promote-from-Screening (v1.22 / #233)
+# ──────────────────────────────────────────────────────────────────────
+#
+# A Full Job created via promote-from-screening reuses the docking
+# scores + pose files that the screening already produced. We don't
+# re-run Vina because:
+#   1. The screening already docked these compounds against this exact
+#      (target, mutation) at exhaustiveness=4. With a fixed seed,
+#      re-docking at exhaustiveness=8 moves the score by ~0.1 kcal/mol
+#      worst-case — barely above single-seed noise.
+#   2. The user's intent on clicking "promote" is to see the 3D pose +
+#      ADMET + AI Variants panel. None of that requires a fresh dock —
+#      pose viewer reads pose_uri, ADMET is pose-agnostic, AI Variants
+#      kicks off its own dock per generated SMILES.
+#
+# The trade we accept: hits/misses / pocket-contact analysis (which
+# JobPage renders below the pose) is currently embedded in the dock
+# pipeline's `validate_pose` step (see audit). Imported jobs don't get
+# that section. JobPage already renders gracefully when the `extra`
+# field lacks contacts data, so this degrades cleanly to "score + pose
+# + ADMET only" without breaking.
+#
+# Tracking the source screening: stored in Job.tags as a
+# `promoted-from-screening:<screening_share_id>` token. Avoids a schema
+# migration for v1.22; can be promoted to a proper FK column later if
+# we add more cross-Job relationships.
+
+class PromoteFromScreeningPayload(BaseModel):
+    """Request body for POST /jobs/from-screening."""
+    screening_share_id: str = Field(min_length=1, max_length=64)
+    compound_ids: list[int] = Field(min_length=1, max_length=5)
+    title: str | None = Field(default=None, max_length=200)
+
+
+_PROMOTE_TAG_PREFIX = "promoted-from-screening:"
+
+
+@router.post(
+    "/from-screening",
+    response_model=JobOut,
+    status_code=201,
+    dependencies=[Depends(JOBS_LIMIT)],
+)
+def create_job_from_screening(
+    payload: PromoteFromScreeningPayload,
+    user: CurrentUser = Depends(profile_complete_user),
+    session: Session = Depends(get_session),
+) -> JobOut:
+    """Import a slice of a screening's results as a brand-new Full Job.
+
+    The new Job lands in COMPLETED state with DockingResult rows
+    pre-populated from the matching ScreeningResult rows (scores +
+    pose files cloned via pose_store.clone). No GPU work — the
+    response returns within ~1s for a typical 5-compound promotion.
+
+    Auth: same `profile_complete_user` gate as POST /jobs. Per-user
+    job quota applies (this DOES count, since it produces a real Job
+    that shows up in History). Rate limit also applies via the
+    JOBS_LIMIT dependency on the route.
+    """
+    # 1. Find the source screening + verify ownership.
+    sj = session.exec(
+        select(ScreeningJob).where(ScreeningJob.share_id == payload.screening_share_id)
+    ).first()
+    if sj is None:
+        raise HTTPException(status_code=404, detail="Screening not found")
+    if sj.user_id and sj.user_id != user.id:
+        # Hide existence from non-owners so screening share_ids can't
+        # be enumerated. Same pattern as the /screening endpoint.
+        raise HTTPException(status_code=404, detail="Screening not found")
+
+    # 2. Pull the screening's result rows for the requested compounds.
+    selected_ids = list(set(payload.compound_ids))
+    src_rows = session.exec(
+        select(ScreeningResult)
+        .where(ScreeningResult.screening_job_id == sj.id)
+        .where(ScreeningResult.compound_id.in_(selected_ids))
+    ).all()
+    if not src_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="None of the requested compounds belong to that screening.",
+        )
+
+    # At least one mutant row must have docked successfully — otherwise
+    # there's nothing to promote. WT-only screenings hit this branch
+    # if WT failed; legit failure path.
+    ok_rows = [r for r in src_rows if r.status == "ok" and r.best_score is not None]
+    if not ok_rows:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Selected screening rows have no completed docks. "
+                "Wait for the screening to finish or pick rows with status=ok."
+            ),
+        )
+
+    # 3. Per-user lifetime job quota — same logic as create_job. Imported
+    #    Jobs DO count: they create a real Job row that shows in History.
+    quota_row = session.execute(
+        text(
+            "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            " (SELECT COUNT(*) FROM job j"
+            "  WHERE j.user_id = :uid AND j.status IN ('PENDING','RUNNING','COMPLETED')"
+            " ) AS used"
+            " FROM (SELECT 1) _"
+            " LEFT JOIN public.user_profile p ON p.user_id = :uid"
+        ),
+        {"uid": user.id},
+    ).mappings().first()
+    quota = int(quota_row["quota"]) if quota_row else 10
+    used = int(quota_row["used"]) if quota_row else 0
+    if used >= quota:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"You've used your {quota} free dockings. Contact us if "
+                "you'd like more."
+            ),
+        )
+
+    # 4. Build the Job shell. Status=COMPLETED from the jump — there's
+    #    no async work pending. Mutations come from the screening so
+    #    we never accidentally widen the set on import.
+    mutations_list = [m for m in (sj.mutations or "").split(",") if m]
+    mut_label = "+".join(mutations_list) if mutations_list else "WT"
+    auto_title = (
+        payload.title
+        or f"Promoted from Screening · {sj.pdb_id} · {mut_label} · {len(selected_ids)} cmpd"
+    )
+    # Carry forward any tags the source screening had + add the
+    # promote marker so the JobPage UI can render the back-link.
+    tags = list(sj.tags or [])
+    tags.append(f"{_PROMOTE_TAG_PREFIX}{sj.share_id}")
+
+    job = Job(
+        pdb_id=sj.pdb_id,
+        chain=sj.chain,
+        uniprot_id=None,  # screening doesn't track uniprot; not needed for read-only Job
+        mutations=sj.mutations or "",
+        # Use the screening's exhaustiveness so the score row reads as
+        # "from a screening" not "from a Full Job at exh=8". Lying
+        # about exhaustiveness here would be a data-integrity bug.
+        exhaustiveness=sj.exhaustiveness or 4,
+        include_wt=True,  # screening always produces WT rows; preserve
+        engine=sj.engine or "quickvina2_gpu",
+        status=JobStatus.COMPLETED,
+        user_id=user.id,
+        title=auto_title,
+        tags=tags,
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    # 5. Materialize Compound rows owned by the new Job. The screening's
+    #    Compound rows may have job_id=NULL (compounds are shared); we
+    #    create fresh ones FK'd to this Job so JobPage's lookup chain
+    #    works exactly like a freshly-submitted Job.
+    src_compounds_by_id = {
+        c.id: c
+        for c in session.exec(
+            select(Compound).where(Compound.id.in_(selected_ids))
+        ).all()
+    }
+    src_to_new_compound: dict[int, Compound] = {}
+    for src_cid in selected_ids:
+        src_c = src_compounds_by_id.get(src_cid)
+        if src_c is None:
+            continue
+        new_c = Compound(job_id=job.id, name=src_c.name, smiles=src_c.smiles)
+        session.add(new_c)
+        src_to_new_compound[src_cid] = new_c
+    session.commit()
+    for new_c in src_to_new_compound.values():
+        session.refresh(new_c)
+
+    # 6. Copy ScreeningResult rows → DockingResult rows. Clone pose
+    #    files so the new Job's pose viewer can resolve them without
+    #    fishing for the old screening's URI conventions. The clone
+    #    method on pose_store handles LocalDisk + R2 server-side copy.
+    store = get_pose_store()
+    for sr in src_rows:
+        if sr.compound_id not in src_to_new_compound:
+            continue
+        new_c = src_to_new_compound[sr.compound_id]
+
+        new_pose_uri: str | None = None
+        if sr.pose_uri:
+            try:
+                new_pose_uri = store.clone(
+                    sr.pose_uri, job.id, new_c.id, sr.variant,
+                )
+            except Exception as e:
+                # A missing source file or transient R2 error shouldn't
+                # take down the whole promote — fall back to no pose
+                # for this cell. The user will see the score but the
+                # 3D viewer for that cell will show "pose unavailable".
+                log.warning(
+                    "promote-from-screening %s: pose clone failed for compound=%s variant=%s: %s",
+                    sj.share_id, sr.compound_id, sr.variant, e,
+                )
+                new_pose_uri = None
+
+        # Carry the screening's extras forward so any outside-pocket
+        # flag / FoldX ddg / engine tag survives the import.
+        new_extra = sr.extra
+        # Stamp the cell with its provenance so the AI panel can know
+        # "this score came from a screening, not from a dedicated dock".
+        provenance = f"source=screening|screening_id={sj.share_id}"
+        new_extra = f"{provenance}|{new_extra}" if new_extra else provenance
+
+        dr = DockingResult(
+            job_id=job.id,
+            compound_id=new_c.id,
+            variant=sr.variant,
+            best_score=sr.best_score if sr.best_score is not None else 0.0,
+            pose_uri=new_pose_uri,
+            extra=new_extra,
+        )
+        session.add(dr)
+    session.commit()
+    session.refresh(job)
+
+    log.info(
+        "promote-from-screening: created job %s from screening %s "
+        "(%d compounds, %d cells)",
+        job.share_id, sj.share_id, len(src_to_new_compound), len(src_rows),
+    )
     return _to_out(job)
 
 

@@ -48,6 +48,15 @@ class PoseStore(Protocol):
     def exists(self, pose_uri: str) -> bool:
         """Cheap probe — does the underlying object/file still exist?"""
 
+    def clone(
+        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+    ) -> str:
+        """Copy an existing pose under a new (job_id, compound_id, variant)
+        key and return the new URI. Used by the screening→Job import flow
+        (v1.22) so we don't have to re-dock for compounds we already have
+        a pose for. Cheap: ~50KB pose, instant on local disk; one S3
+        CopyObject on R2 (server-side copy, no data egress)."""
+
 
 class LocalDiskPoseStore:
     """Filesystem implementation. Mirrors the legacy behaviour exactly so old
@@ -90,6 +99,31 @@ class LocalDiskPoseStore:
             return Path(pose_uri).is_file() and Path(pose_uri).stat().st_size > 0
         except OSError:
             return False
+
+    def clone(
+        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+    ) -> str:
+        """Copy a local pose file under a new key. Path-validates the source
+        the same way `read()` does so a malformed URI can't escape the
+        allowed roots."""
+        import shutil
+        src = Path(src_uri).resolve()
+        allowed_roots = [self.base_dir.resolve()]
+        legacy = (Path.home() / ".deltadock" / "poses").resolve()
+        if legacy not in allowed_roots:
+            allowed_roots.append(legacy)
+        if not any(_is_within(src, root) for root in allowed_roots):
+            raise FileNotFoundError(f"pose path outside allowed roots: {src_uri}")
+        if not src.is_file():
+            raise FileNotFoundError(f"pose not found: {src_uri}")
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        target = self.base_dir / f"job{new_job_id}_c{compound_id}_{variant}.pdbqt"
+        # Same atomic write contract as write() so the import endpoint can
+        # be retried safely if it crashes mid-loop.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        shutil.copyfile(src, tmp)
+        tmp.replace(target)
+        return str(target)
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -163,6 +197,23 @@ class R2PoseStore:
             return True
         except Exception:
             return False
+
+    def clone(
+        self, src_uri: str, new_job_id: int, compound_id: int, variant: str
+    ) -> str:
+        """Server-side S3 CopyObject — pose bytes never leave R2. No egress
+        cost, sub-100ms per call. The new key follows the same job-keyed
+        convention as write() so the existing read path resolves it
+        without translation."""
+        src_bucket, src_key = self._parse_uri(src_uri)
+        new_key = self._key_for(new_job_id, compound_id, variant)
+        self._client.copy_object(
+            Bucket=self._bucket,
+            Key=new_key,
+            CopySource={"Bucket": src_bucket, "Key": src_key},
+            ContentType="chemical/x-pdbqt",
+        )
+        return f"r2://{self._bucket}/{new_key}"
 
 
 _store: PoseStore | None = None
