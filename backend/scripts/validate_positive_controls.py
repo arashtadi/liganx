@@ -214,6 +214,42 @@ CASES: list[Case] = [
         # and Avapritinib (active-conformation selectivity).
         caveat="Pirtobrutinib's clinical retention against C481S comes from being non-covalent — no acrylamide to lose. Rigid-receptor Vina cannot model covalent vs non-covalent mechanism, so Pirtobrutinib and Ibrutinib both return similar small-magnitude ΔΔG against C481S even though their clinical IC50 shifts differ by >100×. Documented limitation, not a pipeline regression.",
     ),
+    # ─── v2 cases added 2026-05-12 (#217) ──────────────────────────────────
+    # Three textbook resistance/selectivity events that round out the suite
+    # from 8 → 10 cases and add explicit coverage of the marquee KRAS G12C
+    # workflow + the EGFR resistance-ladder (T790M → C797S → L858R back to
+    # the activating mutation). Each comes with a literature anchor and an
+    # honest caveat where the case is known to underperform the IC50 shifts.
+    Case(
+        name="KRAS G12C — Sotorasib selectivity",
+        pdb_id="4OBE", chain="A", uniprot_id="P01116",
+        mutation="G12C",
+        drug_name="Sotorasib",
+        drug_smiles="CC1=CC(=C(N=C1N1CCN(CC1C)C(=O)C=C)C1=C(C(=NC2=C1N(C(=O)N=C2N1CCC(CC1)F)C1=C(C=CC=C1F)F)O)C(F)(F)F)C",
+        expected_direction="selectivity",
+        literature="Canon et al., Nature 2019 — Sotorasib (AMG 510) was specifically designed to bind the GDP-bound KRAS G12C; cellular IC50 ~5-15 nM against G12C and effectively inert against WT. First FDA-approved direct KRAS inhibitor (May 2021).",
+        caveat="Sotorasib is a COVALENT acrylamide targeting the engineered C12 thiol via Michael addition (binds the GDP-bound 'switch-II pocket'). Vina is rigid-receptor non-covalent; it cannot model the covalent attack or the cryptic switch-II conformational opening. The geometric selectivity for G12C vs G12-WT may produce a small Δ, but the magnitude will dramatically under-state the >10,000-fold cellular selectivity. Same family of limitation as the Osimertinib / Avapritinib / Ibrutinib cases.",
+    ),
+    Case(
+        name="EGFR C797S — Osimertinib resistance",
+        pdb_id="2ITY", chain="A", uniprot_id="P00533",
+        mutation="C797S",
+        drug_name="Osimertinib",
+        drug_smiles="COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
+        expected_direction="resistance",
+        literature="Thress et al., Nat Med 2015 — C797S is the on-target acquired resistance mutation to Osimertinib (3rd-gen EGFR TKI). Loss of the covalent cysteine ablates the irreversible bond; cellular IC50 shifts >100× in T790M/C797S double-mutants.",
+        caveat="Osimertinib's WT advantage is COVALENT (acrylamide → C797 thiol). The C797S substitution is precisely the loss-of-target mechanism Vina cannot see — without the covalent bond, both the WT (with C) and mutant (with S) score similarly under non-covalent scoring. The Δ may be smaller than IC50 data suggests but should still trend toward resistance (positive sign).",
+    ),
+    Case(
+        name="EGFR L858R — Gefitinib selectivity",
+        pdb_id="2ITY", chain="A", uniprot_id="P00533",
+        mutation="L858R",
+        drug_name="Gefitinib",
+        drug_smiles="COc1cc2ncnc(Nc3ccc(F)c(Cl)c3)c2cc1OCCCN1CCOCC1",
+        expected_direction="selectivity",
+        literature="Lynch et al., NEJM 2004 — L858R activating mutation drives 1st-gen TKI response in NSCLC. Gefitinib has ~10× higher affinity for the L858R-activated kinase conformation than for WT EGFR; the founding observation that put EGFR TKIs in front-line lung therapy.",
+        caveat="L858R is an activating mutation that shifts the kinase to an active conformation favored by 1st-gen TKIs — but rigid-receptor Vina docks against the static crystal pocket and cannot model the conformational shift. The geometric selectivity may produce a measurable Δ if the L→R substitution alone reshapes the pocket, but the IC50 difference reflects state-equilibrium effects Vina under-represents.",
+    ),
 ]
 
 

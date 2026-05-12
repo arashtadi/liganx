@@ -1,12 +1,12 @@
 {
-  "timestamp_utc": "2026-05-02T06:22:44Z",
-  "api_base": "https://api.liganx.com",
+  "timestamp_utc": "2026-05-12T08:42:58Z",
+  "api_base": "https://liganx-api.fly.dev",
   "noise_floor_kcal": 1.0,
   "summary": {
-    "total": 8,
+    "total": 11,
     "pass": 5,
-    "fail": 0,
-    "noise": 3,
+    "fail": 1,
+    "noise": 5,
     "skip": 0
   },
   "cases": [
@@ -145,6 +145,57 @@
       "delta_kcal": 0.5,
       "verdict": "PASS",
       "verdict_note": "|\u0394|=0.50 within \u00b11.0 kcal/mol noise floor (retained as expected)"
+    },
+    {
+      "share_id": "rxG7dFfcJCs",
+      "name": "KRAS G12C \u2014 Sotorasib selectivity",
+      "pdb_id": "4OBE",
+      "chain": "A",
+      "uniprot_id": "P01116",
+      "mutation": "G12C",
+      "drug_name": "Sotorasib",
+      "expected_direction": "selectivity",
+      "literature": "Canon et al., Nature 2019 \u2014 Sotorasib (AMG 510) was specifically designed to bind GDP-bound KRAS G12C; cellular IC50 ~5-15 nM against G12C and effectively inert against WT. First FDA-approved direct KRAS inhibitor (May 2021).",
+      "caveat": "Sotorasib is a COVALENT acrylamide targeting the engineered C12 thiol via Michael addition. Vina is rigid-receptor non-covalent; it cannot model the covalent attack or the cryptic switch-II conformational opening.",
+      "wt_score": -7.0,
+      "mut_score": -7.0,
+      "delta_kcal": 0.0,
+      "verdict": "NOISE",
+      "verdict_note": "|\u0394|=0.00 below \u00b11.0 kcal/mol noise floor"
+    },
+    {
+      "share_id": "ZovxKqrAVsY",
+      "name": "EGFR C797S \u2014 Osimertinib resistance",
+      "pdb_id": "2ITY",
+      "chain": "A",
+      "uniprot_id": "P00533",
+      "mutation": "C797S",
+      "drug_name": "Osimertinib",
+      "expected_direction": "resistance",
+      "literature": "Thress et al., Nat Med 2015 \u2014 C797S is the on-target acquired resistance mutation to Osimertinib (3rd-gen EGFR TKI). Loss of the covalent cysteine ablates the irreversible bond; cellular IC50 shifts >100\u00d7.",
+      "caveat": "Osimertinib's WT advantage is COVALENT (acrylamide \u2192 C797 thiol). C797S is precisely the loss-of-target Vina cannot see; both WT and mutant score similarly under non-covalent scoring.",
+      "wt_score": -8.0,
+      "mut_score": -7.4,
+      "delta_kcal": 0.5999999999999996,
+      "verdict": "NOISE",
+      "verdict_note": "|\u0394|=0.60 below \u00b11.0 kcal/mol noise floor"
+    },
+    {
+      "share_id": "FCVUsEe6wPQ",
+      "name": "EGFR L858R \u2014 Gefitinib selectivity",
+      "pdb_id": "2ITY",
+      "chain": "A",
+      "uniprot_id": "P00533",
+      "mutation": "L858R",
+      "drug_name": "Gefitinib",
+      "expected_direction": "selectivity",
+      "literature": "Lynch et al., NEJM 2004 \u2014 L858R activating mutation drives 1st-gen TKI response in NSCLC. Gefitinib has ~10\u00d7 higher affinity for the L858R-activated kinase than for WT EGFR.",
+      "caveat": "L858R activates the kinase via conformational shift. Rigid-receptor Vina docks against the static crystal pocket and under-represents state-equilibrium effects.",
+      "wt_score": -8.0,
+      "mut_score": -6.8,
+      "delta_kcal": 1.2000000000000002,
+      "verdict": "FAIL",
+      "verdict_note": "\u0394=+1.20 disagrees with 'selectivity' \u2014 documented method limitation."
     }
   ]
 }
