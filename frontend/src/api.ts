@@ -326,15 +326,56 @@ export class ApiError extends Error {
   }
 }
 
+/** Default per-request hard ceiling. If the backend hangs (cold-start,
+ *  wedged DB pool, network blip), the fetch promise would otherwise
+ *  never resolve and the calling component shows a spinner forever
+ *  with no way for the user to retry. 60 s is long enough to absorb
+ *  a legitimate cold start on Fly + RunPod, short enough that a
+ *  truly stuck request surfaces as an error the user can react to.
+ *
+ *  History: 2026-05-12 production went dark on /health hang (server
+ *  bug since fixed). The History page spinner spun forever because
+ *  this fetch had no AbortController. Even after the backend bug was
+ *  fixed, an unbounded client fetch is a defence-in-depth gap — kept
+ *  the timeout as a permanent guardrail. */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(await authHeader()),
-      ...(init?.headers || {}),
-    },
-    ...init,
-  });
+  // Allow callers to pass their own AbortSignal (e.g. a long-running
+  // Optimize call) by reading it off init. If none is supplied, set up
+  // a timeout-backed controller of our own. We never override an
+  // explicit signal — caller knows their cancellation policy better
+  // than we do.
+  const callerSignal = init?.signal as AbortSignal | undefined;
+  const ownController = callerSignal ? null : new AbortController();
+  const timeoutHandle = ownController
+    ? window.setTimeout(() => ownController.abort(new Error("request timed out")), REQUEST_TIMEOUT_MS)
+    : null;
+
+  let r: Response;
+  try {
+    r = await fetch(`${BASE}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeader()),
+        ...(init?.headers || {}),
+      },
+      ...init,
+      signal: callerSignal ?? ownController?.signal,
+    });
+  } catch (e) {
+    // Turn AbortError into a human-readable error the UI can render
+    // without leaking the "the operation was aborted" browser message.
+    if ((e as Error)?.name === "AbortError") {
+      throw new ApiError(
+        0,
+        `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s — the server may be cold-starting. Please retry.`,
+      );
+    }
+    throw e;
+  } finally {
+    if (timeoutHandle != null) window.clearTimeout(timeoutHandle);
+  }
   if (!r.ok) {
     // Prefer the FastAPI `detail` field — that's the human message we wrote.
     let detail: string | undefined;

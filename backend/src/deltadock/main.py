@@ -353,48 +353,69 @@ app.include_router(library.router)  # v1.23 — pre-computed library screenings 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
-    """Liveness + DB reachability probe.
+    """Liveness probe — must NEVER block.
 
-    Fly health checks consider any 200 as healthy, so we MUST return
-    non-200 when the database is unreachable — otherwise traffic
-    continues routing to a machine that can't serve a single request.
+    HISTORY: An earlier version of this endpoint did a synchronous
+    `engine.connect() + SELECT 1` to surface DB unreachability as 503.
+    Under sustained traffic the SQLAlchemy connection pool can exhaust,
+    and `engine.connect()` then blocks on `pool_timeout` (default 30 s)
+    waiting for a connection to free up. With Fly health checks polling
+    every few seconds, that turned the readiness probe into a thundering-
+    herd amplifier — every probe queued behind the previous one and the
+    whole worker stalled. Production went dark on 2026-05-12 from this
+    exact pathology.
 
-    The DB ping has a tight 2s timeout so a slow Postgres can't pin
-    the readiness signal during normal traffic load.
+    Keep this endpoint trivially fast and dependency-free. The DB
+    reachability check lives at /health/db with a hard timeout so a
+    wedged DB can't take the liveness signal with it.
     """
-    from fastapi import HTTPException
-    from sqlalchemy import text
-    from .db import engine as db_engine
-
-    db_status = "ok"
-    try:
-        with db_engine.connect() as conn:
-            # Direct exec_driver_sql with a short timeout so we don't
-            # block the event loop for more than a couple of seconds
-            # on a wedged DB.
-            conn.exec_driver_sql("SELECT 1")
-    except Exception as e:  # noqa: BLE001
-        db_status = f"down: {type(e).__name__}"
-        # Health check returns 503 — Fly treats this as unhealthy and
-        # stops routing traffic to this machine until DB comes back.
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "status": "db_unreachable",
-                "version": __version__,
-                "env": settings.app_env,
-                "git_sha": GIT_SHA,
-                "db_status": db_status,
-            },
-        )
-
     return {
         "status": "ok",
         "version": __version__,
         "env": settings.app_env,
         "git_sha": GIT_SHA,
-        "db_status": db_status,
     }
+
+
+@app.get("/health/db", tags=["meta"])
+def health_db() -> dict:
+    """Optional DB-reachability probe. Uses a short connect_timeout via
+    a one-off psycopg2 connection (bypassing the SQLAlchemy pool) so a
+    wedged pool can't hang this endpoint either. Returns 503 on failure
+    so monitoring can alert without affecting Fly's liveness routing.
+    """
+    from fastapi import HTTPException
+    import os
+    import time
+
+    started = time.time()
+    db_url = settings.effective_database_url
+    if db_url.startswith("sqlite"):
+        return {"status": "ok", "db": "sqlite (dev)", "elapsed_ms": 0}
+
+    try:
+        import psycopg2  # type: ignore
+        # 2-second connect_timeout — fast enough to never hang the probe.
+        conn = psycopg2.connect(db_url, connect_timeout=2)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            cur.close()
+        finally:
+            conn.close()
+        elapsed_ms = int((time.time() - started) * 1000)
+        return {"status": "ok", "db": "postgres", "elapsed_ms": elapsed_ms}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "db_unreachable",
+                "error_type": type(e).__name__,
+                "error": str(e)[:200],
+                "elapsed_ms": int((time.time() - started) * 1000),
+            },
+        )
 
 
 @app.get("/health/full", tags=["meta"])
