@@ -1,0 +1,234 @@
+{
+  "n_total": 50,
+  "n_scored": 25,
+  "auc_overall": 0.71875,
+  "threshold_kcal": 1.0,
+  "confusion": {
+    "tp": 8,
+    "fn": 8,
+    "fp": 1,
+    "tn": 8,
+    "precision": 0.8888888888888888,
+    "recall": 0.5,
+    "f1": 0.64
+  },
+  "per_mechanism": {
+    "activation_loop_conformational": {
+      "n": 2,
+      "n_positive": 1,
+      "n_negative": 1,
+      "auc": 1.0,
+      "mean_delta_positive": 1.9,
+      "mean_delta_negative": -0.6
+    },
+    "conformational_activation": {
+      "n": 2,
+      "n_positive": 0,
+      "n_negative": 2,
+      "auc": null,
+      "mean_delta_positive": null,
+      "mean_delta_negative": 0.45
+    },
+    "covalent_design": {
+      "n": 2,
+      "n_positive": 0,
+      "n_negative": 2,
+      "auc": null,
+      "mean_delta_positive": null,
+      "mean_delta_negative": -1.45
+    },
+    "covalent_escape": {
+      "n": 2,
+      "n_positive": 2,
+      "n_negative": 0,
+      "auc": null,
+      "mean_delta_positive": 0.85,
+      "mean_delta_negative": null
+    },
+    "designed_for_resistance": {
+      "n": 1,
+      "n_positive": 0,
+      "n_negative": 1,
+      "auc": null,
+      "mean_delta_positive": null,
+      "mean_delta_negative": -0.7
+    },
+    "dfg_motif": {
+      "n": 2,
+      "n_positive": 2,
+      "n_negative": 0,
+      "auc": null,
+      "mean_delta_positive": -0.30000000000000004,
+      "mean_delta_negative": null
+    },
+    "gatekeeper": {
+      "n": 7,
+      "n_positive": 6,
+      "n_negative": 1,
+      "auc": 0.5833333333333334,
+      "mean_delta_positive": 1.1833333333333336,
+      "mean_delta_negative": 0.4
+    },
+    "gatekeeper_adjacent": {
+      "n": 1,
+      "n_positive": 1,
+      "n_negative": 0,
+      "auc": null,
+      "mean_delta_positive": 1.2,
+      "mean_delta_negative": null
+    },
+    "macrocyclic_design": {
+      "n": 1,
+      "n_positive": 0,
+      "n_negative": 1,
+      "auc": null,
+      "mean_delta_positive": null,
+      "mean_delta_negative": 1.6
+    },
+    "non_covalent_design": {
+      "n": 1,
+      "n_positive": 0,
+      "n_negative": 1,
+      "auc": null,
+      "mean_delta_positive": null,
+      "mean_delta_negative": 0.8
+    },
+    "p_loop": {
+      "n": 2,
+      "n_positive": 2,
+      "n_negative": 0,
+      "auc": null,
+      "mean_delta_positive": 3.1,
+      "mean_delta_negative": null
+    },
+    "solvent_front": {
+      "n": 2,
+      "n_positive": 2,
+      "n_negative": 0,
+      "auc": null,
+      "mean_delta_positive": 0.95,
+      "mean_delta_negative": null
+    }
+  },
+  "false_negatives": [
+    {
+      "event_id": "met-y1230h-capmatinib",
+      "mutation_code": "Y1230H",
+      "drug": "Capmatinib",
+      "target": "met",
+      "mechanism": "dfg_motif",
+      "expected_direction": "resistance",
+      "delta_kcal": -0.9,
+      "wt_score": -8.6,
+      "mut_score": -9.5,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "egfr-t790m-gefitinib",
+      "mutation_code": "T790M",
+      "drug": "Gefitinib",
+      "target": "egfr",
+      "mechanism": "gatekeeper",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.2,
+      "wt_score": -6.8,
+      "mut_score": -6.6,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "egfr-c797s-osimertinib",
+      "mutation_code": "C797S",
+      "drug": "Osimertinib",
+      "target": "egfr",
+      "mechanism": "covalent_escape",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.2,
+      "wt_score": -7.2,
+      "mut_score": -7.0,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "alk-l1196m-crizotinib",
+      "mutation_code": "L1196M",
+      "drug": "Crizotinib",
+      "target": "alk",
+      "mechanism": "gatekeeper",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.2,
+      "wt_score": -7.9,
+      "mut_score": -7.7,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "met-d1228v-capmatinib",
+      "mutation_code": "D1228V",
+      "drug": "Capmatinib",
+      "target": "met",
+      "mechanism": "dfg_motif",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.3,
+      "wt_score": -9.0,
+      "mut_score": -8.7,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "egfr-t790m-erlotinib",
+      "mutation_code": "T790M",
+      "drug": "Erlotinib",
+      "target": "egfr",
+      "mechanism": "gatekeeper",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.4,
+      "wt_score": -6.7,
+      "mut_score": -6.3,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "egfr-l792h-osimertinib",
+      "mutation_code": "L792H",
+      "drug": "Osimertinib",
+      "target": "egfr",
+      "mechanism": "solvent_front",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.4,
+      "wt_score": -7.3,
+      "mut_score": -6.9,
+      "label": 1,
+      "status": "ok"
+    },
+    {
+      "event_id": "abl-t315i-dasatinib",
+      "mutation_code": "T315I",
+      "drug": "Dasatinib",
+      "target": "abl",
+      "mechanism": "gatekeeper",
+      "expected_direction": "resistance",
+      "delta_kcal": 0.8,
+      "wt_score": -9.1,
+      "mut_score": -8.3,
+      "label": 1,
+      "status": "ok"
+    }
+  ],
+  "false_positives": [
+    {
+      "event_id": "ros1-g2032r-repotrectinib-retained",
+      "mutation_code": "G2032R",
+      "drug": "Repotrectinib",
+      "target": "ros1",
+      "mechanism": "macrocyclic_design",
+      "expected_direction": "retained",
+      "delta_kcal": 1.6,
+      "wt_score": -8.4,
+      "mut_score": -6.8,
+      "label": 0,
+      "status": "ok"
+    }
+  ]
+}
