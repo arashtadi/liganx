@@ -302,3 +302,35 @@ def cancel_screening(
     session.commit()
     session.refresh(sj)
     return _to_out(sj, session)
+
+
+@router.delete("/{key}", status_code=204)
+def delete_screening(
+    key: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    """Permanently delete a screening and all its result rows.
+
+    Owner-only — non-owners get 404 to avoid leaking existence. Mirrors
+    the delete_job pattern: cascade is done in app code (no ON DELETE
+    CASCADE FK), parent screening_result rows are deleted first.
+
+    Compounds attached via screening_result.compound_id are NOT deleted
+    here — they're orphan-safe (job_id is now nullable per migration 013)
+    and another screening / job may reference the same canonical SMILES.
+    A periodic GC job can sweep truly-orphan Compound rows later.
+    """
+    sj = _resolve_screening(session, key)
+    if not sj:
+        raise HTTPException(status_code=404, detail="Screening not found")
+    if sj.user_id != user.id:
+        # Don't leak existence — return 404, not 403.
+        raise HTTPException(status_code=404, detail="Screening not found")
+    # Children first.
+    for r in session.exec(
+        select(ScreeningResult).where(ScreeningResult.screening_job_id == sj.id)
+    ):
+        session.delete(r)
+    session.delete(sj)
+    session.commit()

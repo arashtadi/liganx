@@ -707,6 +707,27 @@ export const api = {
    *  selectivity_index DESC NULLS LAST, so the array order IS the ranked hit
    *  list. WT rows have null wt_score/delta/selectivity_index — they're the
    *  reference baseline, not a Δ candidate. */
+  /** Submit a virtual screening run. Same shape as JobCreatePayload
+   *  but targets POST /screening — pre-stages N×M ScreeningResult
+   *  rows (compounds × variants) and kicks off the runner. Returns
+   *  the new Screening (with empty `results` and `n_completed=0`)
+   *  ready for the polling UI on /screening/:shareId. */
+  createScreening: (payload: {
+    pdb_id: string;
+    chain: string;
+    uniprot_id?: string;
+    mutations: string[];        // max 1 in v1
+    compounds: { name?: string; smiles: string }[];
+    include_wt?: boolean;
+    engine?: string;
+    exhaustiveness?: number;
+    title?: string;
+    tags?: string[];
+  }) =>
+    request<Screening>("/screening", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getScreening: (key: string | number) =>
     request<Screening>(`/screening/${key}`),
   /** List the current user's screening runs, newest-first. Same
@@ -726,6 +747,17 @@ export const api = {
    *  mutating, non-owners get 404 (probe protection). */
   cancelScreening: (key: string | number) =>
     request<Screening>(`/screening/${key}/cancel`, { method: "POST" }),
+  /** Permanently delete a screening and all its rows. Owner-only;
+   *  non-owners get 404 (probe protection). Mirrors deleteJob. */
+  deleteScreening: async (key: string | number): Promise<void> => {
+    const r = await fetch(`${BASE}/screening/${key}`, {
+      method: "DELETE",
+      headers: { ...(await authHeader()) },
+    });
+    if (!r.ok && r.status !== 204) {
+      throw new ApiError(r.status, `${r.status} ${r.statusText}`);
+    }
+  },
   /** AI assistant — natural-language compound edit. Calls Claude Haiku
    *  with the user's instruction + optional pocket context (target PDB
    *  + mutations). Returns the proposed new SMILES, a one-line

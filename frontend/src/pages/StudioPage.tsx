@@ -1,7 +1,7 @@
 // Build verification tag — surfaces the deploy tag in the bundled JS so a
 // `curl liganx.com/assets/index-*.js | grep LIGANX_BUILD_TAG` confirms which
 // version is live. Cheap, ~50 bytes; replace each release.
-const LIGANX_BUILD_TAG = "v1.17-2026-05-11-history-screenings-tab";
+const LIGANX_BUILD_TAG = "v1.18-2026-05-11-studio-screening-submit-and-row-actions";
 if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX_BUILD_TAG;
 
 /**
@@ -1605,6 +1605,96 @@ export default function StudioPage() {
       return;
     } catch (e: any) {
       setDockError(e?.message || "Full Job submission failed.");
+    } finally {
+      setSubmittingFull(false);
+    }
+  }
+
+  // (v1.18, #209) Virtual screening submit — sibling to runFullJob but
+  // targets POST /screening. Differs from a Full Job in three ways the
+  // user feels:
+  //   1. Multiple compounds × variants are RANKED (not displayed as a
+  //      matrix). The selectivity_index column on /screening/:shareId
+  //      sorts compounds by how cleanly they prefer the mutant over WT.
+  //   2. Lower exhaustiveness (4 vs 8) — screening is about ranking
+  //      across many compounds, not nailing absolute scores per cell.
+  //   3. Pre-stages every (compound, variant) row at submit time so the
+  //      progress bar has its denominator immediately.
+  // Single target only in v1 (multi-target screening would mean
+  // separate runs, easier to surface as separate buttons later).
+  async function runScreening() {
+    // Reuse the same compound-and-target gating as runFullJob so the
+    // disabled-state logic on the button stays in sync.
+    // The createScreening API uses `{name?: string, smiles: string}` — name is
+    // optional/undefined (never null), matching the matching CompoundIn schema.
+    // Filter `null` to `undefined` when staging so the optional-name contract
+    // holds end-to-end.
+    const compoundList: { name?: string; smiles: string }[] = compounds.length > 0
+      ? compounds.filter((c) => c.smiles).map((c) => ({ name: c.name || undefined, smiles: c.smiles }))
+      : currentSmiles
+      ? [{ name: loadedCompound?.name || activeDraft?.name || "Studio compound", smiles: currentSmiles }]
+      : [];
+    if (compoundList.length === 0) { setDockError("Stage at least one compound first."); return; }
+    if (selectedTargets.length === 0) { setDockError("Pick a target."); return; }
+    setDockError(null);
+    setSubmittingFull(true);
+    try {
+      // Resolve the target the same way runFullJob does (mergedCatalog
+      // first, then fall back to PDB-shaped id). Screening is single-
+      // target in v1 — use the first selected target.
+      const tid = selectedTargets[0];
+      const tMeta = mergedCatalog.find((c: any) => c.id === tid) as any;
+      const fallbackPdb = /^[a-z0-9]{4}$/i.test(tid) ? tid.toUpperCase() : "";
+      const tPdb = (tMeta?.pdb_id || fallbackPdb).trim();
+      if (!tPdb) { setDockError(`Couldn't resolve a PDB id for target "${tid}".`); return; }
+
+      const screening = await api.createScreening({
+        pdb_id: tPdb,
+        chain: tMeta?.chain || "A",
+        uniprot_id: tMeta?.uniprot,
+        // Backend caps screening at 1 mutation in v1 — clamp here so
+        // the user sees a clear error if they have 2 mutations staged
+        // rather than a 422 from the server.
+        mutations: selectedMutations.slice(0, 1),
+        compounds: compoundList,
+        include_wt: includeWt,
+        engine: "quickvina2_gpu",
+        exhaustiveness: 4,
+        title: `Studio screen · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations[0]}` : ""} · ${compoundList.length} cmpd`,
+      });
+      const screeningKey = (screening as any).share_id ?? String((screening as any).id ?? "");
+      if (!screeningKey) {
+        setDockError("Screening created but no id returned — refresh /history to find it.");
+        return;
+      }
+      // Persist session snapshot synchronously (same reason as
+      // runFullJob: the debounced autosave won't fire before
+      // route unmount).
+      const snap: StudioSessionSnapshot = {
+        v: 1,
+        savedAt: Date.now(),
+        selectedTargets,
+        selectedMutations,
+        includeWt,
+        adHocTargets,
+        compounds,
+        activeCompoundIdx,
+        currentSmiles,
+        fullJobKey: null,
+        fullJobStatus: null,
+        fullJobStage: null,
+        fullJobRows: [],
+        selectedRowCompoundId: null,
+        dockResult: null,
+        dockResultWt: null,
+        setupCollapsed,
+        loadedCompound,
+      };
+      writeStudioSession(snap);
+      navigate(`/screening/${screeningKey}?from=studio`);
+      return;
+    } catch (e: any) {
+      setDockError(e?.message || "Virtual screening submission failed.");
     } finally {
       setSubmittingFull(false);
     }
@@ -3530,6 +3620,49 @@ export default function StudioPage() {
                       <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
                   </div>
+                );
+              })()}
+
+              {/* (v1.18, #209) Virtual screening button — peer to RUN DOCK.
+                  Sits below the Vina/GNINA split so the visual hierarchy
+                  is: docks side-by-side first (the common path), then VS
+                  as the secondary high-throughput option. Distinct cyan
+                  color so it doesn't get confused with the dock buttons
+                  on the green/violet scale. Lands the user on
+                  /screening/:shareId for the ranked-hit results page. */}
+              {(() => {
+                const hasCompound = !!currentSmiles || compounds.length > 0;
+                const compoundCount = compounds.length > 0
+                  ? compounds.filter((c) => c.smiles).length
+                  : currentSmiles ? 1 : 0;
+                const isDisabled = docking || submittingFull
+                  || !ketcherReady || !hasCompound || !selectedTarget;
+                const variantCount = (includeWt ? 1 : 0) + Math.min(1, selectedMutations.length);
+                const cellCount = compoundCount * Math.max(1, variantCount);
+                return (
+                  <button
+                    onClick={() => runScreening()}
+                    disabled={isDisabled}
+                    className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
+                      submittingFull
+                        ? "border-cyan-500/40 bg-cyan-950/30 text-cyan-300/70 cursor-wait animate-pulse"
+                        : !ketcherReady || !hasCompound || !selectedTarget
+                        ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                        : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
+                    }`}
+                    title={
+                      !selectedTarget ? "Pick a target first."
+                      : !hasCompound ? "Stage at least one compound first."
+                      : "Submit as a virtual screening run — pre-stages every (compound × variant) row, lower exhaustiveness (4), and lands you on the ranked-hit results page sorted by selectivity index (mutant tighter than WT)."
+                    }
+                  >
+                    <span>⇢ Run Virtual Screening</span>
+                    {cellCount > 0 && (
+                      <span className="opacity-60 ml-1.5">
+                        · {compoundCount} cmpd × {variantCount} variant{variantCount === 1 ? "" : "s"} ({cellCount} cells)
+                      </span>
+                    )}
+                  </button>
                 );
               })()}
             </div>

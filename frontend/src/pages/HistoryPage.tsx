@@ -1042,6 +1042,10 @@ function ScreeningsTab() {
 
 
 function ScreeningRow({ s }: { s: Screening }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState<"none" | "cancel" | "delete">("none");
+  const [confirming, setConfirming] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const created = parseUtcDate(s.created_at);
   const dateLabel = created
     ? created.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
@@ -1049,9 +1053,48 @@ function ScreeningRow({ s }: { s: Screening }) {
   const progressPct = s.n_total > 0
     ? Math.min(100, Math.round((s.n_completed / s.n_total) * 100))
     : 0;
+  const isTerminal = ["completed", "failed", "cancelled"].includes(s.status);
+
+  async function onCancelClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setBusy("cancel");
+    setErr(null);
+    try {
+      await api.cancelScreening(s.share_id);
+      await queryClient.invalidateQueries({ queryKey: ["screenings"] });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy("none");
+    }
+  }
+
+  // Two-step delete: first click arms the confirm state (5s timer auto-
+  // disarms), second click actually deletes. Same pattern as the Jobs
+  // row's delete — keeps a single misclick from wiping a row.
+  async function onDeleteClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirming) {
+      setConfirming(true);
+      setErr(null);
+      window.setTimeout(() => setConfirming(false), 5000);
+      return;
+    }
+    setBusy("delete");
+    try {
+      await api.deleteScreening(s.share_id);
+      await queryClient.invalidateQueries({ queryKey: ["screenings"] });
+    } catch (e) {
+      setBusy("none");
+      setConfirming(false);
+      setErr((e as Error).message);
+    }
+  }
 
   return (
-    <li>
+    <li className="relative">
       <Link
         to={`/screening/${s.share_id}`}
         className="block px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
@@ -1101,10 +1144,46 @@ function ScreeningRow({ s }: { s: Screening }) {
               </div>
             )}
           </div>
-          <div className="text-right text-xs text-slate-500 dark:text-slate-400 shrink-0">
-            {dateLabel}
+          <div className="text-right text-xs text-slate-500 dark:text-slate-400 shrink-0 flex items-center gap-2">
+            <span>{dateLabel}</span>
+            {/* Cancel button — only meaningful on pending/running runs.
+                One click → idempotent backend cancel. The row stays in
+                place but the status pill flips to "cancelled" on the
+                next refetch. */}
+            {!isTerminal && (
+              <button
+                type="button"
+                onClick={onCancelClick}
+                disabled={busy !== "none"}
+                className="rounded-md px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-40 transition-colors"
+                title="Cancel this run. The runner stops at the next cell boundary; any completed cells stay in the DB."
+              >
+                {busy === "cancel" ? "…" : "Cancel"}
+              </button>
+            )}
+            {/* Two-step delete — first click shows red "Click to confirm",
+                second click actually deletes. Mirrors the Jobs tab. */}
+            <button
+              type="button"
+              onClick={onDeleteClick}
+              disabled={busy !== "none"}
+              className={`rounded-md w-6 h-6 inline-flex items-center justify-center text-sm font-bold transition-colors disabled:opacity-40 ${
+                confirming
+                  ? "bg-rose-600 text-white hover:bg-rose-700"
+                  : "text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30"
+              }`}
+              title={confirming ? "Click again to confirm permanent delete" : "Delete screening"}
+              aria-label="Delete screening"
+            >
+              {busy === "delete" ? "…" : confirming ? "!" : "×"}
+            </button>
           </div>
         </div>
+        {err && (
+          <div className="mt-2 px-2 py-1 rounded bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800/60 text-[11px] text-rose-700 dark:text-rose-300">
+            {err}
+          </div>
+        )}
       </Link>
     </li>
   );
