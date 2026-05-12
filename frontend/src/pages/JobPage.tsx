@@ -5,6 +5,7 @@ import { api, ApiError, type CatalogMutation, type CatalogTarget, type Compound,
 import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
+import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import LiganxAIPanel from "../components/LiganxAIPanel";
@@ -401,6 +402,7 @@ export default function JobPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      <MobileDesktopOnlyBanner pageName="Job results" />
       <Header
         job={job}
         selected={selected}

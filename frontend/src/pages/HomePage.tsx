@@ -55,31 +55,34 @@ function Hero() {
       <div className="pointer-events-none absolute -top-32 -right-32 w-[40rem] h-[40rem] rounded-full bg-delta-100/60 blur-3xl dark:bg-delta-700/30" />
       <div className="pointer-events-none absolute -bottom-32 -left-32 w-[40rem] h-[40rem] rounded-full bg-accent-400/20 blur-3xl dark:bg-accent-500/20" />
 
-      <Container className="relative py-16 sm:py-20 lg:py-28">
+      {/* Mobile-first hero padding: tightened from py-16 to py-10 on the
+          smallest viewport so the matrix-preview card sits closer to the
+          fold on phones. sm+ keeps the airier desktop spacing. */}
+      <Container className="relative py-10 sm:py-20 lg:py-28">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
           <div className="lg:col-span-3 flex flex-col justify-center">
             <div className="eyebrow flex items-center gap-2">
               <Sparkles size={14} /> Mutation-aware docking
             </div>
-            <h1 className="mt-4 text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-ink dark:text-white leading-[1.05]">
+            <h1 className="mt-4 text-3xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-ink dark:text-white leading-[1.1] sm:leading-[1.05]">
               Find compounds that
               <br />
               <span className="bg-gradient-to-r from-delta-600 to-accent-500 bg-clip-text text-transparent dark:from-delta-400 dark:to-accent-400">
                 prefer the mutant.
               </span>
             </h1>
-            <p className="mt-6 text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
+            <p className="mt-5 sm:mt-6 text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
               Pick a clinically relevant mutation. Pick your compounds. We dock against
               wild-type <em>and</em> mutant in parallel and show exactly which compounds
               gain selectivity — no PyMOL, FoldX, or AutoDock setup. Or skip setup
               entirely and browse our pre-computed FDA-drug screenings against every
               catalog mutation.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link to="/studio" className="btn-primary btn-lg">
+            <div className="mt-6 sm:mt-8 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+              <Link to="/studio" className="btn-primary btn-lg justify-center">
                 Start a docking run <ArrowRight size={16} />
               </Link>
-              <Link to="/library" className="btn-secondary btn-lg">
+              <Link to="/library" className="btn-secondary btn-lg justify-center">
                 Browse pre-computed screenings
               </Link>
             </div>
@@ -238,7 +241,7 @@ function HowItWorks() {
   ];
   return (
     <section className="bg-white dark:bg-slate-950">
-      <Container className="py-16 sm:py-20">
+      <Container className="py-12 sm:py-20">
         <SectionHead eyebrow="How it works" title="From mutation to selectivity matrix in three clicks." />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {steps.map((s) => (
@@ -395,7 +398,7 @@ function FeatureGrid() {
   ];
   return (
     <section className="bg-white dark:bg-slate-950">
-      <Container className="py-16 sm:py-20">
+      <Container className="py-12 sm:py-20">
         <SectionHead eyebrow="What you get" title="Everything an early-discovery med-chemist actually wants." />
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {features.map((f) => (
@@ -474,7 +477,7 @@ function WhatsNew() {
   ];
   return (
     <section className="bg-slate-50 dark:bg-slate-900/40 border-y border-slate-200/80 dark:border-slate-800/60">
-      <Container className="py-16 sm:py-20">
+      <Container className="py-12 sm:py-20">
         <SectionHead eyebrow="What's new" title="Recently shipped." />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {items.map((it) => (
@@ -516,10 +519,14 @@ function WhatsNew() {
 function Comparison() {
   return (
     <section className="bg-white dark:bg-slate-950">
-      <Container className="py-16 sm:py-20">
+      <Container className="py-12 sm:py-20">
         <SectionHead eyebrow="Where we sit" title="The missing middle." />
-      <div className="card overflow-hidden p-0">
-        <table className="w-full text-sm">
+      {/* overflow-x-auto on mobile — at 360px the 4-col table is too wide
+          to fit, and `overflow-hidden` would clip the rightmost columns
+          (Schrödinger Maestro) silently. `min-w` on the table keeps the
+          rows readable instead of squishing into unreadable narrow cells. */}
+      <div className="card overflow-x-auto p-0">
+        <table className="w-full min-w-[640px] text-sm">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
             <tr>
               <th className="text-left px-5 py-3 font-semibold text-slate-700 dark:text-slate-300"></th>
@@ -713,7 +720,7 @@ function CTAStrip() {
       <div className="absolute inset-0 opacity-20 pointer-events-none" style={{
         backgroundImage: "radial-gradient(circle at 25% 25%, rgba(255,255,255,0.5), transparent 55%)",
       }} />
-      <Container className="relative py-16 sm:py-20 text-center">
+      <Container className="relative py-12 sm:py-20 text-center">
         <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">
           Stop hand-rolling mutation-aware docking.
         </h2>

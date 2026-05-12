@@ -286,6 +286,12 @@ function Header() {
   // body font, but having the chrome (header + nav + profile menu) in
   // mono unifies the brand feel across pages without rewriting every
   // page's body content.
+  //
+  // 2026-05-12: mobile-friendly pass. Below `md` (768px) the inline nav
+  // collapses into a hamburger that opens a slide-down panel — keeping the
+  // 5 nav links + auth buttons reachable on phones without overflowing the
+  // header bar. Studio CTA stays in the header even on mobile, because the
+  // banner on /studio itself routes phone visitors to a working page.
   const linkCls = ({ isActive }: { isActive: boolean }) =>
     `text-[11px] font-mono uppercase tracking-[0.15em] transition-colors ${
       isActive
@@ -293,9 +299,41 @@ function Header() {
         : "text-slate-600 hover:text-ink dark:text-slate-400 dark:hover:text-white"
     }`;
   const { user, signOut } = useAuth();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const location = useLocation();
+  const mobileNavRef = useRef<HTMLDivElement>(null);
+
+  // Auto-close the mobile menu whenever the route changes — otherwise
+  // clicking a link inside the panel navigates but the panel stays open.
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
+
+  // Click outside the dropdown OR the toggle button closes it.
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (mobileNavRef.current && !mobileNavRef.current.contains(e.target as Node)) {
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [mobileMenuOpen]);
+
+  // Mobile-panel link variant — uppercase mono like desktop, but
+  // block-sized for tap targets (>=44px tall) and full-width so the
+  // active state has a clean column to highlight.
+  const mobileLinkCls = ({ isActive }: { isActive: boolean }) =>
+    `block w-full px-4 py-3 text-[12px] font-mono uppercase tracking-[0.15em] transition-colors ${
+      isActive
+        ? "text-delta-700 dark:text-delta-300 bg-delta-50/60 dark:bg-delta-900/30"
+        : "text-slate-700 hover:text-ink hover:bg-slate-50 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800/60"
+    }`;
+
   return (
     <header className="sticky top-0 z-50 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-6 py-3">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-6 py-3 relative">
         <Link to="/" className="flex items-center gap-2.5 group">
           <LogoMark size={28} className="transition-transform group-hover:rotate-[-4deg]" />
           <span className="text-base font-mono font-bold uppercase tracking-[0.18em] text-ink dark:text-white">Liganx</span>
@@ -303,7 +341,9 @@ function Header() {
             beta
           </span>
         </Link>
-        <nav className="flex items-center gap-1 sm:gap-2">
+
+        {/* Desktop nav — visible md+ */}
+        <nav className="hidden md:flex items-center gap-1 sm:gap-2">
           <NavLink to="/" end className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Home
           </NavLink>
@@ -364,6 +404,81 @@ function Header() {
             Studio
           </Link>
         </nav>
+
+        {/* Mobile nav — visible <md. Studio CTA + hamburger toggle. */}
+        <div ref={mobileNavRef} className="md:hidden flex items-center gap-2">
+          <Link to="/studio" className="btn-primary btn-sm font-mono uppercase tracking-[0.15em]">
+            Studio
+          </Link>
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((v) => !v)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+            className="p-2 -mr-2 text-slate-700 dark:text-slate-200 hover:text-ink dark:hover:text-white"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {mobileMenuOpen ? (
+                // X
+                <>
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </>
+              ) : (
+                // Hamburger
+                <>
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </>
+              )}
+            </svg>
+          </button>
+
+          {/* Slide-down panel — absolute-positioned below the header bar.
+              Anchored to the parent flex container so it spans the full
+              viewport width via the outer header's max-w-6xl + inset. */}
+          {mobileMenuOpen && (
+            <div className="absolute left-0 right-0 top-full bg-white dark:bg-slate-950 border-b border-slate-200/70 dark:border-slate-800 shadow-lg z-50">
+              <nav className="flex flex-col py-2">
+                <NavLink to="/" end className={mobileLinkCls}>Home</NavLink>
+                <NavLink to="/library" className={mobileLinkCls}>Library</NavLink>
+                <NavLink to="/atlas" className={mobileLinkCls}>
+                  <span>Atlas</span>
+                  <span className="ml-2 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
+                    NEW
+                  </span>
+                </NavLink>
+                <NavLink to="/blog" className={mobileLinkCls}>Blog</NavLink>
+                {user && <NavLink to="/history" className={mobileLinkCls}>History</NavLink>}
+                {user && <NavLink to="/settings" className={mobileLinkCls}>Settings</NavLink>}
+                {user && (user.email || "").toLowerCase() === ADMIN_EMAIL && (
+                  <NavLink to="/admin" className={mobileLinkCls}>Admin</NavLink>
+                )}
+                <div className="border-t border-slate-200/70 dark:border-slate-800 mt-1 pt-1">
+                  {user ? (
+                    <button
+                      type="button"
+                      onClick={() => { setMobileMenuOpen(false); void signOut(); }}
+                      className="block w-full text-left px-4 py-3 text-[12px] font-mono uppercase tracking-[0.15em] text-slate-700 hover:text-ink hover:bg-slate-50 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800/60"
+                    >
+                      Sign out
+                    </button>
+                  ) : (
+                    <>
+                      <Link to="/login" className="block w-full px-4 py-3 text-[12px] font-mono uppercase tracking-[0.15em] text-slate-700 hover:text-ink hover:bg-slate-50 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800/60">
+                        Sign in
+                      </Link>
+                      <Link to="/signup" className="block w-full px-4 py-3 text-[12px] font-mono uppercase tracking-[0.15em] font-semibold text-delta-700 dark:text-delta-300 hover:bg-delta-50 dark:hover:bg-delta-900/30">
+                        Sign up
+                      </Link>
+                    </>
+                  )}
+                </div>
+              </nav>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

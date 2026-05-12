@@ -33,6 +33,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
+import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -1870,6 +1871,7 @@ export default function StudioPage() {
 
   return (
     <div className="min-h-screen bg-[#070b15] text-slate-200 select-none">
+      <MobileDesktopOnlyBanner pageName="Studio" />
       {/* ═══ STATUS BAR ═══ */}
       <header className="sticky top-0 z-30 bg-[#0d1422] border-b border-slate-800/70 px-4 py-2">
         <div className="flex items-center gap-6 text-[11px] tracking-wide">
