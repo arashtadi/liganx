@@ -7,8 +7,10 @@ Key differences from /jobs:
     point of this endpoint is "rank N compounds against one target +
     optional mutation", not the single-compound matrix view.
 
-  - Mutation list capped at 1. Δ-vs-WT ranking math is undefined for
-    multi-mutation, and we deliberately keep this clean for v1.
+  - Mutation list capped at 2 (v1.19). Δ-vs-WT ranking math runs
+    per-mutant row independently, so 2 mutations = 2 separate
+    Δ columns ranked next to each other. Higher caps would require
+    a multi-Δ aggregation strategy we haven't designed yet.
 
   - Per-cell ScreeningResult rows are pre-created at submit time (one
     per compound × variant) so the progress bar has its denominator

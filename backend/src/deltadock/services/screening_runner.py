@@ -595,6 +595,11 @@ def _run_real_screening(
 
         for variant in variants_in_play:
             # Cancellation check before each variant's prep.
+            # session.get returns the cached identity-map object — the cancel
+            # endpoint commits from a DIFFERENT Session, so we'd never see
+            # the new status without expiring our cache first. Expire +
+            # re-read forces a SELECT.
+            session.expire(sj)
             sj_fresh = session.get(ScreeningJob, sj.id)
             if sj_fresh is None or sj_fresh.status == ScreeningStatus.CANCELLED:
                 log.info("screening %s cancelled mid-run; bailing.", sj.id)
@@ -631,7 +636,10 @@ def _run_real_screening(
                     continue
                 compound = compounds_by_id[r.compound_id]
 
-                # Per-cell cancellation check.
+                # Per-cell cancellation check. Same identity-map caveat
+                # as the variant-boundary check above — expire to force
+                # a real SELECT so we actually see a concurrent cancel.
+                session.expire(sj)
                 sj_fresh = session.get(ScreeningJob, sj.id)
                 if sj_fresh is None or sj_fresh.status == ScreeningStatus.CANCELLED:
                     log.info("screening %s cancelled mid-cell; bailing.", sj.id)
