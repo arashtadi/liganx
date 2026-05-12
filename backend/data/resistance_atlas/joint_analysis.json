@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "n_events": 25,
+  "n_positive": 16,
+  "n_negative": 9,
+  "model_id_esm2": "facebook/esm2_t12_35M_UR50D",
+  "auc": {
+    "delta_only": 0.71875,
+    "esm2_negabs_only": 0.7291666666666666,
+    "esm2_raw_only": 0.6875,
+    "joint_logreg": 0.8958333333333334
+  },
+  "logreg_weights_standardized": {
+    "w_delta": 1.4734423057546422,
+    "w_esm2_negabs": 0.9199546710808392,
+    "bias": 0.8966125747212502
+  },
+  "logreg_feature_stats": {
+    "delta_mean": 0.7560000000000002,
+    "delta_std": 1.3172941964496772,
+    "esm2_negabs_mean": -3.412528388053179,
+    "esm2_negabs_std": 1.5454914680853782
+  },
+  "generated_at": "2026-05-12T17:06:06Z",
+  "rows": [
+    {
+      "event_id": "abl-t315i-imatinib",
+      "delta": 2.1,
+      "fitness": -2.900852084159851,
+      "joint_score": 2.704501919492761,
+      "joint_prob": 0.937291769842002,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "abl-e255k-imatinib",
+      "delta": 3.5,
+      "fitness": -2.047454833984375,
+      "joint_score": 4.778438923246342,
+      "joint_prob": 0.9916610075528395,
+      "label": 1,
+      "mechanism": "p_loop"
+    },
+    {
+      "event_id": "abl-y253h-imatinib",
+      "delta": 2.7,
+      "fitness": -4.353574275970459,
+      "joint_score": 2.5108904158714864,
+      "joint_prob": 0.9249017608668902,
+      "label": 1,
+      "mechanism": "p_loop"
+    },
+    {
+      "event_id": "abl-f317l-dasatinib",
+      "delta": 1.2,
+      "fitness": 0.035888671875,
+      "joint_score": 3.4031897072624457,
+      "joint_prob": 0.967804072945921,
+      "label": 1,
+      "mechanism": "gatekeeper_adjacent"
+    },
+    {
+      "event_id": "abl-t315i-dasatinib",
+      "delta": 0.8,
+      "fitness": -2.900852084159851,
+      "joint_score": 1.2504038124460948,
+      "joint_prob": 0.7773697552146731,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "abl-t315i-nilotinib",
+      "delta": 3.4,
+      "fitness": -2.900852084159851,
+      "joint_score": 4.158600026539427,
+      "joint_prob": 0.9846110963025553,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "abl-t315i-ponatinib-retained",
+      "delta": 0.4,
+      "fitness": -2.900852084159851,
+      "joint_score": 0.8029890102778898,
+      "joint_prob": 0.690613496077809,
+      "label": 0,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "egfr-t790m-gefitinib",
+      "delta": 0.2,
+      "fitness": -2.45715868473053,
+      "joint_score": 0.8433903563215918,
+      "joint_prob": 0.6991787834096896,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "egfr-t790m-erlotinib",
+      "delta": 0.4,
+      "fitness": -2.45715868473053,
+      "joint_score": 1.0670977574056943,
+      "joint_prob": 0.7440445978450434,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "egfr-c797s-osimertinib",
+      "delta": 0.2,
+      "fitness": 3.7468024492263794,
+      "joint_score": 0.0757291756047449,
+      "joint_prob": 0.5189232511733665,
+      "label": 1,
+      "mechanism": "covalent_escape"
+    },
+    {
+      "event_id": "egfr-l792h-osimertinib",
+      "delta": 0.4,
+      "fitness": -2.908776044845581,
+      "joint_score": 0.7982722681949788,
+      "joint_prob": 0.6896047812887842,
+      "label": 1,
+      "mechanism": "solvent_front"
+    },
+    {
+      "event_id": "egfr-l858r-gefitinib-selective",
+      "delta": 0.4,
+      "fitness": -4.969543814659119,
+      "joint_score": -0.4284009131208796,
+      "joint_prob": 0.39450824332627243,
+      "label": 0,
+      "mechanism": "conformational_activation"
+    },
+    {
+      "event_id": "egfr-g719s-erlotinib",
+      "delta": 0.5,
+      "fitness": -4.968906367197633,
+      "joint_score": -0.31616777161660237,
+      "joint_prob": 0.42160997412558077,
+      "label": 0,
+      "mechanism": "conformational_activation"
+    },
+    {
+      "event_id": "kit-d816v-imatinib",
+      "delta": 1.9,
+      "fitness": -3.2448116540908813,
+      "joint_score": 2.276052389736145,
+      "joint_prob": 0.9068741928649702,
+      "label": 1,
+      "mechanism": "activation_loop_conformational"
+    },
+    {
+      "event_id": "kit-d816v-avapritinib-rescue",
+      "delta": -0.6,
+      "fitness": -3.2448116540908813,
+      "joint_score": -0.520290123815136,
+      "joint_prob": 0.37278439553841314,
+      "label": 0,
+      "mechanism": "activation_loop_conformational"
+    },
+    {
+      "event_id": "btk-c481s-ibrutinib",
+      "delta": 1.5,
+      "fitness": 3.8877981305122375,
+      "joint_score": 1.4458995235665681,
+      "joint_prob": 0.8093665643701217,
+      "label": 1,
+      "mechanism": "covalent_escape"
+    },
+    {
+      "event_id": "btk-c481s-pirtobrutinib-retained",
+      "delta": 0.8,
+      "fitness": 3.8877981305122375,
+      "joint_score": 0.6629236197722093,
+      "joint_prob": 0.659916832959531,
+      "label": 0,
+      "mechanism": "non_covalent_design"
+    },
+    {
+      "event_id": "kras-g12c-sotorasib",
+      "delta": -2.4,
+      "fitness": -4.000953733921051,
+      "joint_score": -2.9837507345452927,
+      "joint_prob": 0.048165382793963575,
+      "label": 0,
+      "mechanism": "covalent_design"
+    },
+    {
+      "event_id": "kras-g12c-adagrasib",
+      "delta": -0.5,
+      "fitness": -4.000953733921051,
+      "joint_score": -0.8585304242463189,
+      "joint_prob": 0.2976464735622006,
+      "label": 0,
+      "mechanism": "covalent_design"
+    },
+    {
+      "event_id": "alk-l1196m-crizotinib",
+      "delta": 0.2,
+      "fitness": -1.185880422592163,
+      "joint_score": 1.600119461365809,
+      "joint_prob": 0.8320350808451714,
+      "label": 1,
+      "mechanism": "gatekeeper"
+    },
+    {
+      "event_id": "ros1-g2032r-crizotinib",
+      "delta": 1.5,
+      "fitness": -6.717512373812497,
+      "joint_score": -0.23848948129350023,
+      "joint_prob": 0.44065862783089044,
+      "label": 1,
+      "mechanism": "solvent_front"
+    },
+    {
+      "event_id": "met-d1228v-capmatinib",
+      "delta": 0.3,
+      "fitness": -1.150700330734253,
+      "joint_score": 1.7329141314971859,
+      "joint_prob": 0.8497847901900435,
+      "label": 1,
+      "mechanism": "dfg_motif"
+    },
+    {
+      "event_id": "met-y1230h-capmatinib",
+      "delta": -0.9,
+      "fitness": -5.268646314740181,
+      "joint_score": -2.0605399526240746,
+      "joint_prob": 0.11299170223891088,
+      "label": 1,
+      "mechanism": "dfg_motif"
+    },
+    {
+      "event_id": "egfr-t790m-osimertinib-selectivity",
+      "delta": -0.7,
+      "fitness": -2.45715868473053,
+      "joint_score": -0.16329294855686916,
+      "joint_prob": 0.45926723286393534,
+      "label": 0,
+      "mechanism": "designed_for_resistance"
+    },
+    {
+      "event_id": "ros1-g2032r-repotrectinib-retained",
+      "delta": 1.6,
+      "fitness": -6.717512373812497,
+      "joint_score": -0.12663578075144877,
+      "joint_prob": 0.4683832956154704,
+      "label": 0,
+      "mechanism": "macrocyclic_design"
+    }
+  ]
+}

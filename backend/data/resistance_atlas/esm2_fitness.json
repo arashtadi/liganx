@@ -1,0 +1,467 @@
+{
+  "schema_version": 1,
+  "model_id": "facebook/esm2_t12_35M_UR50D",
+  "generated_at": "2026-05-12T17:05:28Z",
+  "total": 50,
+  "ok": 49,
+  "failed": 0,
+  "skipped": 1,
+  "results": [
+    {
+      "event_id": "abl-t315i-imatinib",
+      "status": "ok",
+      "log_p_wt": -1.2228962182998657,
+      "log_p_mut": -4.123748302459717,
+      "fitness": -2.900852084159851,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-e255k-imatinib",
+      "status": "ok",
+      "log_p_wt": -1.1473381519317627,
+      "log_p_mut": -3.1947929859161377,
+      "fitness": -2.047454833984375,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-y253h-imatinib",
+      "status": "ok",
+      "log_p_wt": -1.5838093757629395,
+      "log_p_mut": -5.937383651733398,
+      "fitness": -4.353574275970459,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-f317l-dasatinib",
+      "status": "ok",
+      "log_p_wt": -1.2785217761993408,
+      "log_p_mut": -1.2426331043243408,
+      "fitness": 0.035888671875,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-t315i-dasatinib",
+      "status": "ok",
+      "log_p_wt": -1.2228962182998657,
+      "log_p_mut": -4.123748302459717,
+      "fitness": -2.900852084159851,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-t315i-nilotinib",
+      "status": "ok",
+      "log_p_wt": -1.2228962182998657,
+      "log_p_mut": -4.123748302459717,
+      "fitness": -2.900852084159851,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-t315i-ponatinib-retained",
+      "status": "ok",
+      "log_p_wt": -1.2228962182998657,
+      "log_p_mut": -4.123748302459717,
+      "fitness": -2.900852084159851,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-t790m-gefitinib",
+      "status": "ok",
+      "log_p_wt": -0.9964345693588257,
+      "log_p_mut": -3.4535932540893555,
+      "fitness": -2.45715868473053,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-t790m-erlotinib",
+      "status": "ok",
+      "log_p_wt": -0.9964345693588257,
+      "log_p_mut": -3.4535932540893555,
+      "fitness": -2.45715868473053,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-c797s-osimertinib",
+      "status": "ok",
+      "log_p_wt": -4.669588088989258,
+      "log_p_mut": -0.9227856397628784,
+      "fitness": 3.7468024492263794,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-l792h-osimertinib",
+      "status": "ok",
+      "log_p_wt": -1.6104719638824463,
+      "log_p_mut": -4.519248008728027,
+      "fitness": -2.908776044845581,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-l858r-gefitinib-selective",
+      "status": "ok",
+      "log_p_wt": -0.7194658517837524,
+      "log_p_mut": -5.689009666442871,
+      "fitness": -4.969543814659119,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-g719s-erlotinib",
+      "status": "ok",
+      "log_p_wt": -0.03116992674767971,
+      "log_p_mut": -5.0000762939453125,
+      "fitness": -4.968906367197633,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kit-d816v-imatinib",
+      "status": "ok",
+      "log_p_wt": -0.8752049207687378,
+      "log_p_mut": -4.120016574859619,
+      "fitness": -3.2448116540908813,
+      "seq_len": 976,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kit-t670i-imatinib",
+      "status": "ok",
+      "log_p_wt": -2.1535227298736572,
+      "log_p_mut": -4.381309509277344,
+      "fitness": -2.2277867794036865,
+      "seq_len": 976,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kit-d816v-avapritinib-rescue",
+      "status": "ok",
+      "log_p_wt": -0.8752049207687378,
+      "log_p_mut": -4.120016574859619,
+      "fitness": -3.2448116540908813,
+      "seq_len": 976,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "btk-c481s-ibrutinib",
+      "status": "ok",
+      "log_p_wt": -4.541158199310303,
+      "log_p_mut": -0.6533600687980652,
+      "fitness": 3.8877981305122375,
+      "seq_len": 659,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "btk-c481s-pirtobrutinib-retained",
+      "status": "ok",
+      "log_p_wt": -4.541158199310303,
+      "log_p_mut": -0.6533600687980652,
+      "fitness": 3.8877981305122375,
+      "seq_len": 659,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "btk-t474i-pirtobrutinib",
+      "status": "ok",
+      "log_p_wt": -1.7298643589019775,
+      "log_p_mut": -3.84725022315979,
+      "fitness": -2.1173858642578125,
+      "seq_len": 659,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "braf-v600e-vemurafenib",
+      "status": "ok",
+      "log_p_wt": -2.1185832023620605,
+      "log_p_mut": -3.196720838546753,
+      "fitness": -1.0781376361846924,
+      "seq_len": 766,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "braf-v600e-dabrafenib",
+      "status": "ok",
+      "log_p_wt": -2.1185832023620605,
+      "log_p_mut": -3.196720838546753,
+      "fitness": -1.0781376361846924,
+      "seq_len": 766,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kras-g12c-sotorasib",
+      "status": "ok",
+      "log_p_wt": -0.7258114218711853,
+      "log_p_mut": -4.726765155792236,
+      "fitness": -4.000953733921051,
+      "seq_len": 189,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kras-g12c-adagrasib",
+      "status": "ok",
+      "log_p_wt": -0.7258114218711853,
+      "log_p_mut": -4.726765155792236,
+      "fitness": -4.000953733921051,
+      "seq_len": 189,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kras-y96d-adagrasib",
+      "status": "ok",
+      "log_p_wt": -3.443082332611084,
+      "log_p_mut": -8.980344772338867,
+      "fitness": -5.537262439727783,
+      "seq_len": 189,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "alk-l1196m-crizotinib",
+      "log_p_wt": -0.5612353086471558,
+      "log_p_mut": -1.7471157312393188,
+      "fitness": -1.185880422592163,
+      "seq_len_full": 1620,
+      "window_len": 801,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "alk-g1202r-crizotinib",
+      "log_p_wt": -0.011084998026490211,
+      "log_p_mut": -6.479946136474609,
+      "fitness": -6.468861138448119,
+      "seq_len_full": 1620,
+      "window_len": 801,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "alk-g1202r-lorlatinib-retained",
+      "log_p_wt": -0.011084998026490211,
+      "log_p_mut": -6.479946136474609,
+      "fitness": -6.468861138448119,
+      "seq_len_full": 1620,
+      "window_len": 801,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "ros1-g2032r-crizotinib",
+      "log_p_wt": -0.011594529263675213,
+      "log_p_mut": -6.729106903076172,
+      "fitness": -6.717512373812497,
+      "seq_len_full": 2347,
+      "window_len": 716,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "met-d1228v-capmatinib",
+      "log_p_wt": -2.63997483253479,
+      "log_p_mut": -3.790675163269043,
+      "fitness": -1.150700330734253,
+      "seq_len_full": 1390,
+      "window_len": 563,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "met-y1230h-capmatinib",
+      "log_p_wt": -0.07109348475933075,
+      "log_p_mut": -5.339739799499512,
+      "fitness": -5.268646314740181,
+      "seq_len_full": 1390,
+      "window_len": 561,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "flt3-f691l-gilteritinib",
+      "status": "ok",
+      "log_p_wt": -2.1651947498321533,
+      "log_p_mut": -1.296600341796875,
+      "fitness": 0.8685944080352783,
+      "seq_len": 993,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "flt3-d835y-quizartinib",
+      "status": "ok",
+      "log_p_wt": -0.6150650382041931,
+      "log_p_mut": -4.723134517669678,
+      "fitness": -4.108069479465485,
+      "seq_len": 993,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "flt3-d835v-quizartinib",
+      "status": "ok",
+      "log_p_wt": -0.6150650382041931,
+      "log_p_mut": -5.52184534072876,
+      "fitness": -4.906780302524567,
+      "seq_len": 993,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "her2-l755s-lapatinib",
+      "status": "ok",
+      "log_p_wt": -0.343593567609787,
+      "log_p_mut": -4.340703964233398,
+      "fitness": -3.9971103966236115,
+      "seq_len": 1255,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "her2-l755s-tucatinib-retained",
+      "status": "ok",
+      "log_p_wt": -0.343593567609787,
+      "log_p_mut": -4.340703964233398,
+      "fitness": -3.9971103966236115,
+      "seq_len": 1255,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "her2-v777l-lapatinib",
+      "status": "ok",
+      "log_p_wt": -1.993064045906067,
+      "log_p_mut": -1.0541914701461792,
+      "fitness": 0.9388725757598877,
+      "seq_len": 1255,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "pi3ka-h1047r-alpelisib",
+      "log_p_wt": -6.03367805480957,
+      "log_p_mut": -5.3314642906188965,
+      "fitness": 0.7022137641906738,
+      "seq_len_full": 1068,
+      "window_len": 422,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "pi3ka-e545k-alpelisib",
+      "status": "ok",
+      "log_p_wt": -2.1524062156677246,
+      "log_p_mut": -2.1359925270080566,
+      "fitness": 0.01641368865966797,
+      "seq_len": 1068,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "idh1-r132h-ivosidenib",
+      "status": "ok",
+      "log_p_wt": -3.3400611877441406,
+      "log_p_mut": -3.621490716934204,
+      "fitness": -0.2814295291900635,
+      "seq_len": 414,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-v299l-dasatinib",
+      "status": "ok",
+      "log_p_wt": -0.37931814789772034,
+      "log_p_mut": -1.9812983274459839,
+      "fitness": -1.6019801795482635,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "abl-f359v-nilotinib",
+      "status": "ok",
+      "log_p_wt": -0.8378672003746033,
+      "log_p_mut": -1.837265968322754,
+      "fitness": -0.9993987679481506,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-t790m-osimertinib-selectivity",
+      "status": "ok",
+      "log_p_wt": -0.9964345693588257,
+      "log_p_mut": -3.4535932540893555,
+      "fitness": -2.45715868473053,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "kit-v654a-imatinib",
+      "status": "ok",
+      "log_p_wt": -0.3637513220310211,
+      "log_p_mut": -4.096884727478027,
+      "fitness": -3.7331334054470062,
+      "seq_len": 976,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-l792q-osimertinib",
+      "status": "ok",
+      "log_p_wt": -1.6104719638824463,
+      "log_p_mut": -6.891014575958252,
+      "fitness": -5.280542612075806,
+      "seq_len": 1210,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "alk-i1171n-alectinib",
+      "log_p_wt": -3.7891159057617188,
+      "log_p_mut": -5.42165994644165,
+      "fitness": -1.6325440406799316,
+      "seq_len_full": 1620,
+      "window_len": 801,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "ros1-g2032r-repotrectinib-retained",
+      "log_p_wt": -0.011594529263675213,
+      "log_p_mut": -6.729106903076172,
+      "fitness": -6.717512373812497,
+      "seq_len_full": 2347,
+      "window_len": 716,
+      "windowed": true,
+      "status": "ok"
+    },
+    {
+      "event_id": "abl-h396p-nilotinib",
+      "status": "ok",
+      "log_p_wt": -4.335109710693359,
+      "log_p_mut": -4.31687068939209,
+      "fitness": 0.01823902130126953,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "egfr-exon19del-gefitinib",
+      "status": "skipped",
+      "skip_reason": "not a single-AA substitution"
+    },
+    {
+      "event_id": "abl-m351t-imatinib",
+      "status": "ok",
+      "log_p_wt": -0.043654702603816986,
+      "log_p_mut": -8.473526954650879,
+      "fitness": -8.429872252047062,
+      "seq_len": 1130,
+      "uniprot_mismatch": null
+    },
+    {
+      "event_id": "her2-v842i-lapatinib",
+      "status": "ok",
+      "log_p_wt": -0.5884591341018677,
+      "log_p_mut": -1.1195966005325317,
+      "fitness": -0.5311374664306641,
+      "seq_len": 1255,
+      "uniprot_mismatch": null
+    }
+  ],
+  "windowed_residues": 400
+}
