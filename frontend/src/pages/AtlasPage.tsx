@@ -136,6 +136,33 @@ function AtlasListView() {
         </p>
       </header>
 
+      {/* "Test your own data" CTA — Pro feature entry point. Free tier
+          lets a chemist score 10 of their own (drug, mutation) cases
+          against our calibrated model in seconds; Pro tier (email
+          early-access list) unlocks unlimited rows + real GPU docking. */}
+      <section className="rounded-xl border border-violet-300 dark:border-violet-700/60 bg-violet-50/70 dark:bg-violet-900/30 p-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex-1 min-w-[280px]">
+            <div className="eyebrow text-violet-700 dark:text-violet-300">New · Pro beta</div>
+            <h2 className="mt-1 text-xl font-bold tracking-tight text-ink dark:text-white">
+              Calibrate the model against YOUR data
+            </h2>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-200 leading-relaxed max-w-2xl">
+              Upload up to 10 (drug, mutation) cases — your internal validation
+              set, a published paper you want to sanity-check, anything. We score
+              each row in seconds and compute your AUC vs our published 0.81 OOF
+              baseline. Free; no signup required.
+            </p>
+          </div>
+          <Link
+            to="/atlas/calibrate"
+            className="rounded-lg bg-violet-600 hover:bg-violet-700 px-4 py-2 text-sm font-semibold text-white whitespace-nowrap"
+          >
+            Try it now →
+          </Link>
+        </div>
+      </section>
+
       <section>
         <h2 className="text-2xl font-bold tracking-tight text-ink dark:text-white">
           Drugs in the atlas

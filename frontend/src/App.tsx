@@ -27,6 +27,7 @@ import StudioPage from "./pages/StudioPage";
 import BlogIndexPage from "./pages/BlogIndexPage";
 import BlogPostPage from "./pages/BlogPostPage";
 import AtlasPage from "./pages/AtlasPage";
+import CalibratePage from "./pages/CalibratePage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -88,6 +89,11 @@ export default function App() {
             <Route path="/blog" element={<BlogIndexPage />} />
             <Route path="/blog/:slug" element={<BlogPostPage />} />
             <Route path="/atlas" element={<AtlasPage />} />
+            {/* Pro feature: score user-uploaded (drug, mutation) data
+                against the calibrated 2-signal model. Free tier = 10
+                rows / request, ESM2-cache + BLOSUM proxy. Pro tier
+                (Stripe-stubbed) = unlimited rows + real GPU docking. */}
+            <Route path="/atlas/calibrate" element={<CalibratePage />} />
             <Route path="/atlas/:slug" element={<AtlasPage />} />
             <Route path="/admin" element={<AdminPage />} />
             {/* Capital-A alias so /Admin (which is what user typed) works
