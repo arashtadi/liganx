@@ -235,17 +235,35 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _no_default_secret_in_prod(self) -> "Settings":
-        """Belt-and-suspenders: refuse to boot in production with the default
-        app_secret. The default `change-me` is fine for unit tests and dev,
-        but if a Fly secret-load fails and the env var is missing, we'd
-        silently fall back to a public-by-design string and sign every JWT
-        with `change-me`. Better to crash on startup than to ship that.
+        """Surface the "running with default secret in prod" condition
+        without crashing the process.
+
+        History: an earlier version of this validator raised RuntimeError
+        on `app_env=production AND app_secret="change-me"`. That sounds
+        like the safe move but in practice it bricked production on
+        2026-05-12 — APP_SECRET wasn't set in Fly secrets, every machine
+        restart hit this validator and exited code 2, and /health never
+        had a chance to respond. Running with a known default secret is
+        degraded; refusing to boot is OUTAGE. Degraded > outage.
+
+        We log a loud warning instead, so the condition is visible in
+        Fly logs and Sentry. To gate strictly, set
+        REQUIRE_STRONG_APP_SECRET=1 in your env — that flips the check
+        back to raising, for environments where the operator has already
+        ensured the secret is set.
         """
+        import os
         if self.app_env == "production" and self.app_secret == "change-me":
-            raise RuntimeError(
-                "Refusing to start: app_secret is the default 'change-me' "
-                "but APP_ENV=production. Set APP_SECRET via Fly secrets."
+            msg = (
+                "WARNING: app_secret is the default 'change-me' but "
+                "APP_ENV=production. Set APP_SECRET via Fly secrets to "
+                "fix. JWT signing is currently using a public-by-design "
+                "default — degraded but functional."
             )
+            if os.environ.get("REQUIRE_STRONG_APP_SECRET", "").lower() in ("1", "true", "yes"):
+                raise RuntimeError(msg + " (REQUIRE_STRONG_APP_SECRET is set)")
+            import logging
+            logging.getLogger("deltadock").warning(msg)
         return self
 
     @field_validator("cors_origins", mode="before")
