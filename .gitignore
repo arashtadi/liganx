@@ -28,6 +28,7 @@ node_modules/
 dist/
 build/
 .vite/
+vite.config.ts.timestamp-*
 .next/
 coverage/
 *.log
