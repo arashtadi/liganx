@@ -162,26 +162,50 @@ def _score_row(
 ) -> dict:
     """Compute joint probability for one (gene, position, wt, mut) row.
 
+    Resolution order (best → worst signal):
+      1. Local 49-event cache (instant, real ESM2)
+      2. Pod /esm2/fitness endpoint (real ESM2, ~1s GPU on cache miss,
+         instant on pod-sqlite hit)
+      3. BLOSUM62 substitution-matrix proxy (last-resort fallback when
+         the pod isn't reachable; explicitly tagged so the caller
+         knows the result is degraded)
+
     Returns a dict with:
-      fitness         — ESM2 (cached) or BLOSUM-proxy fitness
-      score_source    — "cached_esm2" | "blosum_proxy"
-      delta_kcal      — passed-through (None → 0 for the model)
+      fitness         — log P(mut|context) − log P(wt|context)
+      score_source    — "cached_esm2" | "live_esm2_pod" | "cached_esm2_local" | "blosum_proxy"
+      delta_kcal      — passed-through (None → neutral standardised dz=0)
       joint_logit     — pre-sigmoid LR score
       joint_probability — calibrated probability of resistance
     """
     key = (gene, position, mut)
+    pod_extra: dict = {}
     if key in cache:
         fitness = cache[key]
         source = "cached_esm2"
     else:
-        # BLOSUM proxy. Wild-type-to-wild-type is always +11 by
-        # construction; we want fitness = 0 in that case (mutation
-        # is no change). The substitution score ranges roughly
-        # -4 to +3 for distinct AAs; rescale to a pseudo-fitness.
-        blosum_key = (wt.upper() + mut.upper())
-        raw = BLOSUM62.get(blosum_key, 0)
-        fitness = (raw - 2) / 2.0  # rough mapping to ESM2-fitness scale
-        source = "blosum_proxy"
+        # Try the pod for real ESM2 inference. fetch_pod_fitness returns
+        # None on any failure (pod not configured, asleep, error) and
+        # we fall through to BLOSUM in that case.
+        from ..services.esm2_pod_client import fetch_pod_fitness
+        pod_result = fetch_pod_fitness(gene=gene, position=position, wt=wt, mut=mut)
+        if pod_result and pod_result.get("fitness") is not None:
+            fitness = float(pod_result["fitness"])
+            source = pod_result.get("score_source", "live_esm2_pod")
+            pod_extra = {
+                "log_p_wt": pod_result.get("log_p_wt"),
+                "log_p_mut": pod_result.get("log_p_mut"),
+                "windowed": pod_result.get("windowed"),
+                "pod_cache_hit": pod_result.get("pod_cache_hit"),
+                "uniprot_id": pod_result.get("uniprot_id"),
+            }
+        else:
+            # BLOSUM62 last-resort. Score is clearly tagged so the
+            # UI can flag these rows as "approximate — re-score on
+            # Pro for full ESM2 coverage."
+            blosum_key = (wt.upper() + mut.upper())
+            raw = BLOSUM62.get(blosum_key, 0)
+            fitness = (raw - 2) / 2.0
+            source = "blosum_proxy"
     neg_abs_fit = -abs(fitness)
     # Missing-Δ handling. When the caller doesn't provide delta_kcal,
     # the principled choice for a logistic regression at inference time
@@ -207,6 +231,7 @@ def _score_row(
         "delta_treated_as": "user_provided" if delta_kcal is not None else "neutral_no_docking",
         "joint_logit": logit,
         "joint_probability": _sigmoid(logit),
+        **pod_extra,
     }
 
 

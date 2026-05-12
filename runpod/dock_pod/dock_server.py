@@ -638,3 +638,44 @@ def admet_predict(req: _AdmetReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         log.exception("admet_predict failed for smiles=%r", req.smiles)
         raise HTTPException(status_code=500, detail=f"admet predict failed: {e}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# /esm2/fitness — ESM-2 masked-LM fitness for (uniprot, position, wt,
+# mut) or (gene, position, wt, mut). Powers the public /calibrate/score
+# free-tier endpoint on the Liganx backend. Same lazy-load + sqlite
+# cache pattern as /admet/predict. Cache lives at
+# /workspace/esm2_cache.sqlite and survives pod restarts.
+# ────────────────────────────────────────────────────────────────────
+class _Esm2Req(BaseModel):
+    gene: str | None = None
+    uniprot_id: str | None = None
+    position: int
+    wt: str
+    mut: str
+
+
+@app.post("/esm2/fitness")
+def esm2_fitness(req: _Esm2Req) -> dict[str, Any]:
+    if not (req.gene or req.uniprot_id):
+        raise HTTPException(status_code=400, detail="provide gene or uniprot_id")
+    try:
+        from esm2_pod import predict_fitness, predict_fitness_by_gene  # type: ignore
+        if req.uniprot_id:
+            payload = predict_fitness(
+                req.uniprot_id, req.position, req.wt, req.mut,
+            )
+            payload["uniprot_id"] = req.uniprot_id.upper()
+        else:
+            payload = predict_fitness_by_gene(
+                req.gene or "", req.position, req.wt, req.mut,
+            )
+        return payload
+    except ValueError as e:
+        # Input-level error (bad gene, out-of-bounds position, etc.) —
+        # return 400 so the backend doesn't retry it as a transient
+        # failure.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        log.exception("esm2_fitness failed for %r", req.dict())
+        raise HTTPException(status_code=500, detail=f"esm2 inference failed: {e}")
