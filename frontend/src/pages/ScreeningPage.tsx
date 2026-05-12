@@ -71,6 +71,13 @@ export default function ScreeningPage() {
   // multiple rows (WT + N mutants); a tick on any of its rows means
   // "promote this compound." Hard cap = PROMOTE_CAP (matches /jobs).
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // v1.21.1: auto-submit Full Job on promote so the user lands directly
+  // on the /jobs/:shareId page (3D pose + ADMET). `submitting` disables
+  // the promote buttons mid-POST; `submitError` surfaces validation
+  // failures (FoldX rejects, rate limits, 503s) inline without losing
+  // the user's selection.
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   function toggleSelected(compoundId: number) {
     setSelected((prev) => {
@@ -161,17 +168,21 @@ export default function ScreeningPage() {
     return rows;
   }, [data, sortKey, filter]);
 
-  /** Navigate to /studio with the chosen compounds + this screening's
-   *  target/mutations staged. Studio's existing `location.state.reseed`
-   *  flow handles the rest (same shape History Re-run uses), so we
-   *  don't duplicate the staging logic. `replaceSession: true` mirrors
-   *  History Re-run so the user lands in a clean Studio workspace
-   *  built from THESE compounds, not merged with whatever they were
-   *  sketching before. */
-  function promoteToFullJob(compoundIds: number[]) {
-    if (!data || compoundIds.length === 0) return;
-    // Order matters — preserve the table's current ranking order so
-    // the user lands in Studio with their top hit first.
+  /** v1.21.1: submit a Full Job directly from the screening page and
+   *  navigate to /jobs/:shareId on success. The user already picked
+   *  the winners here — bouncing through Studio just to click Run a
+   *  second time is friction. We POST /jobs with the staged compounds
+   *  + this screening's target/mutations, then land on the Full Job
+   *  results page (3D pose viewer + ADMET + AI Variants — the rich
+   *  layer that screening intentionally doesn't render).
+   *
+   *  Errors (FoldX reject, rate limit, 503) come back as ApiError and
+   *  get surfaced inline above the table without dropping the user's
+   *  selection — they can fix and retry. */
+  async function promoteToFullJob(compoundIds: number[]) {
+    if (!data || compoundIds.length === 0 || submitting) return;
+    // Preserve the table's current ranking order so the resulting
+    // Full Job shows the top hit first.
     const ordered = visible
       .map((r) => r.compound_id)
       .filter((cid, i, arr) => arr.indexOf(cid) === i && compoundIds.includes(cid))
@@ -189,25 +200,42 @@ export default function ScreeningPage() {
       .filter(Boolean) as { name: string; smiles: string }[];
     if (compounds.length === 0) return;
 
-    navigate("/studio", {
-      state: {
-        reseed: {
-          pdb_id: data.pdb_id,
-          chain: data.chain,
-          mutations: data.mutations,
-          compounds,
-          // Full Job defaults — same as the existing Studio submit
-          // form when started fresh.
-          engine: "quickvina2_gpu",
-          exhaustiveness: 8,
-          include_wt: true,
-          replaceSession: true,
-          // Trace marker so the resulting Job can carry a
-          // "Promoted from Screening #X" reference downstream.
-          promotedFromScreeningId: data.share_id,
-        },
-      },
-    });
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      // Auto-title so this Job is traceable back to its parent
+      // screening in History. Keeps the relationship visible
+      // without needing a new DB column for now.
+      const mutLabel = data.mutations.length
+        ? data.mutations.join("+")
+        : "WT";
+      const title = `Promoted from Screening · ${data.pdb_id} · ${mutLabel} · ${compounds.length} cmpd`;
+      const job = await api.createJob({
+        pdb_id: data.pdb_id,
+        chain: data.chain,
+        mutations: data.mutations,
+        compounds,
+        // Full Job defaults — exhaustiveness 8 matches Studio's default
+        // for the deep-dive use case (vs screening's lighter exh=4).
+        engine: "quickvina2_gpu",
+        exhaustiveness: 8,
+        include_wt: true,
+        title,
+      });
+      // Land on the Full Job results page — polling kicks in
+      // immediately so the user sees docking progress in real time.
+      navigate(`/jobs/${job.share_id}`);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? `Full Job submit failed (${err.status}): ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : "Full Job submit failed";
+      setSubmitError(msg);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   // ── Error states ─────────────────────────────────────────────
@@ -253,7 +281,23 @@ export default function ScreeningPage() {
         onClearSelection={clearSelection}
         onPromoteSelected={() => promoteToFullJob(Array.from(selected))}
         promoteCap={PROMOTE_CAP}
+        submitting={submitting}
       />
+      {/* v1.21.1: inline error banner. Selection is preserved so the
+          user can retry after fixing whatever the backend rejected. */}
+      {submitError && (
+        <div className="rounded-md bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800/60 px-3 py-2 text-[12px] text-rose-800 dark:text-rose-200 flex items-start justify-between gap-3">
+          <span><strong className="font-semibold">Couldn't start Full Job —</strong> {submitError}</span>
+          <button
+            type="button"
+            onClick={() => setSubmitError(null)}
+            className="text-rose-600 dark:text-rose-300 hover:text-rose-800 dark:hover:text-rose-100 text-[11px] font-semibold"
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <ResultsTable
         data={data}
         rows={visible}
@@ -261,6 +305,7 @@ export default function ScreeningPage() {
         onToggleSelected={toggleSelected}
         onPromoteOne={(compoundId) => promoteToFullJob([compoundId])}
         promoteCap={PROMOTE_CAP}
+        submitting={submitting}
       />
     </div>
   );
@@ -392,6 +437,7 @@ function ResultsToolbar({
   onClearSelection,
   onPromoteSelected,
   promoteCap,
+  submitting,
 }: {
   data: Screening;
   sortKey: SortKey;
@@ -403,6 +449,7 @@ function ResultsToolbar({
   onClearSelection: () => void;
   onPromoteSelected: () => void;
   promoteCap: number; // surfaced for tooltip parity; cap enforced upstream
+  submitting: boolean;
 }) {
   // promoteCap accessor — keeps the prop in the public API even though
   // the toolbar copy doesn't render the number directly. Future i18n
@@ -471,7 +518,8 @@ function ResultsToolbar({
             <button
               type="button"
               onClick={onClearSelection}
-              className="rounded-md px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              disabled={submitting}
+              className="rounded-md px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-40"
               title="Clear selection"
             >
               Clear ({selected.size})
@@ -479,11 +527,21 @@ function ResultsToolbar({
             <button
               type="button"
               onClick={onPromoteSelected}
-              className="rounded-md bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 text-xs font-semibold shadow-sm inline-flex items-center gap-1.5"
-              title={`Send ${selected.size} compound${selected.size > 1 ? "s" : ""} to a Full Job (deep dock + pose + ADMET)`}
+              disabled={submitting}
+              className="rounded-md bg-violet-600 hover:bg-violet-700 disabled:bg-violet-400 disabled:cursor-wait text-white px-3 py-1.5 text-xs font-semibold shadow-sm inline-flex items-center gap-1.5"
+              title={`Submit ${selected.size} compound${selected.size > 1 ? "s" : ""} as a Full Job — opens the deep-dock results page with 3D pose + ADMET`}
             >
-              <span aria-hidden>→</span>
-              Promote {selected.size} to Full Job
+              {submitting ? (
+                <>
+                  <Spinner size={11} />
+                  Submitting…
+                </>
+              ) : (
+                <>
+                  <span aria-hidden>→</span>
+                  Promote {selected.size} to Full Job
+                </>
+              )}
             </button>
           </>
         )}
@@ -518,6 +576,7 @@ function ResultsTable({
   onToggleSelected,
   onPromoteOne,
   promoteCap,
+  submitting,
 }: {
   data: Screening;
   rows: ScreeningResultOut[];
@@ -525,6 +584,7 @@ function ResultsTable({
   onToggleSelected: (compoundId: number) => void;
   onPromoteOne: (compoundId: number) => void;
   promoteCap: number;
+  submitting: boolean;
 }) {
   // Empty state: screening is still pending and no rows have docked yet.
   if (rows.length === 0) {
@@ -621,6 +681,7 @@ function ResultsTable({
                   atCap={atCap}
                   onToggle={() => onToggleSelected(r.compound_id)}
                   onPromote={() => onPromoteOne(r.compound_id)}
+                  submitting={submitting}
                 />
               );
             })}
@@ -640,6 +701,7 @@ function Row({
   atCap = false,
   onToggle,
   onPromote,
+  submitting = false,
 }: {
   r: ScreeningResultOut;
   rank: number;
@@ -649,6 +711,7 @@ function Row({
   atCap?: boolean;
   onToggle?: () => void;
   onPromote?: () => void;
+  submitting?: boolean;
 }) {
   // Failure path — show the row but mark it inert. The cell-level
   // `error_message` from the backend gets the tooltip treatment.
@@ -697,7 +760,7 @@ function Row({
           type="checkbox"
           checked={isChecked}
           onChange={() => onToggle && onToggle()}
-          disabled={!isSelectable || atCap}
+          disabled={!isSelectable || atCap || submitting}
           aria-label={
             isSelectable
               ? `Select ${r.compound_name || "compound"} for Full Job promotion`
@@ -808,10 +871,11 @@ function Row({
           <button
             type="button"
             onClick={() => onPromote && onPromote()}
-            className="inline-flex items-center gap-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors"
-            title="Send this compound to a Full Job — opens Studio with the target, mutation, and compound pre-staged"
+            disabled={submitting}
+            className="inline-flex items-center gap-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-wait"
+            title="Submit this compound as a Full Job — auto-opens the deep-dock results page (3D pose + ADMET)"
           >
-            Full job →
+            {submitting ? "…" : "Full job →"}
           </button>
         ) : (
           <span className="text-slate-300 dark:text-slate-700">—</span>
