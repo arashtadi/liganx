@@ -248,7 +248,12 @@ function PrecomputedCard({ r }: { r: PrecomputedSummary }) {
         {mutLabel}
       </div>
       <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
-        vs {r.library_name} ({r.library_compound_count} cmpds)
+        {/* v1.23.1: show how many compounds actually docked vs the
+            library size. n_total = 2 cells per compound (WT + mutant),
+            so screened = n_total / 2. Honest reporting — earlier
+            iterations said "30 cmpds" when only 10 had real Vina
+            scores, which misled at-a-glance. */}
+        vs {r.library_name} ({Math.floor(r.n_total / 2)} / {r.library_compound_count} screened)
       </div>
       <div className="mt-3 flex items-center justify-between text-[11px]">
         <div className="flex items-center gap-2">

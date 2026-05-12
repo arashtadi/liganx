@@ -280,6 +280,24 @@ export default function ScreeningPage() {
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
       <Header data={data} isFetching={isFetching} onRefresh={() => refetch()} />
+      {/* v1.23.1: method-limits banner for precomputed snapshots. The
+          scores are real Vina output, but Vina is rigid-receptor and
+          can't model covalent binding — so cross-promiscuity artifacts
+          (e.g. a BCR-ABL drug topping KRAS rankings) are baked in.
+          Tell the user upfront so they read the table as triage,
+          not as clinical prediction. */}
+      {isPrecomputed && (
+        <div className="rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800/60 px-4 py-3 text-[12px] text-amber-800 dark:text-amber-200 leading-relaxed">
+          <strong className="font-semibold">Method note:</strong>{" "}
+          Scores are real QuickVina2 docks against FoldX-built mutants —
+          but Vina uses rigid-receptor scoring and cannot model covalent
+          binding. Read the ranking as triage (which compounds might be
+          worth a deeper look), not as a clinical prediction. Cross-
+          target promiscuity in the top rows is a known artifact, not
+          a discovery. Failed rows are real FoldX rejects or
+          outside-pocket flags — not bugs.
+        </div>
+      )}
       <ResultsToolbar
         data={data}
         sortKey={sortKey}
