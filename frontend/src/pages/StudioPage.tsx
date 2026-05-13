@@ -6231,11 +6231,20 @@ function ProductionViewer3D({
   // we still show pose/style toggles so users can preview the conformer
   // in different modes.
   const showToolbar = hasDock || !!conformerSdf;
+  // v1.25 — collapse the 3D pane when there's literally nothing to
+  // show. The 280px min-height was wasting half the right column on
+  // every fresh visit and forcing users to scroll the Telemetry pane
+  // to reach the Compound picker. When empty we shrink to a thin
+  // banner; once any content lands (live conformer, dock result, dock
+  // in progress) we snap back to the normal 40% layout.
+  const is3DEmpty = !smiles && !dockResult && !dockResultWt && !status;
 
   return (
     <div className={
       fullscreen
         ? "fixed inset-0 z-50 bg-[#0d1422] border border-slate-800/70 flex flex-col overflow-hidden"
+        : is3DEmpty
+        ? "bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden flex-shrink-0"
         : "bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden h-[40%] min-h-[280px]"
     }>
       <div className="px-3 py-1.5 border-b border-slate-800/70 flex items-center justify-between text-[10px]">
@@ -6341,50 +6350,41 @@ function ProductionViewer3D({
         </div>
       )}
 
-      <div className="flex-1 relative bg-[#0f172a] overflow-hidden">
-        <div ref={containerRef} className="absolute inset-0" />
-        {/* Onboarding empty state — shows when there's no compound and no
-            docking result yet. Walks the user through the 4-step flow so
-            a first-time visitor doesn't stare at a black canvas. */}
-        {!smiles && !dockResult && !dockResultWt && !status && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="max-w-md px-6 py-5 rounded-lg border border-slate-800/70 bg-[#0b1220]/80 backdrop-blur-sm">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-cyan-400 text-[10px] font-mono tracking-[0.2em] uppercase">▸ studio · ready</span>
-                <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
-              </div>
-              <div className="text-slate-300 text-xs leading-relaxed font-mono">
-                <div className="mb-2 text-slate-400">Mutation-aware docking in 5 steps:</div>
-                <ol className="space-y-1.5">
-                  <li className="flex gap-2">
-                    <span className="text-cyan-400 tabular-nums">1.</span>
-                    <span><span className="text-slate-200">Pick a target</span> <span className="text-slate-500">— curated catalog, RCSB PDB search, or upload</span></span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-cyan-400 tabular-nums">2.</span>
-                    <span><span className="text-slate-200">Choose mutation(s)</span> <span className="text-slate-500">— curated chips or type any code (T790M, V600E…)</span></span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-cyan-400 tabular-nums">3.</span>
-                    <span><span className="text-slate-200">Choose compound(s)</span> <span className="text-slate-500">— sketch, paste a SMILES list, or upload a CSV/SDF (up to 50)</span></span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-cyan-400 tabular-nums">4.</span>
-                    <span><span className="text-slate-200">Run Dock</span> <span className="text-slate-500">— scores WT + each mutant in parallel</span></span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-cyan-400 tabular-nums">5.</span>
-                    <span><span className="text-slate-200">Inspect &amp; iterate</span> <span className="text-slate-500">— Δ-vs-WT, Kd, 3D pose, AI variants for next round</span></span>
-                  </li>
-                </ol>
-              </div>
-              <div className="mt-3 pt-3 border-t border-slate-800/50 text-[9px] font-mono text-slate-600 tracking-wider uppercase leading-relaxed space-y-0.5">
-                <div>tip · ai variants suggests 3 pocket-aware redesigns per dock</div>
+      <div className={is3DEmpty ? "relative bg-[#0f172a] overflow-hidden" : "flex-1 relative bg-[#0f172a] overflow-hidden"}>
+        {/* Keep the 3D canvas mounted but invisible when empty so the
+            3Dmol viewer instance isn't recreated each time a user
+            picks a compound (re-init costs ~200ms). */}
+        <div ref={containerRef} className={is3DEmpty ? "hidden" : "absolute inset-0"} />
+        {/* Onboarding empty state — shows when there's no compound and
+            no docking result yet. Walks the user through the 5-step
+            flow so a first-time visitor knows what to do, but stays
+            compact so the bulk of the right column belongs to the
+            target / mutation / compound pickers in Telemetry. The
+            expandable details lets curious users see the full
+            walkthrough without forcing it on everyone. */}
+        {is3DEmpty && (
+          <details className="group px-3 py-2.5 text-xs font-mono leading-relaxed text-slate-300">
+            <summary className="flex items-center gap-2 cursor-pointer list-none select-none">
+              <span className="text-cyan-400 text-[10px] tracking-[0.2em] uppercase">▸ studio · ready</span>
+              <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
+              <span className="text-[9px] uppercase tracking-wider text-slate-500 group-open:hidden">▾ 5-step guide</span>
+              <span className="text-[9px] uppercase tracking-wider text-slate-500 hidden group-open:inline">▴ hide guide</span>
+            </summary>
+            <div className="mt-2">
+              <div className="mb-2 text-slate-400 text-[11px]">Mutation-aware docking in 5 steps:</div>
+              <ol className="space-y-1 text-[11px]">
+                <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">1.</span><span><span className="text-slate-200">Pick a target</span> <span className="text-slate-500">— curated catalog, RCSB PDB search, or upload</span></span></li>
+                <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">2.</span><span><span className="text-slate-200">Choose mutation(s)</span> <span className="text-slate-500">— curated chips or type any code (T790M, V600E…)</span></span></li>
+                <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">3.</span><span><span className="text-slate-200">Choose compound(s)</span> <span className="text-slate-500">— sketch, paste a SMILES list, or upload (up to 50)</span></span></li>
+                <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">4.</span><span><span className="text-slate-200">Run Dock</span> <span className="text-slate-500">— scores WT + each mutant in parallel</span></span></li>
+                <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">5.</span><span><span className="text-slate-200">Inspect &amp; iterate</span> <span className="text-slate-500">— Δ-vs-WT, Kd, 3D pose, AI variants</span></span></li>
+              </ol>
+              <div className="mt-2 pt-2 border-t border-slate-800/50 text-[9px] tracking-wider uppercase text-slate-600 space-y-0.5">
                 <div>tip · save compounds to your library for next session</div>
                 <div>live conformer renders here · 3D pose appears after dock</div>
               </div>
             </div>
-          </div>
+          </details>
         )}
         {status && (
           <div className="absolute bottom-2 left-2 right-2 px-2 py-1 rounded bg-rose-950/60 border border-rose-900/60 text-[10px] text-rose-200 font-mono">
