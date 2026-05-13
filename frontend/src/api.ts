@@ -372,6 +372,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s — the server may be cold-starting. Please retry.`,
       );
     }
+    // 2026-05-12 user-reported bug: a network-level fetch failure landed
+    // in the UI as the raw browser TypeError "Failed to fetch". That's
+    // technically accurate but completely useless to the user — they
+    // can't tell if the backend is down, their internet's flaky, an
+    // ad-blocker ate the request, or a VPN is in the way. Catch the
+    // TypeError specifically (every browser uses this name for
+    // network-level fetch errors) and replace with an actionable message.
+    // ApiError(0, ...) signals "didn't reach the server" — same status
+    // as AbortError above, so callers that already special-case 0 keep
+    // working unchanged.
+    if (e instanceof TypeError) {
+      throw new ApiError(
+        0,
+        "Couldn't reach the server. Check your internet connection, " +
+          "disable any ad-blocker or VPN that might be blocking api.liganx.com, " +
+          "and retry. If this keeps happening, status.liganx.com shows current health.",
+      );
+    }
     throw e;
   } finally {
     if (timeoutHandle != null) window.clearTimeout(timeoutHandle);
