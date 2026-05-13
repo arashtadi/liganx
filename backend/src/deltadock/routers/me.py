@@ -62,6 +62,11 @@ class ProfileOut(BaseModel):
     researchgate_url: Optional[str] = None
     marketing_opt_in: bool = False
     signup_source: Optional[str] = None
+    # Pro tier flag — toggled from /admin. When False (the default for
+    # all new signups) the frontend gates GNINA + Virtual Screening
+    # behind a "Pro feature" contact-us modal; the backend also rejects
+    # those submissions with 402.
+    is_pro: bool = False
 
 
 class ProfileUpdate(BaseModel):
@@ -114,7 +119,8 @@ def get_my_profile(
     row = session.execute(
         text(
             "SELECT full_name, organization, role, role_other,"
-            " researchgate_url, marketing_opt_in, signup_source"
+            " researchgate_url, marketing_opt_in, signup_source,"
+            " COALESCE(is_pro, FALSE) AS is_pro"
             " FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},

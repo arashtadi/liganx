@@ -79,12 +79,18 @@ class AdminUserRow(BaseModel):
     jobs_used: int  # count of pending+running+completed jobs
     jobs_total: int  # all-time count regardless of status, for visibility
     is_admin: bool
+    is_pro: bool  # GNINA + Virtual Screening unlocked. Free tier = Vina only.
 
 
 class QuotaUpdate(BaseModel):
     """PATCH payload for changing a user's quota. Allow 0 (effectively
     bans new submissions but doesn't kill existing ones)."""
     job_quota: int = Field(..., ge=0, le=10_000)
+
+
+class ProUpdate(BaseModel):
+    """PATCH payload for flipping a user's Pro status."""
+    is_pro: bool
 
 
 @router.get("/stats", response_model=AdminStats)
@@ -136,6 +142,7 @@ def list_users(
                 p.organization,
                 p.role,
                 COALESCE(p.job_quota, 10) AS job_quota,
+                COALESCE(p.is_pro, FALSE) AS is_pro,
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
@@ -182,6 +189,7 @@ def list_users(
                 jobs_used=int(r["jobs_used"]),
                 jobs_total=int(r["jobs_total"]),
                 is_admin=(r["email"] or "").strip().lower() == admin_email_lc,
+                is_pro=bool(r.get("is_pro") or False),
             ))
         except Exception as e:
             uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
@@ -224,6 +232,34 @@ def update_user_quota(
 
     # Return the refreshed row so the frontend can update its local
     # state without a separate GET.
+    rows = list_users(admin, session)
+    for r in rows:
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+
+
+@router.patch("/users/{user_id}/pro", response_model=AdminUserRow)
+def update_user_pro(
+    payload: ProUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Flip a user's is_pro flag (true=Pro, false=Free). UPSERTs the
+    user_profile row so OAuth users who haven't touched /me/profile yet
+    can still be granted Pro access — same defensive pattern as
+    update_user_quota."""
+    session.execute(text(
+        """
+        INSERT INTO public.user_profile (user_id, is_pro, marketing_opt_in)
+        VALUES (:uid, :pro, FALSE)
+        ON CONFLICT (user_id) DO UPDATE SET is_pro = EXCLUDED.is_pro
+        """
+    ), {"uid": user_id, "pro": payload.is_pro})
+    session.commit()
+    log.info("Admin %s set user %s is_pro=%s", admin.email, user_id, payload.is_pro)
+
     rows = list_users(admin, session)
     for r in rows:
         if r.user_id == user_id:

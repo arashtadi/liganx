@@ -35,6 +35,7 @@ import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
+import ProGateModal, { type ProFeature } from "../components/ProGateModal";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -370,6 +371,28 @@ export default function StudioPage() {
   );
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
+  // v1.24 — Pro tier gating. is_pro=true users see GNINA + Virtual
+  // Screening as normal; free tier sees them disabled with a 🔒 lock
+  // icon and clicking opens proGateFeature modal. Admin toggles per-user
+  // from /admin. Defaults to false until the profile fetch completes so
+  // we never *accidentally* expose Pro features to a free user during
+  // the brief loading window.
+  const [isPro, setIsPro] = useState(false);
+  const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyProfile()
+      .then((p) => {
+        if (!cancelled) setIsPro(Boolean(p?.is_pro));
+      })
+      .catch(() => {
+        /* swallow — anonymous users see free tier (correct) */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // (v0.30) Silent autosave bookkeeping. activeDraft holds the most
   // recently upserted draft so subsequent edits update the SAME record
   // (not a fresh draft per keystroke). lastSavedAt drives the tiny
@@ -3712,10 +3735,22 @@ export default function StudioPage() {
                         Same disable logic. Tooltip is honest about the
                         CNN-rerank state on current production. */}
                     <button
-                      onClick={() => runFullJob("gnina")}
-                      disabled={isDisabled}
+                      onClick={() => {
+                        // v1.24 — Pro gate. Free tier sees the lock modal
+                        // instead of submitting. Button stays interactable
+                        // so we can SHOW them what they're missing — a
+                        // straight disable+tooltip is too easy to overlook.
+                        if (!isPro) {
+                          setProGateFeature("gnina");
+                          return;
+                        }
+                        runFullJob("gnina");
+                      }}
+                      disabled={isPro && isDisabled}
                       className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
-                        submittingFull
+                        !isPro
+                          ? "border-violet-700/40 bg-violet-950/15 text-violet-300/60 hover:bg-violet-950/30 hover:border-violet-600/60 cursor-pointer"
+                          : submittingFull
                           ? "border-violet-500/40 bg-violet-950/30 text-violet-300/70"
                           : isCoolingOff
                           ? "border-violet-700/30 bg-violet-950/15 text-violet-300/50"
@@ -3724,12 +3759,13 @@ export default function StudioPage() {
                           : "border-violet-600/50 bg-violet-950/25 text-violet-200 hover:bg-violet-900/40 hover:border-violet-500"
                       }`}
                       title={
-                        !selectedTarget ? "Pick a target first."
+                        !isPro ? "GNINA is a Pro feature — click for details."
+                        : !selectedTarget ? "Pick a target first."
                         : !hasCompound ? "Stage at least one compound first."
                         : "Dock with GNINA. CNN re-rank currently OFFLINE (Blackwell sm_120 incompatibility) — produces sampling-only differences from Vina until the planned 4090 deploy ships. Marked as engine=gnina in History."
                       }
                     >
-                      <span>{baseLabel}</span>
+                      <span>{!isPro && <span className="mr-1">🔒</span>}{baseLabel}</span>
                       <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
                   </div>
@@ -3754,23 +3790,32 @@ export default function StudioPage() {
                 const cellCount = compoundCount * Math.max(1, variantCount);
                 return (
                   <button
-                    onClick={() => runScreening()}
-                    disabled={isDisabled}
+                    onClick={() => {
+                      if (!isPro) {
+                        setProGateFeature("screening");
+                        return;
+                      }
+                      runScreening();
+                    }}
+                    disabled={isPro && isDisabled}
                     className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
-                      submittingFull
+                      !isPro
+                        ? "border-cyan-700/40 bg-cyan-950/15 text-cyan-300/60 hover:bg-cyan-950/30 hover:border-cyan-600/60 cursor-pointer"
+                        : submittingFull
                         ? "border-cyan-500/40 bg-cyan-950/30 text-cyan-300/70 cursor-wait animate-pulse"
                         : !ketcherReady || !hasCompound || !selectedTarget
                         ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
                         : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
                     }`}
                     title={
-                      !selectedTarget ? "Pick a target first."
+                      !isPro ? "Virtual Screening is a Pro feature — click for details."
+                      : !selectedTarget ? "Pick a target first."
                       : !hasCompound ? "Stage at least one compound first."
                       : "Submit as a virtual screening run — pre-stages every (compound × variant) row, lower exhaustiveness (4), and lands you on the ranked-hit results page sorted by selectivity index (mutant tighter than WT)."
                     }
                   >
-                    <span>⇢ Run Virtual Screening</span>
-                    {cellCount > 0 && (
+                    <span>{!isPro && <span className="mr-1">🔒</span>}⇢ Run Virtual Screening</span>
+                    {isPro && cellCount > 0 && (
                       <span className="opacity-60 ml-1.5">
                         · {compoundCount} cmpd × {variantCount} variant{variantCount === 1 ? "" : "s"} ({cellCount} cells)
                       </span>
@@ -3970,6 +4015,13 @@ export default function StudioPage() {
           share key. Pre-dock there's nothing on the page to ask about,
           so we hide the FAB to avoid a confusing empty-context chat. */}
       {fullJobKey && <LiganxAIPanel jobKey={fullJobKey} />}
+
+      {/* v1.24 — Pro gate modal. Opens when a free-tier user clicks
+          the locked GNINA or VS button. Stateless / parent-owned. */}
+      <ProGateModal
+        feature={proGateFeature}
+        onClose={() => setProGateFeature(null)}
+      />
     </div>
   );
 }

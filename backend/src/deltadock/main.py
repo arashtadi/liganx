@@ -305,6 +305,16 @@ def _ensure_compound_job_id_nullable() -> None:
     )
 
 
+def _ensure_is_pro_column() -> None:
+    """v1.24 — Pro tier flag on user_profile. Gates GNINA + Virtual
+    Screening; admin toggles via PATCH /admin/users/{id}/pro."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_014_ON_STARTUP",
+        sql_filename="014_is_pro.sql",
+        label="Migration 014 (is_pro flag)",
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     import asyncio
@@ -313,6 +323,7 @@ async def lifespan(_app: FastAPI):
     _ensure_screening_columns()
     _ensure_chat_history_table()
     _ensure_compound_job_id_nullable()
+    _ensure_is_pro_column()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     try:

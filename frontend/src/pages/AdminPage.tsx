@@ -107,6 +107,17 @@ function AdminDashboard() {
     },
   });
 
+  // v1.24 — Flip a user's Pro status. Used by the inline Pro toggle
+  // on each row. We invalidate the users list rather than patching
+  // locally so the row immediately re-renders with the correct badge.
+  const setProMut = useMutation({
+    mutationFn: ({ userId, isPro }: { userId: string; isPro: boolean }) =>
+      api.adminSetPro(userId, isPro),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
   const deleteMut = useMutation({
     mutationFn: (userId: string) => api.adminDeleteUser(userId),
     onSuccess: () => {
@@ -238,13 +249,41 @@ function AdminDashboard() {
                 return (
                   <tr key={u.user_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
                     <td className="px-4 py-3 align-top">
-                      <div className="font-medium text-ink dark:text-slate-100 flex items-center gap-1.5">
+                      <div className="font-medium text-ink dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
                         {u.full_name || "—"}
                         {u.is_admin && (
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-delta-100 text-delta-800 dark:bg-delta-900/40 dark:text-delta-200">
                             admin
                           </span>
                         )}
+                        {/* v1.24 — Pro toggle. Click to flip free⇆Pro.
+                            Admin user is implicitly Pro everywhere (see
+                            backend is_pro_user), but we still let the
+                            admin row toggle its own DB flag so the
+                            badge stays consistent with what other code
+                            paths see. */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setProMut.mutate({
+                              userId: u.user_id,
+                              isPro: !u.is_pro,
+                            })
+                          }
+                          disabled={setProMut.isPending}
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider transition-colors ${
+                            u.is_pro
+                              ? "bg-violet-100 text-violet-800 hover:bg-violet-200 dark:bg-violet-900/40 dark:text-violet-200 dark:hover:bg-violet-900/60"
+                              : "bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-700/40 dark:text-slate-400 dark:hover:bg-slate-700/60"
+                          } disabled:opacity-50`}
+                          title={
+                            u.is_pro
+                              ? "Pro — click to revoke. GNINA + Virtual Screening unlocked."
+                              : "Free tier — click to grant Pro (unlocks GNINA + Virtual Screening)."
+                          }
+                        >
+                          {u.is_pro ? "★ pro" : "free"}
+                        </button>
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{u.email}</div>
                       {u.role && (

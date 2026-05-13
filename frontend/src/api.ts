@@ -475,6 +475,10 @@ export interface UserProfile {
   researchgate_url?: string | null;
   marketing_opt_in: boolean;
   signup_source?: string | null;
+  /** Pro tier flag — when false, GNINA + Virtual Screening are locked
+   *  behind a "Pro feature, contact us" modal in the Studio. Admin
+   *  toggles per-user from /admin. Defaults to false. */
+  is_pro?: boolean;
 }
 
 /** PATCH-style payload for PUT /me/profile. All fields optional —
@@ -543,6 +547,9 @@ export interface AdminUserRow {
   jobs_used: number;
   jobs_total: number;
   is_admin: boolean;
+  /** v1.24 — Pro tier unlocks GNINA + Virtual Screening. Toggle from
+   *  the admin panel via PATCH /admin/users/:id/pro. */
+  is_pro: boolean;
 }
 
 export const api = {
@@ -725,6 +732,12 @@ export const api = {
     request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}`, {
       method: "PATCH",
       body: JSON.stringify({ job_quota: jobQuota }),
+    }),
+  /** Admin-only: flip a user's Pro status. Pro unlocks GNINA + VS. */
+  adminSetPro: (userId: string, isPro: boolean) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/pro`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_pro: isPro }),
     }),
   /** Admin-only: live status of the controlled RunPod GPU pod plus the
    *  watchdog's last-activity timer. Drives the Pod Control card. */

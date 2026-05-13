@@ -372,6 +372,26 @@ def create_job(
     # scoring family — Boltz-2's affinity_pred_value is a different unit
     # entirely (log10 IC50 μM vs Vina kcal/mol).
     cfg = get_settings()
+
+    # Pro-tier gate: GNINA is Pro only. Free tier sees a 402 with a
+    # "contact us" message; the frontend Studio also hides/locks the
+    # button so this is defense-in-depth for a direct API call.
+    if payload.engine == "gnina":
+        from ..auth import is_pro_user
+        if not is_pro_user(user.id, session):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": (
+                        "GNINA docking is a Liganx Pro feature. "
+                        "Free tier supports AutoDock Vina. "
+                        "Contact us to upgrade your account."
+                    ),
+                    "feature": "gnina",
+                    "contact_url": "https://liganx.com/contact",
+                },
+            )
+
     if payload.engine == "boltz2" and not cfg.boltz2_enabled:
         raise HTTPException(
             status_code=503,

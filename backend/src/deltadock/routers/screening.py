@@ -146,6 +146,24 @@ def create_screening(
     user: CurrentUser = Depends(profile_complete_user),
     session: Session = Depends(get_session),
 ) -> ScreeningOut:
+    # Pro-tier gate: Virtual Screening is Pro only. Free tier sees 402
+    # with a contact-us message; the Studio UI also hides/locks the VS
+    # entry point so this is defense-in-depth.
+    from ..auth import is_pro_user
+    if not is_pro_user(user.id, session):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "message": (
+                    "Virtual Screening is a Liganx Pro feature. "
+                    "Free tier supports single-compound AutoDock Vina docking. "
+                    "Contact us to upgrade your account."
+                ),
+                "feature": "screening",
+                "contact_url": "https://liganx.com/contact",
+            },
+        )
+
     # Hard cap. Frontend should never send more than this — server-side
     # defense for direct API callers.
     if len(payload.compounds) > MAX_COMPOUNDS_PER_SCREEN:

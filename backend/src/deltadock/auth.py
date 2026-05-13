@@ -31,11 +31,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Optional
 
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from jwt import PyJWKClient
+from sqlalchemy import text
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +283,41 @@ def profile_complete_user(user: Annotated[CurrentUser, Depends(verified_user)]) 
 # The check is case-insensitive because Supabase normalizes email casing
 # inconsistently between OAuth and password flows.
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+
+
+def is_pro_user(user_id: Optional[str], session) -> bool:
+    """Return True if the user has user_profile.is_pro = TRUE OR is the
+    configured admin. Cheap one-column read against an indexed PK.
+
+    Designed for routers that need to gate features (GNINA, /screening)
+    without coupling to fastapi.Depends — call from inside the handler
+    after you already have a Session. NULL/missing rows return False so
+    a brand-new OAuth user (no profile row yet) defaults to free tier."""
+    if not user_id:
+        return False
+    # Admin email always implicit Pro
+    try:
+        row = session.execute(
+            text("SELECT email FROM auth.users WHERE id = :uid"),
+            {"uid": user_id},
+        ).first()
+        if row and (row[0] or "").strip().lower() == ADMIN_EMAIL:
+            return True
+    except Exception:
+        # Any auth.users read failure → fall through to profile check
+        pass
+    try:
+        row = session.execute(
+            text("SELECT COALESCE(is_pro, FALSE) FROM public.user_profile WHERE user_id = :uid"),
+            {"uid": user_id},
+        ).first()
+        return bool(row and row[0])
+    except Exception:
+        # Defensive: if the column doesn't exist yet (migration hasn't
+        # run), treat everyone as free tier. The migration runs on
+        # startup so this is only relevant in the brief window before
+        # the next deploy.
+        return False
 
 
 def admin_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:

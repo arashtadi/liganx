@@ -55,6 +55,20 @@ const PREFILL_MESSAGES: Record<string, string> = {
     "feature in the compound editor) on my account. A bit about my use case:\n\n",
 };
 
+// Subject-line presets for Pro-upgrade requests routed in from the
+// Studio's locked-feature modal. The Studio's ProGateModal sets
+// ?subject=... in the URL, and we map known values to a longer
+// pre-filled message so the user doesn't start at a blank page.
+const SUBJECT_PREFILLS: Record<string, string> = {
+  "Pro upgrade: GNINA access":
+    "Hi — I'd like to enable GNINA docking on my Liganx account. " +
+    "A bit about my use case and what I'm working on:\n\n",
+  "Pro upgrade: Virtual Screening access":
+    "Hi — I'd like to enable Virtual Screening on my Liganx account. " +
+    "A bit about the libraries I want to screen and the targets I'm " +
+    "working on:\n\n",
+};
+
 type Status = "idle" | "sending" | "sent" | "error";
 
 // Role choices keep the question crisp without forcing the user into a
@@ -109,7 +123,17 @@ export default function ContactPage() {
   const stateReason = (location.state as { reason?: string } | null)?.reason ?? "";
   const queryReason = new URLSearchParams(location.search).get("reason") ?? "";
   const reason = stateReason || queryReason;
-  const prefilled = reason && PREFILL_MESSAGES[reason] ? PREFILL_MESSAGES[reason] : "";
+  // v1.24 — Pro-upgrade routes pass ?subject=... instead of ?reason=...
+  // because the subject doubles as a human-readable title in the
+  // confirmation email. Map known subjects to a pre-filled message;
+  // unknown subjects still get the bare prompt with the subject text
+  // shown as the form's heading.
+  const querySubject = new URLSearchParams(location.search).get("subject") ?? "";
+  const prefilled = reason && PREFILL_MESSAGES[reason]
+    ? PREFILL_MESSAGES[reason]
+    : (querySubject && SUBJECT_PREFILLS[querySubject])
+    ? SUBJECT_PREFILLS[querySubject]
+    : "";
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
