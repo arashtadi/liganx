@@ -3409,9 +3409,29 @@ export default function StudioPage() {
                       )}
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
+                          // 2026-05-12 bug fix: removing the LAST compound
+                          // used to leave the Ketcher 2D canvas + 3D viewer
+                          // + dock results showing the deleted compound's
+                          // ghost. Now when the row count drops to zero we
+                          // wipe the canvas, the loaded-compound banner,
+                          // the dirty-edit pill, the active draft, and
+                          // both dock-result slots so the panel returns
+                          // to its empty pre-load state.
+                          const willBeEmpty = compounds.length === 1; // removing the only one
                           setCompounds((prev) => prev.filter((_, j) => j !== i));
                           if (activeCompoundIdx >= compounds.length - 1) setActiveCompoundIdx(0);
+                          if (willBeEmpty) {
+                            setLoadedCompound(null);
+                            setActiveDraft(null);
+                            setCurrentSmiles("");
+                            setDockResult(null);
+                            setDockResultWt(null);
+                            try {
+                              const a = getKetcherApi(iframeRef.current);
+                              if (a?.setMolecule) await a.setMolecule("");
+                            } catch { /* canvas already gone or not ready */ }
+                          }
                         }}
                         className="text-slate-600 hover:text-rose-400 px-1 shrink-0"
                         title="Remove this compound from the suite"

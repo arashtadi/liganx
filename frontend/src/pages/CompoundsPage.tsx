@@ -157,9 +157,18 @@ export default function CompoundsPage() {
     // NewJobPage used to consume — see Studio's reseed handler. The
     // function is still called useInNewJob for backwards-compat with
     // the call sites; renaming is a follow-up if anyone cares.
+    //
+    // 2026-05-12 bug fix: passing replaceSession: true so each "Edit and
+    // Dock" click gives a clean Studio session with ONLY this compound.
+    // Without this flag, Studio's init MERGED the new compound with the
+    // restored session (see StudioPage `compounds` useState init), so
+    // every click piled compounds up instead of replacing.
     navigate("/studio", {
       state: {
-        reseed: { compounds: [{ name: c.name, smiles: c.smiles }] },
+        reseed: {
+          compounds: [{ name: c.name, smiles: c.smiles }],
+          replaceSession: true,
+        },
       },
     });
   }
