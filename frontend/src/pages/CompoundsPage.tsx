@@ -339,21 +339,22 @@ export default function CompoundsPage() {
                   />
                 </div>
                 <div className="flex items-center gap-2 whitespace-nowrap">
-                  <button
-                    type="button"
-                    onClick={() => setSketcherFor(c)}
-                    className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-delta-700 hover:bg-delta-50 dark:text-slate-400 dark:hover:text-delta-300 dark:hover:bg-delta-900/30 transition-colors"
-                    title="Open the structure in the 2D sketcher"
-                  >
-                    Edit
-                  </button>
+                  {/* 2026-05-12: "Edit" button removed; "Use in new job"
+                      renamed to "Edit and Dock" since the new-job flow
+                      routes through Studio, which has its own 2D sketcher
+                      + SAVE EDITS / SAVE AS NEW buttons. So one button now
+                      covers both intents (edit the structure AND run a
+                      dock). The KetcherModal scaffolding + savePrompt /
+                      renamePrompt machinery below is now unreachable from
+                      this page but kept in case we restore the inline
+                      edit flow later. */}
                   <button
                     type="button"
                     onClick={() => useInNewJob(c)}
                     className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold text-delta-700 hover:bg-delta-50 dark:text-delta-300 dark:hover:bg-delta-900/30 transition-colors"
-                    title="Open the New-job form with this compound pre-loaded"
+                    title="Open Studio with this compound pre-loaded — edit the structure in the 2D sketcher and run a dock"
                   >
-                    Use in new job <ArrowRight size={12} />
+                    Edit and Dock <ArrowRight size={12} />
                   </button>
                   <button
                     type="button"
