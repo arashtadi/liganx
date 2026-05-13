@@ -176,7 +176,18 @@ class Settings(BaseSettings):
     # submissions. Admin endpoints under /admin/pod/* expose manual
     # start/stop + status. Currently controlling pod diqoc6q2lt55mn.
     runpod_pod_id: str = ""
-    runpod_idle_minutes: int = 30
+    # 2026-05-12 update: watchdog disabled by default. The cost-savings
+    # ($0.13/day idle vs ~$15/day running, on the 4090) aren't worth the
+    # "site looks broken to new visitors" cost — a stopped pod returns
+    # 404 to every dock call, which is THE worst-possible first
+    # impression for a free visitor. To re-enable, set Fly secret
+    # RUNPOD_WATCHDOG_ENABLED=true. When disabled, /admin/pod/stop still
+    # works for manual cost control.
+    runpod_watchdog_enabled: bool = False
+    # If watchdog re-enabled: idle window before auto-stopping. Bumped
+    # from 30 to 240 min so a visitor who closes the tab + comes back
+    # later doesn't always land on a paused pod.
+    runpod_idle_minutes: int = 240
     # Hard ceiling on pod uptime regardless of activity. The activity-based
     # watchdog above can theoretically loop forever if new jobs keep
     # arriving, which on RunPod is real money: an RTX 4090 is ~$0.40/hour
@@ -185,9 +196,9 @@ class Settings(BaseSettings):
     # in-depth ceiling — once a pod has been up for `max_uptime_minutes`
     # the watchdog stops it regardless. The next /jobs submission will
     # auto-resume via pod_lifecycle.ensure_pod_warm, so user impact is a
-    # one-time cold-start cost. Default 240 (4 hours) lines up with our
-    # typical batch-run windows. Override per-deploy via Fly secret.
-    runpod_max_uptime_minutes: int = 240
+    # one-time cold-start cost. Bumped from 240 (4h) to 1440 (24h) so
+    # a typical work day stays warm.
+    runpod_max_uptime_minutes: int = 1440
     # Boltz-2 sampling controls. Defaults match the integration plan:
     # single-sequence (no MSA fetch) for fair WT/mutant comparison, one
     # sample because Boltz is deterministic at temperature=0.

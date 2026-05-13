@@ -524,7 +524,14 @@ function PodControl() {
           <button
             type="button"
             onClick={() => startMut.mutate()}
-            disabled={!s?.configured || !isStopped || startMut.isPending || stopMut.isPending}
+            // 2026-05-12: enable on !isRunning instead of isStopped. RunPod
+            // returns a bunch of states besides EXITED/STOPPED — STOPPING,
+            // PAUSED, sometimes null mid-transition — and the user
+            // couldn't click Start because none matched the narrow
+            // isStopped check. start_pod is idempotent on RunPod's side
+            // (no-op if the pod is already starting), so enabling
+            // whenever the pod isn't actively RUNNING is safe.
+            disabled={!s?.configured || isRunning || startMut.isPending || stopMut.isPending}
             className="px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed"
             title="Resume the pod. ~3-5 min until ready for docking."
           >

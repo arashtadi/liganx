@@ -122,6 +122,11 @@ async def _runpod_watchdog():
     if not runpod_client.is_configured():
         log.info("RunPod watchdog: not configured — skipping")
         return
+    # 2026-05-12: watchdog default-disabled. Set Fly secret
+    # RUNPOD_WATCHDOG_ENABLED=true to turn back on. See config.py for why.
+    if not settings.runpod_watchdog_enabled:
+        log.info("RunPod watchdog: disabled via RUNPOD_WATCHDOG_ENABLED=false — skipping")
+        return
     threshold = settings.runpod_idle_minutes * 60
     max_uptime = settings.runpod_max_uptime_minutes * 60
     # Track when this watchdog last observed the pod transition into RUNNING
