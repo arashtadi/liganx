@@ -39,7 +39,8 @@ import { LogoMark, Spinner } from "./components/Icons";
 // import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { api } from "./api";
-import DocFlaskTour from "./components/DocFlask/DocFlaskTour";
+// DocFlaskTour was removed 2026-05-12 — first-run mascot/tour retired.
+// Component files under components/DocFlask/ have been deleted.
 
 export default function App() {
   return (
@@ -105,11 +106,7 @@ export default function App() {
           </Routes>
         </Main>
         <FooterUnlessStudio />
-        {/* First-run tour mascot. Self-gates on route + localStorage —
-            renders nothing for users who've seen it or are off the
-            tour-eligible pages. Mounted once at app root so the tour
-            survives client-side route transitions. */}
-        <DocFlaskTour />
+        {/* DocFlaskTour removed 2026-05-12 — first-run mascot retired. */}
         {/* On first sign-in (and only first sign-in), redirects to the
             full-page /welcome onboarding form. Replaces the previous
             popup-modal pattern — users prefer a real page where they
@@ -565,10 +562,6 @@ function UserMenu({ email, avatarUrl, isAdmin, onSignOut }: { email: string; ava
           >
             My compounds
           </button>
-          {/* The Doc Flask tour toggle moved to /settings — keeping it
-              there only avoids two parallel UI entry points that can
-              drift apart. Users reach it via Settings → "Doc Flask
-              tour" instead. */}
           {isAdmin && (
             <button
               type="button"

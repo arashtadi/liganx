@@ -19,9 +19,7 @@
  *      sign-in method without breaking Google sign-in. We say so in
  *      the helper text rather than hiding the section for them.
  *
- *   4. Doc Flask tour — wraps the same localStorage flag the in-tour
- *      checkbox writes. ON → tour fires on every /new visit. OFF →
- *      tour stays dismissed.
+ * (Doc Flask tour card was removed 2026-05-12 along with the mascot itself.)
  *
  * Auth state (and hence avatar URL / email) updates flow through
  * supabase.auth.onAuthStateChange in AuthProvider, so saving here
@@ -35,11 +33,7 @@ import { useAuth, SIGNUP_ROLES } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 import { api, ApiError } from "../api";
 import type { UserProfile } from "../api";
-import {
-  isDocFlaskTourDismissed,
-  resetDocFlaskTour,
-  dismissDocFlaskTour,
-} from "../components/DocFlask/DocFlaskTour";
+// DocFlask tour helpers removed 2026-05-12 — first-run mascot retired.
 import { Spinner } from "../components/Icons";
 
 export default function SettingsPage() {
@@ -80,7 +74,7 @@ export default function SettingsPage() {
           (p: string) => p !== "email",
         )}
       />
-      <DocFlaskCard />
+      {/* DocFlaskCard removed 2026-05-12 — first-run mascot retired. */}
     </div>
   );
 }
@@ -377,68 +371,8 @@ function PasswordCard({ signedInWithPasswordOnly }: { signedInWithPasswordOnly: 
 }
 
 /* -------------------------------------------------------------------------- */
-/* Doc Flask tour toggle                                                      */
+/* Doc Flask tour toggle — REMOVED 2026-05-12 (mascot retired).               */
 /* -------------------------------------------------------------------------- */
-
-function DocFlaskCard() {
-  // Read once on mount; toggling updates immediately. We don't subscribe to
-  // localStorage events because nothing else writes this key while the page
-  // is open (the in-tour checkbox lives on /new).
-  const [enabled, setEnabled] = useState(() => !isDocFlaskTourDismissed());
-
-  function toggle() {
-    if (enabled) {
-      // Was on → turn off → persist dismissed flag.
-      dismissDocFlaskTour();
-      setEnabled(false);
-    } else {
-      // Was off → turn on → clear the flag. resetDocFlaskTour also dispatches
-      // the docflask:show event, but we're not on /new, so the listener just
-      // ignores it. The flag is what matters: next /new visit, the tour
-      // will fire on settle.
-      resetDocFlaskTour();
-      setEnabled(true);
-    }
-  }
-
-  return (
-    <section className="card">
-      <h2 className="text-lg font-semibold text-ink dark:text-white">Doc Flask tour</h2>
-      <p className="muted mt-1 text-sm">
-        The first-run walkthrough on the New Job page. When ON, Doc Flask
-        appears every visit. When OFF, the tour stays hidden until you turn
-        it back on (or click "Show Doc Flask tour" in the avatar menu).
-      </p>
-      <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40 px-4 py-3">
-        <div>
-          <div className="text-sm font-medium text-ink dark:text-slate-100">
-            Show Doc Flask on the New Job page
-          </div>
-          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            {enabled
-              ? "Currently on — the tour will appear next time you open New Job."
-              : "Currently off — you've opted out of the walkthrough."}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={toggle}
-          role="switch"
-          aria-checked={enabled}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            enabled ? "bg-delta-600" : "bg-slate-300 dark:bg-slate-600"
-          }`}
-        >
-          <span
-            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-              enabled ? "translate-x-5" : "translate-x-0.5"
-            }`}
-          />
-        </button>
-      </div>
-    </section>
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /* Profile fields                                                             */
@@ -454,7 +388,7 @@ function DocFlaskCard() {
 // Why a separate card instead of bundling into the Profile picture
 // card: keeps the diff readable, lets us add/remove fields here
 // without touching the avatar upload logic, and matches the visual
-// pattern of the existing Email/Password/DocFlask cards.
+// pattern of the existing Email/Password cards.
 
 function ProfileFieldsCard() {
   const [loading, setLoading] = useState(true);
