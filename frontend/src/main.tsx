@@ -7,54 +7,40 @@ import "./index.css";
 import { tryReloadOnChunkError } from "./lib/chunkReload";
 
 // Sentry — opt-in via VITE_SENTRY_DSN. When the env var is unset (local
-// dev, preview deploys), the init code is a no-op. We dynamic-import so
-// the @sentry/react bundle never ships to clients we don't have a DSN
-// for. Documented in the May 2026 platform audit (#256).
+// dev, preview deploys), Sentry.init() is skipped and the bundle still
+// contains the SDK but it's never wired up. The SDK is a static import
+// so Vite bundles it — the previous dynamic-import-with-vite-ignore
+// trick caused the bare specifier "@sentry/react" to reach the browser
+// at runtime, where it 404'd silently and Sentry never initialised.
+// (May 2026 platform audit #256 + smoke-test debug 2026-05-13.)
+import * as Sentry from "@sentry/react";
+
 if (import.meta.env.VITE_SENTRY_DSN) {
-  // @sentry/react is an optional runtime dep. We dynamic-import it
-  // only when VITE_SENTRY_DSN is set; without that env var the import
-  // never runs and the package doesn't need to be installed for the
-  // rest of the app to build.
-  //
-  // The module specifier goes through a variable so Rollup can't
-  // statically resolve it at build time. Without that indirection the
-  // build fails with "Rollup failed to resolve import '@sentry/react'"
-  // whenever the package isn't installed, even though the runtime
-  // code path is gated on the DSN env var. The catch block below
-  // handles the case where the package is missing at runtime.
-  const sentryModuleId = "@sentry/react";
-  import(/* @vite-ignore */ sentryModuleId).then((Sentry) => {
-    Sentry.init({
-      dsn: import.meta.env.VITE_SENTRY_DSN,
-      environment: import.meta.env.MODE,
-      // Conservative: 10% traces, 100% errors. Bump tracesSampleRate
-      // higher if performance work needs more data.
-      tracesSampleRate: 0.1,
-      // Don't capture replays by default — costs a lot of bandwidth and
-      // we haven't reviewed for PII yet.
-      replaysSessionSampleRate: 0,
-      replaysOnErrorSampleRate: 0,
-    });
-    // Bridge our ErrorBoundary's componentDidCatch into Sentry. The
-    // boundary calls window.__liganx_capture_error__ for every caught
-    // render exception; registering Sentry.captureException here means
-    // those land in Sentry the moment the DSN is configured. Other
-    // monitoring products can register their own bridge from app code
-    // without touching this file.
-    window.__liganx_capture_error__ = (err, info, routeName) => {
-      try {
-        Sentry.captureException(err, {
-          tags: { route: routeName || "unknown" },
-          extra: { componentStack: info?.componentStack },
-        });
-      } catch {
-        /* swallow — observability must not cascade */
-      }
-    };
-  }).catch(() => {
-    // Soft-fail: missing dependency or network error shouldn't break the
-    // app. Sentry is observability, not a critical path.
+  Sentry.init({
+    dsn: import.meta.env.VITE_SENTRY_DSN,
+    environment: import.meta.env.MODE,
+    // Conservative: 10% traces, 100% errors. Bump tracesSampleRate
+    // higher if performance work needs more data.
+    tracesSampleRate: 0.1,
+    // Don't capture replays by default — costs a lot of bandwidth and
+    // we haven't reviewed for PII yet.
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0,
   });
+  // Bridge our ErrorBoundary's componentDidCatch into Sentry. The
+  // boundary calls window.__liganx_capture_error__ for every caught
+  // render exception; registering Sentry.captureException here means
+  // those land in Sentry the moment the DSN is configured.
+  window.__liganx_capture_error__ = (err, info, routeName) => {
+    try {
+      Sentry.captureException(err, {
+        tags: { route: routeName || "unknown" },
+        extra: { componentStack: info?.componentStack },
+      });
+    } catch {
+      /* swallow — observability must not cascade */
+    }
+  };
 }
 
 // Sentry smoke-test trigger — hit https://liganx.com/?sentry_test=1 to
@@ -67,7 +53,7 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 if (typeof window !== "undefined" && window.location.search.includes("sentry_test=1")) {
   setTimeout(() => {
     const ts = new Date().toISOString();
-    const err = new Error(`Liganx Sentry smoke test — ${ts}`);
+    const err = new Error(`Liganx Sentry smoke test ${ts}`);
     // Send directly via the same bridge ErrorBoundary uses. This works
     // even if React hasn't thrown yet, and tags the event so it's
     // easy to find in Sentry ("route: sentry_test").
