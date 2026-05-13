@@ -35,6 +35,19 @@ import CalibratePage from "./pages/CalibratePage";
 // admin, update both this constant and the Fly secret in lockstep.
 const ADMIN_EMAIL = "arashtadi@gmail.com";
 import { LogoMark, Spinner } from "./components/Icons";
+import ErrorBoundary from "./components/ErrorBoundary";
+
+/**
+ * Per-route ErrorBoundary helper. Wraps a route element so that any
+ * render exception in the route's component tree renders the friendly
+ * recovery card instead of unmounting the whole React tree (which used
+ * to give the user a blank white page). routeName is plumbed into the
+ * fallback copy + the support-email subject so we can tell where the
+ * crash happened from a bug report alone.
+ */
+function withBoundary(element: React.ReactNode, routeName: string): React.ReactNode {
+  return <ErrorBoundary routeName={routeName}>{element}</ErrorBoundary>;
+}
 // (v0.28) ThemeToggle import removed — site is dark-only now.
 // import ThemeToggle from "./components/ThemeToggle";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -49,60 +62,64 @@ export default function App() {
         <Header />
         <Main>
           <Routes>
-            <Route path="/" element={<HomePage />} />
+            {/* Every route element wrapped in <ErrorBoundary> so a render
+                exception in one page surfaces a recovery card instead of
+                unmounting the whole React tree (blank white page). Route
+                name is plumbed for the support-email subject. */}
+            <Route path="/" element={withBoundary(<HomePage />, "Home")} />
             {/* Legacy /new — NewJobPage retired 2026-05-08, all flows
                 consolidated into Studio. Permanent redirect so old
                 bookmarks, email links, and any caller still calling
                 navigate("/new") all land in /studio without a 404. */}
             <Route path="/new" element={<Navigate to="/studio" replace />} />
-            <Route path="/studio" element={<RequireAuth><StudioPage /></RequireAuth>} />
-            <Route path="/history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
-            <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-            <Route path="/welcome" element={<RequireAuth><CompleteProfilePage /></RequireAuth>} />
-            <Route path="/compounds" element={<RequireAuth><CompoundsPage /></RequireAuth>} />
-            <Route path="/jobs/:id" element={<JobPage />} />
+            <Route path="/studio" element={withBoundary(<RequireAuth><StudioPage /></RequireAuth>, "Studio")} />
+            <Route path="/history" element={withBoundary(<RequireAuth><HistoryPage /></RequireAuth>, "History")} />
+            <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
+            <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
+            <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />
+            <Route path="/jobs/:id" element={withBoundary(<JobPage />, "Job results")} />
             {/* Public — anyone with the share_id can view the ranked
                 hit list. Like /jobs/:id, this is read-only and we
                 rely on share_id being a random token, not a sequential
                 int, so guessing isn't tractable. */}
-            <Route path="/screening/:shareId" element={<ScreeningPage />} />
-            <Route path="/library" element={<LibraryPage />} />
+            <Route path="/screening/:shareId" element={withBoundary(<ScreeningPage />, "Screening results")} />
+            <Route path="/library" element={withBoundary(<LibraryPage />, "Library")} />
             {/* v1.23 P1.4: public landing pages for pre-computed library
                 screenings. Same ScreeningPage component renders these in
                 read-only mode (no Promote / Cancel buttons); fetcher is
                 /library/precomputed/{slug} instead of /screening/{id}.
                 SEO-friendly URLs — every snapshot has its own page. */}
-            <Route path="/library/precomputed/:slug" element={<ScreeningPage />} />
-            <Route path="/suite" element={<SuitePage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/signup" element={<SignupPage />} />
-            <Route path="/verify-email" element={<VerifyEmailPage />} />
-            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-            <Route path="/privacy" element={<PrivacyPage />} />
-            <Route path="/terms" element={<TermsPage />} />
-            <Route path="/validation" element={<ValidationPage />} />
-            <Route path="/mutation-docking-guide" element={<MutationDockingGuidePage />} />
-            <Route path="/contact" element={<ContactPage />} />
+            <Route path="/library/precomputed/:slug" element={withBoundary(<ScreeningPage />, "Pre-computed screening")} />
+            <Route path="/suite" element={withBoundary(<SuitePage />, "Suite")} />
+            <Route path="/login" element={withBoundary(<LoginPage />, "Sign in")} />
+            <Route path="/signup" element={withBoundary(<SignupPage />, "Sign up")} />
+            <Route path="/verify-email" element={withBoundary(<VerifyEmailPage />, "Verify email")} />
+            <Route path="/forgot-password" element={withBoundary(<ForgotPasswordPage />, "Forgot password")} />
+            <Route path="/privacy" element={withBoundary(<PrivacyPage />, "Privacy")} />
+            <Route path="/terms" element={withBoundary(<TermsPage />, "Terms")} />
+            <Route path="/validation" element={withBoundary(<ValidationPage />, "Validation")} />
+            <Route path="/mutation-docking-guide" element={withBoundary(<MutationDockingGuidePage />, "Mutation docking guide")} />
+            <Route path="/contact" element={withBoundary(<ContactPage />, "Contact")} />
             {/* Blog — public, indexed by Google. /blog is the listing,
                 /blog/:slug renders one post. Posts are .tsx modules
                 under src/blog/posts/, discovered at build time via
                 import.meta.glob (see src/blog/registry.ts). */}
-            <Route path="/blog" element={<BlogIndexPage />} />
-            <Route path="/blog/:slug" element={<BlogPostPage />} />
-            <Route path="/atlas" element={<AtlasPage />} />
+            <Route path="/blog" element={withBoundary(<BlogIndexPage />, "Blog")} />
+            <Route path="/blog/:slug" element={withBoundary(<BlogPostPage />, "Blog post")} />
+            <Route path="/atlas" element={withBoundary(<AtlasPage />, "Atlas")} />
             {/* Pro feature: score user-uploaded (drug, mutation) data
                 against the calibrated 2-signal model. Free tier = 10
                 rows / request, ESM2-cache + BLOSUM proxy. Pro tier
                 (Stripe-stubbed) = unlimited rows + real GPU docking. */}
-            <Route path="/atlas/calibrate" element={<CalibratePage />} />
-            <Route path="/atlas/:slug" element={<AtlasPage />} />
-            <Route path="/admin" element={<AdminPage />} />
+            <Route path="/atlas/calibrate" element={withBoundary(<CalibratePage />, "Calibrate your data")} />
+            <Route path="/atlas/:slug" element={withBoundary(<AtlasPage />, "Atlas drug page")} />
+            <Route path="/admin" element={withBoundary(<AdminPage />, "Admin")} />
             {/* Capital-A alias so /Admin (which is what user typed) works
                 too. Without this React Router would 404 because routes
                 are case-sensitive. */}
             <Route path="/Admin" element={<Navigate to="/admin" replace />} />
             {/* Catch-all 404 — used to leak through as a blank page */}
-            <Route path="*" element={<NotFound />} />
+            <Route path="*" element={withBoundary(<NotFound />, "Not Found")} />
           </Routes>
         </Main>
         <FooterUnlessStudio />
