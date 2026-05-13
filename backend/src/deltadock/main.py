@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, jobs, library, lookup, me, me_compounds, screening, structures, suggest
+from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, jobs, library, lookup, me, me_compounds, screening, sentry_webhook, structures, suggest
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -356,6 +356,7 @@ app.include_router(ask.router)  # Liganx AI Beta — Q&A over a job's results pa
 app.include_router(library.router)  # v1.23 — pre-computed library screenings (public)
 app.include_router(atlas.router)  # Resistance Atlas — per-drug forecast landing pages (public)
 app.include_router(calibrate.router)  # Pro feature: score user's own (drug, mutation) data against Liganx model
+app.include_router(sentry_webhook.router)  # Sentry alerts → Telegram bridge (/internal/sentry-webhook)
 
 
 @app.get("/health", tags=["meta"])

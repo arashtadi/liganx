@@ -154,6 +154,51 @@ def notify_job_failed(
     return _send("\n".join(parts))
 
 
+def notify_sentry_alert(
+    *,
+    title: str,
+    project: Optional[str] = None,
+    env: Optional[str] = None,
+    level: Optional[str] = None,
+    culprit: Optional[str] = None,
+    url: Optional[str] = None,
+    action: Optional[str] = None,
+) -> bool:
+    """Fire when Sentry's "Issue Alert" / "Internal Integration"
+    webhook reports a new error. Designed to be called from
+    /internal/sentry-webhook with fields already extracted from
+    Sentry's varying payload shapes (see routers/sentry_webhook.py
+    for the shape-tolerant parser).
+
+    Compact layout: emoji + title at the top so the locked-screen
+    preview is useful. Project / env / level on one line each so
+    they wrap cleanly on a phone screen. URL last with an explicit
+    'Open in Sentry' anchor."""
+    title_e = _escape_html(_truncate(title or "Sentry alert", 250))
+    project_e = _escape_html(project) if project else None
+    env_e = _escape_html(env) if env else None
+    level_e = _escape_html(level) if level else None
+    culprit_e = _escape_html(_truncate(culprit, 200)) if culprit else None
+    action_e = _escape_html(action) if action else None
+    url_e = _escape_html(url) if url else None
+
+    parts = [f"🚨 <b>{title_e}</b>"]
+    if project_e:
+        parts.append(f"📦 Project: <code>{project_e}</code>")
+    if env_e:
+        parts.append(f"🌍 Env: <code>{env_e}</code>")
+    if level_e:
+        parts.append(f"⚠️ Level: <code>{level_e}</code>")
+    if culprit_e:
+        parts.append(f"📍 In: <code>{culprit_e}</code>")
+    if action_e:
+        parts.append(f"({action_e})")
+    if url_e:
+        parts.append(f'<a href="{url_e}">Open in Sentry</a>')
+
+    return _send("\n".join(parts))
+
+
 def notify_user_report(
     *,
     job_id: int,
