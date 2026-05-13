@@ -34,6 +34,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
+import PodStatusBanner from "../components/PodStatusBanner";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -261,6 +262,54 @@ function writeStudioSession(snap: StudioSessionSnapshot): void {
   }
 }
 
+/**
+ * Demo reseed catalog — keyed by URL slug. /studio?demo=braf-v600e lands
+ * a first-time visitor on a Studio page with target / mutation / compound
+ * already staged, so the user can hit RUN DOCK and see a real
+ * selectivity result without having to figure out the form first.
+ *
+ * Each demo is curated to be:
+ *   - A well-known oncogenic mutation a reviewer will recognize
+ *   - In our catalog (pdb_id resolvable, mutation in our curated list)
+ *   - Tractable on the free-tier pod (small enough to dock in ~10s)
+ *
+ * Add new demos by adding entries here. The slug becomes part of the
+ * URL so keep it short + URL-safe.
+ */
+const DEMO_RESEEDS: Record<string, {
+  compounds: { name: string; smiles: string }[];
+  mutations: string[];
+  pdb_id: string;
+  catalog_target_id?: string;
+  include_wt: boolean;
+  replaceSession: true;
+}> = {
+  "braf-v600e": {
+    compounds: [{ name: "Vemurafenib (demo)", smiles: "CCCS(=O)(=O)Nc1ccc(F)c(C(=O)c2cnc(Nc3ccc(Cl)cc3)c2)c1F" }],
+    mutations: ["V600E"],
+    pdb_id: "4mne",
+    catalog_target_id: "braf",
+    include_wt: true,
+    replaceSession: true,
+  },
+  "egfr-t790m": {
+    compounds: [{ name: "Osimertinib (demo)", smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1" }],
+    mutations: ["T790M"],
+    pdb_id: "4zau",
+    catalog_target_id: "egfr",
+    include_wt: true,
+    replaceSession: true,
+  },
+  "abl-t315i": {
+    compounds: [{ name: "Imatinib (demo)", smiles: "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1" }],
+    mutations: ["T315I"],
+    pdb_id: "2hyy",
+    catalog_target_id: "abl1",
+    include_wt: true,
+    replaceSession: true,
+  },
+};
+
 export default function StudioPage() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const navigate = useNavigate();
@@ -270,7 +319,21 @@ export default function StudioPage() {
   // arrived with a `reseed` payload (e.g. from JobPage's Edit & re-dock
   // or from HistoryPage), the reseed wins — we want the new compound
   // loaded fresh, not the prior session restored over it.
-  const reseed = (location.state as any)?.reseed as
+  // /studio?demo=<slug> support — when a first-time visitor lands with
+  // a demo slug, we synthesize a reseed payload from a built-in catalog
+  // (DEMO_RESEEDS below). The goal is "first impression = a working
+  // selectivity result, not an empty form." Falls back to a no-op when
+  // the slug is unknown so a bad link doesn't break the page.
+  const urlReseed = (() => {
+    if (location.state && (location.state as any).reseed) return undefined;
+    const params = new URLSearchParams(location.search);
+    const slug = params.get("demo") || "";
+    if (!slug) return undefined;
+    const demo = DEMO_RESEEDS[slug.toLowerCase()];
+    if (!demo) return undefined;
+    return demo;
+  })();
+  const reseed = ((location.state as any)?.reseed ?? urlReseed) as
     | { compounds?: { name?: string | null; smiles: string }[]; mutations?: string[]; pdb_id?: string; chain?: string; catalog_target_id?: string; include_wt?: boolean; replaceSession?: boolean; sourceJobKey?: string }
     | undefined;
   // (Studio v0.94) When the reseed payload explicitly asks for a clean
@@ -3586,6 +3649,12 @@ export default function StudioPage() {
                   compounds without ever clicking a row got a stuck
                   disabled button — they had to click a row just to
                   warm up the canvas. */}
+              {/* Pod status — self-gates on healthOk. Renders nothing
+                  on healthy pod; renders amber "warming up ~30s" banner
+                  when /health is failing so the user understands the
+                  upcoming wait instead of thinking the Run Dock click
+                  did nothing. */}
+              <PodStatusBanner />
               {(() => {
                 const hasCompound = !!currentSmiles || compounds.length > 0;
                 const isDisabled = docking || submittingFull

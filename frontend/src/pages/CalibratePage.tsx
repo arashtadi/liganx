@@ -18,6 +18,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { usePageMeta } from "../lib/usePageMeta";
+import PodStatusBanner from "../components/PodStatusBanner";
+import ReproFooter from "../components/ReproFooter";
 
 const API = import.meta.env.VITE_API_URL || "/api";
 
@@ -117,6 +119,7 @@ export default function CalibratePage() {
 
   return (
     <div className="space-y-8 animate-fade-in">
+      <PodStatusBanner />
       <header>
         <Link
           to="/atlas"
@@ -322,6 +325,7 @@ export default function CalibratePage() {
           join the list.
         </p>
       </section>
+      <ReproFooter noteWhenLoaded="Calibration scores produced by the 2-signal Liganx model (Δ + ESM-2). Same input + same build below = identical output." />
     </div>
   );
 }

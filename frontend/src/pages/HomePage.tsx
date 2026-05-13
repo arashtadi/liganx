@@ -86,6 +86,16 @@ function Hero() {
                 Browse pre-computed screenings
               </Link>
             </div>
+            {/* First-time-visitor escape hatch: land in Studio with a
+                working selectivity example pre-staged. Cheaper first
+                impression than the empty form — one click to see what
+                a real result looks like. */}
+            <div className="mt-3 text-[12px] text-slate-500 dark:text-slate-400">
+              First time?{" "}
+              <Link to="/studio?demo=braf-v600e" className="text-delta-700 dark:text-delta-300 font-semibold hover:underline">
+                Open a worked example: BRAF V600E + Vemurafenib →
+              </Link>
+            </div>
             <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
               <span className="flex items-center gap-1.5"><Check /> Vina + GNINA + Boltz-2 ML</span>

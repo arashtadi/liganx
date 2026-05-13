@@ -529,6 +529,21 @@ export interface AdminUserRow {
 
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
+  /**
+   * /health → boolean. Used by PodStatusBanner to poll pod liveness
+   * cheaply. Returns true when the backend AND its GPU pod proxy are
+   * both reachable, false otherwise. Never throws — a network error
+   * counts as false. Backend caches the upstream pod check, so this
+   * is a single ~50ms round-trip even under heavy polling.
+   */
+  healthOk: async (): Promise<boolean> => {
+    try {
+      const r = await request<{ status: string }>("/health");
+      return r?.status === "ok";
+    } catch {
+      return false;
+    }
+  },
 
   // ── Current-user profile (typed mirror of Supabase user_metadata) ──
   // Reads from public.user_profile via the backend so we get clean

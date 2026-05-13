@@ -6,6 +6,7 @@ import SelectivityMatrix from "../components/SelectivityMatrix";
 import PoseDetail from "../components/PoseDetail";
 import HeroBanner from "../components/HeroBanner";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
+import ReproFooter from "../components/ReproFooter";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import LiganxAIPanel from "../components/LiganxAIPanel";
@@ -625,6 +626,7 @@ export default function JobPage() {
           the DB at click-time, so partial / streaming jobs answer
           questions about what's loaded so far. */}
       <LiganxAIPanel jobKey={jobKey} />
+      <ReproFooter noteWhenLoaded="Selectivity matrix and pose data computed by the build below. Same job ID + same build = same numbers." />
     </div>
   );
 }

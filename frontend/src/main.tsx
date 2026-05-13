@@ -35,6 +35,22 @@ if (import.meta.env.VITE_SENTRY_DSN) {
       replaysSessionSampleRate: 0,
       replaysOnErrorSampleRate: 0,
     });
+    // Bridge our ErrorBoundary's componentDidCatch into Sentry. The
+    // boundary calls window.__liganx_capture_error__ for every caught
+    // render exception; registering Sentry.captureException here means
+    // those land in Sentry the moment the DSN is configured. Other
+    // monitoring products can register their own bridge from app code
+    // without touching this file.
+    window.__liganx_capture_error__ = (err, info, routeName) => {
+      try {
+        Sentry.captureException(err, {
+          tags: { route: routeName || "unknown" },
+          extra: { componentStack: info?.componentStack },
+        });
+      } catch {
+        /* swallow — observability must not cascade */
+      }
+    };
   }).catch(() => {
     // Soft-fail: missing dependency or network error shouldn't break the
     // app. Sentry is observability, not a critical path.
