@@ -141,6 +141,18 @@ async def ensure_pod_ready(
         log.info("ensure_pod_ready: pod healthy after %.1fs", time.time() - (deadline - timeout_s))
     else:
         log.warning("ensure_pod_ready: pod not ready after %ds", timeout_s)
+        # Operator alert — every Run Dock click while the pod is down
+        # will silently fail for users, so we need to know about this
+        # fast. Imported lazily to keep this module's import cheap and
+        # to dodge any potential cycles via services.notifications.
+        try:
+            from .notifications import notify_pod_down
+            notify_pod_down(
+                reason=f"Health-poll deadline hit after resume (desired={desired or 'unknown'})",
+                timeout_s=timeout_s,
+            )
+        except Exception:
+            log.exception("notify_pod_down failed")
     return ready
 
 

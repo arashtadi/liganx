@@ -53,6 +53,50 @@ class RateLimit:
 _buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _lock = Lock()
 
+# Abuse detector: counts 429s per (ip, scope) inside ABUSE_WINDOW_S. When the
+# count crosses ABUSE_THRESHOLD we fire a Telegram alert ONCE, then silence
+# further alerts for ABUSE_SILENCE_S so a sustained attack doesn't spam
+# the operator.
+_abuse_hits: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_abuse_last_alert: dict[tuple[str, str], float] = {}
+ABUSE_WINDOW_S = 300   # 5 min
+ABUSE_THRESHOLD = 10
+ABUSE_SILENCE_S = 3600  # 1 h
+
+
+def _record_abuse_hit(ip: str, scope: str) -> None:
+    """Called every time we raise 429. Decides if/when to alert the
+    operator. Cheap O(N) walk over recent hits — N is bounded by
+    ABUSE_THRESHOLD because we trim aggressively."""
+    now = time.monotonic()
+    key = (ip, scope)
+    cutoff = now - ABUSE_WINDOW_S
+    with _lock:
+        hits = _abuse_hits[key]
+        while hits and hits[0] < cutoff:
+            hits.popleft()
+        hits.append(now)
+        count = len(hits)
+        last = _abuse_last_alert.get(key, 0.0)
+        if count >= ABUSE_THRESHOLD and (now - last) >= ABUSE_SILENCE_S:
+            _abuse_last_alert[key] = now
+            should_alert = True
+        else:
+            should_alert = False
+    if should_alert:
+        # Import lazily to avoid pulling httpx into the dep tree if not
+        # needed (and to dodge any future circular imports).
+        try:
+            from .notifications import notify_rate_limit_abuse
+            notify_rate_limit_abuse(
+                ip=ip,
+                scope=scope,
+                hits_in_window=count,
+                window_minutes=ABUSE_WINDOW_S // 60,
+            )
+        except Exception:
+            log.exception("notify_rate_limit_abuse failed")
+
 
 def _bypass_emails() -> set[str]:
     """Comma-separated list of emails (lowercased) read from
@@ -157,6 +201,10 @@ def rate_limit(scope: str, limit: RateLimit) -> Callable:
                     "rate-limit hit: ip=%s scope=%s count=%d/%d retry_after=%ds",
                     ip, scope, current, limit.max_requests, retry_after,
                 )
+                # Telegram alert if this IP has racked up >=ABUSE_THRESHOLD
+                # 429s recently. Idempotent (silenced for 1h after first
+                # alert per (ip, scope)).
+                _record_abuse_hit(ip, scope)
                 raise HTTPException(
                     status_code=429,
                     detail=(

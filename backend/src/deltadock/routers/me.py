@@ -163,21 +163,50 @@ def update_my_profile(
         ),
         fields,
     )
+    is_first_profile_write = False
     if result.rowcount == 0:
         # No existing row — INSERT one. Default marketing_opt_in to
         # False if not provided in the payload.
         cols = list(fields.keys())  # includes uid
         col_list = ", ".join(["user_id" if c == "uid" else c for c in cols])
         val_list = ", ".join(f":{c}" for c in cols)
-        session.execute(
+        ins = session.execute(
             text(
                 f"INSERT INTO public.user_profile ({col_list})"
                 f" VALUES ({val_list})"
                 " ON CONFLICT (user_id) DO NOTHING"
+                " RETURNING user_id"
             ),
             fields,
         )
+        # The INSERT actually landed a fresh row (not ON CONFLICT no-op),
+        # so this is the first time we're persisting anything for this
+        # user. That's our "new signup" hook — any subsequent profile
+        # edits hit the UPDATE branch above instead.
+        is_first_profile_write = ins.first() is not None
     session.commit()
+
+    # Operator alert: Telegram ping on a brand-new signup. Fired AFTER
+    # the commit so a notification implies the user is fully persisted.
+    # Wrapped in try/except so a Telegram failure can't take down the
+    # signup write (notifications module already swallows internally,
+    # but defense in depth).
+    if is_first_profile_write:
+        try:
+            from ..services.notifications import notify_new_user
+            notify_new_user(
+                user_email=getattr(user, "email", None),
+                user_id=user.id,
+                signup_method=getattr(user, "provider", None),
+                full_name=payload.full_name,
+                organization=payload.organization,
+                role=payload.role,
+            )
+        except Exception:
+            # Observability must not cascade; log + swallow.
+            import logging
+            logging.getLogger(__name__).exception("notify_new_user failed")
+
     return get_my_profile(user, session)
 
 

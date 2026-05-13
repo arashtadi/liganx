@@ -274,6 +274,56 @@ def _commit_retry(session: Session) -> None:
     session.commit()  # if this raises, let it — outer handler writes FAILED
 
 
+def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
+    """If this is the user's first-ever COMPLETED job, fire a Telegram
+    activation alert. Skips if user_id is None (anonymous job) OR if
+    they've previously completed a job. The 'first ever' check uses a
+    COUNT of prior COMPLETED jobs by the same user — by the time this
+    runs the current job is already COMPLETED in the DB, so we look
+    for any OTHER completed job.
+
+    Cheap query (one COUNT against an indexed column). Side-effect
+    only — never raises into the runner."""
+    if not job.user_id:
+        return
+    from sqlalchemy import text as _sql_text
+    prior = session.execute(
+        _sql_text(
+            "SELECT COUNT(*) FROM job"
+            " WHERE user_id = :uid AND status = 'COMPLETED' AND id != :jid"
+        ),
+        {"uid": str(job.user_id), "jid": job.id},
+    ).scalar() or 0
+    if prior > 0:
+        return  # not their first — quietly skip
+    # Build compound summary for the alert (names, truncated)
+    comp_rows = session.execute(
+        _sql_text(
+            "SELECT DISTINCT c.name FROM compound c"
+            " JOIN dockingresult dr ON dr.compound_id = c.id"
+            " WHERE dr.job_id = :jid"
+        ),
+        {"jid": job.id},
+    ).all()
+    comp_names = ", ".join(r[0] for r in comp_rows) if comp_rows else "—"
+    user_row = session.execute(
+        _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
+        {"uid": str(job.user_id)},
+    ).first()
+    user_email = user_row[0] if user_row else None
+    from .notifications import notify_first_dock
+    notify_first_dock(
+        job_id=job.id,
+        share_id=job.share_id,
+        user_email=user_email,
+        user_id=str(job.user_id),
+        pdb_id=job.pdb_id,
+        mutations=job.mutations or "",
+        engine=job.engine or "",
+        compound_summary=comp_names,
+    )
+
+
 def _safe_commit(session: Session, job_id: int, *, status: JobStatus,
                  error_message: str | None = None) -> bool:
     """Commit a final job status update, surviving a poisoned session.
@@ -399,6 +449,15 @@ def run_job_in_background(job_id: int) -> None:
             if terminal_status == JobStatus.COMPLETED:
                 if _safe_commit(session, job_id, status=JobStatus.COMPLETED):
                     log.info("Job %s completed", job_id)
+                    # Activation signal: was this the user's FIRST
+                    # successful job? If so, fire a Telegram alert —
+                    # this is the most important growth event we track.
+                    # Wrapped in try/except so a Telegram blip can't
+                    # impact the completion path.
+                    try:
+                        _maybe_notify_first_dock(session, job)
+                    except Exception:
+                        log.exception("Telegram first-dock alert failed (non-fatal)")
                 else:
                     log.error("Job %s: COULD NOT WRITE COMPLETED STATUS (DB unreachable)", job_id)
             else:

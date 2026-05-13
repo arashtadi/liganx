@@ -106,6 +106,125 @@ def _send(text: str) -> bool:
         return False
 
 
+def notify_new_user(
+    *,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    signup_method: Optional[str] = None,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+    role: Optional[str] = None,
+) -> bool:
+    """Fire when a brand-new user lands a row in user_profile for the
+    first time. Should be called from update_my_profile's INSERT path
+    OR from dismiss_onboarding when no profile row existed yet.
+
+    Idempotency is the caller's responsibility (only call on the
+    first-row-creation code path). We don't dedupe here because the
+    helper is too low-level to know whether 'first' means first
+    profile row, first job, first session, etc."""
+    email_e = _escape_html(user_email or "—")
+    name_e = _escape_html(full_name or "—") if full_name else None
+    org_e = _escape_html(organization) if organization else None
+    role_e = _escape_html(role) if role else None
+    method_e = _escape_html(signup_method or "—")
+    user_id_e = _escape_html(user_id or "—")
+
+    parts = [
+        "🎉 <b>New user signed up</b>",
+        "",
+        f"📧 Email: <code>{email_e}</code>",
+    ]
+    if name_e and name_e != "—":
+        parts.append(f"👤 Name: {name_e}")
+    if org_e:
+        parts.append(f"🏢 Org: {org_e}")
+    if role_e:
+        parts.append(f"💼 Role: {role_e}")
+    parts.append(f"🔐 Method: <code>{method_e}</code>")
+    parts.append(f"🆔 <code>{user_id_e}</code>")
+    return _send("\n".join(parts))
+
+
+def notify_first_dock(
+    *,
+    job_id: int,
+    share_id: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    pdb_id: str,
+    mutations: str,
+    engine: str,
+    compound_summary: str,
+) -> bool:
+    """Fire when a user's first successful dock job lands COMPLETED.
+    This is the activation signal — they got real value out of the
+    product for the first time."""
+    email_e = _escape_html(user_email or user_id or "—")
+    pdb_e = _escape_html(pdb_id or "—")
+    muts_e = _escape_html(mutations or "WT only")
+    engine_e = _escape_html(engine or "—")
+    compound_e = _escape_html(_truncate(compound_summary, 200))
+
+    parts = [
+        "🚀 <b>First successful dock — user activated!</b>",
+        "",
+        f"👤 User: <code>{email_e}</code>",
+        f"🎯 Target: <b>{pdb_e}</b>  ·  variants: {muts_e}",
+        f"⚙️ Engine: {engine_e}",
+        f"🧪 Compounds: {compound_e}",
+        f"🔗 Job: <code>{job_id}</code>  ·  share: <code>{_escape_html(share_id or '—')}</code>",
+    ]
+    return _send("\n".join(parts))
+
+
+def notify_rate_limit_abuse(
+    *,
+    ip: str,
+    scope: str,
+    hits_in_window: int,
+    window_minutes: int,
+) -> bool:
+    """Fire when an IP has racked up enough 429s to look like abuse
+    (or a runaway client). Caller decides the threshold + dedupes via
+    per-IP-per-hour suppression so this doesn't spam during sustained
+    abuse — we only need to know it started."""
+    ip_e = _escape_html(ip)
+    scope_e = _escape_html(scope)
+    parts = [
+        "🛑 <b>Rate-limit abuse detected</b>",
+        "",
+        f"📍 IP: <code>{ip_e}</code>",
+        f"🎯 Scope: <code>{scope_e}</code>",
+        f"📊 {hits_in_window} hits in last {window_minutes} min",
+        "",
+        "<i>Notifications for this IP+scope are silenced for the next hour.</i>",
+    ]
+    return _send("\n".join(parts))
+
+
+def notify_pod_down(
+    *,
+    reason: str,
+    timeout_s: int,
+) -> bool:
+    """Fire when ensure_pod_ready can't get the pod healthy within its
+    deadline. This usually means RunPod's allocation lost the GPU slot
+    or the resume failed silently — needs operator attention because
+    every Run Dock click in this state will fail."""
+    reason_e = _escape_html(_truncate(reason, 300))
+    parts = [
+        "🟥 <b>GPU pod is unreachable</b>",
+        "",
+        f"⏱  Tried for {timeout_s}s",
+        f"💥 {reason_e}",
+        "",
+        "User-facing Run Dock buttons are currently broken.",
+        "Check RunPod console / Fly logs.",
+    ]
+    return _send("\n".join(parts))
+
+
 def notify_job_failed(
     *,
     job_id: int,
