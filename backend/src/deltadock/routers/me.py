@@ -126,9 +126,25 @@ def get_my_profile(
         {"uid": user.id},
     ).mappings().first()
 
+    # ADMIN_EMAIL is implicit Pro everywhere — backend gates check it
+    # via auth.is_pro_user, frontend gates check via this field. Without
+    # this override the admin user's profile row would say is_pro=false
+    # and the Studio would show lock icons on GNINA + VS even though the
+    # backend would happily accept the submission.
+    from ..auth import ADMIN_EMAIL
+    admin_is_pro_override = (
+        ADMIN_EMAIL
+        and getattr(user, "email", None)
+        and user.email.strip().lower() == ADMIN_EMAIL
+    )
+
     if row is None:
-        return ProfileOut(user_id=user.id)
-    return ProfileOut(user_id=user.id, **row)
+        return ProfileOut(user_id=user.id, is_pro=bool(admin_is_pro_override))
+    # Build the response dict from the row, then override is_pro for admin.
+    payload = dict(row)
+    if admin_is_pro_override:
+        payload["is_pro"] = True
+    return ProfileOut(user_id=user.id, **payload)
 
 
 @router.put("/profile", response_model=ProfileOut)
