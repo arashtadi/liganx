@@ -6363,7 +6363,7 @@ function ProductionViewer3D({
             expandable details lets curious users see the full
             walkthrough without forcing it on everyone. */}
         {is3DEmpty && (
-          <details className="group px-3 py-2.5 text-xs font-mono leading-relaxed text-slate-300">
+          <details open className="group px-3 py-2.5 text-xs font-mono leading-relaxed text-slate-300">
             <summary className="flex items-center gap-2 cursor-pointer list-none select-none">
               <span className="text-cyan-400 text-[10px] tracking-[0.2em] uppercase">▸ studio · ready</span>
               <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
@@ -6379,10 +6379,6 @@ function ProductionViewer3D({
                 <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">4.</span><span><span className="text-slate-200">Run Dock</span> <span className="text-slate-500">— scores WT + each mutant in parallel</span></span></li>
                 <li className="flex gap-2"><span className="text-cyan-400 tabular-nums">5.</span><span><span className="text-slate-200">Inspect &amp; iterate</span> <span className="text-slate-500">— Δ-vs-WT, Kd, 3D pose, AI variants</span></span></li>
               </ol>
-              <div className="mt-2 pt-2 border-t border-slate-800/50 text-[9px] tracking-wider uppercase text-slate-600 space-y-0.5">
-                <div>tip · save compounds to your library for next session</div>
-                <div>live conformer renders here · 3D pose appears after dock</div>
-              </div>
             </div>
           </details>
         )}
