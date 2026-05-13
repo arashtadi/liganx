@@ -57,6 +57,36 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   });
 }
 
+// Sentry smoke-test trigger — hit https://liganx.com/?sentry_test=1 to
+// throw a synthetic error that the ErrorBoundary + Sentry bridge will
+// capture. The thrown message includes a timestamp so repeat visits
+// produce distinct events instead of being deduped into one issue.
+// Wrapped in a setTimeout so React has fully mounted before the throw —
+// otherwise the error fires before our ErrorBoundary is in the tree
+// and only the global window.error handler sees it.
+if (typeof window !== "undefined" && window.location.search.includes("sentry_test=1")) {
+  setTimeout(() => {
+    const ts = new Date().toISOString();
+    const err = new Error(`Liganx Sentry smoke test — ${ts}`);
+    // Send directly via the same bridge ErrorBoundary uses. This works
+    // even if React hasn't thrown yet, and tags the event so it's
+    // easy to find in Sentry ("route: sentry_test").
+    try {
+      window.__liganx_capture_error__?.(err, undefined, "sentry_test");
+    } catch {
+      /* observability must not cascade */
+    }
+    // Also throw so any global listener (window.onerror, etc.) sees it.
+    // Caught synchronously to avoid blanking the page.
+    try {
+      throw err;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[sentry_test] threw + captured:", (e as Error).message);
+    }
+  }, 1500);
+}
+
 // Stale-chunk recovery. Vite emits hashed chunk names (`3Dmol-CXDV6TS_.js`)
 // and references them from the deployed `index.html`. After a redeploy, the
 // chunk hashes change — but a user whose browser already cached the old

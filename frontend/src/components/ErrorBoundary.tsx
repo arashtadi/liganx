@@ -47,7 +47,7 @@ interface State {
 
 declare global {
   interface Window {
-    __liganx_capture_error__?: (err: Error, info: ErrorInfo, routeName?: string) => void;
+    __liganx_capture_error__?: (err: Error, info?: ErrorInfo, routeName?: string) => void;
   }
 }
 
