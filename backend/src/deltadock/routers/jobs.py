@@ -246,9 +246,23 @@ def create_job(
     # transaction's duration so two concurrent POST /jobs from the same
     # user serialise instead of both seeing "under quota" and both
     # inserting — TOCTOU race called out in the May 2026 audit (#251).
+    #
+    # Compute the lock key in Python rather than via SQL's hashtext()
+    # because the inline cast `:uid::text` triggers a SQLAlchemy text()
+    # parser bug (Sentry issue 2026-05-13: psycopg2.errors.SyntaxError
+    # "syntax error at or near :"). md5+8-byte-truncation gives the
+    # same property pg_advisory_xact_lock wants (a stable bigint per
+    # user_id) without needing Postgres-side hashing.
+    import hashlib as _hashlib
+    _uid_str = str(user.id)
+    _lock_key = int.from_bytes(
+        _hashlib.md5(_uid_str.encode()).digest()[:8],
+        "big",
+        signed=True,
+    )
     session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:uid::text)::bigint)"),
-        {"uid": user.id},
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _lock_key},
     )
     quota_row = session.execute(
         text(
