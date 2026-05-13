@@ -249,14 +249,52 @@ def update_user_pro(
     """Flip a user's is_pro flag (true=Pro, false=Free). UPSERTs the
     user_profile row so OAuth users who haven't touched /me/profile yet
     can still be granted Pro access — same defensive pattern as
-    update_user_quota."""
-    session.execute(text(
-        """
-        INSERT INTO public.user_profile (user_id, is_pro, marketing_opt_in)
-        VALUES (:uid, :pro, FALSE)
-        ON CONFLICT (user_id) DO UPDATE SET is_pro = EXCLUDED.is_pro
-        """
-    ), {"uid": user_id, "pro": payload.is_pro})
+    update_user_quota.
+
+    Quota side-effect on grant: a Pro user with the default free-tier
+    quota (≤10 jobs) gets bumped to PRO_DEFAULT_QUOTA. Without this,
+    granting Pro unlocks the engines (GNINA + VS) but the user is
+    still capped at 10 lifetime jobs — the most-common surprise per
+    May 13 admin feedback. Admin can still tune the quota further
+    via the existing PATCH /admin/users/{id} endpoint.
+
+    Quota side-effect on revoke: we LEAVE the quota where it is.
+    A user who consumed 200 jobs while Pro shouldn't suddenly find
+    themselves at 200/10 = 2000% blocked on every new submission.
+    If the admin wants to restrict them, they can lower the quota
+    explicitly."""
+    PRO_DEFAULT_QUOTA = 500
+    FREE_DEFAULT_QUOTA = 10  # matches migration 007 DEFAULT
+
+    if payload.is_pro:
+        # On grant, bump quota only if the user is at (or below) the
+        # free-tier default. Don't clobber a manually-raised cap.
+        session.execute(text(
+            """
+            INSERT INTO public.user_profile (user_id, is_pro, job_quota, marketing_opt_in)
+            VALUES (:uid, TRUE, :pro_quota, FALSE)
+            ON CONFLICT (user_id) DO UPDATE SET
+                is_pro = TRUE,
+                job_quota = CASE
+                    WHEN public.user_profile.job_quota <= :free_quota THEN :pro_quota
+                    ELSE public.user_profile.job_quota
+                END
+            """
+        ), {
+            "uid": user_id,
+            "pro_quota": PRO_DEFAULT_QUOTA,
+            "free_quota": FREE_DEFAULT_QUOTA,
+        })
+    else:
+        # On revoke, only flip the flag — don't touch quota. The user
+        # keeps whatever cap they were at; admin can lower manually.
+        session.execute(text(
+            """
+            INSERT INTO public.user_profile (user_id, is_pro, marketing_opt_in)
+            VALUES (:uid, FALSE, FALSE)
+            ON CONFLICT (user_id) DO UPDATE SET is_pro = FALSE
+            """
+        ), {"uid": user_id})
     session.commit()
     log.info("Admin %s set user %s is_pro=%s", admin.email, user_id, payload.is_pro)
 
