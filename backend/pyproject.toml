@@ -29,6 +29,9 @@ dependencies = [
   # asymmetric keys). PyJWT has built-in PyJWKClient that handles fetch +
   # cache + kid lookup; cryptography backend is needed for ES256.
   "pyjwt[crypto]>=2.9",
+  # Sentry — opt-in via SENTRY_DSN env var. Wrapped in try/except in
+  # main.py, but installing here so prod actually reports errors.
+  "sentry-sdk[fastapi,sqlalchemy]>=2.20",
 ]
 
 [project.optional-dependencies]
