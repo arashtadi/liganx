@@ -1668,16 +1668,25 @@ def _run_real(session: Session, job: Job) -> None:
                 # any extra imports. ProLIF tags H-bond contacts with
                 # types like "HBAc"/"HBDo" or "HBAcceptor"/"HBDonor"
                 # depending on version — we match all four prefixes.
+                # The validator appends its result as a single
+                # pipe-joined blob (confidence=…|posebusters=…|contacts=…|summary=…),
+                # so we have to split each part on "|" first to find
+                # the contacts= sub-segment.
                 hbonds = None
                 for p in parts:
-                    if isinstance(p, str) and p.startswith("contacts="):
-                        n = 0
-                        for tok in p[len("contacts="):].split(","):
-                            t = tok.split(":")[1] if ":" in tok else ""
-                            tl = t.lower()
-                            if tl.startswith("hbond") or tl.startswith("hbdo") or tl.startswith("hbac"):
-                                n += 1
-                        hbonds = n
+                    if not isinstance(p, str):
+                        continue
+                    for sub in p.split("|"):
+                        if sub.startswith("contacts="):
+                            n = 0
+                            for tok in sub[len("contacts="):].split(","):
+                                t = tok.split(":")[1] if ":" in tok else ""
+                                tl = t.lower()
+                                if tl.startswith("hbond") or tl.startswith("hbdo") or tl.startswith("hbac"):
+                                    n += 1
+                            hbonds = n
+                            break
+                    if hbonds is not None:
                         break
                 # NOTE: smina --score_only --scoring vina prints a tabular
                 # format (space-separated values under a "## Name …"
