@@ -679,3 +679,62 @@ def esm2_fitness(req: _Esm2Req) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         log.exception("esm2_fitness failed for %r", req.dict())
         raise HTTPException(status_code=500, detail=f"esm2 inference failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Ensemble relaxation endpoint  (appended to dock_server.py — NOT a
+# standalone module; it references the `app` defined above).
+#
+# Why appended rather than spliced in: the live pod's dock_server.py has
+# drifted from the repo copy (hand-edits over time), so a pure append is
+# the zero-risk way to add a route — it defines new symbols on the
+# existing `app` and touches no existing code.
+#
+# Deploy: curl this fragment onto the pod and `cat >>` it onto
+# /workspace/dock_server.py, then restart uvicorn. See ensemble_pod.py
+# for the actual restrained-MD logic.
+# ═══════════════════════════════════════════════════════════════════════
+from pydantic import BaseModel as _EnsBaseModel  # noqa: E402
+import ensemble_pod as _ensemble_pod  # noqa: E402
+
+
+class RelaxEnsembleRequest(_EnsBaseModel):
+    """Request body for /relax_ensemble."""
+    receptor_pdb: str                 # cleaned receptor PDB text (heavy atoms)
+    box_center: list[float]           # [x, y, z] docking-box centre, PDB Å
+    n_relaxed: int = 4
+    md_ps: float = 250.0
+    equil_ps: float = 20.0
+    pocket_radius: float = 12.0
+
+
+@app.post("/relax_ensemble")
+def relax_ensemble_endpoint(req: RelaxEnsembleRequest):
+    """Generate a receptor conformer ensemble via short restrained GPU MD.
+
+    Returns ``[input_pdb] + N`` MD-relaxed receptor conformer PDB strings.
+    Element 0 is always the un-relaxed input, so ensemble docking can
+    never score worse than standard single-conformation docking.
+
+    Fail-soft on two levels: ensemble_pod.relax_ensemble never raises
+    (returns ``[receptor_pdb]`` on any error), and the try/except here is
+    a belt-and-suspenders guard so the endpoint never 500s the backend —
+    the caller transparently falls back to single-conformation docking.
+    """
+    try:
+        confs = _ensemble_pod.relax_ensemble(
+            req.receptor_pdb,
+            tuple(req.box_center),
+            n_relaxed=req.n_relaxed,
+            md_ps=req.md_ps,
+            equil_ps=req.equil_ps,
+            pocket_radius=req.pocket_radius,
+        )
+        return {"ok": True, "n": len(confs), "conformers": confs}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "n": 1,
+            "conformers": [req.receptor_pdb],
+        }
