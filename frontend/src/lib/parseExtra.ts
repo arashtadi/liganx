@@ -109,6 +109,23 @@ export interface ParsedExtra {
    *  "mutation has no effect". The number is the CA-to-pocket-center
    *  distance in Å. */
   outsidePocketA?: number;
+  /** v1.26 — Interface KPIs. Buried surface area (Å²) of the
+   *  protein-ligand interface, computed via freesasa as
+   *  SASA(receptor) + SASA(ligand) − SASA(complex). Larger = bigger
+   *  contact patch; > 600 Å² is typical for a real druggable pocket. */
+  interfaceBsa?: number;
+  /** v1.26 — Number of H-bonds across the receptor-ligand interface,
+   *  counted from ProLIF's interaction list. Only present when eager
+   *  validation ran (deferred-validation rows backfill later). */
+  interfaceHbonds?: number;
+  /** v1.26 — Vina score decomposition from smina --score_only. Raw
+   *  intermolecular contributions in kcal/mol-ish units. Surfaced as
+   *  an accordion in PoseDetail so medchem users can see WHY a pose
+   *  scores well (hydrophobic-dominant vs H-bond-driven). */
+  vinaTerms?: {
+    g1?: number; g2?: number; rep?: number;
+    hyd?: number; hb?: number; total?: number;
+  };
   raw: string;
 }
 
@@ -237,6 +254,33 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         const m = v.match(/^([\d.]+)A?$/);
         const rmsd = m ? parseFloat(m[1]) : NaN;
         if (Number.isFinite(rmsd)) out.boltz2AlignedRmsd = rmsd;
+        break;
+      }
+      case "iface_bsa": {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) out.interfaceBsa = n;
+        break;
+      }
+      case "iface_hb": {
+        const n = parseInt(v, 10);
+        if (Number.isFinite(n)) out.interfaceHbonds = n;
+        break;
+      }
+      case "vina_terms": {
+        // Format: "g1:-42.04,g2:-1115.74,rep:4.46,hyd:-19.39,hb:-2.07,total:-8.42"
+        const terms: NonNullable<ParsedExtra["vinaTerms"]> = {};
+        for (const tok of v.split(",")) {
+          const [k2, num] = tok.split(":");
+          const f = parseFloat(num);
+          if (!Number.isFinite(f)) continue;
+          if (k2 === "g1") terms.g1 = f;
+          else if (k2 === "g2") terms.g2 = f;
+          else if (k2 === "rep") terms.rep = f;
+          else if (k2 === "hyd") terms.hyd = f;
+          else if (k2 === "hb") terms.hb = f;
+          else if (k2 === "total") terms.total = f;
+        }
+        if (Object.keys(terms).length > 0) out.vinaTerms = terms;
         break;
       }
       // ignore err, validate_err, foldx_failed prefixes etc.

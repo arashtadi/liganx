@@ -123,6 +123,71 @@ export default function PoseDetail({ pick, onClose }: Props) {
       </header>
 
       <div className="p-5 space-y-4">
+        {/* v1.26 — Interface KPIs (BSA + H-bond count). BSA is the
+            strongest single signal for "is this a real, druggable
+            interface?" — >600 Å² is typical for kinase pockets,
+            <300 Å² is usually a glancing pose. H-bond count separates
+            hydrophobic-driven binders from polar-driven ones. Source:
+            runner's interface_extras post-processor (freesasa + ProLIF). */}
+        {(ext.interfaceBsa != null || ext.interfaceHbonds != null) && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {ext.interfaceBsa != null && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono ring-1 ring-inset ring-slate-200 bg-slate-50 text-slate-700 dark:ring-slate-700 dark:bg-slate-800/60 dark:text-slate-200"
+                title="Buried surface area of the protein-ligand interface. SASA(receptor) + SASA(ligand) − SASA(complex). >600 Å² typically signals a real druggable pocket; <300 Å² is often a glancing pose."
+              >
+                <span className="text-slate-400 dark:text-slate-500 uppercase tracking-wider text-[9px]">BSA</span>
+                <span className="font-semibold tabular-nums">{Math.round(ext.interfaceBsa)} Å²</span>
+              </span>
+            )}
+            {ext.interfaceHbonds != null && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono ring-1 ring-inset ring-slate-200 bg-slate-50 text-slate-700 dark:ring-slate-700 dark:bg-slate-800/60 dark:text-slate-200"
+                title="Number of H-bonds across the receptor-ligand interface, from ProLIF. H-bond-rich poses (>=3) usually generalise better across analogs than hydrophobic-only contacts."
+              >
+                <span className="text-slate-400 dark:text-slate-500 uppercase tracking-wider text-[9px]">H-BONDS</span>
+                <span className="font-semibold tabular-nums">{ext.interfaceHbonds}</span>
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* v1.26 — Vina score decomposition. Collapsed by default
+            because the breakdown is power-user info. Source: smina
+            --score_only --scoring vina via interface_extras module. */}
+        {ext.vinaTerms && (
+          <details className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 group">
+            <summary className="cursor-pointer list-none p-3 flex items-center justify-between text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              <span>Score breakdown</span>
+              <span className="text-slate-400 group-open:hidden">▾ expand</span>
+              <span className="text-slate-400 hidden group-open:inline">▴ collapse</span>
+            </summary>
+            <div className="px-3 pb-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
+              {(
+                [
+                  ["g1", "Gauss 1", "Short-range attractive (close contacts)"],
+                  ["g2", "Gauss 2", "Long-range attractive (general shape match)"],
+                  ["rep", "Repulsion", "Steric clash penalty (lower = looser fit)"],
+                  ["hyd", "Hydrophobic", "Non-polar contact bonus"],
+                  ["hb", "H-bond", "Donor-acceptor pair bonus"],
+                  ["total", "Affinity (weighted)", "Final Vina score after term weights"],
+                ] as const
+              ).map(([k, label, tip]) => {
+                const v = ext.vinaTerms?.[k as keyof typeof ext.vinaTerms];
+                if (v === undefined) return null;
+                return (
+                  <div key={k} className="flex items-center justify-between" title={tip}>
+                    <span className="text-slate-500 dark:text-slate-400">{label}</span>
+                    <span className="tabular-nums text-slate-800 dark:text-slate-100">
+                      {v > 0 ? "+" : ""}{v.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
+
         {/* Vina / Δ vs WT / Vinardo / Pose strain metrics all moved to the
             HeroBanner sidebar at the top of the page (single source of
             truth). The drill-down here picks up where the banner stops:

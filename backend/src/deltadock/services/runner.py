@@ -1639,6 +1639,46 @@ def _run_real(session: Session, job: Job) -> None:
             # Format on extra: "water=N/M" where N=displaced, M=pocket
             # waters. Frontend renders a Water Analysis panel from this
             # plus a "Phase 0: not WaterMap" honesty caveat.
+            # ── Interface KPIs + Vina score decomposition (v1.26 — extras
+            # surfaced from FoldX/FlexPepDock comparison). Cheap, inline,
+            # fail-soft. We compute three signals per pose:
+            #   iface_bsa  — buried surface area in Å² via freesasa
+            #   iface_hb   — H-bond count from ProLIF interactions (eager
+            #                validation path only; deferred path skips it)
+            #   vina_terms — gauss1/2/repulsion/hydrophobic/hbond + total
+            #                from smina --score_only --scoring vina
+            # All three are best-effort; any failure just omits the key
+            # from extra and the frontend gracefully hides the chip.
+            try:
+                from deltadock_pipeline.interface_extras import (
+                    compute_bsa, count_hbonds_from_interactions,
+                    vina_score_terms, format_for_extra, pdbqt_to_pdb,
+                )
+                # Convert the pose pdbqt to a pdb-compatible file once
+                # so freesasa can parse it. Write under run_dir so the
+                # outer TemporaryDirectory sweeps it up on exit.
+                pose_pdb = pdbqt_to_pdb(
+                    Path(result.pose_pdbqt),
+                    Path(run_dir) / f"pose_for_bsa_c{compound.id}_{variant}.pdb",
+                )
+                bsa = compute_bsa(Path(receptor_pdb), pose_pdb) if pose_pdb else None
+                hbonds = None
+                # ProLIF interactions only exist if eager validation ran
+                # (v was set in the validate_on + not defer_val branch).
+                # Deferred-path runs lose the h-bond chip on the initial
+                # write; the later validation update can backfill it.
+                try:
+                    _v_local = locals().get("v")
+                    if _v_local is not None and getattr(_v_local, "interactions", None):
+                        hbonds = count_hbonds_from_interactions(_v_local.interactions)
+                except Exception:
+                    hbonds = None
+                vt = vina_score_terms(Path(receptor), Path(result.pose_pdbqt))
+                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds, vina_terms=vt))
+            except Exception as ie:
+                # Don't take down the dock just because BSA/score-decomp blew up.
+                log.debug("Interface extras skipped for c%s × %s: %s", compound.id, variant, ie)
+
             try:
                 from deltadock_pipeline.water import analyse_pose_water_displacement
                 wresult = analyse_pose_water_displacement(
