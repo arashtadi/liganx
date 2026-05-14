@@ -195,6 +195,14 @@ export default function JobPage() {
     // stopping at that flip would freeze the cached snapshot with
     // null `extra` and the 2D interaction map would never appear.
     refetchInterval: (q) => jobPollingInterval(q.state.data, 1500),
+    // Keep polling even while the tab is backgrounded. Without this the
+    // interval pauses the moment the tab loses focus, and since the app's
+    // global QueryClient has refetchOnWindowFocus:false (main.tsx) nothing
+    // refetches on return either — so a user who alt-tabs away during a
+    // ~30s dock comes back to a progress banner frozen at the pre-flight
+    // phantom 15% even though the job finished. A docking-progress page
+    // genuinely wants background polling.
+    refetchIntervalInBackground: true,
     enabled: !!jobKey,
   });
 

@@ -30,6 +30,7 @@
  */
 
 import type { Job } from "../api";
+import { parseUtcDate } from "./parseUtcDate";
 
 const MAX_VALIDATION_WAIT_MS = 5 * 60 * 1000;
 
@@ -62,7 +63,11 @@ export function jobPollingInterval(
   // background) `extra` may be null forever and we'd poll forever.
   // updated_at refreshes when the row mutates; if it's recent, validation
   // is plausibly still landing.
-  const ageMs = Date.now() - new Date(data.updated_at).getTime();
+  // parseUtcDate (not bare `new Date`): backend timestamps are bare ISO
+  // strings with no `Z`, which `new Date` parses as *local* time — so the
+  // age math was off by the viewer's UTC offset, making this cap fire
+  // early (or never) depending on timezone.
+  const ageMs = Date.now() - parseUtcDate(data.updated_at).getTime();
   if (ageMs > MAX_VALIDATION_WAIT_MS) return false;
 
   return runningMs;
