@@ -459,9 +459,13 @@ function PredictionRow({ p }: { p: Prediction }) {
       <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
         <Cell label="Δ binding (kcal/mol)" value={p.delta_kcal !== null ? `${p.delta_kcal >= 0 ? "+" : ""}${p.delta_kcal.toFixed(2)}` : "—"} />
         <Cell
-          label="ΔΔG fold (ESM2)"
+          label="Fold-stability proxy (ESM2)"
           value={p.esm2_fitness != null ? p.esm2_fitness.toFixed(2) : "—"}
-          hint={p.esm2_fitness != null ? esm2StabilityLabel(p.esm2_fitness) : undefined}
+          hint={
+            p.esm2_fitness != null
+              ? `${esm2StabilityLabel(p.esm2_fitness)} · log-likelihood, not kcal/mol`
+              : undefined
+          }
         />
         <Cell label="WT score" value={p.wt_score !== null ? p.wt_score.toFixed(2) : "—"} />
         <Cell label="Mut score" value={p.mut_score !== null ? p.mut_score.toFixed(2) : "—"} />
@@ -573,11 +577,16 @@ function StabilityVsBindingCard({
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <div className="eyebrow text-violet-700 dark:text-violet-300">
-            Stability vs binding (ΔΔG card)
+            Stability vs binding · ESM2 proxy
           </div>
           <h2 className="mt-1 text-xl font-bold tracking-tight text-ink dark:text-white">
             Why these mutations? Two axes, one calibrated score.
           </h2>
+          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            Fold-stability axis is ESM2 pseudo-log-likelihood — a learned proxy
+            for ΔΔG_fold, <strong>not</strong> kcal/mol. Use rank-order, not
+            absolute values.
+          </p>
         </div>
         {wD != null && wE != null && (
           <div className="text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
@@ -651,7 +660,7 @@ function StabilityVsBindingCard({
             transform="rotate(-90)"
             className="fill-slate-600 dark:fill-slate-300 text-[11px] font-semibold"
           >
-            ↑ evolutionarily reachable
+            ↑ fold-stable (−ESM2 LL, unitless)
           </text>
           {/* danger-zone label */}
           <text
@@ -727,12 +736,13 @@ function StabilityVsBindingCard({
         </div>
         <div className="rounded-lg ring-1 ring-slate-200 dark:ring-slate-700 bg-white dark:bg-slate-900 p-3">
           <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
-            ΔΔG fold axis
+            Fold-stability axis (ESM2 proxy)
           </div>
           <div className="mt-1 text-slate-700 dark:text-slate-200">
-            ESM2 pseudo-log-likelihood of the mutated residue, a learned proxy
-            for the FoldX-style ΔΔG of folding. Less negative = the mutation
-            preserves the fold = evolutionarily reachable.
+            ESM2 pseudo-log-likelihood of the mutated residue. A learned proxy
+            for FoldX-style ΔΔG_fold (ρ≈0.4–0.6 vs experimental ΔΔG on
+            benchmark sets) — <strong>unitless log-likelihood, not kcal/mol</strong>.
+            Less negative = the mutation preserves the fold = evolutionarily reachable.
           </div>
         </div>
         <div className="rounded-lg ring-1 ring-slate-200 dark:ring-slate-700 bg-white dark:bg-slate-900 p-3">

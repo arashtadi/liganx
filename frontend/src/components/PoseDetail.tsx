@@ -162,15 +162,23 @@ export default function PoseDetail({ pick, onClose }: Props) {
               <span className="text-slate-400 group-open:hidden">▾ expand</span>
               <span className="text-slate-400 hidden group-open:inline">▴ collapse</span>
             </summary>
-            <div className="px-3 pb-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
+            <div className="px-3 pb-3">
+              <p className="mb-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                Gauss/repulsion/hydrophobic/H-bond rows are raw{" "}
+                <strong>pre-weighting</strong> contributions from
+                <code className="mx-1 font-mono">smina --score_only --scoring vina</code>
+                — they do <em>not</em> sum to the Affinity total. The Affinity row
+                is the final weighted Vina score in kcal/mol.
+              </p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
               {(
                 [
-                  ["g1", "Gauss 1", "Short-range attractive (close contacts)"],
-                  ["g2", "Gauss 2", "Long-range attractive (general shape match)"],
-                  ["rep", "Repulsion", "Steric clash penalty (lower = looser fit)"],
-                  ["hyd", "Hydrophobic", "Non-polar contact bonus"],
-                  ["hb", "H-bond", "Donor-acceptor pair bonus"],
-                  ["total", "Affinity (weighted)", "Final Vina score after term weights"],
+                  ["g1", "Gauss 1", "Short-range attractive (pre-weighting)"],
+                  ["g2", "Gauss 2", "Long-range attractive (pre-weighting)"],
+                  ["rep", "Repulsion", "Steric clash penalty (pre-weighting)"],
+                  ["hyd", "Hydrophobic", "Non-polar contact bonus (pre-weighting)"],
+                  ["hb", "H-bond", "Donor-acceptor pair bonus (pre-weighting)"],
+                  ["total", "Affinity (kcal/mol)", "Final weighted Vina score"],
                 ] as const
               ).map(([k, label, tip]) => {
                 const v = ext.vinaTerms?.[k as keyof typeof ext.vinaTerms];
@@ -184,6 +192,7 @@ export default function PoseDetail({ pick, onClose }: Props) {
                   </div>
                 );
               })}
+              </div>
             </div>
           </details>
         )}
