@@ -126,6 +126,13 @@ export interface ParsedExtra {
     g1?: number; g2?: number; rep?: number;
     hyd?: number; hb?: number; total?: number;
   };
+  /** v1.27 — When BSA + Vina-term decomposition are deferred to the
+   *  background pass (default), the runner writes extras=pending
+   *  during the synchronous _finalize_cell phase. The drainer strips
+   *  this placeholder once the real values are computed. Frontend
+   *  uses this to show a small "computing extras…" hint instead of
+   *  raw empty chips. */
+  extrasPending?: boolean;
   raw: string;
 }
 
@@ -281,6 +288,12 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
           else if (k2 === "total") terms.total = f;
         }
         if (Object.keys(terms).length > 0) out.vinaTerms = terms;
+        break;
+      }
+      case "extras": {
+        // "extras=pending" is the placeholder the runner writes while
+        // BSA + Vina-term decomposition run in the background pass.
+        if (v === "pending") out.extrasPending = true;
         break;
       }
       // ignore err, validate_err, foldx_failed prefixes etc.

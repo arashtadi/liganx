@@ -534,6 +534,98 @@ def run_job_in_background(job_id: int) -> None:
 # Real Vina pipeline
 # ──────────────────────────────────────────────────────────────────────
 
+def _drain_pending_interface_extras(pending: list[dict], session: Session) -> None:
+    """Background pass that computes the slow interface KPIs after each
+    DockingResult row has been committed.
+
+    Why this exists: BSA (freesasa × 3) and the Vina score breakdown
+    (smina --score_only subprocess) together add ~2–4 s of CPU work per
+    cell. Running them inline in _finalize_cell delays the row write,
+    which the user sees as "the dock got slower." Moving them here
+    keeps the result row appearing as fast as before; the chips paint
+    in on the frontend's next 2s poll once we've updated row.extra.
+
+    Each pending item carries: compound_id, variant, job_id, receptor
+    (pdbqt path), receptor_pdb, pose_pdbqt path, run_dir, current_extra.
+    Output is written back into DockingResult.extra in place.
+    """
+    if not pending:
+        return
+    try:
+        from deltadock_pipeline.interface_extras import (
+            compute_bsa, format_for_extra, pdbqt_to_pdb, vina_score_terms,
+        )
+    except ImportError as e:
+        log.info("interface_extras unavailable; skipping deferred BSA + vina-terms: %s", e)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one_extras(item: dict) -> tuple[int, str, list[str], str | None]:
+        """Returns (compound_id, variant, new_segments, error)."""
+        try:
+            pose_pdb = pdbqt_to_pdb(
+                Path(item["pose_pdbqt"]),
+                Path(item["run_dir"]) / f"pose_for_bsa_c{item['compound_id']}_{item['variant']}.pdb",
+            )
+            bsa = compute_bsa(Path(item["receptor_pdb"]), pose_pdb) if pose_pdb else None
+            vterms = None
+            try:
+                vterms = vina_score_terms(
+                    receptor_pdbqt=Path(item["receptor"]),
+                    ligand_pdbqt=Path(item["pose_pdbqt"]),
+                )
+            except Exception as vte:  # noqa: BLE001
+                log.debug("vina_score_terms deferred: failed c%s × %s: %s",
+                          item["compound_id"], item["variant"], vte)
+            segs = format_for_extra(bsa=bsa, hbonds=None, vina_terms=vterms)
+            return (item["compound_id"], item["variant"], segs, None)
+        except Exception as e:  # noqa: BLE001
+            return (item["compound_id"], item["variant"], [], f"extras_err={str(e)[:60]}")
+
+    log.info("Deferred interface extras: draining %d cells in parallel", len(pending))
+    by_key = {(it["compound_id"], it["variant"]): it for it in pending}
+    job_id_for_rows = pending[0].get("job_id") if pending and pending[0].get("job_id") is not None else None
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(_one_extras, it) for it in pending]
+        for fut in as_completed(futures):
+            try:
+                compound_id, variant, new_segs, err = fut.result()
+            except Exception as e:  # noqa: BLE001
+                log.warning("interface_extras worker crashed: %s", e)
+                continue
+            if not new_segs:
+                # No-op when neither BSA nor vina_terms produced anything.
+                continue
+            # Re-read the row to get the freshest extra (validation may
+            # have updated it after the row was first written).
+            stmt = select(DockingResult).where(
+                DockingResult.compound_id == compound_id,
+                DockingResult.variant == variant,
+            )
+            if job_id_for_rows is not None:
+                stmt = stmt.where(DockingResult.job_id == job_id_for_rows)
+            row = session.exec(stmt).first()
+            if row is None:
+                continue
+            current = row.extra or ""
+            # Strip the placeholder if present, then append the new segments.
+            cleaned = "|".join(
+                p for p in current.split("|")
+                if p and p != "extras=pending"
+            )
+            joined_new = "|".join(new_segs)
+            row.extra = (cleaned + "|" + joined_new) if cleaned else joined_new
+            try:
+                session.add(row)
+                session.commit()
+            except Exception as ce:  # noqa: BLE001
+                log.warning("Couldn't commit interface_extras update for c%s × %s: %s",
+                            compound_id, variant, ce)
+                session.rollback()
+
+
 def _drain_pending_validations(pending: list[dict], session: Session) -> None:
     """Run deferred PoseBusters/ProLIF/strain validation in parallel.
 
@@ -1595,6 +1687,12 @@ def _run_real(session: Session, job: Job) -> None:
         # that updates row.extra as each validation finishes. The frontend's
         # 2s polling picks up the updates piecewise.
         pending_validations: list[dict] = []
+        # ── Pending-interface-extras queue. BSA (freesasa × 3 SASA calls)
+        # and Vina score breakdown (smina --score_only) together add
+        # ~2-4 s per cell. Always deferred so the result row appears as
+        # fast as it did before A+B+C shipped; chips paint in on the
+        # next 2s frontend poll.
+        pending_interface_extras: list[dict] = []
         defer_val = settings.defer_validation and validate_on
 
         # ── Per-cell finalize: shared between the legacy per-cell path and
@@ -1649,30 +1747,13 @@ def _run_real(session: Session, job: Job) -> None:
             #                from smina --score_only --scoring vina
             # All three are best-effort; any failure just omits the key
             # from extra and the frontend gracefully hides the chip.
+            # H-bond count: parse from the contacts=… sub-segment of
+            # validate_pose's output. This is FREE (just string parsing
+            # over an already-computed validator blob), so it stays inline.
+            # The slow stuff (freesasa, smina --score_only) is deferred
+            # to _drain_pending_interface_extras after the row is written.
             try:
-                from deltadock_pipeline.interface_extras import (
-                    compute_bsa, format_for_extra, pdbqt_to_pdb,
-                    vina_score_terms,
-                )
-                # BSA via freesasa. Returns None when freesasa isn't
-                # installed (Fly's conda-slim base lacks gcc to build
-                # the C extension), so the chip stays hidden until we
-                # bundle the dep properly.
-                pose_pdb = pdbqt_to_pdb(
-                    Path(result.pose_pdbqt),
-                    Path(run_dir) / f"pose_for_bsa_c{compound.id}_{variant}.pdb",
-                )
-                bsa = compute_bsa(Path(receptor_pdb), pose_pdb) if pose_pdb else None
-                # H-bond count: parse from the contacts=… part the eager
-                # validator already appended to parts a moment ago.
-                # Avoids the closure-locals() footgun and works without
-                # any extra imports. ProLIF tags H-bond contacts with
-                # types like "HBAc"/"HBDo" or "HBAcceptor"/"HBDonor"
-                # depending on version — we match all four prefixes.
-                # The validator appends its result as a single
-                # pipe-joined blob (confidence=…|posebusters=…|contacts=…|summary=…),
-                # so we have to split each part on "|" first to find
-                # the contacts= sub-segment.
+                from deltadock_pipeline.interface_extras import format_for_extra
                 hbonds = None
                 for p in parts:
                     if not isinstance(p, str):
@@ -1689,23 +1770,23 @@ def _run_real(session: Session, job: Job) -> None:
                             break
                     if hbonds is not None:
                         break
-                # Vina term decomposition via smina --score_only --scoring vina.
-                # The parser handles smina's tabular `## Name …` output
-                # (current production) and falls back to per-line. Returns
-                # None on any failure → accordion stays hidden.
-                vterms = None
-                try:
-                    vterms = vina_score_terms(
-                        receptor_pdbqt=Path(receptor),
-                        ligand_pdbqt=Path(result.pose_pdbqt),
-                    )
-                except Exception as vte:
-                    log.debug("vina_score_terms failed for c%s × %s: %s",
-                              compound.id, variant, vte)
-                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds, vina_terms=vterms))
+                parts.extend(format_for_extra(hbonds=hbonds))
+                # Mark BSA + vina_terms as pending so the frontend can
+                # show a "computing…" hint if it wants, and so the
+                # drainer can strip the placeholder when it updates.
+                parts.append("extras=pending")
+                pending_interface_extras.append({
+                    "compound_id": compound.id,
+                    "variant": variant,
+                    "job_id": job.id,
+                    "receptor": str(receptor),
+                    "receptor_pdb": str(receptor_pdb),
+                    "pose_pdbqt": str(result.pose_pdbqt),
+                    "run_dir": str(run_dir),
+                })
             except Exception as ie:
-                # Don't take down the dock just because BSA/score-decomp blew up.
-                log.debug("Interface extras skipped for c%s × %s: %s", compound.id, variant, ie)
+                log.debug("H-bond inline parse skipped for c%s × %s: %s",
+                          compound.id, variant, ie)
 
             try:
                 from deltadock_pipeline.water import analyse_pose_water_displacement
@@ -2021,6 +2102,10 @@ def _run_real(session: Session, job: Job) -> None:
                     log.info("Job %s docking phase complete; running validation in background", job.id)
             set_stage(session, job.id, "validating_poses" if pending_validations else None)
             _drain_pending_validations(pending_validations, session)
+            # BSA + Vina score breakdown background pass — fast (~2-4 s/cell
+            # in parallel), runs after validation. Updates row.extra in
+            # place; frontend's 2s polling picks the chips up.
+            _drain_pending_interface_extras(pending_interface_extras, session)
             set_stage(session, job.id, None)
             return  # batched path done; skip the legacy per-cell loop below
 
@@ -2260,6 +2345,7 @@ def _run_real(session: Session, job: Job) -> None:
                 log.info("Job %s docking phase complete; running validation in background", job.id)
         set_stage(session, job.id, "validating_poses" if pending_validations else None)
         _drain_pending_validations(pending_validations, session)
+        _drain_pending_interface_extras(pending_interface_extras, session)
         set_stage(session, job.id, None)
 
 
