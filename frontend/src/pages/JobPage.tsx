@@ -301,21 +301,31 @@ export default function JobPage() {
     }
     if (candidates.length === 0) return;
 
-    // Try strict ranking: most-negative non-outside-pocket Δ first.
+    // Ranking — matches the 4-step algorithm documented above. The order of
+    // these criteria matters: "mutant beats WT" MUST come before the
+    // outside-pocket check, otherwise an outside-pocket mutant loses to WT
+    // and the hero banner opens on the WT pose — leaving the user to hunt
+    // for the mutation they actually ran the job for.
     candidates.sort((a, b) => {
-      // Prefer in-pocket mutants over outside-pocket
-      if (a.outsidePocket !== b.outsidePocket) return a.outsidePocket ? 1 : -1;
-      // Prefer mutants over WT (mutant Δ is the headline story)
       const aMut = a.result.variant !== "WT";
       const bMut = b.result.variant !== "WT";
+      // 1. A mutant always beats WT — the mutant pose is the headline of a
+      //    docking run. WT is only the auto-pick when there are no mutants
+      //    at all (then we fall through to the WT branch below).
       if (aMut !== bMut) return aMut ? -1 : 1;
-      // Among mutants: most-negative Δ wins
+      // 2. Among mutants: prefer an in-pocket cell (real Δ) over an
+      //    outside-pocket one (Δ is method noise) — but an outside-pocket
+      //    mutant still wins over WT via criterion 1.
+      if (aMut && bMut && a.outsidePocket !== b.outsidePocket) {
+        return a.outsidePocket ? 1 : -1;
+      }
+      // 3. Among mutants: most-negative Δ wins.
       if (aMut && bMut) {
         const ad = a.delta ?? 0;
         const bd = b.delta ?? 0;
         return ad - bd;
       }
-      // Among WT: best (most-negative) raw score wins
+      // 4. Among WT only (no mutants existed): best (most-negative) raw score.
       return a.result.best_score - b.result.best_score;
     });
     const top = candidates[0];
