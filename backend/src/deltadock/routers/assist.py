@@ -517,6 +517,80 @@ def _record_optimize_attempt(
 class ConformerRequest(BaseModel):
     """Generate a single 3D conformer for live 3D preview in Studio."""
     smiles: str = Field(..., min_length=1, max_length=2000)
+    # Optional: the MOL/SDF block of the conformer currently on screen.
+    # When present, the freshly embedded conformer is rotated/translated to
+    # best-overlay this one across their maximum common substructure — so a
+    # small 2D edit (adding one bond, swapping an atom) doesn't make the
+    # whole molecule appear to tumble to a new ETKDG orientation in the live
+    # viewer. Purely cosmetic: the 3D geometry itself is unchanged, only the
+    # rigid-body placement. Capped generously for a drug-sized MOL block
+    # while still bounding request size.
+    prev_sdf: Optional[str] = Field(default=None, max_length=200_000)
+
+
+def _align_conformer_to_previous(mol, prev_sdf: str) -> bool:
+    """Rotate/translate ``mol``'s conformer in place so it best-overlays the
+    previous conformer (``prev_sdf``) across their maximum common
+    substructure.
+
+    Purely cosmetic — keeps the unchanged bulk of the molecule visually
+    stationary in Studio's live 3D preview when the user makes a small 2D
+    edit, instead of the whole structure snapping to a fresh ETKDG
+    orientation. Bond lengths/angles of ``mol`` are untouched; only its
+    rigid-body placement changes.
+
+    Returns True if an alignment was applied, False if it was skipped
+    (no usable common substructure, parse failure, RDKit version quirk,
+    etc.). Never raises — callers treat False as "use the un-aligned
+    conformer", which is exactly the pre-existing behaviour.
+    """
+    try:
+        # Lazy import: if this RDKit build is missing rdFMCS / rdMolAlign,
+        # the failure stays contained to this cosmetic helper rather than
+        # breaking the whole assist router at import time.
+        from rdkit.Chem import rdFMCS, rdMolAlign
+
+        prev_mol = Chem.MolFromMolBlock(prev_sdf, removeHs=False, sanitize=True)
+        if prev_mol is None or prev_mol.GetNumConformers() == 0:
+            return False
+        # Largest common substructure between the new molecule and the one
+        # currently on screen. Deliberately a LOOSE match: we want the
+        # biggest *geometric* correspondence to anchor a rigid overlay, not
+        # a chemically strict MCS. Compare atoms by element only and ignore
+        # bond order / ring membership — so an "added one bond" edit, even
+        # one that closes a ring (turning chain atoms into ring atoms),
+        # still recognises the whole shared scaffold. The timeout bounds
+        # worst-case cost on pathological inputs.
+        mcs = rdFMCS.FindMCS(
+            [mol, prev_mol],
+            timeout=2,
+            atomCompare=rdFMCS.AtomCompare.CompareElements,
+            bondCompare=rdFMCS.BondCompare.CompareAny,
+            ringMatchesRingOnly=False,
+            completeRingsOnly=False,
+            matchValences=False,
+        )
+        if mcs.numAtoms < 3:
+            # Too little in common to anchor a meaningful alignment (e.g.
+            # the user cleared the canvas and drew something unrelated).
+            return False
+        patt = Chem.MolFromSmarts(mcs.smartsString)
+        if patt is None:
+            return False
+        new_match = mol.GetSubstructMatch(patt)
+        prev_match = prev_mol.GetSubstructMatch(patt)
+        if not new_match or not prev_match or len(new_match) != len(prev_match):
+            return False
+        # AlignMol superimposes ``mol``'s conformer onto ``prev_mol``'s using
+        # the matched atom pairs (probe idx, ref idx). It moves the whole
+        # conformer rigidly — only the common-substructure atoms drive the
+        # fit, so the newly added atoms land wherever the geometry puts them.
+        atom_map = list(zip(new_match, prev_match))
+        rdMolAlign.AlignMol(mol, prev_mol, atomMap=atom_map)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.debug("conformer: alignment to prev_sdf skipped: %s", e)
+        return False
 
 
 @router.post("/conformer", dependencies=[Depends(_PROP_LIMIT)])
@@ -561,6 +635,15 @@ def conformer_endpoint(
         except Exception:
             # UFF failure is non-fatal — just use the raw ETKDG pose
             pass
+
+        # (cosmetic) If the caller passed the conformer currently on screen,
+        # superimpose this new one onto it over their common substructure so
+        # the live Studio viewer doesn't visibly tumble the whole molecule on
+        # every small 2D edit. Fail-soft: any problem just leaves the
+        # un-aligned ETKDG orientation, i.e. the pre-existing behaviour.
+        prev_sdf = (payload.prev_sdf or "").strip()
+        if prev_sdf:
+            _align_conformer_to_previous(mol, prev_sdf)
 
         # Export to SDF
         sdf = Chem.MolToMolBlock(mol)

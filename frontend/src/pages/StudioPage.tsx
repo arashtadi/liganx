@@ -5461,6 +5461,14 @@ function ProductionViewer3D({
   const dockedSmilesRef = useRef<string>("");
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
+  // (v1.28) SDF of the conformer most recently produced for this viewer.
+  // Passed to /assist/conformer as `prev_sdf` on the next fetch so the
+  // backend superimposes the new conformer onto it over their common
+  // substructure — without this, every 2D edit re-embeds the molecule in
+  // a fresh arbitrary ETKDG orientation and the live 3D view appears to
+  // spin/resize even though the user only added one bond. A ref (not
+  // state) so updating it never triggers a re-render or rebuild.
+  const lastConformerSdfRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
   // (v0.53) Both receptors fetched eagerly so the variant toggle is
   // a style change, not a fetch+rebuild. Computed values below derive
@@ -5715,8 +5723,13 @@ function ProductionViewer3D({
       setLoading(true);
       setConformerErr(null);
       try {
-        const res = await api.assistConformer(smiles);
+        // Pass the conformer currently on screen so the backend can
+        // overlay the new one onto it (MCS alignment) — keeps the live
+        // viewer from tumbling the whole molecule on small 2D edits.
+        const res = await api.assistConformer(smiles, lastConformerSdfRef.current);
         if (res.ok && res.sdf) {
+          // Remember this geometry as the alignment anchor for the next edit.
+          lastConformerSdfRef.current = res.sdf;
           if (smilesEdited) setEditedConformerSdf(res.sdf);
           else setConformerSdf(res.sdf);
         } else {
