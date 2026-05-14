@@ -903,14 +903,15 @@ export default function StudioPage() {
       } catch {
         /* polling errors non-fatal */
       }
-    }, 700);
+    }, 350);
     return () => { cancelled = true; window.clearInterval(t); };
   }, [ketcherReady]);
 
   // Live validity + SA score for whatever's on the canvas. Both hooks
   // share the same React Query cache key so this is ONE network round-
   // trip per unique SMILES, not two. Updates within ~10ms of the
-  // 700ms polling tick — feels live to the user.
+  // 350ms polling tick — feels live to the user. (Was 700ms; tightened
+  // in v1.27 so 3D viewer follows 2D edits with less perceived lag.)
   const liveValidity = useSmilesValidity(currentSmiles);
   const liveSaScore = useSmilesSaScore(currentSmiles);
 
@@ -5705,7 +5706,7 @@ function ProductionViewer3D({
       } finally {
         setLoading(false);
       }
-    }, 350);
+    }, 200);  // v1.27 — tightened from 350ms so 3D follows 2D edits faster.
     return () => window.clearTimeout(t);
     // viewMode + conformerSdf in deps so flipping to "live" triggers a
     // fetch when we don't already have a cached conformer for this
@@ -6211,16 +6212,22 @@ function ProductionViewer3D({
   };
 
   const status = receptorErr || conformerErr;
+  // v1.27 — `loading` ALWAYS wins so a fresh edit is visibly reflected
+  // even when a stale editedConformerSdf is still on screen. Without
+  // this the badge said "live preview" while a NEW conformer was being
+  // fetched, making it look like the 3D wasn't tracking 2D edits.
   const statusBadge = hasDock
-    ? smilesEdited
-      ? editedConformerSdf
-        ? <span className="text-amber-300">⚠ live preview · re-dock to score</span>
-        : <span className="text-cyan-300 animate-pulse">▮ updating preview…</span>
-      : receptorPdb && posePdbqt
-        ? <span className="text-emerald-400">● docked pose · {variant}</span>
-        : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
+    ? loading
+      ? <span className="text-cyan-300 animate-pulse">▮ updating 3D…</span>
+      : smilesEdited
+        ? editedConformerSdf
+          ? <span className="text-amber-300">⚠ live preview · re-dock to score</span>
+          : <span className="text-cyan-300 animate-pulse">▮ updating preview…</span>
+        : receptorPdb && posePdbqt
+          ? <span className="text-emerald-400">● docked pose · {variant}</span>
+          : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
     : loading
-      ? <span className="text-cyan-300 animate-pulse">▮ generating…</span>
+      ? <span className="text-cyan-300 animate-pulse">▮ updating 3D…</span>
       : conformerSdf
         ? <span className="text-emerald-400">● live conformer</span>
         : smiles
