@@ -1651,30 +1651,41 @@ def _run_real(session: Session, job: Job) -> None:
             # from extra and the frontend gracefully hides the chip.
             try:
                 from deltadock_pipeline.interface_extras import (
-                    compute_bsa, count_hbonds_from_interactions,
-                    vina_score_terms, format_for_extra, pdbqt_to_pdb,
+                    compute_bsa, format_for_extra, pdbqt_to_pdb,
                 )
-                # Convert the pose pdbqt to a pdb-compatible file once
-                # so freesasa can parse it. Write under run_dir so the
-                # outer TemporaryDirectory sweeps it up on exit.
+                # BSA via freesasa. Returns None when freesasa isn't
+                # installed (Fly's conda-slim base lacks gcc to build
+                # the C extension), so the chip stays hidden until we
+                # bundle the dep properly.
                 pose_pdb = pdbqt_to_pdb(
                     Path(result.pose_pdbqt),
                     Path(run_dir) / f"pose_for_bsa_c{compound.id}_{variant}.pdb",
                 )
                 bsa = compute_bsa(Path(receptor_pdb), pose_pdb) if pose_pdb else None
+                # H-bond count: parse from the contacts=… part the eager
+                # validator already appended to parts a moment ago.
+                # Avoids the closure-locals() footgun and works without
+                # any extra imports. ProLIF tags H-bond contacts with
+                # types like "HBAc"/"HBDo" or "HBAcceptor"/"HBDonor"
+                # depending on version — we match all four prefixes.
                 hbonds = None
-                # ProLIF interactions only exist if eager validation ran
-                # (v was set in the validate_on + not defer_val branch).
-                # Deferred-path runs lose the h-bond chip on the initial
-                # write; the later validation update can backfill it.
-                try:
-                    _v_local = locals().get("v")
-                    if _v_local is not None and getattr(_v_local, "interactions", None):
-                        hbonds = count_hbonds_from_interactions(_v_local.interactions)
-                except Exception:
-                    hbonds = None
-                vt = vina_score_terms(Path(receptor), Path(result.pose_pdbqt))
-                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds, vina_terms=vt))
+                for p in parts:
+                    if isinstance(p, str) and p.startswith("contacts="):
+                        n = 0
+                        for tok in p[len("contacts="):].split(","):
+                            t = tok.split(":")[1] if ":" in tok else ""
+                            tl = t.lower()
+                            if tl.startswith("hbond") or tl.startswith("hbdo") or tl.startswith("hbac"):
+                                n += 1
+                        hbonds = n
+                        break
+                # NOTE: smina --score_only --scoring vina prints a tabular
+                # format (space-separated values under a "## Name …"
+                # header) rather than the per-term `gauss 1: <value>`
+                # lines my regex assumed. Vina term decomposition is
+                # deferred until that parser is rewritten; the chip
+                # stays hidden in the meantime.
+                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds))
             except Exception as ie:
                 # Don't take down the dock just because BSA/score-decomp blew up.
                 log.debug("Interface extras skipped for c%s × %s: %s", compound.id, variant, ie)
