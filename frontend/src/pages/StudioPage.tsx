@@ -5664,13 +5664,22 @@ function ProductionViewer3D({
     // re-snapshots dockedSmilesRef on every keystroke, which makes
     // smilesEdited always false → LIVE mode + 2D edit kept rendering
     // the pre-edit conformer because nothing thought the SMILES had
-    // diverged. We only want to snapshot when a NEW dock arrives
-    // (posePdbqt changes), so deps are [hasDock, posePdbqt] only.
-    // smiles is read inside the effect via closure on the current
-    // render — that's fine because the effect runs once per dock and
-    // the SMILES at that moment is the docked SMILES.
+    // diverged.
+    //
+    // (v1.27) ALSO excluding `posePdbqt` / `hasDock` — both are DERIVED
+    // from viewVariant (posePdbqt picks the WT-vs-mutant pose; hasDock
+    // follows activeDockResult). When the user flipped the WT/mut/both
+    // toggle, posePdbqt changed, this effect re-fired, and it
+    // re-snapshotted dockedSmilesRef to the CURRENT (edited) SMILES —
+    // so smilesEdited went false and the 3D dropped the live preview,
+    // snapping back to the original docked pose. The real "new dock"
+    // signal is a change to the dockResult / dockResultWt OBJECTS,
+    // which only happens on an actual fresh dock, never on a toggle
+    // flip. posePdbqt + smiles are read via closure on the render
+    // where those objects changed — i.e. the render right after a
+    // dock completes — so the snapshot still captures the right value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasDock, posePdbqt]);
+  }, [dockResult, dockResultWt]);
 
   // Fetch the live conformer in three cases:
   //   1. No dock yet — preview whatever the user is sketching.
