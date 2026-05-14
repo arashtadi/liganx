@@ -5459,11 +5459,6 @@ function ProductionViewer3D({
   // crystal-style docked pose. Stored in a ref so editing doesn't loop
   // through React state updates.
   const dockedSmilesRef = useRef<string>("");
-  // Centroid of the docked pose in receptor coordinates. Used to (a) place
-  // the live-conformer overlay inside the pocket when the user edits the
-  // 2D structure, and (b) frame the camera consistently across pose /
-  // conformer / re-dock cycles. Computed once when the pose loads.
-  const poseCentroidRef = useRef<[number, number, number] | null>(null);
   const [conformerSdf, setConformerSdf] = useState<string | null>(null);
   const [conformerErr, setConformerErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -5587,6 +5582,32 @@ function ProductionViewer3D({
     return lines.join("\n") + "\nEND\n";
   })();
   const hasPose = hasDock && !!posePdbqt;
+  // (v1.27) Centroid of the docked pose, in receptor PDB coordinates.
+  // Used to translate the live-conformer overlay into the binding
+  // pocket when the user edits / loads a compound after a dock.
+  //
+  // This MUST be a pure derivation of posePdbqt — NOT computed in an
+  // effect gated on `smiles`. The old code computed it inside the
+  // dockedSmilesRef snapshot effect, which only ran its body when
+  // `smiles` was truthy. On a history-load the dock result arrives
+  // before Ketcher reports a SMILES, so the centroid never got
+  // computed → poseCentroidRef stayed null → the conformer rendered
+  // at RDKit's (0,0,0) origin, floating far from the PDB-coordinate
+  // receptor. (That's the "ligand way off to the side" bug.)
+  const poseCentroid = useMemo<[number, number, number] | null>(() => {
+    if (!posePdbqt) return null;
+    let sx = 0, sy = 0, sz = 0, n = 0;
+    for (const ln of posePdbqt.split("\n")) {
+      if (!ln.startsWith("ATOM") && !ln.startsWith("HETATM")) continue;
+      const x = parseFloat(ln.slice(30, 38));
+      const y = parseFloat(ln.slice(38, 46));
+      const z = parseFloat(ln.slice(46, 54));
+      if (!Number.isNaN(x) && !Number.isNaN(y) && !Number.isNaN(z)) {
+        sx += x; sy += y; sz += z; n++;
+      }
+    }
+    return n > 0 ? [sx / n, sy / n, sz / n] : null;
+  }, [posePdbqt]);
   // (v0.50) Alternate pose for "both" mode — the variant NOT currently
   // active. Same PDBQT→PDB conversion as the primary so 3Dmol's stable
   // 'pdb' parser handles all atoms (BRANCH atoms get dropped by the
@@ -5657,48 +5678,18 @@ function ProductionViewer3D({
     if (dockResult) setViewMode("dock");
   }, [dockResult]);
 
-  // When a fresh dock arrives, snapshot the SMILES that produced it so
-  // we can detect later 2D edits as "stale pose" and switch the 3D view
-  // to a live conformer preview.
+  // When a fresh dock arrives, clear any stale live-preview conformer
+  // so the new docked pose takes the scene. (Edit-detection itself is
+  // now deterministic via activeDockResult.smiles — see smilesEdited
+  // above — and the pocket centroid is a useMemo on posePdbqt, so this
+  // effect no longer owns either of those; it just resets the preview.)
   useEffect(() => {
+    setEditedConformerSdf(null);
+    // Keep dockedSmilesRef populated as a fallback for pre-v1.27 dock
+    // results that have no .smiles stamped on them.
     if (hasDock && smiles && posePdbqt) {
       dockedSmilesRef.current = smiles;
-      setEditedConformerSdf(null);  // clear any prior preview
-      // Compute pose centroid from the PDBQT — atoms x/y/z columns are
-      // 8-char fixed-width starting at col 30 (PDB format).
-      try {
-        const lines = posePdbqt.split("\n");
-        let sx = 0, sy = 0, sz = 0, n = 0;
-        for (const ln of lines) {
-          if (!ln.startsWith("ATOM") && !ln.startsWith("HETATM")) continue;
-          const x = parseFloat(ln.slice(30, 38));
-          const y = parseFloat(ln.slice(38, 46));
-          const z = parseFloat(ln.slice(46, 54));
-          if (!Number.isNaN(x) && !Number.isNaN(y) && !Number.isNaN(z)) {
-            sx += x; sy += y; sz += z; n++;
-          }
-        }
-        if (n > 0) poseCentroidRef.current = [sx/n, sy/n, sz/n];
-      } catch { /* ignore — fallback to model:1 zoomTo */ }
     }
-    // (v0.32) DELIBERATELY excluding `smiles` from deps. Including it
-    // re-snapshots dockedSmilesRef on every keystroke, which makes
-    // smilesEdited always false → LIVE mode + 2D edit kept rendering
-    // the pre-edit conformer because nothing thought the SMILES had
-    // diverged.
-    //
-    // (v1.27) ALSO excluding `posePdbqt` / `hasDock` — both are DERIVED
-    // from viewVariant (posePdbqt picks the WT-vs-mutant pose; hasDock
-    // follows activeDockResult). When the user flipped the WT/mut/both
-    // toggle, posePdbqt changed, this effect re-fired, and it
-    // re-snapshotted dockedSmilesRef to the CURRENT (edited) SMILES —
-    // so smilesEdited went false and the 3D dropped the live preview,
-    // snapping back to the original docked pose. The real "new dock"
-    // signal is a change to the dockResult / dockResultWt OBJECTS,
-    // which only happens on an actual fresh dock, never on a toggle
-    // flip. posePdbqt + smiles are read via closure on the render
-    // where those objects changed — i.e. the render right after a
-    // dock completes — so the snapshot still captures the right value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dockResult, dockResultWt]);
 
@@ -6034,11 +6025,11 @@ function ProductionViewer3D({
             // centroid) so the new compound sits where the docked pose was.
             try {
               const atoms = m.selectedAtoms ? m.selectedAtoms({}) : [];
-              if (atoms.length && poseCentroidRef.current) {
+              if (atoms.length && poseCentroid) {
                 let cx = 0, cy = 0, cz = 0;
                 for (const a of atoms) { cx += a.x; cy += a.y; cz += a.z; }
                 cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
-                const [px, py, pz] = poseCentroidRef.current;
+                const [px, py, pz] = poseCentroid;
                 if (typeof m.translate === "function") {
                   m.translate(px - cx, py - cy, pz - cz);
                 } else {
