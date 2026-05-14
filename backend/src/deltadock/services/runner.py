@@ -595,11 +595,12 @@ def _drain_pending_interface_extras(pending: list[dict], session: Session) -> No
             except Exception as e:  # noqa: BLE001
                 log.warning("interface_extras worker crashed: %s", e)
                 continue
-            if not new_segs:
-                # No-op when neither BSA nor vina_terms produced anything.
-                continue
             # Re-read the row to get the freshest extra (validation may
-            # have updated it after the row was first written).
+            # have updated it after the row was first written). We do
+            # this even when new_segs is empty so the `extras=pending`
+            # placeholder still gets stripped — otherwise a cell where
+            # both BSA and vina_terms failed would show "computing…"
+            # forever on the frontend.
             stmt = select(DockingResult).where(
                 DockingResult.compound_id == compound_id,
                 DockingResult.variant == variant,
@@ -610,13 +611,27 @@ def _drain_pending_interface_extras(pending: list[dict], session: Session) -> No
             if row is None:
                 continue
             current = row.extra or ""
-            # Strip the placeholder if present, then append the new segments.
+            # Strip the placeholder, then append whatever the worker
+            # produced — real segments, or an extras_err marker on failure
+            # (the frontend parser ignores unknown keys, so it's harmless
+            # but useful for debugging).
             cleaned = "|".join(
                 p for p in current.split("|")
                 if p and p != "extras=pending"
             )
-            joined_new = "|".join(new_segs)
-            row.extra = (cleaned + "|" + joined_new) if cleaned else joined_new
+            append_segs = list(new_segs)
+            if not append_segs and err:
+                append_segs = [err]
+            joined_new = "|".join(append_segs)
+            if joined_new:
+                new_extra = (cleaned + "|" + joined_new) if cleaned else joined_new
+            else:
+                new_extra = cleaned
+            if new_extra == current:
+                # Nothing changed: no placeholder was present and the
+                # worker produced nothing — skip the write entirely.
+                continue
+            row.extra = new_extra
             try:
                 session.add(row)
                 session.commit()

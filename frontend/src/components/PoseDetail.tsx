@@ -129,7 +129,7 @@ export default function PoseDetail({ pick, onClose }: Props) {
             <300 Å² is usually a glancing pose. H-bond count separates
             hydrophobic-driven binders from polar-driven ones. Source:
             runner's interface_extras post-processor (freesasa + ProLIF). */}
-        {(ext.interfaceBsa != null || ext.interfaceHbonds != null) && (
+        {(ext.interfaceBsa != null || ext.interfaceHbonds != null || ext.extrasPending) && (
           <div className="flex items-center gap-2 flex-wrap">
             {ext.interfaceBsa != null && (
               <span
@@ -138,6 +138,21 @@ export default function PoseDetail({ pick, onClose }: Props) {
               >
                 <span className="text-slate-400 dark:text-slate-500 uppercase tracking-wider text-[9px]">BSA</span>
                 <span className="font-semibold tabular-nums">{Math.round(ext.interfaceBsa)} Å²</span>
+              </span>
+            )}
+            {/* BSA + the Vina-term decomposition run in a deferred background
+                pass after the result row is written (runner's
+                _drain_pending_interface_extras). Until that drainer strips
+                the extras=pending placeholder, show a muted "computing…"
+                chip so the user knows the BSA value is on its way rather
+                than missing. It resolves on the next 2s poll. */}
+            {ext.interfaceBsa == null && ext.extrasPending && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono ring-1 ring-inset ring-slate-200 bg-slate-50 text-slate-400 dark:ring-slate-700 dark:bg-slate-800/40 dark:text-slate-500"
+                title="Buried surface area is being computed in the background pass — it'll appear here on the next refresh."
+              >
+                <span className="uppercase tracking-wider text-[9px]">BSA</span>
+                <span className="tabular-nums animate-pulse">computing…</span>
               </span>
             )}
             {ext.interfaceHbonds != null && (
@@ -195,6 +210,16 @@ export default function PoseDetail({ pick, onClose }: Props) {
               </div>
             </div>
           </details>
+        )}
+
+        {/* Score breakdown is still being computed by the background pass.
+            Mirror the collapsed accordion's chrome with a muted "computing…"
+            label so the section doesn't pop in unexpectedly later. */}
+        {!ext.vinaTerms && ext.extrasPending && (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-3 flex items-center justify-between text-[10px] uppercase tracking-wider font-semibold text-slate-400 dark:text-slate-500">
+            <span>Score breakdown</span>
+            <span className="normal-case tracking-normal font-normal animate-pulse">computing in background…</span>
+          </div>
         )}
 
         {/* Vina / Δ vs WT / Vinardo / Pose strain metrics all moved to the

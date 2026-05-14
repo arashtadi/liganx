@@ -62,23 +62,30 @@ def compute_bsa(receptor_pdb: Path, ligand_pdb: Path) -> Optional[float]:
         # constructor with a temp file path; cheapest path is to write a
         # combined PDB to a tempfile.
         import tempfile
-        with tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False) as fh:
-            combined_path = fh.name
-            with open(receptor_pdb) as rec:
-                for line in rec:
-                    if line.startswith(("ATOM", "HETATM", "TER")):
-                        fh.write(line)
-            fh.write("TER\n")
-            with open(ligand_pdb) as lig:
-                for line in lig:
-                    if line.startswith(("ATOM", "HETATM")):
-                        fh.write(line)
-            fh.write("END\n")
+        combined_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False) as fh:
+                combined_path = fh.name
+                with open(receptor_pdb) as rec:
+                    for line in rec:
+                        if line.startswith(("ATOM", "HETATM", "TER")):
+                            fh.write(line)
+                fh.write("TER\n")
+                with open(ligand_pdb) as lig:
+                    for line in lig:
+                        if line.startswith(("ATOM", "HETATM")):
+                            fh.write(line)
+                fh.write("END\n")
 
-        sasa_complex = _sasa_total(combined_path)
-        sasa_rec = _sasa_total(str(receptor_pdb))
-        sasa_lig = _sasa_total(str(ligand_pdb))
-        Path(combined_path).unlink(missing_ok=True)
+            sasa_complex = _sasa_total(combined_path)
+            sasa_rec = _sasa_total(str(receptor_pdb))
+            sasa_lig = _sasa_total(str(ligand_pdb))
+        finally:
+            # Always remove the combined tempfile — even if the PDB
+            # concatenation or a _sasa_total call raised partway through.
+            # NamedTemporaryFile(delete=False) won't clean itself up.
+            if combined_path is not None:
+                Path(combined_path).unlink(missing_ok=True)
         if sasa_complex is None or sasa_rec is None or sasa_lig is None:
             return None
         # BSA = (SASA_rec + SASA_lig − SASA_complex). Divide by 2 if you
@@ -262,65 +269,78 @@ def vina_score_terms(
     pose_path = _ensure_single_model(ligand_pdbqt)
     if pose_path is None:
         return None
-    cmd = [
-        smina_bin,
-        "--receptor", str(receptor_pdbqt),
-        "--ligand", str(pose_path),
-        "--score_only",
-        "--scoring", "vina",
-    ]
+    # _ensure_single_model writes a stripped tempfile for multi-MODEL
+    # poses; when the pose is already single-model it returns the input
+    # path untouched. Track whether we own a tempfile to clean up.
+    pose_is_temp = pose_path != Path(ligand_pdbqt)
     try:
-        res = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        log.info("vina_score_terms: smina timed out after %ss", timeout)
-        return None
-    except Exception as e:
-        log.info("vina_score_terms: smina invocation failed: %s", e)
-        return None
-    if res.returncode != 0:
-        log.info("vina_score_terms: smina exit %d (stderr: %s)",
-                 res.returncode, (res.stderr or "")[:200])
-        return None
-
-    out = res.stdout or ""
-    # First try the *tabular* form (current production smina output);
-    # fall back to per-line if the tabular parse comes up empty so that
-    # older / debug builds still work.
-    terms = _parse_smina_table(out)
-    if not terms:
-        gauss_seen = 0
-        for m in _TERM_LINE_RE.finditer(out):
-            label = m.group(1).lower().replace(" ", "").replace("_", "")
-            val = float(m.group(2))
-            if label == "gauss1":
-                terms["g1"] = val
-            elif label == "gauss2":
-                terms["g2"] = val
-            elif label == "repulsion":
-                terms["rep"] = val
-            elif label == "hydrophobic":
-                terms["hyd"] = val
-            elif label in ("hydrogen", "hbond", "nondirhbond"):
-                terms["hb"] = val
-            # Heuristic gauss-counter just in case the lines come back
-            # without explicit numbers (older smina output).
-            if "gauss" in label and "g1" not in terms and "g2" not in terms:
-                key = "g1" if gauss_seen == 0 else "g2"
-                terms[key] = val
-                gauss_seen += 1
-    if not terms:
-        log.info("vina_score_terms: no recognisable terms in smina stdout (head: %s)", out[:300])
-        return None
-    am = _AFFINITY_LINE_RE.search(out)
-    if am:
+        cmd = [
+            smina_bin,
+            "--receptor", str(receptor_pdbqt),
+            "--ligand", str(pose_path),
+            "--score_only",
+            "--scoring", "vina",
+        ]
         try:
-            terms["total"] = float(am.group(1))
-        except ValueError:
-            pass
-    return terms
+            res = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            log.info("vina_score_terms: smina timed out after %ss", timeout)
+            return None
+        except Exception as e:
+            log.info("vina_score_terms: smina invocation failed: %s", e)
+            return None
+        if res.returncode != 0:
+            log.info("vina_score_terms: smina exit %d (stderr: %s)",
+                     res.returncode, (res.stderr or "")[:200])
+            return None
+
+        out = res.stdout or ""
+        # First try the *tabular* form (current production smina output);
+        # fall back to per-line if the tabular parse comes up empty so that
+        # older / debug builds still work.
+        terms = _parse_smina_table(out)
+        if not terms:
+            gauss_seen = 0
+            for m in _TERM_LINE_RE.finditer(out):
+                label = m.group(1).lower().replace(" ", "").replace("_", "")
+                val = float(m.group(2))
+                if label == "gauss1":
+                    terms["g1"] = val
+                elif label == "gauss2":
+                    terms["g2"] = val
+                elif label == "repulsion":
+                    terms["rep"] = val
+                elif label == "hydrophobic":
+                    terms["hyd"] = val
+                elif label in ("hydrogen", "hbond", "nondirhbond"):
+                    terms["hb"] = val
+                # Heuristic gauss-counter just in case the lines come back
+                # without explicit numbers (older smina output).
+                if "gauss" in label and "g1" not in terms and "g2" not in terms:
+                    key = "g1" if gauss_seen == 0 else "g2"
+                    terms[key] = val
+                    gauss_seen += 1
+        if not terms:
+            log.info("vina_score_terms: no recognisable terms in smina stdout (head: %s)", out[:300])
+            return None
+        am = _AFFINITY_LINE_RE.search(out)
+        if am:
+            try:
+                terms["total"] = float(am.group(1))
+            except ValueError:
+                pass
+        return terms
+    finally:
+        # Clean up the stripped-pose tempfile if _ensure_single_model
+        # made one. Never unlink the caller's original pose file.
+        if pose_is_temp:
+            try:
+                pose_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _ensure_single_model(pose_pdbqt: Path) -> Optional[Path]:
