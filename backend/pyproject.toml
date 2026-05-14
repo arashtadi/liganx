@@ -22,11 +22,11 @@ dependencies = [
   "rdkit>=2024.3.5",
   "biopython>=1.84",
   "requests>=2.32",
-  # NOTE: freesasa was added for the BSA chip but builds from source
-  # (no manylinux wheel for py3.12 + conda image) and Fly's slim base
-  # lacks gcc. interface_extras.compute_bsa is wrapped in try/except
-  # ImportError so the BSA chip stays hidden until we either bundle
-  # gcc into the Dockerfile or switch to a wheel-only SASA implementation.
+  # freesasa is installed via conda-forge in the Dockerfile (no pip
+  # wheel for py3.12, but conda-forge ships a pre-built binary). Local
+  # dev without conda can `pip install freesasa --no-build-isolation`
+  # if they want the BSA chip; interface_extras.compute_bsa wraps the
+  # import in try/except so absence degrades gracefully.
   # Production persistence + object storage
   "psycopg2-binary>=2.9.9",
   "boto3>=1.35",

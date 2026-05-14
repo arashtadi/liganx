@@ -130,23 +130,19 @@ def count_hbonds_from_interactions(interactions: Iterable[dict]) -> int:
 # Vina score decomposition
 # ──────────────────────────────────────────────────────────────────────
 
-# smina --score_only's "Intermolecular contributions" block looks like:
+# smina --score_only --scoring vina emits two shapes of output across
+# versions. The current build prints a *tabular* form:
 #
-#   Intermolecular contributions to the terms, before weighting:
-#       gauss 1     :  -42.04
-#       gauss 2     : -1115.74
-#       repulsion   :    4.46
-#       hydrophobic :  -19.39
-#       Hydrogen    :   -2.07
+#   ## Name gauss(o=0,_w=0.5,_c=8)  gauss(o=3,_w=2,_c=8)  repulsion(o=0,_c=8) \
+#           hydrophobic(g=0.5,_b=1.5,_c=8) non_dir_h_bond(g=-0.7,_b=0,_c=8)
+#   ##  -1115.7427  -42.0444  4.4612  -19.3949  -2.0769
+#   Affinity:  -8.42114  (kcal/mol)
 #
-# torsion isn't in the intermolecular block — it's the Vina-style
-# torsion penalty applied at the end (1 + Ntors-related). We extract
-# the "Affinity" line as the WEIGHTED total and reconstruct torsion
-# from (weighted total) − (sum of weighted intermolecular terms) when
-# available. Easier path: just expose the five intermolecular terms,
-# users care about the relative magnitudes.
+# Some older / debug builds emit per-line `gauss 1 : -42.04` etc. We
+# accept *both* — table first (current production), then per-line as a
+# fallback so the parser keeps working across smina version bumps.
 _TERM_LINE_RE = re.compile(
-    r"^\s*(gauss\s*1|gauss\s*2|repulsion|hydrophobic|Hydrogen|hbond)\s*:\s*(-?\d+\.\d+)",
+    r"^\s*(gauss\s*1|gauss\s*2|repulsion|hydrophobic|Hydrogen|hbond|non_dir_h_bond)\s*:\s*(-?\d+\.\d+)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -154,6 +150,88 @@ _TERM_LINE_RE = re.compile(
 # weighted total alongside the per-term raw contributions. The runner
 # already has best_score from Vina; this is a sanity-check anchor.
 _AFFINITY_LINE_RE = re.compile(r"Affinity\s*:\s*(-?\d+\.\d+)")
+
+# Canonical key per smina term-name token. We match by *substring* in
+# the header to keep this robust across `gauss(o=0,_w=0.5,_c=8)` vs
+# `gauss(o=3,_w=2,_c=8)` (both contain the substring "gauss"), and
+# pair the right value column to the right canonical key.
+def _canonical_term_key(header_token: str, gauss_seen: int) -> tuple[Optional[str], int]:
+    """Map a smina term header token to our canonical key.
+
+    Returns (key_or_None, new_gauss_seen_counter). gauss appears twice
+    in smina's header (two different parameter sets) — we map the
+    first to g1 and the second to g2 so the order matches Vina's
+    canonical (g1, g2, repulsion, hydrophobic, hbond) ordering.
+    """
+    h = header_token.lower()
+    if "gauss" in h:
+        if gauss_seen == 0:
+            return "g1", 1
+        return "g2", 2
+    if "repulsion" in h:
+        return "rep", gauss_seen
+    if "hydrophobic" in h:
+        return "hyd", gauss_seen
+    # smina's H-bond term has lots of aliases: non_dir_h_bond,
+    # Hydrogen, hbond. Match any of them.
+    if "h_bond" in h or "hbond" in h or "hydrogen" in h:
+        return "hb", gauss_seen
+    return None, gauss_seen
+
+
+def _parse_smina_table(stdout: str) -> dict:
+    """Parse the `## Name <terms>` + `## <values>` tabular block."""
+    terms: dict = {}
+    # Find the header line (starts with `## Name`) and the value line that
+    # immediately follows or appears later in the block. smina prints the
+    # values twice: once right after Name, once at the end of the
+    # "Intermolecular contributions" section. Either is fine.
+    lines = stdout.splitlines()
+    name_idx = None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("##") and "name" in s.lower():
+            name_idx = i
+            break
+    if name_idx is None:
+        return terms
+    # Tokenise the header: drop the leading `##`, drop the literal
+    # `Name`, keep the remaining whitespace-separated tokens.
+    header_tokens = lines[name_idx].strip().split()
+    if len(header_tokens) < 3:
+        return terms
+    # header_tokens[0] is "##", [1] is "Name"; the rest are term labels.
+    term_tokens = header_tokens[2:]
+    # Find the value line — first `## <numbers>` line after the header
+    # with the matching number of value columns.
+    val_tokens: list[str] = []
+    for j in range(name_idx + 1, min(name_idx + 6, len(lines))):
+        s = lines[j].strip()
+        if not s.startswith("##"):
+            continue
+        candidate = s.split()
+        # Drop the leading "##" token, the rest should be floats.
+        if len(candidate) - 1 != len(term_tokens):
+            continue
+        try:
+            [float(t) for t in candidate[1:]]
+        except ValueError:
+            continue
+        val_tokens = candidate[1:]
+        break
+    if not val_tokens:
+        return terms
+    # Map header term names to canonical keys, pair with values.
+    gauss_seen = 0
+    for token, raw in zip(term_tokens, val_tokens):
+        key, gauss_seen = _canonical_term_key(token, gauss_seen)
+        if key is None:
+            continue
+        try:
+            terms[key] = float(raw)
+        except ValueError:
+            continue
+    return terms
 
 
 def vina_score_terms(
@@ -208,23 +286,33 @@ def vina_score_terms(
         return None
 
     out = res.stdout or ""
-    terms: dict = {}
-    for m in _TERM_LINE_RE.finditer(out):
-        label = m.group(1).lower().replace(" ", "")
-        val = float(m.group(2))
-        # Canonicalise the keys.
-        if label == "gauss1":
-            terms["g1"] = val
-        elif label == "gauss2":
-            terms["g2"] = val
-        elif label == "repulsion":
-            terms["rep"] = val
-        elif label == "hydrophobic":
-            terms["hyd"] = val
-        elif label in ("hydrogen", "hbond"):
-            terms["hb"] = val
+    # First try the *tabular* form (current production smina output);
+    # fall back to per-line if the tabular parse comes up empty so that
+    # older / debug builds still work.
+    terms = _parse_smina_table(out)
     if not terms:
-        log.info("vina_score_terms: no recognisable terms in smina stdout")
+        gauss_seen = 0
+        for m in _TERM_LINE_RE.finditer(out):
+            label = m.group(1).lower().replace(" ", "").replace("_", "")
+            val = float(m.group(2))
+            if label == "gauss1":
+                terms["g1"] = val
+            elif label == "gauss2":
+                terms["g2"] = val
+            elif label == "repulsion":
+                terms["rep"] = val
+            elif label == "hydrophobic":
+                terms["hyd"] = val
+            elif label in ("hydrogen", "hbond", "nondirhbond"):
+                terms["hb"] = val
+            # Heuristic gauss-counter just in case the lines come back
+            # without explicit numbers (older smina output).
+            if "gauss" in label and "g1" not in terms and "g2" not in terms:
+                key = "g1" if gauss_seen == 0 else "g2"
+                terms[key] = val
+                gauss_seen += 1
+    if not terms:
+        log.info("vina_score_terms: no recognisable terms in smina stdout (head: %s)", out[:300])
         return None
     am = _AFFINITY_LINE_RE.search(out)
     if am:

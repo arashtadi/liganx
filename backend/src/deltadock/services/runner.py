@@ -1652,6 +1652,7 @@ def _run_real(session: Session, job: Job) -> None:
             try:
                 from deltadock_pipeline.interface_extras import (
                     compute_bsa, format_for_extra, pdbqt_to_pdb,
+                    vina_score_terms,
                 )
                 # BSA via freesasa. Returns None when freesasa isn't
                 # installed (Fly's conda-slim base lacks gcc to build
@@ -1688,13 +1689,20 @@ def _run_real(session: Session, job: Job) -> None:
                             break
                     if hbonds is not None:
                         break
-                # NOTE: smina --score_only --scoring vina prints a tabular
-                # format (space-separated values under a "## Name …"
-                # header) rather than the per-term `gauss 1: <value>`
-                # lines my regex assumed. Vina term decomposition is
-                # deferred until that parser is rewritten; the chip
-                # stays hidden in the meantime.
-                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds))
+                # Vina term decomposition via smina --score_only --scoring vina.
+                # The parser handles smina's tabular `## Name …` output
+                # (current production) and falls back to per-line. Returns
+                # None on any failure → accordion stays hidden.
+                vterms = None
+                try:
+                    vterms = vina_score_terms(
+                        receptor_pdbqt=Path(receptor),
+                        ligand_pdbqt=Path(result.pose_pdbqt),
+                    )
+                except Exception as vte:
+                    log.debug("vina_score_terms failed for c%s × %s: %s",
+                              compound.id, variant, vte)
+                parts.extend(format_for_extra(bsa=bsa, hbonds=hbonds, vina_terms=vterms))
             except Exception as ie:
                 # Don't take down the dock just because BSA/score-decomp blew up.
                 log.debug("Interface extras skipped for c%s × %s: %s", compound.id, variant, ie)

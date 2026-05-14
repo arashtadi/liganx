@@ -62,6 +62,7 @@ RUN mamba install -y -n base -c conda-forge \
         posebusters \
         biopython \
         smina \
+        freesasa \
     && mamba clean -afy
 
 # Pure-Python web/server deps. Meeko ships here too — pinned >=0.6 so the
