@@ -58,6 +58,12 @@ interface QuickDockResult {
   pose_in_pocket?: boolean;
   pose_offset_a?: number;
   dock_attempts?: number;
+  // (v1.27) The SMILES this pose was actually computed from. Stamped
+  // at every setDockResult site so the 3D viewer can deterministically
+  // tell "is the current 2D structure still the one this pose belongs
+  // to?" — instead of inferring it from a timing-sensitive ref that
+  // raced with loadIntoCanvas on history-restore / edit-compound.
+  smiles?: string;
 }
 
 function getKetcherApi(iframe: HTMLIFrameElement | null): any | null {
@@ -1349,6 +1355,9 @@ export default function StudioPage() {
             if (!firstError) firstError = res.error || "Dock failed.";
             continue;
           }
+          // (v1.27) Stamp the docked SMILES onto the result so the 3D
+          // viewer's edit-detection is deterministic, not ref-timed.
+          res.smiles = baseArgs.smiles;
           if (kind === "mut") setDockResult(res);
           else if (wantMutant) setDockResultWt(res);
           else setDockResult(res);  // WT-only run uses the primary slot
@@ -1897,6 +1906,7 @@ export default function StudioPage() {
               pdb_id: job.pdb_id,
               chain: job.chain,
               receptor_variant: "mutant",
+              smiles: best.smiles,  // (v1.27) deterministic edit-detection
             } : null;
             const wt: QuickDockResult | null = best.wtScore != null ? {
               ok: true,
@@ -1907,6 +1917,7 @@ export default function StudioPage() {
               pdb_id: job.pdb_id,
               chain: job.chain,
               receptor_variant: "wt",
+              smiles: best.smiles,  // (v1.27) deterministic edit-detection
             } : null;
             // Single-target rule: mut → primary slot if any, else WT
             // takes the primary slot; mirror the prior semantics.
@@ -2575,6 +2586,7 @@ export default function StudioPage() {
                         pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
                         chain: dockResult?.chain || dockResultWt?.chain,
                         receptor_variant: "mutant",
+                        smiles: row.smiles,  // (v1.27) deterministic edit-detection
                       } : null;
                       const wt: QuickDockResult | null = row.wtScore != null ? {
                         ok: true,
@@ -2585,6 +2597,7 @@ export default function StudioPage() {
                         pdb_id: dockResult?.pdb_id || dockResultWt?.pdb_id,
                         chain: dockResult?.chain || dockResultWt?.chain,
                         receptor_variant: "wt",
+                        smiles: row.smiles,  // (v1.27) deterministic edit-detection
                       } : null;
                       if (mut) { setDockResult(mut); setDockResultWt(wt); }
                       else { setDockResult(wt); setDockResultWt(null); }
@@ -5606,13 +5619,21 @@ function ProductionViewer3D({
   // RDKit ETKDG geometry. The hasDock variable above is kept honest
   // so the score panel and other UI remain accurate.
   const showDockedScene = hasDock && viewMode === "dock";
-  // Live-preview gate: true when the user has edited the 2D structure
-  // since the dock that produced the current pose. While true, the 3D
-  // view shows a live conformer of the edited SMILES (positioned at
-  // the docked pose's centroid) instead of the now-stale docked pose.
-  // Reset by a successful re-dock (which writes the new SMILES into
-  // dockedSmilesRef).
-  const smilesEdited = hasDock && !!smiles && !!dockedSmilesRef.current && smiles !== dockedSmilesRef.current;
+  // Live-preview gate: true when the current 2D structure is NOT the
+  // one this docked pose belongs to. While true, the 3D view shows a
+  // live conformer of the edited SMILES instead of the stale pose.
+  //
+  // (v1.27) The docked SMILES now comes straight off the dock result
+  // object (activeDockResult.smiles, stamped at every setDockResult
+  // site). This is DETERMINISTIC — no timing. The old approach inferred
+  // it from dockedSmilesRef, which was written by an effect that raced
+  // with loadIntoCanvas: picking a compound from history or hitting
+  // "modify compound" would either snapshot the ref too early (stale)
+  // or too late (matched the new smiles → looked un-edited → 3D stayed
+  // on the old pose). dockedSmilesRef is kept ONLY as a fallback for
+  // pre-v1.27 dock results / restored sessions that have no .smiles.
+  const dockedSmiles = activeDockResult?.smiles ?? dockedSmilesRef.current;
+  const smilesEdited = hasDock && !!smiles && !!dockedSmiles && smiles !== dockedSmiles;
 
   // Hits = pocket-contact residues from the dock result. Used to highlight
   // side chains and to decide whether to enable the Contacts toggle.
