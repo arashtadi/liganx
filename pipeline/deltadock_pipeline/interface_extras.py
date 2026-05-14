@@ -102,11 +102,28 @@ def compute_bsa(receptor_pdb: Path, ligand_pdb: Path) -> Optional[float]:
 
 
 def _sasa_total(pdb_path: str) -> Optional[float]:
-    """Run freesasa on a single PDB and return total SASA in Å²."""
+    """Run freesasa on a single PDB and return total SASA in Å².
+
+    Two bugs in the original version made BSA silently return None on every
+    production job (the bare `except` swallowed both):
+
+      1. SASA call. freesasa 2.x exposes a module-level ``calc()`` function
+         — there is no ``freesasa.Calc`` class, so ``freesasa.Calc()`` raised
+         AttributeError. We call ``freesasa.calc()`` and keep a getattr shim
+         only as a defensive fallback for unusual builds.
+      2. HETATM handling. ``freesasa.Structure`` skips HETATM records by
+         default — and the docked-ligand PDB is *all* HETATM, so it parsed
+         as "no atoms" and raised. ``options={'hetatm': True}`` includes
+         them; verified every ligand atom is then scored.
+    """
     import freesasa  # type: ignore
     try:
-        structure = freesasa.Structure(pdb_path)
-        result = freesasa.Calc().calculate(structure)
+        structure = freesasa.Structure(pdb_path, options={"hetatm": True})
+        calc = getattr(freesasa, "calc", None)
+        if calc is not None:
+            result = calc(structure)
+        else:  # pragma: no cover — defensive fallback for very old bindings
+            result = freesasa.Calc().calculate(structure)  # type: ignore[attr-defined]
         return float(result.totalArea())
     except Exception:
         return None
@@ -131,6 +148,38 @@ def count_hbonds_from_interactions(interactions: Iterable[dict]) -> int:
     except Exception:
         return 0
     return n
+
+
+def count_hbonds_from_extra(extra: str) -> Optional[int]:
+    """Count interface H-bonds from the ``contacts=`` segment of a serialised
+    ``DockingResult.extra`` string.
+
+    Returns the count, or ``None`` when there is no ``contacts=`` segment at
+    all — so callers can tell "zero H-bonds" apart from "no contact data yet".
+
+    Why this exists separately from ``count_hbonds_from_interactions``: on the
+    production (pod-batched) path ProLIF validation runs in a *deferred*
+    background pass, so ``contacts=`` is not in ``extra`` when the cell is
+    first finalised. The interface-extras drainer runs *after* validation, so
+    by then the segment is present — that's the right place to derive the
+    H-bond count from. ``contacts=`` items look like ``RES:Type[:dist]`` with
+    Type in ProLIF's short codes (HBAc, HBDo, Hydr, VdWC, …)."""
+    if not extra:
+        return None
+    for seg in extra.split("|"):
+        if not seg.startswith("contacts="):
+            continue
+        body = seg[len("contacts="):]
+        if not body:
+            return 0
+        n = 0
+        for tok in body.split(","):
+            bits = tok.split(":")
+            t = bits[1].lower() if len(bits) > 1 else ""
+            if t.startswith("hbond") or t.startswith("hbdo") or t.startswith("hbac"):
+                n += 1
+        return n
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────

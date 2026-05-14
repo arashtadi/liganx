@@ -553,7 +553,8 @@ def _drain_pending_interface_extras(pending: list[dict], session: Session) -> No
         return
     try:
         from deltadock_pipeline.interface_extras import (
-            compute_bsa, format_for_extra, pdbqt_to_pdb, vina_score_terms,
+            compute_bsa, count_hbonds_from_extra, format_for_extra,
+            pdbqt_to_pdb, vina_score_terms,
         )
     except ImportError as e:
         log.info("interface_extras unavailable; skipping deferred BSA + vina-terms: %s", e)
@@ -622,6 +623,16 @@ def _drain_pending_interface_extras(pending: list[dict], session: Session) -> No
             append_segs = list(new_segs)
             if not append_segs and err:
                 append_segs = [err]
+            # Interface H-bond count: derive it HERE, not at cell-finalize
+            # time. On the production deferred-validation path the
+            # `contacts=` segment isn't in `extra` when the cell is first
+            # written — it only lands after _drain_pending_validations runs,
+            # which is *before* this drainer. So by now `contacts=` exists.
+            # Skip if the eager-validation path already wrote iface_hb.
+            if "iface_hb=" not in current:
+                hb = count_hbonds_from_extra(current)
+                if hb is not None:
+                    append_segs.append(f"iface_hb={hb}")
             joined_new = "|".join(append_segs)
             if joined_new:
                 new_extra = (cleaned + "|" + joined_new) if cleaned else joined_new
