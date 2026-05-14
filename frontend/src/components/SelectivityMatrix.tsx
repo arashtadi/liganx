@@ -650,6 +650,17 @@ function ScoreCell({
   const currentPickRing = isCurrentPick
     ? "ring-[3px] ring-inset ring-violet-600 dark:ring-violet-400"
     : "";
+  // The WT column has no pose to "inspect" — the right-rail 3D viewer always
+  // compares a mutant against WT — so the WT cell body was completely inert:
+  // its onClick early-returns, and `interactive` (= !isWT) is false, so it got
+  // no pointer cursor and no hover ring. That left the tiny 16px corner
+  // checkbox as the ONLY way to add WT to a shared subset, which users read as
+  // "it won't let me select WT". When the matrix is in selection mode, make
+  // the whole WT cell body toggle its checkbox — same target size and
+  // affordance a mutant cell gets for inspect. Purely additive: WT's onClick
+  // was a no-op before, and when selection mode is off this is unchanged.
+  const wtSelectable = isWT && selectable && !!onToggleSelect;
+  const tdOnClick = wtSelectable ? onToggleSelect : onClick;
   return (
     <td
       className={`relative text-right py-2.5 ${selectable ? "pl-6 pr-4" : "px-4"} font-mono tabular-nums transition-all align-top
@@ -658,9 +669,11 @@ function ScoreCell({
         ${selectionRing}
         ${currentPickRing}
         ${interactive && !isSelected && !isCurrentPick ? "cursor-pointer hover:ring-2 hover:ring-inset hover:ring-delta-400 dark:hover:ring-delta-500" : ""}
-        ${interactive && (isSelected || isCurrentPick) ? "cursor-pointer" : ""}`}
+        ${interactive && (isSelected || isCurrentPick) ? "cursor-pointer" : ""}
+        ${wtSelectable ? "cursor-pointer" : ""}
+        ${wtSelectable && !isSelected ? "hover:ring-2 hover:ring-inset hover:ring-delta-400/50 dark:hover:ring-delta-500/50" : ""}`}
       style={{ background: bg || undefined }}
-      onClick={onClick}
+      onClick={tdOnClick}
     >
       {Checkbox}
       <div className="text-ink dark:text-slate-100 font-semibold">{value.toFixed(2)}</div>
