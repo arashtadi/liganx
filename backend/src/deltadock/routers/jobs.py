@@ -1200,3 +1200,110 @@ def get_pose(
         if res.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             return out_path.read_text()
         return best_pdbqt
+
+
+@router.get("/{job_key}/review")
+async def chemist_review(
+    job_key: str,
+    compound_id: int | None = Query(default=None),
+    variant: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    user: CurrentUser | None = Depends(current_user_or_none),
+) -> dict:
+    """Chemist-style sanity review of a docking result (S1).
+
+    Picks the best (most-negative) pose for this job by default, or a
+    specific (compound_id, variant) if both query params are given.
+    Calls the chemist_review service which:
+      • Parses the runner's already-computed extras (PoseBusters, ProLIF
+        contacts, MMFF94 strain, FoldX ΔΔG, BSA, H-bond count, Vina-term
+        split) — same metrics the matrix UI shows.
+      • Loads the target's catalog metadata for context.
+      • Asks Claude Haiku for a chemist verdict in strict JSON form.
+      • Returns it as a ChemistReview dict.
+
+    PUBLIC by share_id, owner-only for the integer PK — matches the
+    /poses endpoint's visibility model.
+
+    Errors:
+      404 — job not found, or no docking result for the picked pose
+      503 — ANTHROPIC_API_KEY not configured on this deployment
+      502 — Anthropic returned a non-success response
+    """
+    import os
+    from ..catalog import get_target
+    from ..services.chemist_review import review_pose
+
+    job = _resolve_job_public(session, job_key, user)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Pick the pose to review. Specific (compound, variant) if both given;
+    # otherwise the best-scoring row for this job.
+    if compound_id is not None and variant is not None:
+        if not _VARIANT_RE.match(variant):
+            raise HTTPException(status_code=400, detail="invalid variant format")
+        result = session.exec(
+            select(DockingResult)
+            .where(DockingResult.job_id == job.id)
+            .where(DockingResult.compound_id == compound_id)
+            .where(DockingResult.variant == variant)
+        ).first()
+    else:
+        result = session.exec(
+            select(DockingResult)
+            .where(DockingResult.job_id == job.id)
+            # Skip placeholder failure rows (best_score == 0 with no pose)
+            # — picking those as "best" would always trigger the failed-
+            # docking short-circuit and waste a Claude call.
+            .where(DockingResult.best_score < 0)
+            .order_by(DockingResult.best_score.asc())   # type: ignore[attr-defined]
+        ).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="No docking result to review")
+
+    compound = session.get(Compound, result.compound_id)
+    if not compound:
+        raise HTTPException(status_code=404, detail="Compound not found")
+
+    target = get_target(job.pdb_id)
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ANTHROPIC_API_KEY is not configured on this server — the "
+                "chemist reviewer can't run. Set it via Fly secrets."
+            ),
+        )
+
+    try:
+        review = await review_pose(
+            compound_smiles=compound.smiles,
+            compound_name=compound.name or f"compound #{compound.id}",
+            target_id=target.id if target else (job.pdb_id or "unknown"),
+            target_name=target.name if target else (job.pdb_id or "Unknown target"),
+            target_uniprot=(target.uniprot if target else (job.uniprot_id or "")),
+            pdb_id=job.pdb_id,
+            chain=job.chain,
+            variant=result.variant,
+            indications=(target.indications if target else []),
+            docked_score=result.best_score,
+            extra=result.extra,
+            api_key=api_key,
+        )
+    except RuntimeError as e:
+        # Anthropic-side error (network, auth, rate-limit, parse). Map to
+        # 502 so monitoring can distinguish it from our own bugs (5xx).
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {
+        "job_id": job.id,
+        "share_id": job.share_id,
+        "compound_id": result.compound_id,
+        "compound_name": compound.name,
+        "variant": result.variant,
+        "score": result.best_score,
+        "review": review.to_dict(),
+    }
