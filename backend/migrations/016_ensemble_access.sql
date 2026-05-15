@@ -24,5 +24,9 @@
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS. Safe to run on every boot.
 
+-- Bootstrap (same rationale as migration 014): no-op on prod, creates
+-- the minimal user_profile on fresh CI databases.
+CREATE TABLE IF NOT EXISTS public.user_profile (user_id UUID PRIMARY KEY);
+
 ALTER TABLE public.user_profile
     ADD COLUMN IF NOT EXISTS ensemble_enabled BOOLEAN NOT NULL DEFAULT TRUE;
