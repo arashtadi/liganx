@@ -341,6 +341,15 @@ function FeatureGrid() {
       body: "QuickVina2-GPU (fast Vina-family, default), GNINA (Vina + CNN pose rescoring trained on PDBbind — CNN rescoring requires sm_89 / RTX 4090; on other GPUs GNINA falls back to its Vina-fork score), and Boltz-2 (full ML co-folding from sequence + SMILES — no docking box needed). Three genuinely different methods, side-by-side on the same job. Most free tools give you one.",
       isNew: true,
     },
+    {
+      // Ensemble docking — opt-in on any Full Job. Short GPU MD relaxation
+      // of the receptor, dock against several pocket conformers, keep the
+      // best, surface the per-conformer score spread. Shipped 2026-05-15.
+      icon: <Beaker />,
+      title: "Ensemble docking",
+      body: "Flip one toggle on any Full Job and we stop pretending the protein is a rigid statue. A short GPU molecular-dynamics run relaxes the receptor into several pocket conformers; each ligand is docked against all of them and the best score + pose is kept — with the per-conformer score spread shown so you can see exactly how much protein flexibility moved the number. Retires the \"single-conformation docking can't see the pocket breathe\" caveat.",
+      isNew: true,
+    },
     // 2026-05-04: added after the Tier 1 AI Optimize loop shipped.
     // Single card describing the whole AI design pipeline so the grid
     // doesn't become 4 separate AI cards. The "Recently shipped" strip
@@ -607,6 +616,15 @@ function Comparison() {
               // because Schrödinger has AlphaFold integrations but not the
               // affinity-head workflow as a first-class scoring engine yet.
               ["ML co-folding (Boltz-2 class)",  false,     true,      "partial"],
+              // Ensemble docking — shipped 2026-05-15. Opt-in on any Full
+              // Job: short GPU MD relaxes the receptor into several pocket
+              // conformers, dock against all, keep the best + report the
+              // spread. Free servers dock against one rigid snapshot —
+              // false. Schrödinger genuinely has this (Induced Fit Docking
+              // / IFD-MD), so Maestro is an honest "true" here; the point
+              // of this row is that it's the kind of flexible-receptor
+              // capability you otherwise only get in the expensive tool.
+              ["Ensemble / flexible-receptor docking", false, true,    true],
               // Library row added 2026-04-30 alongside the per-user compound
               // library ship. Free servers have no concept of a per-user
               // saved compound library. Maestro has Project favorites but
