@@ -136,6 +136,12 @@ export default function Post() {
         ADMET panel will flag hepatotoxicity (the sotorasib pattern) if
         your candidate has the same liabilities.
       </p>
+      <p>
+        Liganx is molecular docking online: free, browser-based, and set
+        up for exactly this kind of mutation question. If you want to
+        try molecular docking on KRAS G12C without a local install, that
+        is the fastest path.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

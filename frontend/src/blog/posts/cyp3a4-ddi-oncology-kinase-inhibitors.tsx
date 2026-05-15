@@ -176,6 +176,12 @@ export default function Post() {
         that introduces a CYP3A4 liability is rarely worth it once you
         cost in the eventual prescribing restrictions.
       </p>
+      <p>
+        Liganx pairs molecular docking with an ADMET readout in one
+        browser-based workflow. Having molecular docking online and free
+        means you can weigh an affinity gain against a CYP3A4 liability
+        before you commit to a series.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

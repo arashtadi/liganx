@@ -182,6 +182,12 @@ export default function Post() {
         resistance signal that drove QuANTUM-R&rsquo;s exclusion criteria
         before it ever drove a clinical relapse.
       </p>
+      <p>
+        Liganx is molecular docking online: free, browser-based, no
+        install. It is a fast way to put molecular docking on the type-I
+        versus type-II FLT3 question and watch quizartinib and
+        gilteritinib diverge across D835Y and F691L.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

@@ -134,6 +134,13 @@ export default function Post() {
         &Delta;&Delta; between wild-type and mutant is the selectivity story,
         and it is the number that matters more than either absolute score.
       </p>
+      <p>
+        Liganx is molecular docking online: a free, browser-based
+        platform with no install and no local GPU required. It is a fast
+        way to put molecular docking to work on a resistance question
+        like G1202R and watch the wild-type-versus-mutant story for
+        yourself.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

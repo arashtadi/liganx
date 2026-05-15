@@ -208,6 +208,11 @@ export default function Post() {
         functions point at the same pose with similar confidence,
         that&apos;s the case you can trust without additional follow-up.
       </p>
+      <p>
+        Because Liganx offers molecular docking online and free, you can
+        run Vina and GNINA on the same job in the browser and compare
+        the two scoring functions without a local toolchain.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

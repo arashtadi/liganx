@@ -166,6 +166,14 @@ export default function Post() {
         self-docking check catches most of the silent failures the
         validation papers warn about.
       </p>
+      <p>
+        Liganx brings molecular docking online into the browser, so you
+        can run a self-docking check and screen against a predicted or
+        experimental structure without standing up a local pipeline.
+        Molecular docking is only as good as the structure underneath
+        it, and the target card tells you which kind you are working
+        with.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

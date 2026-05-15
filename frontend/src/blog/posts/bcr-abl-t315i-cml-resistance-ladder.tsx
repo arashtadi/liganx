@@ -195,6 +195,12 @@ export default function Post() {
         pocket to see why allosteric inhibition is structurally immune
         to the gatekeeper.
       </p>
+      <p>
+        Liganx makes molecular docking online and free: no install, no
+        setup, just a target and a ligand in the browser. It is a quick
+        way to see how molecular docking captures the T315I gatekeeper
+        story across imatinib, ponatinib, and asciminib.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

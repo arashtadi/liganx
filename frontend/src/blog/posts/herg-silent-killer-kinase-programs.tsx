@@ -129,6 +129,12 @@ export default function Post() {
         rose-rose-rose, it&rsquo;s not necessarily dead, but it&rsquo;s a strong
         signal to redesign before sinking the synthesis cost.
       </p>
+      <p>
+        Liganx brings molecular docking online into the browser and runs
+        the ADMET panel on every pose. Using molecular docking and the
+        cardiac-risk readout together is how you catch a hERG liability
+        before the synthesis cost.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

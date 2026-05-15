@@ -156,6 +156,11 @@ export default function Post() {
         memorize the checks; the point is that a docking score is one
         signal and pose validity is a separate, equally important one.
       </p>
+      <p>
+        Because Liganx runs molecular docking online in the browser, the
+        PoseBusters checks travel with every result, so you see pose
+        validity next to the score rather than as a separate step.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

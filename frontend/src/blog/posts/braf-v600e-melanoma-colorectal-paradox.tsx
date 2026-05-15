@@ -204,6 +204,12 @@ export default function Post() {
         will see the selectivity gap that lets these drugs spare normal
         tissues at clinical concentrations.
       </p>
+      <p>
+        Liganx runs molecular docking online in the browser, free and
+        with no local setup. It is a direct way to use molecular docking
+        to compare how vemurafenib, dabrafenib, and encorafenib sit in
+        the BRAF V600E pocket.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

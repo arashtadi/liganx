@@ -154,6 +154,11 @@ export default function Post() {
         misses). That&rsquo;s the EGFR resistance story in three docking
         cells.
       </p>
+      <p>
+        Liganx puts molecular docking online and free in the browser. It
+        is a quick way to run molecular docking across L858R, T790M, and
+        C797S and see the EGFR resistance staircase in three cells.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

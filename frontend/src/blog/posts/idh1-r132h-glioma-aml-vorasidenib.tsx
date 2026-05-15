@@ -198,6 +198,12 @@ export default function Post() {
         and P-glycoprotein efflux risk, which is where ivosidenib loses
         to vorasidenib structurally.
       </p>
+      <p>
+        Liganx runs molecular docking online, free and in the browser.
+        It is a direct way to use molecular docking on the IDH1 R132H
+        allosteric pocket and read the wild-type-versus-mutant
+        selectivity gap.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>

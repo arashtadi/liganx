@@ -141,6 +141,11 @@ export default function Post() {
         (reactive cysteine present) and the wild-type receptor (no reactive
         cysteine) to see the selectivity the warhead is supposed to buy you.
       </p>
+      <p>
+        Liganx puts molecular docking online and free in the browser, so
+        you can test a warhead-bearing candidate against a reactive-
+        cysteine target without a local install.
+      </p>
 
       <h2>Primary sources</h2>
       <ul>
