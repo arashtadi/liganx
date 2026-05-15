@@ -546,10 +546,18 @@ def health_db() -> dict:
     if db_url.startswith("sqlite"):
         return {"status": "ok", "db": "sqlite (dev)", "elapsed_ms": 0}
 
+    # DATABASE_URL is a SQLAlchemy-style DSN ("postgresql+psycopg2://...").
+    # psycopg2.connect() speaks libpq and chokes on the "+psycopg2" dialect
+    # suffix with a ProgrammingError — which made this probe report
+    # db_unreachable even when the database was perfectly healthy (the app
+    # itself, going through SQLAlchemy, was fine the whole time). Strip the
+    # dialect suffix to a plain libpq URI before connecting.
+    libpq_dsn = db_url.replace("postgresql+psycopg2://", "postgresql://", 1)
+
     try:
         import psycopg2  # type: ignore
         # 2-second connect_timeout — fast enough to never hang the probe.
-        conn = psycopg2.connect(db_url, connect_timeout=2)
+        conn = psycopg2.connect(libpq_dsn, connect_timeout=2)
         try:
             cur = conn.cursor()
             cur.execute("SELECT 1")

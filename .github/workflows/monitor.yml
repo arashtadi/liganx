@@ -1,0 +1,90 @@
+name: Uptime Monitor
+
+# Scheduled health check across every layer of the stack — backend,
+# database, GPU-pod connectivity, and frontend. It runs on GitHub
+# Actions, deliberately OUTSIDE the production infrastructure: if the
+# backend or the pod is down, this monitor still runs and reports it
+# (a monitor that lives inside the thing it watches is useless when
+# that thing goes down).
+#
+# Alerting:
+#   * Any failed check fails the job. GitHub emails the repo owner on a
+#     failed scheduled run automatically — that's the zero-config alert.
+#   * If the TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID repo secrets are
+#     set, a Telegram message is also sent on failure. Set them once:
+#         gh secret set TELEGRAM_BOT_TOKEN   # same value as the Fly secret
+#         gh secret set TELEGRAM_CHAT_ID     # same value as the Fly secret
+#     Until they're set, the Telegram step skips cleanly and the GitHub
+#     failure email is still sent.
+#
+# Note: GitHub's scheduled runs can be delayed under load — treat the
+# 15-minute cadence as "roughly every 15-20 minutes", which is fine for
+# uptime monitoring. Use the Actions tab's "Run workflow" button to
+# trigger an on-demand check.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    name: Stack health check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every layer
+        run: |
+          set +e
+          fail=0
+
+          # check <label> <url> <expected-http-code>
+          check() {
+            local label="$1" url="$2" want="$3" code
+            code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 25 "$url")
+            if [ "$code" = "$want" ]; then
+              echo "  OK    $label  ($code)"
+            else
+              echo "  FAIL  $label  (got $code, want $want)"
+              [ -s /tmp/body ] && echo "        body: $(head -c 300 /tmp/body)"
+              fail=1
+            fi
+          }
+
+          echo "=== Liganx stack health check $(date -u) ==="
+          check "backend  /health"     "https://api.liganx.com/health"     200
+          check "backend  /health/db"  "https://api.liganx.com/health/db"  200
+          check "frontend liganx.com"  "https://liganx.com/"               200
+
+          # /health/full must be 200 AND report pod_dock_status == "ok" —
+          # that's the backend->GPU-pod connectivity check (the backend
+          # reaches the pod the same way real docking does).
+          code=$(curl -s -o /tmp/full -w '%{http_code}' --max-time 30 https://api.liganx.com/health/full)
+          if [ "$code" = "200" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('/tmp/full')).get('pod_dock_status')=='ok' else 1)"; then
+            echo "  OK    backend->pod  (/health/full, pod_dock_status=ok)"
+          else
+            echo "  FAIL  backend->pod  (/health/full code=$code)"
+            [ -s /tmp/full ] && echo "        body: $(head -c 300 /tmp/full)"
+            fail=1
+          fi
+
+          echo "=== result: $([ $fail -eq 0 ] && echo ALL OK || echo FAILURES DETECTED) ==="
+          exit $fail
+
+      - name: Telegram alert on failure
+        if: failure()
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping Telegram"
+            echo "(GitHub still emails the repo owner on this failed run)"
+            exit 0
+          fi
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          msg=$'\xF0\x9F\x94\xB4 Liganx uptime monitor FAILED\nA stack health check did not pass — see the run for which layer:\n'"$run_url"
+          curl -s --max-time 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT}" \
+            --data-urlencode "text=${msg}" > /dev/null \
+            && echo "Telegram alert sent." \
+            || echo "Telegram send failed (GitHub failure email still sent)."
