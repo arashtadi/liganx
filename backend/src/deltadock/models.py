@@ -84,6 +84,24 @@ class Job(SQLModel, table=True):
     # value is unknown. NULL on legacy rows ⇒ treated as quickvina2_gpu.
     engine: Optional[str] = Field(default="quickvina2_gpu", index=True)
 
+    # Opt-in "ensemble docking". When True, the runner docks each ligand
+    # against several short-MD-relaxed receptor conformers (generated on the
+    # GPU Pod's /relax_ensemble endpoint) instead of a single rigid crystal
+    # snapshot, and keeps the best score + pose per cell. This retires the
+    # "single-conformation docking can't see protein flexibility" caveat.
+    #
+    # Full Jobs only — NEVER set by the Quick Dock path (keeps the editor's
+    # fast path instant). Default False so every existing code path and
+    # every legacy row is byte-for-byte unchanged: when this is False the
+    # runner's docking path is exactly what it is today. The per-cell
+    # score spread across conformers is recorded pipe-delimited in
+    # DockingResult.extra (ens=... segment), not a dedicated column —
+    # matches how vinardo/water/strain extras are carried.
+    #
+    # Added by migration 015_job_ensemble.sql. NULL on rows that predate
+    # the migration ⇒ treated as False by the runner's getattr fallback.
+    ensemble: bool = Field(default=False)
+
     # Status
     status: JobStatus = Field(default=JobStatus.PENDING, index=True)
     error_message: Optional[str] = None

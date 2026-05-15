@@ -118,6 +118,17 @@ function AdminDashboard() {
     },
   });
 
+  // Flip a user's ensemble-docking access. Ungated by default — this is
+  // the admin kill-switch. Same invalidate-on-success pattern as the Pro
+  // toggle so the row re-renders with the correct badge state.
+  const setEnsembleMut = useMutation({
+    mutationFn: ({ userId, ensembleEnabled }: { userId: string; ensembleEnabled: boolean }) =>
+      api.adminSetEnsemble(userId, ensembleEnabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
   const deleteMut = useMutation({
     mutationFn: (userId: string) => api.adminDeleteUser(userId),
     onSuccess: () => {
@@ -283,6 +294,32 @@ function AdminDashboard() {
                           }
                         >
                           {u.is_pro ? "★ pro" : "free"}
+                        </button>
+                        {/* Ensemble-docking access toggle. Ungated by
+                            default, so the common state is "on" — the
+                            badge only stands out (rose) when an admin has
+                            explicitly revoked it. Click to flip. */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEnsembleMut.mutate({
+                              userId: u.user_id,
+                              ensembleEnabled: !u.ensemble_enabled,
+                            })
+                          }
+                          disabled={setEnsembleMut.isPending}
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider transition-colors ${
+                            u.ensemble_enabled
+                              ? "bg-sky-100 text-sky-800 hover:bg-sky-200 dark:bg-sky-900/40 dark:text-sky-200 dark:hover:bg-sky-900/60"
+                              : "bg-rose-100 text-rose-800 hover:bg-rose-200 dark:bg-rose-900/40 dark:text-rose-200 dark:hover:bg-rose-900/60"
+                          } disabled:opacity-50`}
+                          title={
+                            u.ensemble_enabled
+                              ? "Ensemble docking allowed (the default). Click to revoke — the user's Studio ensemble toggle will be disabled and ensemble submissions rejected."
+                              : "Ensemble docking REVOKED for this user. Click to restore access."
+                          }
+                        >
+                          {u.ensemble_enabled ? "⧉ ensemble" : "⧉ blocked"}
                         </button>
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{u.email}</div>

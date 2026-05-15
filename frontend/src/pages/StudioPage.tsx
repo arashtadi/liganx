@@ -214,6 +214,10 @@ interface StudioSessionSnapshot {
   selectedTargets: string[];
   selectedMutations: string[];
   includeWt: boolean;
+  // (Ensemble docking) Opt-in flag for docking against an MD-relaxed
+  // receptor conformer ensemble. Optional so snapshots written before
+  // the feature shipped still deserialise (defaults to false on restore).
+  ensemble?: boolean;
   // (v0.83) Ad-hoc targets the user picked from the RCSB PDB search
   // tier. Persisted so a Back-to-Studio round trip can resolve the
   // PDB id back into a usable target entry — otherwise selectedTargets
@@ -385,12 +389,24 @@ export default function StudioPage() {
   // the brief loading window.
   const [isPro, setIsPro] = useState(false);
   const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
+  // Ensemble-docking access. UNGATED BY DEFAULT — initialised true so the
+  // toggle is usable during the profile-fetch window and for anonymous
+  // users. Flipped to false only if the profile fetch comes back with an
+  // explicit ensemble_enabled === false (admin kill-switch). This is the
+  // opposite default from isPro: Pro features fail closed, ensemble fails
+  // open, because ensemble is ungated-by-default by design.
+  const [ensembleAllowed, setEnsembleAllowed] = useState(true);
   useEffect(() => {
     let cancelled = false;
     api
       .getMyProfile()
       .then((p) => {
-        if (!cancelled) setIsPro(Boolean(p?.is_pro));
+        if (!cancelled) {
+          setIsPro(Boolean(p?.is_pro));
+          // Only an explicit `false` revokes — undefined (older API) or
+          // true both mean "allowed".
+          setEnsembleAllowed(p?.ensemble_enabled !== false);
+        }
       })
       .catch(() => {
         /* swallow — anonymous users see free tier (correct) */
@@ -454,6 +470,11 @@ export default function StudioPage() {
   // keeps WT selected, so the trigger shows e.g. "WT + Q61H + L597R"
   // and Run Dock fires all in parallel.
   const [includeWt, setIncludeWt] = useState<boolean>(initialSession?.includeWt ?? reseed?.include_wt ?? true);
+  // (Ensemble docking) Opt-in: dock against an MD-relaxed receptor conformer
+  // ensemble instead of one rigid crystal snapshot, keeping the best score+
+  // pose per cell. Full Job only — never wired into Quick Dock. Restored
+  // from the session snapshot; defaults off.
+  const [ensemble, setEnsemble] = useState<boolean>(initialSession?.ensemble ?? false);
   const [selectedMutations, setSelectedMutations] = useState<string[]>(
     initialSession?.selectedMutations && initialSession.selectedMutations.length > 0
       ? initialSession.selectedMutations
@@ -1539,6 +1560,7 @@ export default function StudioPage() {
         selectedTargets,
         selectedMutations,
         includeWt,
+        ensemble,
         adHocTargets,
         compounds,
         activeCompoundIdx,
@@ -1557,7 +1579,7 @@ export default function StudioPage() {
     }, 400);
     return () => window.clearTimeout(t);
   }, [
-    selectedTargets, selectedMutations, includeWt, adHocTargets,
+    selectedTargets, selectedMutations, includeWt, ensemble, adHocTargets,
     compounds, activeCompoundIdx, currentSmiles,
     fullJobKey, fullJobStatus, fullJobStage,
     fullJobRows, selectedRowCompoundId,
@@ -1635,8 +1657,18 @@ export default function StudioPage() {
           mutations: selectedMutations,
           compounds: compoundList,
           include_wt: includeWt,
+          // Ensemble docking v1 runs on the QuickVina batch path — it does
+          // NOT combine with GNINA. Send false for GNINA jobs so the job
+          // row honestly reflects what runs (the runner ignores ensemble
+          // for engine=gnina anyway, but keeping the row accurate means
+          // History/JobPage don't show a misleading "ensemble" badge).
+          // Also force false when the user's ensemble access has been
+          // revoked by an admin — the toggle is already disabled in that
+          // case, this is belt-and-suspenders so a stale toggle state
+          // can't slip an ensemble=true past the backend's 402 gate.
+          ensemble: engine === "gnina" || !ensembleAllowed ? false : ensemble,
           engine,
-          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}${engine === "gnina" ? " · GNINA" : ""}`,
+          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}${engine === "gnina" ? " · GNINA" : ""}${engine !== "gnina" && ensembleAllowed && ensemble ? " · Ensemble" : ""}`,
         });
         return { tid, job, pdbId: tPdb };
       });
@@ -1677,6 +1709,7 @@ export default function StudioPage() {
         selectedTargets,
         selectedMutations,
         includeWt,
+        ensemble,
         adHocTargets,
         compounds,
         activeCompoundIdx,
@@ -3692,6 +3725,65 @@ export default function StudioPage() {
                   upcoming wait instead of thinking the Run Dock click
                   did nothing. */}
               <PodStatusBanner />
+
+              {/* (Ensemble docking) Opt-in toggle — Full Job only. Docking
+                  against an MD-relaxed receptor conformer ensemble removes
+                  the "single rigid crystal snapshot" blind spot at the cost
+                  of ~30-60 s extra per variant. Sits directly above RUN DOCK
+                  so it reads as a docking-setup knob, peer to the engine
+                  choice. Sky-blue when on so it's distinct from the
+                  emerald/violet RUN DOCK buttons below. Applies to the Vina
+                  path; the GNINA half ignores it (ensemble v1 is
+                  QuickVina-only — runFullJob sends ensemble=false for GNINA). */}
+              <button
+                type="button"
+                disabled={!ensembleAllowed}
+                onClick={() => { if (ensembleAllowed) setEnsemble((v) => !v); }}
+                className={`mb-2 w-full flex items-center gap-2.5 px-3 py-2 rounded border text-left transition-all ${
+                  !ensembleAllowed
+                    ? "border-slate-800 bg-slate-900/20 cursor-not-allowed opacity-60"
+                    : ensemble
+                    ? "border-sky-600/60 bg-sky-950/30 hover:bg-sky-900/30"
+                    : "border-slate-800 bg-slate-900/30 hover:bg-slate-800/40"
+                }`}
+                title={
+                  !ensembleAllowed
+                    ? "Ensemble docking has been disabled for your account by an administrator. Contact us at liganx.com/contact if you believe this is a mistake."
+                    : "Ensemble docking: relax the receptor with a short GPU molecular-dynamics run, dock each ligand against several conformers, and keep the best score + pose. Removes the artefact of docking against one arbitrary rigid crystal snapshot. Adds roughly 30-60 s per variant. Full Job only — applies to the Vina engine."
+                }
+              >
+                <span
+                  className={`inline-flex shrink-0 items-center justify-center w-4 h-4 rounded-sm border text-[10px] leading-none ${
+                    ensembleAllowed && ensemble
+                      ? "border-sky-300 bg-sky-400 text-slate-900"
+                      : "border-slate-600 text-transparent"
+                  }`}
+                >
+                  {ensembleAllowed && ensemble ? "✓" : ""}
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span
+                    className={`block font-mono text-[11px] uppercase tracking-wider ${
+                      ensembleAllowed && ensemble ? "text-sky-200" : "text-slate-400"
+                    }`}
+                  >
+                    {!ensembleAllowed ? "Ensemble docking 🔒" : "Ensemble docking"}
+                  </span>
+                  <span className="block text-[9px] text-slate-500 leading-tight mt-0.5">
+                    {!ensembleAllowed
+                      ? "Disabled for your account by an administrator — contact us to restore."
+                      : "Dock against an MD-relaxed receptor ensemble, not one rigid snapshot. +~30-60 s/variant."}
+                  </span>
+                </span>
+                <span
+                  className={`shrink-0 text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                    ensembleAllowed && ensemble ? "bg-sky-900/60 text-sky-300" : "bg-slate-800 text-slate-500"
+                  }`}
+                >
+                  {!ensembleAllowed ? "n/a" : ensemble ? "on" : "off"}
+                </span>
+              </button>
+
               {(() => {
                 const hasCompound = !!currentSmiles || compounds.length > 0;
                 const isDisabled = docking || submittingFull

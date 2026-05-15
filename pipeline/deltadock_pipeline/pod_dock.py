@@ -331,6 +331,129 @@ def dock_batch_pod(
     return out
 
 
+# ─────────────────── ensemble (receptor relaxation) ───────────────────
+
+def relax_ensemble_pod(
+    receptor_pdb: Path | str,
+    box_center: tuple[float, float, float],
+    out_dir: Path | str,
+    cfg: PodDockConfig,
+    *,
+    n_relaxed: int = 4,
+    md_ps: float = 250.0,
+    equil_ps: float = 20.0,
+    pocket_radius: float = 12.0,
+    timeout_s: int = 240,
+) -> list[Path]:
+    """Generate a receptor conformer ensemble on the GPU Pod.
+
+    POSTs a cleaned receptor PDB (heavy atoms, original numbering — the
+    output of prep.fix_pdb / the mutant builder) to the Pod's
+    ``/relax_ensemble`` endpoint, which runs a short restrained GPU MD
+    (see runpod/dock_pod/ensemble_pod.py) and returns ``[input] + N``
+    relaxed receptor conformers as PDB text. The relaxed conformers are
+    written to ``out_dir`` as files; element 0 of the returned list is the
+    ORIGINAL ``receptor_pdb`` path (unchanged on disk), so ensemble docking
+    can never score worse than standard single-conformation docking.
+
+    Fail-soft contract — this function NEVER raises. On any failure (Pod
+    down, HTTP error, malformed response, MD blow-up on the Pod, file
+    write error) it returns just ``[receptor_pdb]``: the caller
+    transparently degrades to exactly today's single-conformation
+    behaviour. The worst case is "ensemble mode silently behaved like
+    standard mode", never "the job crashed".
+
+    Args:
+        receptor_pdb:  cleaned receptor PDB path (heavy atoms). NOT a PDBQT.
+        box_center:    (x, y, z) docking-box centre in PDB Å — defines which
+                       residues the Pod treats as "pocket" (side chains free).
+        out_dir:       directory the relaxed conformer PDBs are written to.
+        cfg:           Pod URL + base timeout (only base_url is used here).
+        n_relaxed:     how many MD-snapshot conformers to request.
+        md_ps:         total MD length (ps) after equilibration.
+        equil_ps:      equilibration discarded before snapshotting.
+        pocket_radius: residues with Cα within this (Å) of box_center keep
+                       their side chains free; everything else is restrained.
+        timeout_s:     HTTP timeout. Restrained MD on the Pod GPU is fast
+                       (~5 s for a typical kinase domain) but big receptors
+                       or a cold OpenMM context warrant generous headroom.
+
+    Returns:
+        A list of receptor PDB paths to dock against. Length is between 1
+        and (1 + n_relaxed). ALWAYS contains at least ``[receptor_pdb]`` —
+        on any failure that single-element list is what comes back.
+    """
+    receptor_pdb = Path(receptor_pdb)
+    fallback = [receptor_pdb]
+    if not receptor_pdb.exists():
+        log.warning("relax_ensemble_pod: receptor PDB not found: %s", receptor_pdb)
+        return fallback
+    if n_relaxed <= 0:
+        return fallback
+
+    out_dir = Path(out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        receptor_text = receptor_pdb.read_text()
+    except Exception as e:  # noqa: BLE001
+        log.warning("relax_ensemble_pod: could not read receptor / make out_dir: %s", e)
+        return fallback
+
+    payload = {
+        "receptor_pdb": receptor_text,
+        "box_center": [float(box_center[0]), float(box_center[1]), float(box_center[2])],
+        "n_relaxed": n_relaxed,
+        "md_ps": md_ps,
+        "equil_ps": equil_ps,
+        "pocket_radius": pocket_radius,
+    }
+    url = cfg.base_url.rstrip("/") + "/relax_ensemble"
+    log.info("Requesting receptor ensemble from Pod %s (%s, n_relaxed=%d)",
+             cfg.base_url, receptor_pdb.name, n_relaxed)
+
+    try:
+        output = _post_json(url=url, body=payload, timeout_s=timeout_s)
+    except PodDockError as e:
+        # Fail-soft: a Pod hiccup must not take down the dock — the caller
+        # just docks against the single crystal conformer instead.
+        log.warning("relax_ensemble_pod: Pod call failed, single-conformer fallback: %s", e)
+        return fallback
+
+    # Pod contract (see runpod/dock_pod/relax_ensemble_endpoint.txt):
+    #   {"ok": bool, "n": int, "conformers": [pdb_str, ...]}
+    # conformers[0] is always the un-relaxed input text; conformers[1:] are
+    # the MD-relaxed snapshots. We keep the ORIGINAL receptor_pdb path as
+    # element 0 (no need to round-trip the input through a file) and write
+    # only the relaxed snapshots to disk.
+    conformers = output.get("conformers")
+    if not isinstance(conformers, list) or len(conformers) < 2:
+        # ok=False, or the Pod's own MD fail-soft kicked in and returned
+        # just [input]. Either way: degrade to single-conformer.
+        if not output.get("ok", False):
+            log.warning("relax_ensemble_pod: Pod reported failure (%s) — single-conformer fallback",
+                        str(output.get("error"))[:160])
+        else:
+            log.info("relax_ensemble_pod: Pod returned no relaxed conformers — single-conformer fallback")
+        return fallback
+
+    out_paths: list[Path] = [receptor_pdb]
+    for i, conf_text in enumerate(conformers[1:], start=1):
+        if not isinstance(conf_text, str) or not conf_text.strip():
+            log.warning("relax_ensemble_pod: conformer %d empty/non-string — skipping", i)
+            continue
+        try:
+            conf_path = out_dir / f"{receptor_pdb.stem}_conf{i}.pdb"
+            conf_path.write_text(conf_text)
+            out_paths.append(conf_path)
+        except Exception as e:  # noqa: BLE001
+            # One bad snapshot shouldn't lose the others (or the input).
+            log.warning("relax_ensemble_pod: could not write conformer %d: %s", i, e)
+
+    log.info("relax_ensemble_pod: ensemble ready for %s (1 input + %d relaxed)",
+             receptor_pdb.name, len(out_paths) - 1)
+    return out_paths
+
+
 # ───────────────────────── helpers ─────────────────────────
 
 def _b64(data: bytes) -> str:

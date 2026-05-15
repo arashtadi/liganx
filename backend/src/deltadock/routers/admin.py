@@ -80,6 +80,10 @@ class AdminUserRow(BaseModel):
     jobs_total: int  # all-time count regardless of status, for visibility
     is_admin: bool
     is_pro: bool  # GNINA + Virtual Screening unlocked. Free tier = Vina only.
+    # Ensemble-docking access. UNGATED BY DEFAULT (True) — this is an admin
+    # kill-switch, not a billing tier. Admin flips it False to revoke a
+    # user's access to ensemble docking via PATCH /admin/users/{id}/ensemble.
+    ensemble_enabled: bool = True
 
 
 class QuotaUpdate(BaseModel):
@@ -91,6 +95,11 @@ class QuotaUpdate(BaseModel):
 class ProUpdate(BaseModel):
     """PATCH payload for flipping a user's Pro status."""
     is_pro: bool
+
+
+class EnsembleUpdate(BaseModel):
+    """PATCH payload for flipping a user's ensemble-docking access."""
+    ensemble_enabled: bool
 
 
 @router.get("/stats", response_model=AdminStats)
@@ -143,6 +152,10 @@ def list_users(
                 p.role,
                 COALESCE(p.job_quota, 10) AS job_quota,
                 COALESCE(p.is_pro, FALSE) AS is_pro,
+                -- Ensemble docking is ungated by default — COALESCE a NULL
+                -- (column predates migration 016, or admin never touched
+                -- it) to TRUE so a fresh user reads as having access.
+                COALESCE(p.ensemble_enabled, TRUE) AS ensemble_enabled,
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
@@ -190,6 +203,11 @@ def list_users(
                 jobs_total=int(r["jobs_total"]),
                 is_admin=(r["email"] or "").strip().lower() == admin_email_lc,
                 is_pro=bool(r.get("is_pro") or False),
+                # Ungated by default: a NULL/missing value reads as True.
+                ensemble_enabled=(
+                    True if r.get("ensemble_enabled") is None
+                    else bool(r.get("ensemble_enabled"))
+                ),
             ))
         except Exception as e:
             uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
@@ -297,6 +315,43 @@ def update_user_pro(
         ), {"uid": user_id})
     session.commit()
     log.info("Admin %s set user %s is_pro=%s", admin.email, user_id, payload.is_pro)
+
+    rows = list_users(admin, session)
+    for r in rows:
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+
+
+@router.patch("/users/{user_id}/ensemble", response_model=AdminUserRow)
+def update_user_ensemble(
+    payload: EnsembleUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Flip a user's ensemble-docking access (true = allowed, false =
+    blocked). UPSERTs the user_profile row so OAuth users who haven't
+    touched /me/profile yet can still be toggled — same defensive
+    pattern as update_user_quota / update_user_pro.
+
+    Important: ensemble docking is UNGATED BY DEFAULT. This endpoint is
+    an admin kill-switch, NOT a billing unlock — setting ensemble_enabled
+    FALSE is the only thing that blocks a user; the column DEFAULTs TRUE
+    and a missing row reads as allowed. No quota side-effects (unlike the
+    Pro toggle) — ensemble docking doesn't change a user's job budget."""
+    session.execute(text(
+        """
+        INSERT INTO public.user_profile (user_id, ensemble_enabled, marketing_opt_in)
+        VALUES (:uid, :enabled, FALSE)
+        ON CONFLICT (user_id) DO UPDATE SET ensemble_enabled = EXCLUDED.ensemble_enabled
+        """
+    ), {"uid": user_id, "enabled": payload.ensemble_enabled})
+    session.commit()
+    log.info(
+        "Admin %s set user %s ensemble_enabled=%s",
+        admin.email, user_id, payload.ensemble_enabled,
+    )
 
     rows = list_users(admin, session)
     for r in rows:

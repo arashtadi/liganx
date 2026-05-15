@@ -67,6 +67,13 @@ class ProfileOut(BaseModel):
     # behind a "Pro feature" contact-us modal; the backend also rejects
     # those submissions with 402.
     is_pro: bool = False
+    # Ensemble-docking access flag — UNGATED BY DEFAULT (True). This is
+    # NOT a billing tier like is_pro; it's an admin kill-switch. When an
+    # admin sets it False for a user, the Studio's ensemble toggle is
+    # disabled with a "contact us" hint and the backend rejects
+    # ensemble=true submissions from that user with 402. Defaults True
+    # here so a missing profile row (fresh OAuth user) keeps full access.
+    ensemble_enabled: bool = True
 
 
 class ProfileUpdate(BaseModel):
@@ -120,7 +127,11 @@ def get_my_profile(
         text(
             "SELECT full_name, organization, role, role_other,"
             " researchgate_url, marketing_opt_in, signup_source,"
-            " COALESCE(is_pro, FALSE) AS is_pro"
+            " COALESCE(is_pro, FALSE) AS is_pro,"
+            # Ensemble docking is ungated by default — COALESCE a NULL
+            # (column predates the migration, or admin never touched it)
+            # to TRUE so access is the default state.
+            " COALESCE(ensemble_enabled, TRUE) AS ensemble_enabled"
             " FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},

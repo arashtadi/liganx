@@ -315,6 +315,35 @@ def _ensure_is_pro_column() -> None:
     )
 
 
+def _ensure_job_ensemble_column() -> None:
+    """Ensemble docking — `ensemble` flag on the job table. When set, the
+    runner docks each ligand against an MD-relaxed receptor conformer
+    ensemble instead of a single rigid snapshot. Default FALSE so legacy
+    rows + non-opted-in jobs are unchanged.
+
+    MUST run before any Job query (the SQLModel Job class now declares the
+    `ensemble` field, so a SELECT against a pre-migration table would
+    error). lifespan() calls this right after init_db() and before
+    _reap_orphan_jobs(), so the ordering holds."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_015_ON_STARTUP",
+        sql_filename="015_job_ensemble.sql",
+        label="Migration 015 (job.ensemble flag)",
+    )
+
+
+def _ensure_ensemble_access_column() -> None:
+    """Ensemble docking — per-user `ensemble_enabled` access flag on
+    user_profile. Ungated by default (column DEFAULTs TRUE); admin can
+    revoke per-user via PATCH /admin/users/{id}/ensemble. Reusable for
+    the planned MM-GBSA / FEP-lite phase-2 feature."""
+    _apply_startup_migration(
+        env_flag="MIGRATE_016_ON_STARTUP",
+        sql_filename="016_ensemble_access.sql",
+        label="Migration 016 (ensemble access flag)",
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     import asyncio
@@ -324,6 +353,8 @@ async def lifespan(_app: FastAPI):
     _ensure_chat_history_table()
     _ensure_compound_job_id_nullable()
     _ensure_is_pro_column()
+    _ensure_job_ensemble_column()
+    _ensure_ensemble_access_column()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     try:

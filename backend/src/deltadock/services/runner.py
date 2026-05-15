@@ -1129,6 +1129,39 @@ def _run_real(session: Session, job: Job) -> None:
         from deltadock_pipeline.pod_dock import dock_batch_pod, BatchLigand
         log.info("Pod GPU batch dispatch enabled (one HTTP call per variant)")
 
+    # ── Ensemble docking ──────────────────────────────────────────────────
+    # When job.ensemble is set, each ligand is docked against several short-
+    # MD-relaxed receptor conformers (generated on the Pod's /relax_ensemble
+    # endpoint) instead of one rigid crystal snapshot — the best score+pose
+    # per cell is kept and the per-conformer spread is recorded. This is a
+    # FULL JOB ONLY opt-in (Quick Dock never sets job.ensemble).
+    #
+    # Requires the Pod: it's used for BOTH conformer generation AND docking
+    # each conformer's ligand batch. dock_batch_pod is the workhorse — it
+    # docks the whole ligand list against one receptor per HTTP call, so
+    # ensemble = one dock_batch_pod call per conformer. Note this does NOT
+    # require pod_batch_dock (that flag only controls whether the *standard*
+    # path batches); ensemble always uses the batch primitive.
+    #
+    # Fully additive + gated: when ensemble_on is False nothing below changes.
+    # If the user opted in but no Pod is configured we log and fall through
+    # to standard single-conformation docking (the API gate + frontend
+    # should prevent this, but defense-in-depth).
+    ensemble_on = pod_on and bool(getattr(job, "ensemble", False))
+    if ensemble_on:
+        from deltadock_pipeline.pod_dock import (
+            dock_batch_pod, BatchLigand, relax_ensemble_pod,
+        )
+        log.info("Ensemble docking ENABLED for job %s — MD-relaxed receptor "
+                 "conformer ensemble per variant", job.id)
+    elif getattr(job, "ensemble", False):
+        log.warning(
+            "Job %s requested ensemble docking but no Pod is configured "
+            "(POD_DOCK_URL unset) — ensemble needs the Pod for conformer "
+            "generation AND docking; falling back to single-conformation docking",
+            job.id,
+        )
+
     # RunPod serverless can run *alongside* Pod GPU as a burst-overflow path:
     # when the Pod is busy / 5xx / timing out, individual cells fall through
     # to RunPod instead of dropping straight to local CPU. When Pod is off,
@@ -1160,6 +1193,19 @@ def _run_real(session: Session, job: Job) -> None:
         and settings.gnina_enabled
         and pod_on  # GNINA hits the same Pod, so requires pod_dock_url
     )
+    if ensemble_on and gnina_requested:
+        # Ensemble docking v1 uses the QuickVina batch primitive
+        # (dock_batch_pod) — it does NOT route through the GNINA client.
+        # Rather than silently dock with the wrong scoring function, we let
+        # GNINA win: the ensemble branch below is gated on `not
+        # gnina_requested`, so a gnina+ensemble job runs as a normal GNINA
+        # job. The frontend already declines to send ensemble=true with
+        # engine=gnina; this is the defense-in-depth for direct API callers.
+        log.warning(
+            "Job %s requested BOTH engine=gnina and ensemble=true — ensemble "
+            "docking v1 is QuickVina-only; running as a standard GNINA job "
+            "(ensemble ignored for this job)", job.id,
+        )
     if gnina_requested:
         from deltadock_pipeline.gnina_dock import (
             dock_one_gnina, dock_batch_gnina, GninaDockConfig, GninaDockError, GninaBatchLigand,
@@ -1726,9 +1772,16 @@ def _run_real(session: Session, job: Job) -> None:
         # OR deferred) ProLIF/PoseBusters validation, persists the pose to
         # R2 (or local), and writes the DB row. Pure side effects on
         # `session`; caller commits.
-        def _finalize_cell(compound, variant, receptor, receptor_pdb, run_dir, result, engine_used):
+        def _finalize_cell(compound, variant, receptor, receptor_pdb, run_dir, result,
+                           engine_used, extra_segments=None):
             parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
             parts.append(f"engine={engine_used}")
+            # Optional caller-supplied extra segments (e.g. the ensemble path
+            # injects ensemble=N/M | ens_spread=X | ens_best=label here).
+            # Appended right after engine= so they sit alongside the other
+            # pipe-delimited telemetry parseExtra.ts already understands.
+            if extra_segments:
+                parts.extend(seg for seg in extra_segments if seg)
             try:
                 from deltadock_pipeline.rescore import smina_rescore
                 v_score = smina_rescore(receptor, result.pose_pdbqt, scoring="vinardo")
@@ -1864,6 +1917,264 @@ def _run_real(session: Session, job: Job) -> None:
                     "ligand_smiles": compound.smiles,
                     "current_extra": "|".join(parts) if parts else None,
                 })
+
+        # ── Ensemble dispatch path. Activates when the job opted into
+        # ensemble docking AND a Pod is configured. For each variant we
+        # generate an MD-relaxed receptor conformer ensemble on the Pod,
+        # dock the whole ligand batch against EACH conformer, and keep the
+        # best score+pose per cell (recording the per-conformer spread).
+        # Entirely separate from the standard paths below — when ensemble_on
+        # is False this whole block is skipped and behaviour is byte-for-byte
+        # unchanged. Fail-soft throughout: a failed ensemble generation, a
+        # failed conformer prep, or a failed per-conformer dock just shrinks
+        # the candidate set; the un-relaxed input is always a candidate, so
+        # the worst case is "ensemble silently behaved like standard mode".
+        #
+        # `not gnina_requested` — ensemble v1 uses the QuickVina batch
+        # primitive, so a gnina+ensemble job falls through to the standard
+        # GNINA path instead (see the warning logged at gnina_requested).
+        if ensemble_on and not gnina_requested:
+            # Mark pod activity so the cost-control watchdog doesn't auto-stop
+            # mid-job. See services/pod_activity.py.
+            from .pod_activity import bump_pod_activity  # local: avoid circular
+            bump_pod_activity()
+            # Pose-drift threshold + offset helper — used to prefer in-pocket
+            # conformer poses over off-pocket ones with artificially good scores.
+            from .pocket_filter import (
+                _POSE_DRIFT_THRESHOLD_A, compute_pose_offset_a,
+            )
+            log.info(
+                "Using ENSEMBLE dispatch: %d compound(s) x %d variant(s)",
+                len(compounds), len(variants),
+            )
+
+            def _dock_variant_ensemble(variant, receptor, receptor_pdb, batch_ligs):
+                """Dock a ligand batch against an MD-relaxed receptor conformer
+                ensemble for ONE variant.
+
+                Per compound: keep the best pose+score across conformers
+                (preferring in-pocket poses, then most-negative score) and
+                record the score spread across conformers. Adds DockingResult
+                rows via _finalize_cell (or a docking_failed row when every
+                conformer failed for a ligand). Caller commits."""
+                set_stage(session, job.id, f"ensemble_relax_{variant}")
+                ens_dir = work / f"ensemble_{variant}"
+                ens_dir.mkdir(exist_ok=True)
+
+                # Step 1: generate the receptor conformer ensemble on the Pod.
+                # relax_ensemble_pod NEVER raises — on any failure it returns
+                # just [receptor_pdb], so this variant transparently degrades
+                # to standard single-conformation docking.
+                conformer_pdbs = relax_ensemble_pod(
+                    receptor_pdb=receptor_pdb,
+                    box_center=(box.center_x, box.center_y, box.center_z),
+                    out_dir=ens_dir,
+                    cfg=pod_cfg,
+                )
+
+                # Step 2: prep each conformer PDB into a docking-ready PDBQT.
+                # conformer_pdbs[0] is the original receptor_pdb whose PDBQT
+                # (`receptor`) is already built — reuse it. Only conformers
+                # 1..N need prepare_receptor; a conformer that fails prep is
+                # dropped (we still have the others + the un-relaxed input).
+                # conformers: list of (label, receptor_pdbqt, receptor_clean_pdb)
+                conformers = [("input", receptor, receptor_pdb)]
+                for i, conf_pdb in enumerate(conformer_pdbs[1:], start=1):
+                    try:
+                        conf_pdbqt = ens_dir / f"{conf_pdb.stem}.pdbqt"
+                        prepare_receptor(conf_pdb, conf_pdbqt, chain=chain)
+                        conformers.append((f"conf{i}", conf_pdbqt, conf_pdb))
+                    except Exception as e:
+                        log.warning(
+                            "ensemble: conformer %d prep failed for %s: %s — dropping",
+                            i, variant, e,
+                        )
+                conf_by_label = {lbl: (pq, cp) for (lbl, pq, cp) in conformers}
+                n_conf = len(conformers)
+                log.info("ensemble: variant %s — docking against %d receptor conformer(s)",
+                         variant, n_conf)
+
+                # Step 3: dock the whole ligand batch against EACH conformer —
+                # one dock_batch_pod call per conformer (the GPU loads that
+                # conformer once and docks every ligand). A per-conformer
+                # failure is non-fatal: we just lose that conformer's poses.
+                # per_compound[cid] = [(conf_label, BatchDockResult, run_dir), ...]
+                per_compound: dict[int, list] = {}
+                for conf_idx, (conf_label, conf_pdbqt, _cp) in enumerate(conformers, start=1):
+                    if is_cancelled(session, job.id):
+                        raise JobCancelled()
+                    set_stage(session, job.id,
+                              f"ensemble_dock_{variant}_{conf_idx}_of_{n_conf}")
+                    conf_run_dir = ens_dir / f"dock_{conf_label}"
+                    conf_run_dir.mkdir(exist_ok=True)
+                    try:
+                        batch_results = dock_batch_pod(
+                            receptor_pdbqt=conf_pdbqt,
+                            ligands=batch_ligs,
+                            box=box,
+                            work_dir=conf_run_dir,
+                            cfg=pod_cfg,
+                            exhaustiveness=exhaustiveness,
+                            num_modes=9,
+                        )
+                    except PodDockError as pde:
+                        log.warning(
+                            "ensemble: batch dock failed for %s conformer %s: %s "
+                            "— skipping this conformer", variant, conf_label, pde,
+                        )
+                        continue
+                    for br in batch_results:
+                        try:
+                            cid = int(br.id)
+                        except (TypeError, ValueError):
+                            continue
+                        per_compound.setdefault(cid, []).append(
+                            (conf_label, br, conf_run_dir)
+                        )
+
+                # Step 4: per compound, pick the winning conformer. Sort key
+                # prefers in-pocket poses, then most-negative score — so an
+                # off-pocket pose with an artificially good score can't beat
+                # a clean in-pocket one. The spread (worst − best across all
+                # successful conformers) is recorded as a transparency signal:
+                # how much receptor flexibility actually moved this score.
+                box_center = (box.center_x, box.center_y, box.center_z)
+                for c in compounds:
+                    if c.id not in prepped:
+                        continue
+                    attempts = per_compound.get(c.id, [])
+                    ok = [(lbl, br, rd) for (lbl, br, rd) in attempts
+                          if br.result is not None and not br.error]
+                    if not ok:
+                        errs = "; ".join(
+                            br.error for (_, br, _) in attempts if br.error
+                        ) or "no conformer produced a pose"
+                        log.warning(
+                            "ensemble: c%s x %s — all %d conformer dock(s) failed: %s",
+                            c.id, variant, len(attempts), errs,
+                        )
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=c.id, variant=variant,
+                            best_score=0.0,
+                            extra=f"docking_failed: ensemble — all conformers failed "
+                                  f"({errs[:120]})",
+                        ))
+                        continue
+
+                    scored = []
+                    for (lbl, br, rd) in ok:
+                        try:
+                            offset = compute_pose_offset_a(
+                                pose_pdbqt=br.result.pose_pdbqt, box_center=box_center,
+                            )
+                        except Exception:
+                            offset = 0.0  # offset unknown — don't penalise
+                        scored.append((lbl, br, rd, offset, br.result.best_score))
+                    # in-pocket first (False sorts before True), then most-negative score
+                    scored.sort(key=lambda t: (t[3] > _POSE_DRIFT_THRESHOLD_A, t[4]))
+                    best_label, best_br, best_run_dir, best_offset, best_score = scored[0]
+
+                    all_scores = [t[4] for t in scored]
+                    spread = max(all_scores) - min(all_scores)
+                    n_ok = len(ok)
+                    in_pocket = best_offset <= _POSE_DRIFT_THRESHOLD_A
+                    ens_segments = [
+                        f"ensemble={n_ok}/{n_conf}",
+                        f"ens_spread={spread:.2f}",
+                        f"ens_best={best_label}",
+                    ]
+                    engine_label = (
+                        "pod_gpu_ensemble" if in_pocket
+                        else "pod_gpu_ensemble_off_pocket"
+                    )
+                    win_pdbqt, win_pdb = conf_by_label.get(
+                        best_label, (receptor, receptor_pdb)
+                    )
+                    log.info(
+                        "ensemble: c%s x %s — best=%s score=%.2f spread=%.2f (%d/%d ok)",
+                        c.id, variant, best_label, best_score, spread, n_ok, n_conf,
+                    )
+                    try:
+                        _finalize_cell(
+                            c, variant, win_pdbqt, win_pdb, best_run_dir,
+                            best_br.result, engine_label, extra_segments=ens_segments,
+                        )
+                    except Exception as e:
+                        log.warning("ensemble: finalize failed for c%s x %s: %s",
+                                    c.id, variant, e)
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=c.id, variant=variant,
+                            best_score=0.0,
+                            extra=f"docking_failed: ensemble finalize {str(e)[:120]}",
+                        ))
+
+            # Phase 1: prep every ligand once (identical to the batched path).
+            prepped: dict[int, Path] = {}
+            for compound in compounds:
+                if is_cancelled(session, job.id):
+                    log.info("Job %s cancelled during ligand prep", job.id)
+                    raise JobCancelled()
+                try:
+                    lig_pdbqt = work / f"compound_{compound.id}.pdbqt"
+                    prepare_ligand(compound.smiles, lig_pdbqt,
+                                   name=compound.name or f"c{compound.id}")
+                    prepped[compound.id] = lig_pdbqt
+                except Exception as e:
+                    log.warning("Ligand prep failed for compound %s: %s", compound.id, e)
+                    for variant in variants:
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=compound.id, variant=variant,
+                            best_score=0.0, extra=f"ligand_prep_failed: {e}",
+                        ))
+                    _commit_retry(session)
+
+            # Phase 2: per-variant ensemble dispatch.
+            for variant in variants:
+                if is_cancelled(session, job.id):
+                    log.info("Job %s cancelled — skipping remaining variants", job.id)
+                    raise JobCancelled()
+                receptor = receptor_for_variant.get(variant, wt_receptor)
+                receptor_pdb = receptor_pdb_for_variant.get(variant, cleaned_pdb)
+                # Sentinel: receptor=None ⇒ upstream caught a corrupt precache.
+                if receptor is None:
+                    fail_reason = variant_extra.get(variant, "mutant_verify_failed")
+                    log.warning("Variant %s receptor unavailable: %s", variant, fail_reason)
+                    for c in compounds:
+                        if c.id in prepped:
+                            session.add(DockingResult(
+                                job_id=job.id, compound_id=c.id, variant=variant,
+                                best_score=0.0, extra=fail_reason,
+                            ))
+                    _commit_retry(session)
+                    continue
+
+                batch_ligs = [
+                    BatchLigand(id=str(c.id), pdbqt_path=prepped[c.id])
+                    for c in compounds if c.id in prepped
+                ]
+                if not batch_ligs:
+                    continue
+                _dock_variant_ensemble(variant, receptor, receptor_pdb, batch_ligs)
+                _commit_retry(session)
+
+            # Mark COMPLETED before the validation drain so the user sees the
+            # matrix as soon as docking finishes — same ordering as the
+            # standard batched path.
+            if pending_validations:
+                session.refresh(job)
+                if job.status != JobStatus.CANCELLED:
+                    job.status = JobStatus.COMPLETED
+                    job.updated_at = datetime.utcnow()
+                    session.add(job)
+                    _commit_retry(session)
+                    log.info("Job %s ensemble docking phase complete; "
+                             "running validation in background", job.id)
+            set_stage(session, job.id,
+                      "validating_poses" if pending_validations else None)
+            _drain_pending_validations(pending_validations, session)
+            _drain_pending_interface_extras(pending_interface_extras, session)
+            set_stage(session, job.id, None)
+            return  # ensemble path done; skip the standard dispatch below
 
         # ── Batched-per-variant dispatch path. Activates when pod_batch_on
         # AND the matrix has more than one cell. Inverts the loop nesting:

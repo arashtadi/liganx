@@ -700,6 +700,48 @@ function ScoreCell({
           <span className="opacity-60">v⁺</span> {ext.vinardo.toFixed(2)}
         </div>
       )}
+      {/* Ensemble docking chip — present only on cells from a job that
+          opted into ensemble docking. The score above IS the best across
+          the conformer ensemble; this chip says how many conformers it
+          was picked from and how much the score moved across them. When
+          total === 1 the Pod's relaxation produced no extra conformers
+          (fail-soft) — so the cell is effectively a standard single-
+          conformation dock, and the chip says so honestly. */}
+      {ext.ensemble && (
+        <div
+          title={
+            ext.ensemble.total > 1
+              ? `Ensemble docking: this ligand was docked against ${ext.ensemble.total} short-MD-relaxed receptor conformers${
+                  ext.ensemble.docked < ext.ensemble.total
+                    ? ` (${ext.ensemble.docked} produced a usable pose)`
+                    : ""
+                }, and the best-scoring one is the score shown above.${
+                  ext.ensemble.spread != null
+                    ? ` Score spread across conformers: ${ext.ensemble.spread.toFixed(2)} kcal/mol — how much receptor flexibility moved this score (≈0 means the pocket was effectively rigid for this ligand).`
+                    : ""
+                }${
+                  ext.ensemble.best
+                    ? ` Winning conformer: ${
+                        ext.ensemble.best === "input"
+                          ? "the un-relaxed crystal snapshot — relaxation didn't help this ligand."
+                          : `MD-relaxed conformer "${ext.ensemble.best}" — the pocket had to breathe to fit this ligand.`
+                      }`
+                    : ""
+                }`
+              : `Ensemble docking was requested, but the Pod's receptor relaxation produced no extra conformers for this run — this cell is a standard single-conformation dock (fail-soft fallback).`
+          }
+          className="text-[10px] font-medium text-sky-600 dark:text-sky-400 mt-0.5"
+        >
+          <span className="opacity-60">⧉</span>{" "}
+          {ext.ensemble.total > 1
+            ? `best of ${ext.ensemble.total}${
+                ext.ensemble.spread != null && ext.ensemble.spread > 0
+                  ? ` ±${ext.ensemble.spread.toFixed(2)}`
+                  : ""
+              }`
+            : "ensemble 1×"}
+        </div>
+      )}
       {/* "Mutation outside pocket" badge — shown when the mutated residue is
           farther from the docking box center than Vina can see. Without this
           tag, the user would interpret an identical WT/mutant score as "the

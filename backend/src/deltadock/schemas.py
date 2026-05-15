@@ -47,6 +47,17 @@ class JobCreate(BaseModel):
     # Whether to also dock against wild-type. Default True (most users want a
     # baseline for Δ); set False to skip WT and just dock the listed mutants.
     include_wt: bool = True
+    # Opt-in ensemble docking. When True, the runner docks each ligand
+    # against several short-MD-relaxed receptor conformers (generated on the
+    # Pod's /relax_ensemble endpoint) instead of one rigid crystal snapshot,
+    # and keeps the best score + pose per cell. This is a FULL JOB ONLY
+    # opt-in — the Quick Dock path never sets it. Requires a Pod (used for
+    # both conformer generation AND docking); the runner falls back to
+    # standard single-conformation docking if no Pod is configured or if
+    # ensemble generation fails. Default False = exactly today's behaviour.
+    # Access is ungated by default but admin-revocable per-user via
+    # user_profile.ensemble_enabled — the gate is enforced in routers/jobs.py.
+    ensemble: bool = False
     # Docking engine choice. Three options:
     #   "quickvina2_gpu" — default; QuickVina2-GPU on the Pod, physics-empirical.
     #   "gnina"          — Vina-fork with CNN pose rescoring (Koes lab).
@@ -142,6 +153,11 @@ class JobOut(BaseModel):
     # legacy behaviour for jobs created before these fields existed.
     exhaustiveness: int = 8
     include_wt: bool = True
+    # Echo whether this job ran with ensemble docking (each ligand docked
+    # against an MD-relaxed receptor conformer ensemble, best kept). False
+    # on legacy rows and jobs that didn't opt in. The matrix UI uses this
+    # to label the run and to interpret the ens=… extra segments.
+    ensemble: bool = False
     # Echo the engine the job was submitted with so the matrix UI can label
     # which engine produced these scores. None on legacy rows = quickvina2_gpu.
     engine: str | None = "quickvina2_gpu"

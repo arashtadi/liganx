@@ -70,6 +70,7 @@ def _to_out(job: Job) -> JobOut:
         updated_at=job.updated_at,
         exhaustiveness=job.exhaustiveness,
         include_wt=job.include_wt,
+        ensemble=bool(getattr(job, "ensemble", False)),
         engine=job.engine,
         user_id=job.user_id,
         title=job.title,
@@ -406,6 +407,28 @@ def create_job(
                 },
             )
 
+    # Ensemble-docking access gate. Ensemble docking is UNGATED BY DEFAULT
+    # — this rejects ONLY users an admin has explicitly switched off
+    # (user_profile.ensemble_enabled = FALSE). It is NOT a Pro paywall;
+    # 402 here means "an admin disabled this for your account", not "pay
+    # to unlock". The Studio also disables the toggle for these users, so
+    # this is defense-in-depth for a direct API call.
+    if payload.ensemble:
+        from ..auth import ensemble_access_allowed
+        if not ensemble_access_allowed(user.id, session):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": (
+                        "Ensemble docking has been disabled for your account "
+                        "by an administrator. Contact us if you believe this "
+                        "is a mistake."
+                    ),
+                    "feature": "ensemble",
+                    "contact_url": "https://liganx.com/contact",
+                },
+            )
+
     if payload.engine == "boltz2" and not cfg.boltz2_enabled:
         raise HTTPException(
             status_code=503,
@@ -460,6 +483,7 @@ def create_job(
         mutations=",".join(payload.mutations),
         exhaustiveness=payload.exhaustiveness,
         include_wt=payload.include_wt,
+        ensemble=payload.ensemble,
         engine=payload.engine,
         status=JobStatus.PENDING,
         user_id=user.id,
@@ -1000,6 +1024,7 @@ def _to_summary_out(job: Job) -> JobOut:
         updated_at=job.updated_at,
         exhaustiveness=job.exhaustiveness,
         include_wt=job.include_wt,
+        ensemble=bool(getattr(job, "ensemble", False)),
         engine=job.engine,
         user_id=job.user_id,
         title=job.title,

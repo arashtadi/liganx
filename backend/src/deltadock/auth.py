@@ -320,6 +320,52 @@ def is_pro_user(user_id: Optional[str], session) -> bool:
         return False
 
 
+def ensemble_access_allowed(user_id: Optional[str], session) -> bool:
+    """Return True if the user may submit ensemble-docking Full Jobs.
+
+    Ensemble docking is UNGATED BY DEFAULT — this is an admin kill-switch,
+    NOT a billing tier like is_pro. The result is True unless an admin has
+    explicitly set user_profile.ensemble_enabled = FALSE for this user. A
+    missing profile row, a NULL column, or the column not existing yet
+    (migration 016 hasn't run) all resolve to True = access. The
+    configured admin email is always allowed.
+
+    Designed for routers gating the ensemble feature without coupling to
+    fastapi.Depends — call from inside the handler after you already have
+    a Session. Same call shape as is_pro_user."""
+    if not user_id:
+        # Job submission requires auth, so this shouldn't fire — but
+        # default-allow keeps parity with "ungated by default".
+        return True
+    # Admin email is always allowed (mirrors is_pro_user).
+    try:
+        row = session.execute(
+            text("SELECT email FROM auth.users WHERE id = :uid"),
+            {"uid": user_id},
+        ).first()
+        if row and (row[0] or "").strip().lower() == ADMIN_EMAIL:
+            return True
+    except Exception:
+        # Any auth.users read failure → fall through to the profile check.
+        pass
+    try:
+        row = session.execute(
+            text(
+                "SELECT COALESCE(ensemble_enabled, TRUE) "
+                "FROM public.user_profile WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        ).first()
+        # No profile row → ungated (True). Row present → honour the
+        # COALESCE'd value (only an explicit FALSE blocks).
+        if row is None:
+            return True
+        return bool(row[0])
+    except Exception:
+        # Column doesn't exist yet (migration 016 pending) → ungated.
+        return True
+
+
 def admin_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
     """Auth + admin email gate. Apply to /admin/* endpoints. Returns 403
     (not 401) for authenticated-but-not-admin users so we can distinguish

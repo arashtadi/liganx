@@ -890,6 +890,7 @@ function Header({
           <Stat icon={<Target />} label="Compounds" value={job.compounds.length} />
           <Stat icon={<Beaker />} label="Variants" value={job.mutations.length + 1} hint={["WT", ...job.mutations].join(", ")} />
           <EnginePill engine={job.engine} />
+          {job.ensemble && <EnsemblePill />}
           {/* Click-to-copy job ID pill. Replaces the previous Stat-only
               "Job #N" label with an interactive version so the user can
               copy the ID straight into a support message. Same component
@@ -1106,6 +1107,24 @@ export function EnginePill({ engine }: { engine?: string | null }) {
     >
       <span className="text-current/70 mr-1">Engine:</span>
       <span className="font-semibold">{label}</span>
+    </span>
+  );
+}
+
+/** Ensemble-docking badge: shown only when the job opted into ensemble
+ *  docking (job.ensemble === true). Tells the user at a glance that every
+ *  score on this page is the BEST across an MD-relaxed receptor conformer
+ *  ensemble, not a single rigid-snapshot dock — so the matrix's ⧉ "best of
+ *  N ± spread" chips and the PoseDetail ensemble panel have context. Sky
+ *  tone to match the Studio toggle that turns the feature on. */
+export function EnsemblePill() {
+  return (
+    <span
+      className="badge ring-1 ring-inset bg-sky-100 text-sky-800 ring-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:ring-sky-700/40"
+      title="Ensemble docking: each ligand was docked against several short-MD-relaxed receptor conformers and the best score + pose was kept. Removes the artefact of docking against one arbitrary rigid crystal snapshot. Per-cell conformer counts and score spread show up as ⧉ chips in the matrix."
+    >
+      <span aria-hidden className="mr-1">⧉</span>
+      <span className="font-semibold">Ensemble</span>
     </span>
   );
 }

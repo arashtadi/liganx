@@ -222,6 +222,74 @@ export default function PoseDetail({ pick, onClose }: Props) {
           </div>
         )}
 
+        {/* Ensemble docking panel — present only on cells from a job that
+            opted into ensemble docking. The Vina score in the HeroBanner is
+            already the BEST across the conformer ensemble; this panel
+            explains the ensemble behind it: how many MD-relaxed receptor
+            conformers were tried, how much the score moved across them
+            (spread), and which conformer produced the winning pose. */}
+        {ext.ensemble && (
+          <div className="rounded-lg border border-sky-200 dark:border-sky-800/40 bg-sky-50/60 dark:bg-sky-900/15 p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sky-600 dark:text-sky-400 text-base leading-none" aria-hidden>⧉</span>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-sky-700 dark:text-sky-300">
+                Ensemble docking
+              </div>
+            </div>
+            {ext.ensemble.total > 1 ? (
+              <>
+                <div className="flex items-center gap-6 mb-2">
+                  <div>
+                    <div className="text-lg font-semibold tabular-nums text-sky-800 dark:text-sky-200">
+                      {ext.ensemble.total}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Receptor conformers
+                    </div>
+                  </div>
+                  {ext.ensemble.spread != null && (
+                    <div>
+                      <div className="text-lg font-semibold tabular-nums text-sky-800 dark:text-sky-200">
+                        ±{ext.ensemble.spread.toFixed(2)}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Score spread (kcal/mol)
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  This ligand was docked against {ext.ensemble.total} short-MD-relaxed
+                  receptor conformers
+                  {ext.ensemble.docked < ext.ensemble.total
+                    ? ` (${ext.ensemble.docked} produced a usable pose)`
+                    : ""}
+                  , and the strongest-scoring result is what the matrix and the
+                  score banner show.{" "}
+                  {ext.ensemble.spread != null &&
+                    (ext.ensemble.spread < 0.3
+                      ? "The score barely moved across conformers — the pocket was effectively rigid for this ligand, so a single-snapshot dock would have given essentially the same answer."
+                      : `Receptor flexibility moved the score by ${ext.ensemble.spread.toFixed(
+                          2,
+                        )} kcal/mol across conformers — single-conformation docking against one arbitrary crystal snapshot could have landed anywhere in that range.`)}
+                  {ext.ensemble.best &&
+                    (ext.ensemble.best === "input"
+                      ? " The winning pose came from the un-relaxed crystal snapshot — relaxation didn't change the answer for this ligand."
+                      : ` The winning pose came from MD-relaxed conformer "${ext.ensemble.best}" — the pocket had to breathe to accommodate this ligand.`)}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                Ensemble docking was requested for this job, but the receptor
+                relaxation step produced no extra conformers for this run — so
+                this cell is a standard single-conformation dock. The ensemble
+                pipeline is fail-soft: it never blocks a job, it just falls
+                back to the rigid crystal snapshot.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Vina / Δ vs WT / Vinardo / Pose strain metrics all moved to the
             HeroBanner sidebar at the top of the page (single source of
             truth). The drill-down here picks up where the banner stops:

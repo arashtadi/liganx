@@ -207,6 +207,13 @@ export interface Job {
   /** Whether WT was docked alongside the requested mutants. When false the
    *  matrix has no REF column and no Δ values. */
   include_wt: boolean;
+  /** Whether this job ran with ensemble docking — each ligand docked
+   *  against several short-MD-relaxed receptor conformers (best score+pose
+   *  kept per cell) instead of one rigid crystal snapshot. False on legacy
+   *  rows and jobs that didn't opt in. When true, each result's `extra`
+   *  carries ensemble=N/M | ens_spread=X | ens_best=label segments — see
+   *  lib/parseExtra. */
+  ensemble?: boolean;
   /** Owner — UUID of auth.users(id). Null for legacy/anonymous jobs. The
    *  frontend uses this to decide whether to render the Cancel/Edit Title
    *  buttons (only the owner sees them). */
@@ -248,6 +255,14 @@ export interface JobCreatePayload {
   exhaustiveness?: number;
   /** Optional. Backend defaults to true. Set false to skip the WT row. */
   include_wt?: boolean;
+  /** Optional. Backend defaults to false. When true, the runner docks each
+   *  ligand against an MD-relaxed receptor conformer ensemble instead of a
+   *  single rigid snapshot and keeps the best score+pose per cell. Full Job
+   *  only — never set by Quick Dock. Access is ungated by default but the
+   *  backend can revoke it per-user (402) via user_profile.ensemble_enabled,
+   *  and silently falls back to single-conformation docking if no Pod is
+   *  configured. */
+  ensemble?: boolean;
   /** Optional. Docking engine. Three options:
    *  "quickvina2_gpu" (default): QuickVina2-GPU on the Pod, Vina-family physics-empirical.
    *  "gnina": Vina-fork with CNN pose rescoring. Backend silently falls back
@@ -479,6 +494,12 @@ export interface UserProfile {
    *  behind a "Pro feature, contact us" modal in the Studio. Admin
    *  toggles per-user from /admin. Defaults to false. */
   is_pro?: boolean;
+  /** Ensemble-docking access — UNGATED BY DEFAULT (true). This is an
+   *  admin kill-switch, not a billing tier: when an admin sets it false,
+   *  the Studio's ensemble toggle is disabled with a "contact us" hint
+   *  and the backend rejects ensemble=true submissions with 402.
+   *  Defaults true so a fresh user / missing profile row keeps access. */
+  ensemble_enabled?: boolean;
 }
 
 /** PATCH-style payload for PUT /me/profile. All fields optional —
@@ -550,6 +571,10 @@ export interface AdminUserRow {
   /** v1.24 — Pro tier unlocks GNINA + Virtual Screening. Toggle from
    *  the admin panel via PATCH /admin/users/:id/pro. */
   is_pro: boolean;
+  /** Ensemble-docking access — ungated by default (true). Admin
+   *  kill-switch, not a billing tier. Toggle from the admin panel via
+   *  PATCH /admin/users/:id/ensemble. */
+  ensemble_enabled: boolean;
 }
 
 export const api = {
@@ -738,6 +763,14 @@ export const api = {
     request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/pro`, {
       method: "PATCH",
       body: JSON.stringify({ is_pro: isPro }),
+    }),
+  /** Admin-only: flip a user's ensemble-docking access. Ungated by
+   *  default — setting this false is a kill-switch that blocks the
+   *  user from submitting ensemble Full Jobs. */
+  adminSetEnsemble: (userId: string, ensembleEnabled: boolean) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/ensemble`, {
+      method: "PATCH",
+      body: JSON.stringify({ ensemble_enabled: ensembleEnabled }),
     }),
   /** Admin-only: live status of the controlled RunPod GPU pod plus the
    *  watchdog's last-activity timer. Drives the Pod Control card. */
