@@ -78,6 +78,13 @@ export default function LiganxAIPanel({ jobKey }: Props) {
   // user's in-memory transcript is the source of truth once loaded),
   // and we don't want to clobber a fresh question that's mid-flight.
   const [hydrated, setHydrated] = useState(false);
+  // (AI4) Context-aware quick-question suggestions, fetched once on
+  // first open. The backend renders 3 questions tailored to the job's
+  // target + mutation (KRAS → Adagrasib comparison, EGFR T790M →
+  // gatekeeper context, etc.). Falls back to the static QUICK_QUESTIONS
+  // array below on fetch failure — better to show generic-but-useful
+  // openers than nothing.
+  const [contextQuestions, setContextQuestions] = useState<string[] | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -89,7 +96,30 @@ export default function LiganxAIPanel({ jobKey }: Props) {
   useEffect(() => {
     setMessages([]);
     setHydrated(false);
+    setContextQuestions(null);   // (AI4) re-fetch suggestions for new job
   }, [jobKey]);
+
+  // (AI4) Fetch context-aware quick-questions on first open. Same lazy
+  // pattern as chat hydration — we don't pay this latency unless the
+  // panel is actually used. Best-effort; on failure we fall through to
+  // the static QUICK_QUESTIONS below.
+  useEffect(() => {
+    if (!open || contextQuestions !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await api.getJobAiSuggestions(jobKey);
+        if (cancelled) return;
+        if (resp.suggestions && resp.suggestions.length > 0) {
+          setContextQuestions(resp.suggestions);
+        }
+      } catch {
+        // best-effort — leave contextQuestions null, the render falls
+        // back to the static set.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, contextQuestions, jobKey]);
 
   // Hydrate from saved chat history the first time the panel opens
   // for this jobKey. We do it on open (not on mount) so the cost is
@@ -306,7 +336,7 @@ export default function LiganxAIPanel({ jobKey }: Props) {
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-1">
                   Try asking
                 </div>
-                {QUICK_QUESTIONS.map((q) => (
+                {(contextQuestions ?? QUICK_QUESTIONS).map((q) => (
                   <button
                     key={q}
                     type="button"

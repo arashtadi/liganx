@@ -881,6 +881,18 @@ export const api = {
       messages: { role: "user" | "assistant"; text: string; model_id: string | null; ts: string }[];
     }>(`/jobs/${key}/ai-chat`),
 
+  /** Context-aware quick-question suggestions for the LiganxAI chat panel.
+   *  Returns 3 questions tailored to the job's target + mutation — KRAS
+   *  gets Adagrasib comparisons, EGFR T790M gets gatekeeper-mutation
+   *  context, etc. Static lookup server-side; no auth required. */
+  getJobAiSuggestions: (key: string | number) =>
+    request<{
+      target_id: string;
+      target_name: string;
+      mutations: string[];
+      suggestions: string[];
+    }>(`/jobs/${key}/ai-suggestions`),
+
   /** Fetch a mutation-aware virtual screening run by its share_id (preferred,
    *  public) or legacy integer id. Results come pre-sorted server-side by
    *  selectivity_index DESC NULLS LAST, so the array order IS the ranked hit

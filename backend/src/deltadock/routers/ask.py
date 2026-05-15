@@ -235,6 +235,38 @@ def get_ai_chat_history(
     return ChatHistoryResponse(messages=messages)
 
 
+class AiSuggestionsResponse(BaseModel):
+    target_id: str
+    target_name: str
+    mutations: list[str]
+    suggestions: list[str]
+
+
+@router.get("/{job_key}/ai-suggestions", response_model=AiSuggestionsResponse)
+def get_ai_suggestions(
+    job_key: str,
+    session: Session = Depends(get_session),
+) -> AiSuggestionsResponse:
+    """Three quick-question suggestions tailored to this job's target +
+    mutation. Static lookup table — no LLM call, no auth required, free.
+
+    The frontend renders these as one-click "ask this" buttons above the
+    chat input on first open. Replaces the old hard-coded trio so a KRAS
+    job no longer suggests an EGFR-specific question and vice-versa.
+    """
+    from ..services.ai_suggestions import suggestions_for_job
+    job = _resolve_job_for_ask(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    s = suggestions_for_job(pdb_id=job.pdb_id, mutations=list(job.mutations or []))
+    return AiSuggestionsResponse(
+        target_id=s.target_id,
+        target_name=s.target_name,
+        mutations=s.mutations,
+        suggestions=s.suggestions,
+    )
+
+
 @router.post(
     "/{job_key}/ask",
     response_model=AskResponse,
