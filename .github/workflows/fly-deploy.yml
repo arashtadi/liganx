@@ -57,13 +57,53 @@ jobs:
         # comes back and biases every Δ. Stdlib-only, no network.
         run: python backend/scripts/verify_prep_symmetry.py
 
+  backend-tests:
+    name: Backend tests + migration-wiring gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Match the prod runtime (3.12 in the Dockerfile).
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Check migration wiring
+        # Stdlib-only, no pip install needed — catches the bug class
+        # behind the 2026-05-15 outage: a migration .sql file added to
+        # backend/migrations/ but never wired into main.py's startup
+        # runner. Run first so a wiring mistake fails in seconds rather
+        # than after the (slower) dependency install below.
+        run: python backend/scripts/check_schema_migrations.py
+      - name: Install backend + dev deps
+        # The Batch-5 unit tests import deltadock.main, which pulls in
+        # the full router tree (rdkit, biopython, ...), so the whole
+        # dependency set has to be installed even though the tests
+        # themselves are pure-function.
+        run: pip install -e "backend[dev]"
+      - name: Run pytest (DB-free gate)
+        # `-m "not requires_db"` skips the tests that boot the app
+        # lifespan (test_health.py) — those need a live Postgres and are
+        # left for a future DB-service job. The remaining tests are
+        # deterministic pure-function checks (the extra-format parser
+        # parity + the $$-aware migration SQL splitter). The fake
+        # DATABASE_URL satisfies config validation without any real
+        # connection — the SQLAlchemy engine is created lazily and is
+        # never dialed by these tests.
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/ci_unused
+          APP_SECRET: ci-test-secret
+        run: pytest -m "not requires_db" -q
+
   deploy:
     name: Deploy backend to Fly
     runs-on: ubuntu-latest
-    # Blocking dependency: only deploy after the catalog passes. If
-    # verify-catalog fails, the deploy job is skipped entirely — broken
-    # science never reaches production.
-    needs: verify-catalog
+    # Blocking dependencies: only deploy after BOTH the scientific-
+    # correctness catalog check AND the backend test / migration-wiring
+    # gate pass. If either fails, the deploy job is skipped entirely —
+    # broken science or a failing test never reaches production.
+    needs: [verify-catalog, backend-tests]
     concurrency:
       # Cancel any in-flight deploy so a fresh push always wins.
       group: fly-deploy

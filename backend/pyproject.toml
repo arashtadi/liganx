@@ -65,3 +65,12 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  # A test that boots the app via `TestClient(app)` — which runs the
+  # lifespan: startup migrations + the orphan reaper — and therefore
+  # needs a live Postgres. The fast CI gate runs `-m "not requires_db"`
+  # so it stays DB-free and deterministic. To run these, point
+  # DATABASE_URL at a throwaway Postgres (e.g. a GitHub Actions
+  # `services: postgres` container).
+  "requires_db: needs a live Postgres connection (boots the app lifespan)",
+]

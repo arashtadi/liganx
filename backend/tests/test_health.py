@@ -1,8 +1,20 @@
-"""Smoke tests — confirms the app boots and basic routes respond."""
+"""Smoke tests — confirms the app boots and basic routes respond.
 
+Both tests here use `with TestClient(app)`, which runs the app lifespan
+(startup migrations + orphan reaper) and therefore needs a live Postgres.
+They are marked `requires_db` and excluded from the fast CI gate
+(`pytest -m "not requires_db"`) — running them without a real DB would
+either fail or, worse, connect to whatever DATABASE_URL is in the
+environment. Run them against a throwaway Postgres service container.
+"""
+
+import pytest
 from fastapi.testclient import TestClient
 
 from deltadock.main import app
+
+# Applies to every test in this module — see the module docstring.
+pytestmark = pytest.mark.requires_db
 
 
 def test_health_returns_ok():
