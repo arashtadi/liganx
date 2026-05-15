@@ -100,6 +100,14 @@ export default function ProductionViewer3D({
   // the 3D view reflects 2D edits without requiring a re-dock.
   const [editedConformerSdf, setEditedConformerSdf] = useState<string | null>(null);
 
+  // (bugfix) Which SMILES the cached `conformerSdf` was produced for.
+  // Without this, the conformer-fetch effect's "we already have a cached
+  // SDF, no need to fetch" short-circuit was firing across SMILES changes
+  // — so when the user clicked a different staged compound (pre-dock,
+  // viewMode=live), the 3D viewer kept rendering the previous compound's
+  // conformer. Capturing the source SMILES makes the cache check correct.
+  const conformerSdfForRef = useRef<string | null>(null);
+
   // Visual controls (mirrored from MutationOverlayViewer's toolbar). These
   // cover the 80%-case knobs a user wants when inspecting a docked pose:
   //   • backbone — cartoon (default), surface (pocket shape), line (X-ray-
@@ -345,9 +353,18 @@ export default function ProductionViewer3D({
     // (v0.30) Only short-circuit live-mode caching if the SMILES is
     // unchanged since the cached conformer was produced. After an edit
     // we MUST re-fetch — otherwise the live preview stays glued to the
-    // pre-edit geometry. The smilesEdited flag means "the SMILES has
-    // diverged from dockedSmilesRef", so when it's true we always fetch.
-    if (viewMode === "live" && !smilesEdited && conformerSdf) return;
+    // pre-edit geometry. The smilesEdited flag handles the docked case
+    // ("SMILES has diverged from the docked pose's SMILES"). For the
+    // pre-dock case, smilesEdited is always false, so we additionally
+    // require the cached conformer was generated FOR this same SMILES.
+    // Without that check, switching staged compounds (or modifying the
+    // 2D canvas) left the 3D viewer stuck on the previous conformer.
+    if (
+      viewMode === "live"
+      && !smilesEdited
+      && conformerSdf
+      && conformerSdfForRef.current === smiles
+    ) return;
     const t = window.setTimeout(async () => {
       setLoading(true);
       setConformerErr(null);
@@ -359,8 +376,14 @@ export default function ProductionViewer3D({
         if (res.ok && res.sdf) {
           // Remember this geometry as the alignment anchor for the next edit.
           lastConformerSdfRef.current = res.sdf;
-          if (smilesEdited) setEditedConformerSdf(res.sdf);
-          else setConformerSdf(res.sdf);
+          if (smilesEdited) {
+            setEditedConformerSdf(res.sdf);
+          } else {
+            setConformerSdf(res.sdf);
+            // (bugfix) Stamp the SMILES this conformer corresponds to so
+            // the bail check above is correct on the next render.
+            conformerSdfForRef.current = smiles;
+          }
         } else {
           setConformerErr(res.error || "Conformer failed");
         }
