@@ -2687,6 +2687,20 @@ export default function StudioPage() {
                       } : null;
                       if (mut) { setDockResult(mut); setDockResultWt(wt); }
                       else { setDockResult(wt); setDockResultWt(null); }
+                      // Keep the 2D editor in sync with the 3D pose.
+                      // Previously a docking-results row click only
+                      // updated the 3D viewer — the Ketcher canvas stayed
+                      // on whatever was last loaded, so clicking through
+                      // the 3 result compounds changed the 3D but not the
+                      // 2D. Mirror the staged-compounds list, which loads
+                      // the structure on click. Fire-and-forget: the 3D
+                      // update above is synchronous, the 2D follows when
+                      // Ketcher finishes setMolecule.
+                      if (row.smiles) {
+                        void loadIntoCanvas(row.smiles, {
+                          libraryName: row.name || undefined,
+                        });
+                      }
                     };
                     const admetExpanded = admetExpandedIds.has(row.compoundId);
                     return (
