@@ -1,0 +1,122 @@
+"""Report writers for the retrospective validation.
+
+We produce two artefacts per validation run:
+
+  results/<target>_<timestamp>.csv     — one row per compound:
+        molecule_chembl_id, smiles, experimental_pchembl, predicted_score
+  results/<target>_<timestamp>.md      — human-readable summary with the
+        correlation numbers + interpretation + plot data ready to paste
+        into a chart tool.
+
+The markdown report deliberately includes the per-compound rows inline
+as a fenced table — it's how a chemist would actually want to read it.
+"""
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from .scoring import CorrelationResult, interpret
+
+
+@dataclass
+class CompoundResult:
+    molecule_chembl_id: str
+    canonical_smiles: str
+    standard_type: str
+    experimental_pchembl: float        # -log10(Ki [M])
+    predicted_score: float             # Vina score (kcal/mol; more negative = stronger)
+    note: str = ""                     # e.g. "docking failed", "skipped: heavy>80"
+
+
+def write_csv(path: Path, rows: list[CompoundResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "molecule_chembl_id", "canonical_smiles", "standard_type",
+            "experimental_pchembl", "predicted_score_kcal_mol", "note",
+        ])
+        for r in rows:
+            w.writerow([
+                r.molecule_chembl_id, r.canonical_smiles, r.standard_type,
+                f"{r.experimental_pchembl:.3f}",
+                f"{r.predicted_score:.3f}" if r.predicted_score is not None else "",
+                r.note,
+            ])
+
+
+def write_markdown(
+    path: Path,
+    *,
+    target_name: str,
+    target_uniprot: str,
+    target_chembl_id: str,
+    correlation: CorrelationResult,
+    rows: list[CompoundResult],
+    skipped: int = 0,
+    failures: int = 0,
+    started_at: Optional[datetime] = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    started = started_at or datetime.now(timezone.utc)
+    aligned = correlation.aligned_spearman
+    verdict = interpret(aligned)
+
+    lines: list[str] = []
+    lines.append(f"# Retrospective validation — {target_name}")
+    lines.append("")
+    lines.append(f"- **Target**: {target_name}  (UniProt `{target_uniprot}`, ChEMBL `{target_chembl_id}`)")
+    lines.append(f"- **Run started**: {started.isoformat(timespec='seconds')}")
+    lines.append(f"- **Compounds docked**: {correlation.n}"
+                 + (f"  (skipped: {skipped}, failed: {failures})" if (skipped or failures) else ""))
+    lines.append("")
+    lines.append("## Correlation")
+    lines.append("")
+    lines.append("| Metric | Value | What it means |")
+    lines.append("|---|---|---|")
+    lines.append(f"| Spearman ρ (raw) | `{correlation.spearman:+.3f}` | Sign-flipped vs intuition (Vina is more-negative=stronger). |")
+    lines.append(f"| Spearman ρ (aligned) | `{aligned:+.3f}` | Sign-corrected; positive = method works. |")
+    lines.append(f"| Pearson r | `{correlation.pearson:+.3f}` | Linear fit; for context only — Spearman is the primary number. |")
+    lines.append(f"| **Verdict** | **`{verdict}`** | See interpretation rubric below. |")
+    lines.append("")
+    lines.append("### Interpretation rubric")
+    lines.append("")
+    lines.append("Standard rules of thumb from the docking-validation literature "
+                 "(Cleves & Jain 2008; Sieg et al. 2019):")
+    lines.append("")
+    lines.append("| Aligned Spearman ρ | Verdict | Typical pipeline |")
+    lines.append("|---|---|---|")
+    lines.append("| < 0.2 | uncalibrated | random ranking |")
+    lines.append("| 0.2–0.4 | weak | bare baseline |")
+    lines.append("| 0.4–0.6 | moderate | most published docking pipelines |")
+    lines.append("| 0.6–0.8 | strong | top published methods |")
+    lines.append("| > 0.8 | exceptional | rare; often dataset-specific |")
+    lines.append("")
+    lines.append("## Per-compound data")
+    lines.append("")
+    if rows:
+        lines.append("| ChEMBL ID | Type | Exp. pKi (-log10 M) | Predicted Vina (kcal/mol) | Note |")
+        lines.append("|---|---|---|---|---|")
+        # Sort by experimental affinity (strongest first) — easy reading.
+        for r in sorted(rows, key=lambda x: -x.experimental_pchembl):
+            score_cell = (f"`{r.predicted_score:+.2f}`"
+                          if r.predicted_score is not None and not r.note.startswith("skipped")
+                          else "—")
+            lines.append(
+                f"| `{r.molecule_chembl_id}` | {r.standard_type} | "
+                f"{r.experimental_pchembl:.2f} | {score_cell} | {r.note or ''} |"
+            )
+    else:
+        lines.append("_No compounds in the validation set._")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("_Generated by `backend/scripts/validation/run.py`. "
+                 "See the module docstring for methodology._")
+
+    path.write_text("\n".join(lines))
