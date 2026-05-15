@@ -35,6 +35,13 @@ import { Link } from "react-router-dom";
 interface Props {
   /** Human-readable name for the surface; rendered in the fallback */
   routeName?: string;
+  /** Optional replacement to render on error INSTEAD of the recovery
+   *  card. Pass `fallback={null}` for app chrome (Header / Footer) so a
+   *  crash there degrades to "that bit of chrome is gone" rather than a
+   *  big rose card wedged where the nav bar should be — the rest of the
+   *  app stays fully usable. When omitted, the default recovery card is
+   *  shown (the right behaviour for a whole route). */
+  fallback?: ReactNode;
   children: ReactNode;
 }
 
@@ -90,6 +97,13 @@ export default class ErrorBoundary extends Component<Props, State> {
       // subtree from scratch instead of re-running the same broken
       // render against the same prop snapshot.
       return <div key={resetCount}>{this.props.children}</div>;
+    }
+
+    // Caller opted into a custom fallback (e.g. `fallback={null}` for app
+    // chrome) — render that instead of the full recovery card. The error
+    // was still logged + captured in componentDidCatch above.
+    if (this.props.fallback !== undefined) {
+      return <>{this.props.fallback}</>;
     }
 
     const routeName = this.props.routeName || "this page";

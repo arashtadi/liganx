@@ -445,7 +445,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`, detailObj);
   }
-  return r.json();
+  // Guard the success-path JSON parse. A 200 with a non-JSON body — an
+  // HTML error page from a proxy/CDN, a truncated response, a 200 from a
+  // captive portal — would otherwise throw a raw SyntaxError. Callers
+  // catch ApiError, not SyntaxError, so that surfaces as a cryptic
+  // unhandled crash. Normalise it to an ApiError they already handle.
+  try {
+    return (await r.json()) as T;
+  } catch {
+    throw new ApiError(
+      r.status,
+      "The server returned a malformed response (expected JSON). This " +
+        "usually means a proxy or gateway hiccup — please retry.",
+    );
+  }
 }
 
 export interface PocketBox {

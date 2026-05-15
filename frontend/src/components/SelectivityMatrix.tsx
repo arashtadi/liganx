@@ -668,7 +668,13 @@ function ScoreCell({
       onClick={onClick}
     >
       {Checkbox}
-      <div className="text-ink dark:text-slate-100 font-semibold">{value.toFixed(2)}</div>
+      <div className="text-ink dark:text-slate-100 font-semibold">
+        {/* Defensive: the pending-cell branch above already returns for a
+            null/absent score, but coerce-guard anyway so a malformed API
+            payload (non-number, NaN) renders an em-dash instead of
+            crashing the whole matrix with a .toFixed TypeError. */}
+        {typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—"}
+      </div>
       {delta != null && (
         // Outside-pocket Δ is method noise, not a real signal — render in
         // muted gray (parenthesized + "noise" label) instead of the green/

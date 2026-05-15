@@ -37,7 +37,16 @@ const MAX_VALIDATION_WAIT_MS = 5 * 60 * 1000;
 export function jobPollingInterval(
   data: Job | undefined,
   runningMs: number,
+  fetchFailureCount = 0,
 ): number | false {
+  // Backend unreachable — back off so a down API isn't hammered every
+  // `runningMs` by every open tab (the JobPage polls every 1.5 s).
+  // Exponential: 2×, 4×, 8× … capped at 30 s. React Query resets
+  // fetchFailureCount to 0 on the next successful fetch, so the normal
+  // fast cadence resumes automatically the moment the API recovers.
+  if (fetchFailureCount > 0) {
+    return Math.min(runningMs * 2 ** fetchFailureCount, 30_000);
+  }
   if (!data) return runningMs;
   // Still docking — poll for new pose results.
   if (data.status !== "completed" && data.status !== "failed") return runningMs;

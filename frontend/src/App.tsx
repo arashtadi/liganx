@@ -59,7 +59,13 @@ export default function App() {
   return (
     <AuthProvider>
       <div className="min-h-screen flex flex-col">
-        <Header />
+        {/* Header is OUTSIDE the per-route boundaries — a crash in it
+            would otherwise unmount the whole React tree (white screen).
+            fallback={null} degrades a header crash to "no header" while
+            the routed page below stays fully usable. */}
+        <ErrorBoundary routeName="Navigation header" fallback={null}>
+          <Header />
+        </ErrorBoundary>
         <Main>
           <Routes>
             {/* Every route element wrapped in <ErrorBoundary> so a render
@@ -122,7 +128,11 @@ export default function App() {
             <Route path="*" element={withBoundary(<NotFound />, "Not Found")} />
           </Routes>
         </Main>
-        <FooterUnlessStudio />
+        {/* Footer also sits outside the route boundaries — same
+            white-screen risk, same fallback={null} degradation. */}
+        <ErrorBoundary routeName="Footer" fallback={null}>
+          <FooterUnlessStudio />
+        </ErrorBoundary>
         {/* DocFlaskTour removed 2026-05-12 — first-run mascot retired. */}
         {/* On first sign-in (and only first sign-in), redirects to the
             full-page /welcome onboarding form. Replaces the previous

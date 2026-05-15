@@ -194,7 +194,8 @@ export default function JobPage() {
     // — the backend flips to COMPLETED before validation lands, so
     // stopping at that flip would freeze the cached snapshot with
     // null `extra` and the 2D interaction map would never appear.
-    refetchInterval: (q) => jobPollingInterval(q.state.data, 1500),
+    refetchInterval: (q) =>
+      jobPollingInterval(q.state.data, 1500, q.state.fetchFailureCount),
     // Keep polling even while the tab is backgrounded. Without this the
     // interval pauses the moment the tab loses focus, and since the app's
     // global QueryClient has refetchOnWindowFocus:false (main.tsx) nothing
