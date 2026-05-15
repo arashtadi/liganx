@@ -111,6 +111,30 @@ suite. "low" risk is good for toxicity endpoints (hERG, AMES, DILI); \
 "high" probability is good for absorption endpoints (HIA, oral \
 bioavailability). The page's higher_is_better flag handles direction.
 
+# Ensemble docking
+- Some jobs run with "ensemble docking" (job.ensemble = true in the \
+payload). Instead of docking against one rigid crystal snapshot, each \
+ligand is docked against several short-MD-relaxed receptor conformers \
+and the BEST score+pose is kept. The matrix shows a "⧉ best of N ± \
+spread" chip on these cells.
+- When a result row has an `ensemble` object, read it as: `total` = how \
+many receptor conformers were tried; `docked` = how many produced a \
+usable pose; `spread` = the kcal/mol gap between the best and worst \
+conformer scores; `best` = which conformer won — "input" means the \
+un-relaxed crystal snapshot won (relaxation didn't help that ligand), \
+"confN" means an MD-relaxed conformer won (the pocket had to flex to \
+fit it).
+- Interpreting `spread`: it measures how much receptor flexibility moved \
+the score. A spread near 0 means the pocket was effectively rigid for \
+that ligand, so a single-snapshot dock would have given essentially the \
+same answer. A large spread means the conformer choice mattered a lot — \
+the single-snapshot score could have landed anywhere in that range.
+- A `total` of 1 means ensemble docking was requested but the receptor \
+relaxation produced no extra conformers (fail-soft fallback), so that \
+cell is effectively a standard single-conformation dock.
+- The `score` shown for an ensemble row IS already the best across the \
+ensemble — do not describe it as one conformer's score.
+
 # Tone and length
 - Be a working chemist's co-pilot, not a textbook. 1-4 short paragraphs \
 unless they asked for an exhaustive answer.
@@ -229,6 +253,27 @@ def _summarize_extra(extra: Optional[str]) -> dict[str, Any]:
             if items:
                 out["contacts_count"] = len(items)
                 out["contacts_sample"] = [s.split(":")[0] for s in items[:6]]
+        elif key == "ensemble":
+            # Ensemble docking. Format: "<docked>/<total>" — conformers
+            # that produced a pose / conformers docked against. Mirrors
+            # the frontend parseExtra.ts. Merge-update so segment order in
+            # the extra string doesn't matter (ens_spread/ens_best may
+            # arrive before or after this key).
+            m = re.match(r"^(\d+)/(\d+)$", val)
+            if m:
+                ens = out.setdefault("ensemble", {})
+                ens["docked"] = int(m.group(1))
+                ens["total"] = int(m.group(2))
+        elif key == "ens_spread":
+            # kcal/mol gap between the best and worst conformer scores.
+            try:
+                out.setdefault("ensemble", {})["spread"] = float(val)
+            except ValueError:
+                pass
+        elif key == "ens_best":
+            # Winning conformer label: "input" (un-relaxed crystal) or
+            # "confN" (an MD-relaxed conformer).
+            out.setdefault("ensemble", {})["best"] = val
 
     # Promote PoseBusters "skipped" exactly like the TS parser does, so
     # the AI sees the same UX category the matrix shows.
@@ -342,6 +387,13 @@ def build_job_context(job: Any) -> dict[str, Any]:
             flags["pose_strain"] = ext["strain"].get("verdict")
         if "confidence" in ext:
             flags["pose_busters_verdict"] = ext["confidence"]
+        if "ensemble" in ext and isinstance(ext["ensemble"], dict):
+            # Ensemble docking telemetry for this cell — the `score`
+            # above is already the BEST across the conformer ensemble.
+            # `total` conformers tried, `docked` produced a pose,
+            # `spread` = best↔worst score gap (kcal/mol), `best` = the
+            # winning conformer ("input" = un-relaxed crystal snapshot).
+            row["ensemble"] = ext["ensemble"]
         if flags:
             row["flags"] = flags
         results_block.append(row)
@@ -357,6 +409,10 @@ def build_job_context(job: Any) -> dict[str, Any]:
             "engine": job.engine,
             "exhaustiveness": job.exhaustiveness,
             "include_wt": job.include_wt,
+            # Whether this job ran with ensemble docking — each ligand
+            # docked against several MD-relaxed receptor conformers, best
+            # kept. When true, result rows carry an `ensemble` object.
+            "ensemble": bool(getattr(job, "ensemble", False)),
             "status": str(job.status.value if hasattr(job.status, "value") else job.status),
             "title": job.title,
         },
