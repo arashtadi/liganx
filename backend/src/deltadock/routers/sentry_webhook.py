@@ -43,13 +43,24 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 
 def _check_secret(provided: Optional[str]) -> bool:
-    """Compare against env-var SENTRY_WEBHOOK_SECRET. If the env var is
-    unset, accept anything (with a warning in logs)."""
+    """Validate the webhook secret with a constant-time compare.
+
+    FAILS CLOSED: if SENTRY_WEBHOOK_SECRET isn't set, reject every call.
+    The old behaviour ("unset ⇒ accept anything") left the endpoint wide
+    open — and it forwards straight to the operator's Telegram, so "open"
+    means "anyone can spam your phone". An unconfigured secret should mean
+    "no Sentry alerts", not "no auth". Set the Fly secret to enable it.
+    """
+    import hmac
     expected = (os.environ.get("SENTRY_WEBHOOK_SECRET") or "").strip()
     if not expected:
-        log.warning("sentry-webhook: SENTRY_WEBHOOK_SECRET not set — accepting unauthenticated calls")
-        return True
-    return (provided or "") == expected
+        log.warning(
+            "sentry-webhook: SENTRY_WEBHOOK_SECRET not set — rejecting call "
+            "(fail-closed). Set the Fly secret to enable Sentry → Telegram alerts."
+        )
+        return False
+    # Constant-time compare — a plain == leaks secret length/prefix via timing.
+    return hmac.compare_digest((provided or "").strip(), expected)
 
 
 def _summarise(payload: Dict[str, Any]) -> Dict[str, Optional[str]]:

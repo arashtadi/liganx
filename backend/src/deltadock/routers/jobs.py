@@ -37,19 +37,50 @@ _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|in
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-def _resolve_job(session: Session, key: str) -> Job | None:
+def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
     """Resolve either a legacy integer job ID or a public share_id to a Job.
 
     URLs the frontend creates use `share_id` (random base64url token); URLs in
     bookmarks or older tabs may use the integer primary key. Try integer first
     only when the path looks like one — short numeric strings — to avoid a
     spurious DB hit on every share_id.
+
+    `allow_integer_id=False` resolves ONLY via the unguessable share_id —
+    the sequential integer PK is rejected. The owner-scoped callers
+    (cancel/patch/delete) keep the default True because they re-check
+    ownership anyway; the PUBLIC read path goes through _resolve_job_public
+    which sets this False so /jobs/<int> can't be enumerated to scrape
+    other users' jobs.
     """
-    if key.isdigit() and len(key) <= 9:
+    if allow_integer_id and key.isdigit() and len(key) <= 9:
         job = session.get(Job, int(key))
         if job:
             return job
     return session.exec(select(Job).where(Job.share_id == key)).first()
+
+
+def _resolve_job_public(
+    session: Session, key: str, user: "CurrentUser | None"
+) -> Job | None:
+    """Resolve a job for a PUBLIC, unauthenticated-allowed read endpoint.
+
+    The unguessable share_id always resolves — share links are public by
+    design. The enumerable integer primary key resolves ONLY for the
+    authenticated owner, so a legacy /jobs/<int> bookmark still works for
+    the person who created the job, but an anonymous or third-party caller
+    can't walk /jobs/1, /jobs/2, … to scrape everyone's compounds, scores
+    and poses. This closes the integer-PK enumeration hole without
+    breaking share links or owner bookmarks.
+    """
+    job = _resolve_job(session, key, allow_integer_id=False)  # share_id only
+    if job is not None:
+        return job
+    # share_id miss — it may be a legacy integer PK. Owner-only.
+    if user is not None and key.isdigit() and len(key) <= 9:
+        job = session.get(Job, int(key))
+        if job is not None and job.user_id and str(job.user_id) == str(user.id):
+            return job
+    return None
 
 
 def _to_out(job: Job) -> JobOut:
@@ -760,11 +791,16 @@ def create_job_from_screening(
 
 
 @router.get("/{job_key}", response_model=JobOut)
-def get_job(job_key: str, session: Session = Depends(get_session)) -> JobOut:
-    """Fetch a job by either its share_id (preferred, public) or legacy
-    integer primary key. The same path handles both for backward compat
-    with any links that still exist in the wild."""
-    job = _resolve_job(session, job_key)
+def get_job(
+    job_key: str,
+    session: Session = Depends(get_session),
+    user: CurrentUser | None = Depends(current_user_or_none),
+) -> JobOut:
+    """Fetch a job by its share_id (public, by design) or — for the
+    authenticated owner only — its legacy integer primary key. The
+    integer PK is no longer resolvable by anonymous/third-party callers,
+    so /jobs/<int> can't be enumerated to scrape other users' jobs."""
+    job = _resolve_job_public(session, job_key, user)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return _to_out(job)
@@ -1044,6 +1080,7 @@ def get_pose(
     compound_id: int,
     variant: str,
     session: Session = Depends(get_session),
+    user: CurrentUser | None = Depends(current_user_or_none),
 ) -> str:
     """Serve the docked-pose for a (job, compound, variant), best mode only.
 
@@ -1060,9 +1097,9 @@ def get_pose(
     if not _VARIANT_RE.match(variant):
         raise HTTPException(status_code=400, detail="invalid variant format")
 
-    # Resolve job_key (share_id or legacy int) → integer id for the FK lookup.
-    # DockingResult is keyed on the integer primary key, never on share_id.
-    job = _resolve_job(session, job_key)
+    # Resolve job_key → Job. share_id is public; the integer PK resolves
+    # for the owner only, so pose files can't be scraped by enumeration.
+    job = _resolve_job_public(session, job_key, user)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     job_id = job.id

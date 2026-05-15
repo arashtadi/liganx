@@ -135,8 +135,13 @@ To take this project over you will need access to (rotate or transfer):
   - `DATABASE_URL` — Supabase Postgres connection string
   - `SUPABASE_URL`, `SUPABASE_JWKS_URL` — for JWT verification
   - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` — Cloudflare R2
-  - `POD_GPU_URL` — `https://4cli33cxvf58lb-7861.proxy.runpod.net`
-  - `BOLTZ2_POD_URL` — `https://yvdrklbbg9qlwa-7862.proxy.runpod.net` (only relevant when Boltz-2 is on)
+  - `POD_GPU_URL` — the RunPod GPU pod proxy URL. **Do not paste the literal
+    URL into docs or commits** — it's an unauthenticated compute endpoint;
+    read the live value with `flyctl secrets list -a liganx-api` (the value
+    is masked there too — `flyctl ssh` / the Fly dashboard if you truly need it).
+  - `BOLTZ2_POD_URL` — Boltz-2 pod proxy URL (only relevant when Boltz-2 is
+    on). Same rule: never commit the literal URL; Fly secrets is the source
+    of truth.
   - `BOLTZ2_ENABLED` — `false` (currently)
   - `QUICK_DOCK_ENABLED` — `true`
   - `ANTHROPIC_API_KEY` — for AI editor (Claude Haiku 4.5)
@@ -444,7 +449,7 @@ If the new operator is a human (not Claude), §8 covers the load-bearing knowled
 1. `flyctl secrets set BOLTZ2_ENABLED=true --app liganx-api`
 2. Wake `fine_brown_toad` from RunPod console (Start button)
 3. Wait ~3-4 min (30s pod boot + 2-3 min Boltz-2 model load)
-4. Verify: `curl https://yvdrklbbg9qlwa-7862.proxy.runpod.net/health` returns 200 with `model_loaded:true`
+4. Verify: `curl "$BOLTZ2_POD_URL/health"` returns 200 with `model_loaded:true` (get `$BOLTZ2_POD_URL` from Fly secrets — do not hard-code the pod URL here)
 5. Optionally flip the engine-card badge in `NewJobPage` from "By request" back to "Beta"
 
 ---

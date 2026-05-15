@@ -41,7 +41,7 @@ from sqlmodel import Session, select
 
 log = logging.getLogger(__name__)
 
-from ..auth import CurrentUser, current_user, profile_complete_user
+from ..auth import CurrentUser, current_user, current_user_or_none, profile_complete_user
 from ..db import get_session
 from ..models import Compound, ScreeningJob, ScreeningResult, ScreeningStatus
 from ..schemas import ScreeningCreate, ScreeningOut, ScreeningResultOut
@@ -58,13 +58,37 @@ router = APIRouter(prefix="/screening", tags=["screening"])
 MAX_COMPOUNDS_PER_SCREEN = 1000
 
 
-def _resolve_screening(session: Session, key: str) -> ScreeningJob | None:
-    """Same dual lookup as routers.jobs._resolve_job — integer pk or share_id."""
-    if key.isdigit() and len(key) <= 9:
+def _resolve_screening(
+    session: Session, key: str, *, allow_integer_id: bool = True
+) -> ScreeningJob | None:
+    """Same dual lookup as routers.jobs._resolve_job — integer pk or share_id.
+
+    `allow_integer_id=False` resolves ONLY via the unguessable share_id.
+    The owner-scoped callers (cancel/delete) keep the default True (they
+    re-check ownership); the PUBLIC read path uses _resolve_screening_public
+    which sets it False so /screening/<int> can't be enumerated."""
+    if allow_integer_id and key.isdigit() and len(key) <= 9:
         sj = session.get(ScreeningJob, int(key))
         if sj is not None:
             return sj
     return session.exec(select(ScreeningJob).where(ScreeningJob.share_id == key)).first()
+
+
+def _resolve_screening_public(
+    session: Session, key: str, user: "CurrentUser | None"
+) -> ScreeningJob | None:
+    """Resolve a screening for the PUBLIC read endpoint. share_id always
+    resolves (public by design); the enumerable integer PK resolves only
+    for the authenticated owner — closing the /screening/<int> enumeration
+    hole without breaking share links or owner bookmarks."""
+    sj = _resolve_screening(session, key, allow_integer_id=False)
+    if sj is not None:
+        return sj
+    if user is not None and key.isdigit() and len(key) <= 9:
+        sj = session.get(ScreeningJob, int(key))
+        if sj is not None and sj.user_id and str(sj.user_id) == str(user.id):
+            return sj
+    return None
 
 
 def _result_to_out(r: ScreeningResult, compound: Compound | None) -> ScreeningResultOut:
@@ -318,8 +342,14 @@ def create_screening(
 
 
 @router.get("/{key}", response_model=ScreeningOut)
-def get_screening(key: str, session: Session = Depends(get_session)) -> ScreeningOut:
-    sj = _resolve_screening(session, key)
+def get_screening(
+    key: str,
+    session: Session = Depends(get_session),
+    user: CurrentUser | None = Depends(current_user_or_none),
+) -> ScreeningOut:
+    """Public read: resolves by share_id for anyone; the legacy integer PK
+    resolves for the authenticated owner only (no enumeration scraping)."""
+    sj = _resolve_screening_public(session, key, user)
     if not sj:
         raise HTTPException(status_code=404, detail="Screening not found")
     return _to_out(sj, session)

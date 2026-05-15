@@ -560,12 +560,16 @@ def health_db() -> dict:
         elapsed_ms = int((time.time() - started) * 1000)
         return {"status": "ok", "db": "postgres", "elapsed_ms": elapsed_ms}
     except Exception as e:  # noqa: BLE001
+        # Log the full error server-side; do NOT return it to the caller.
+        # /health/db is unauthenticated and a DB connection error can carry
+        # the host / connection-string shape in its text. The error_type
+        # (class name, e.g. OperationalError) is safe + useful for alerting.
+        log.warning("/health/db: database unreachable: %s", e)
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "db_unreachable",
                 "error_type": type(e).__name__,
-                "error": str(e)[:200],
                 "elapsed_ms": int((time.time() - started) * 1000),
             },
         )
@@ -603,7 +607,11 @@ async def health_full() -> dict:
     return {
         "ok": True,
         "git_sha": GIT_SHA,
-        "pod_dock_url": pod_dock_url_val or "not_set",
+        # Do NOT echo the pod URL — it's an unauthenticated compute
+        # endpoint; leaking its address here hands anyone the door. Report
+        # configured/not + reachability instead, which is all monitoring
+        # actually needs.
+        "pod_dock_configured": bool(pod_dock_url_val),
         "pod_dock_status": pod_dock_status,
         "runpod_api_key": "configured" if settings.runpod_api_key else "missing",
         "boltz2_enabled": settings.boltz2_enabled,
