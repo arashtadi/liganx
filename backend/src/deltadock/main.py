@@ -458,12 +458,19 @@ async def lifespan(_app: FastAPI):
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     reaper_task = asyncio.create_task(_periodic_orphan_reaper())
+    # S3 — failover watchdog. Companion to the cost watchdog: where the
+    # cost watchdog STOPS the pod when idle, this one STARTS it when
+    # /health is unreachable but recent activity says users need it.
+    # No-op when RUNPOD_API_KEY / RUNPOD_POD_ID aren't set, or when
+    # RUNPOD_FAILOVER_ENABLED is false.
+    from .services.pod_failover import runpod_failover_watchdog
+    failover_task = asyncio.create_task(runpod_failover_watchdog())
     try:
         yield
     finally:
-        for task in (watchdog_task, reaper_task):
+        for task in (watchdog_task, reaper_task, failover_task):
             task.cancel()
-        for task in (watchdog_task, reaper_task):
+        for task in (watchdog_task, reaper_task, failover_task):
             try:
                 await task
             except (asyncio.CancelledError, Exception):

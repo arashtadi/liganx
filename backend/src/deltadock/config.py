@@ -197,6 +197,27 @@ class Settings(BaseSettings):
     # from 30 to 240 min so a visitor who closes the tab + comes back
     # later doesn't always land on a paused pod.
     runpod_idle_minutes: int = 240
+    # ── Pod auto-failover (S3) — the inverse of the cost watchdog ──
+    # The cost watchdog (above) STOPS the pod when idle. The failover
+    # watchdog STARTS the pod when there's recent docking traffic but
+    # /health is unreachable. Together they keep the pod up exactly when
+    # users need it. Default ON because the safety rails (sustained-
+    # unreachability threshold + recent-activity gate + cooldown) make
+    # spurious resumes nearly impossible. Disable with
+    # RUNPOD_FAILOVER_ENABLED=false if you want to handle pod outages
+    # manually.
+    runpod_failover_enabled: bool = True
+    # Sustained /health failure (seconds) required before triggering
+    # recovery. Below this is treated as a transient blip.
+    runpod_failover_unreachable_seconds: float = 300.0
+    # If the API hasn't seen docking traffic in this many seconds, an
+    # unreachable pod is assumed to be intentionally stopped (cost
+    # watchdog) — no failover.
+    runpod_failover_recent_activity_seconds: float = 1800.0
+    # Cooldown between recovery attempts (or alert-only events) so the
+    # watchdog never spams the RunPod API or Telegram.
+    runpod_failover_cooldown_seconds: float = 900.0
+
     # Hard ceiling on pod uptime regardless of activity. The activity-based
     # watchdog above can theoretically loop forever if new jobs keep
     # arriving, which on RunPod is real money: an RTX 4090 is ~$0.40/hour
