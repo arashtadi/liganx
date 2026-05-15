@@ -36,7 +36,7 @@ from ..auth import CurrentUser, current_user
 from ..db import get_session
 from ..services.ask_ai import (
     ASK_MODEL, ask_claude_about_job, build_job_context, build_pubmed_query,
-    is_chemist_review_intent, is_literature_intent,
+    is_chemist_review_intent, is_literature_intent, is_structure_intent,
 )
 from ..services.rate_limit import RateLimit, rate_limit
 
@@ -101,6 +101,27 @@ def _resolve_job_for_ask(session: Session, key: str):
         if job:
             return job
     return session.exec(select(Job).where(Job.share_id == key)).first()
+
+
+def _build_structure_image_b64(session: Session, job) -> Optional[str]:
+    """(AI2) Render the 2D structure of the job's best-scoring compound
+    and return its base64 PNG. None when no usable compound exists or
+    when RDKit fails (the chat then falls back to text-only Claude)."""
+    from sqlmodel import select
+    from ..models import Compound, DockingResult
+    from ..services.structure_image import smiles_to_png_b64
+    result = session.exec(
+        select(DockingResult)
+        .where(DockingResult.job_id == job.id)
+        .where(DockingResult.best_score < 0)
+        .order_by(DockingResult.best_score.asc())                  # type: ignore[attr-defined]
+    ).first()
+    if not result:
+        return None
+    compound = session.get(Compound, result.compound_id)
+    if not compound or not compound.smiles:
+        return None
+    return smiles_to_png_b64(compound.smiles)
 
 
 def _build_literature_snippet(job, question: str) -> Optional[str]:
@@ -429,12 +450,22 @@ async def ask_about_job(
     if is_literature_intent(payload.question):
         literature_snippet = _build_literature_snippet(job, payload.question)
 
+    # (AI2) If the user asked to see/describe the molecule, OR if we
+    # already triggered a chemist review (the reviewer benefits hugely
+    # from seeing the structure), attach a rendered 2D PNG so Claude
+    # can use vision. Picks the compound the chemist review targeted
+    # — i.e. the best-scoring real pose.
+    image_b64: str | None = None
+    if is_structure_intent(payload.question) or chemist_snippet is not None:
+        image_b64 = _build_structure_image_b64(session, job)
+
     try:
         result = await ask_claude_about_job(
             context=context,
             question=payload.question,
             chemist_review_snippet=chemist_snippet,
             literature_snippet=literature_snippet,
+            structure_image_b64=image_b64,
         )
     except RuntimeError as e:
         # Maps AI service errors (network, auth, quota) to 503. The

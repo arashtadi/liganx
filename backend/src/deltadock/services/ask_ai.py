@@ -135,6 +135,13 @@ for the full paper. Do NOT cite papers that aren't in the block — your \
 training data isn't a valid source here. If the block is empty, say so \
 plainly ("I couldn't find recent PubMed results for this") rather than \
 fabricating references.
+- (AI2) When a 2D structure image is attached, you can see the molecule \
+directly. Use it to comment on the scaffold, the ring system, \
+substituent positions, stereocentres, and where a modification would \
+land. Be specific about the visible chemistry ("the para-Cl on the \
+benzyl group", "the chiral center at the piperidine carbon") rather \
+than hand-wavy. The image is for the SPECIFIC compound the user is \
+asking about — not the receptor.
 - Define terms that appear on the page (Δ, Vinardo, PoseBusters, \
 outside-pocket, hERG, BBB, CYP, AMES, etc.) in 1-3 sentences when asked.
 - Compare compounds, rank them, or summarize a row's strengths and \
@@ -718,6 +725,35 @@ def build_pubmed_query(
     return " ".join(p for p in parts if p)[:300]
 
 
+# (AI2) Phrases that suggest the user wants the chat to actually see the
+# molecule (its 2D structure) rather than just read scores about it.
+# Triggers attaching a rendered 2D PNG to the Claude call so the model
+# can use vision to comment on the scaffold, chirality, etc.
+_STRUCTURE_INTENT_KEYWORDS = (
+    "what does it look like", "what does this look like",
+    "what does that look like", "what's the structure",
+    "show me the structure", "show the structure", "see the structure",
+    "draw the structure", "look at the structure",
+    "see the molecule", "describe the molecule", "describe the structure",
+    "describe this compound", "describe the compound",
+    "is it flat", "is it planar", "is this flat",
+    "chiral", "chirality", "stereo", "stereochemistry",
+    "scaffold", "scaffold look", "ring system",
+    "look at this molecule", "look at the molecule",
+    "look at it",
+)
+
+
+def is_structure_intent(question: str) -> bool:
+    """Detect a 'show me / describe the molecule' question. When this
+    fires the router attaches the rendered 2D PNG to the chat call —
+    Claude's vision model can then comment on the scaffold/chirality/
+    ring system directly."""
+    if not question:
+        return False
+    return any(kw in question.lower() for kw in _STRUCTURE_INTENT_KEYWORDS)
+
+
 def is_chemist_review_intent(question: str) -> bool:
     """Detect a 'review this pose' question. Keyword-based on purpose —
     these phrasings cover the bulk of the natural-language openers, and
@@ -775,12 +811,42 @@ class AskResult(BaseModel):
     model: str
 
 
+def _build_message_content(
+    *,
+    context: dict[str, Any],
+    question: str,
+    chemist_review_snippet: Optional[str] = None,
+    literature_snippet: Optional[str] = None,
+    structure_image_b64: Optional[str] = None,
+) -> Any:
+    """Build the Anthropic-API `content` for the user message.
+
+    Returns either a plain string (the historical shape — text-only chat)
+    or a list of content blocks (multimodal, when an image is attached).
+    Anthropic accepts both shapes; using string when possible keeps the
+    request smaller for the common case."""
+    text = _build_ask_user_prompt(
+        context=context,
+        question=question,
+        chemist_review_snippet=chemist_review_snippet,
+        literature_snippet=literature_snippet,
+    )
+    if not structure_image_b64:
+        return text
+    from .structure_image import image_block
+    return [
+        {"type": "text", "text": text},
+        image_block(structure_image_b64),
+    ]
+
+
 async def ask_claude_about_job(
     *,
     context: dict[str, Any],
     question: str,
     chemist_review_snippet: Optional[str] = None,
     literature_snippet: Optional[str] = None,
+    structure_image_b64: Optional[str] = None,
 ) -> AskResult:
     """Single-shot Q&A call. Returns AskResult with the model's plain-text
     answer, or raises RuntimeError for auth/network/quota failures (router
@@ -806,11 +872,12 @@ async def ask_claude_about_job(
         "max_tokens": ASK_MAX_TOKENS,
         "system": _ASK_SYSTEM_PROMPT,
         "messages": [
-            {"role": "user", "content": _build_ask_user_prompt(
+            {"role": "user", "content": _build_message_content(
                 context=context,
                 question=question,
                 chemist_review_snippet=chemist_review_snippet,
                 literature_snippet=literature_snippet,
+                structure_image_b64=structure_image_b64,
             )},
         ],
     }
