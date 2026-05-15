@@ -127,6 +127,14 @@ mush; preserve the specificity (e.g. "strain 9.1 kcal/mol — pose is \
 forced into a high-energy conformer"). The review was produced by the \
 same chemist-agent service that runs at GET /jobs/{key}/review and is \
 designed to be authoritative for first-pass sanity checks.
+- (AI3) When a LITERATURE block is attached to the user message, the \
+user has explicitly asked for citable published work. Cite the \
+attached papers BY [n] index, mentioning title + first author + journal \
++ year + PMID and DOI when relevant. The user can click the PubMed URL \
+for the full paper. Do NOT cite papers that aren't in the block — your \
+training data isn't a valid source here. If the block is empty, say so \
+plainly ("I couldn't find recent PubMed results for this") rather than \
+fabricating references.
 - Define terms that appear on the page (Δ, Vinardo, PoseBusters, \
 outside-pocket, hERG, BBB, CYP, AMES, etc.) in 1-3 sentences when asked.
 - Compare compounds, rank them, or summarize a row's strengths and \
@@ -663,6 +671,53 @@ _REVIEW_INTENT_KEYWORDS = (
 )
 
 
+# (AI3) Phrases that suggest the user wants citable literature grounding.
+# Triggers a PubMed search whose top results get pasted into the prompt.
+# Conservative — each match costs 1-2s of PubMed latency, so we only
+# fire when the user has explicitly asked for outside-the-page knowledge.
+_LITERATURE_INTENT_KEYWORDS = (
+    "literature", "papers", "publication", "publications", "studies",
+    "any research on", "what does the literature say", "what's published",
+    "what is published", "cite", "citation", "citations", "references",
+    "published mechanism", "known mechanism", "known structure",
+    "co-crystal", "cocrystal", "co crystal",
+    "in the literature", "in published", "according to literature",
+)
+
+
+def is_literature_intent(question: str) -> bool:
+    """Detect a 'cite published work' question. The chat's default policy
+    is page-only (no extrapolation). This is the explicit opt-in path."""
+    if not question:
+        return False
+    return any(kw in question.lower() for kw in _LITERATURE_INTENT_KEYWORDS)
+
+
+def build_pubmed_query(
+    question: str,
+    *,
+    target_name: str = "",
+    mutations: Optional[list[str]] = None,
+) -> str:
+    """Construct a focused PubMed query from the user's question + job
+    context. The question carries the topic ('gefitinib binding mode');
+    the target/mutations anchor it to the right protein so a vague ask
+    still produces relevant hits."""
+    q = (question or "").strip()
+    # Drop the most common literature-trigger words — they're filler in
+    # a PubMed query and reduce hit quality.
+    for w in ("literature", "papers", "any research on",
+              "what does the literature say", "what's published"):
+        q = q.replace(w, " ")
+    q = " ".join(q.split())
+    parts = [q]
+    if target_name:
+        parts.append(target_name)
+    for m in (mutations or [])[:2]:
+        parts.append(m)
+    return " ".join(p for p in parts if p)[:300]
+
+
 def is_chemist_review_intent(question: str) -> bool:
     """Detect a 'review this pose' question. Keyword-based on purpose —
     these phrasings cover the bulk of the natural-language openers, and
@@ -678,15 +733,22 @@ def _build_ask_user_prompt(
     context: dict[str, Any],
     question: str,
     chemist_review_snippet: Optional[str] = None,
+    literature_snippet: Optional[str] = None,
 ) -> str:
     """Compose the user message: the structured payload first (so the
     model anchors on it before reading the question), then the user's
     actual prompt. Keeping the payload first matches the Anthropic
     cookbook recommendation for grounded-Q&A.
 
-    (AI1) When `chemist_review_snippet` is provided, it's inserted between
-    the page context and the question — Claude is instructed via the
-    system prompt to ground 'review this' answers in the snippet."""
+    (AI1) When `chemist_review_snippet` is provided, it's inserted
+    between the page context and the question — Claude is instructed
+    via the system prompt to ground 'review this' answers in the
+    snippet.
+
+    (AI3) When `literature_snippet` is provided, it's inserted next —
+    Claude can cite specific PMIDs/DOIs from it. Lifts the chat's
+    'page-only' policy in a controlled way: only the papers we
+    pre-fetched are in scope, not the model's training data."""
     out = (
         "PAGE CONTEXT (JSON snapshot of what the user is looking at — "
         "answer only from this, no extrapolation):\n"
@@ -698,6 +760,10 @@ def _build_ask_user_prompt(
             "of the best pose — use as the spine of your answer when the "
             "user is asking for a pose review):\n"
             + chemist_review_snippet.strip()
+        )
+    if literature_snippet:
+        out += (
+            "\n\n" + literature_snippet.strip()
         )
     out += "\n\nQUESTION:\n" + question.strip()
     return out
@@ -714,6 +780,7 @@ async def ask_claude_about_job(
     context: dict[str, Any],
     question: str,
     chemist_review_snippet: Optional[str] = None,
+    literature_snippet: Optional[str] = None,
 ) -> AskResult:
     """Single-shot Q&A call. Returns AskResult with the model's plain-text
     answer, or raises RuntimeError for auth/network/quota failures (router
@@ -743,6 +810,7 @@ async def ask_claude_about_job(
                 context=context,
                 question=question,
                 chemist_review_snippet=chemist_review_snippet,
+                literature_snippet=literature_snippet,
             )},
         ],
     }

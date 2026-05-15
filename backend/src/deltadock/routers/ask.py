@@ -35,7 +35,8 @@ from sqlmodel import Session
 from ..auth import CurrentUser, current_user
 from ..db import get_session
 from ..services.ask_ai import (
-    ASK_MODEL, ask_claude_about_job, build_job_context, is_chemist_review_intent,
+    ASK_MODEL, ask_claude_about_job, build_job_context, build_pubmed_query,
+    is_chemist_review_intent, is_literature_intent,
 )
 from ..services.rate_limit import RateLimit, rate_limit
 
@@ -100,6 +101,35 @@ def _resolve_job_for_ask(session: Session, key: str):
         if job:
             return job
     return session.exec(select(Job).where(Job.share_id == key)).first()
+
+
+def _build_literature_snippet(job, question: str) -> Optional[str]:
+    """(AI3) Build a PubMed citations snippet for the chat to ground its
+    answer in. Returns None if nothing useful comes back so the chat
+    flow falls through to its normal page-only answer.
+
+    Synchronous (NCBI eutils is fast and stdlib-only) — keeps the router
+    simple. The cost is ~1-2s which is acceptable when the user has
+    EXPLICITLY asked for literature; we never pay it otherwise."""
+    from ..catalog import get_target
+    from ..services.pubmed_client import format_for_snippet, search_and_summarize
+    target = get_target(job.pdb_id) if job.pdb_id else None
+    target_name = target.name if target else (job.pdb_id or "")
+    query = build_pubmed_query(
+        question,
+        target_name=target_name,
+        mutations=list(job.mutations or []),
+    )
+    if not query:
+        return None
+    try:
+        hits = search_and_summarize(query, max_results=3)
+    except Exception as e:                                          # noqa: BLE001
+        log.info("pubmed search failed in chat path: %s", e)
+        return None
+    if not hits:
+        return None
+    return format_for_snippet(hits, query=query)
 
 
 async def _build_chemist_review_snippet(session: Session, job) -> Optional[str]:
@@ -390,11 +420,21 @@ async def ask_about_job(
     if is_chemist_review_intent(payload.question):
         chemist_snippet = await _build_chemist_review_snippet(session, job)
 
+    # (AI3) If the user explicitly asked for citable literature, hit
+    # PubMed and pass the top results as a snippet. Conservative gate
+    # (keyword classifier) so most chat questions don't pay the 1-2s
+    # PubMed latency. Best-effort: empty or failed lookup falls through
+    # and the chat answers from the page alone.
+    literature_snippet: str | None = None
+    if is_literature_intent(payload.question):
+        literature_snippet = _build_literature_snippet(job, payload.question)
+
     try:
         result = await ask_claude_about_job(
             context=context,
             question=payload.question,
             chemist_review_snippet=chemist_snippet,
+            literature_snippet=literature_snippet,
         )
     except RuntimeError as e:
         # Maps AI service errors (network, auth, quota) to 503. The
