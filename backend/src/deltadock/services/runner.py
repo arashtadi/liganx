@@ -552,6 +552,30 @@ def run_job_in_background(job_id: int) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 def _drain_pending_interface_extras(pending: list[dict], session: Session) -> None:
+    """Crash-safe wrapper around the interface-extras drain. NEVER raises.
+
+    Why this matters: the drain runs AFTER the job has already been marked
+    COMPLETED. If it raised, the exception would bubble up through
+    _run_real into run_job_in_background's `except Exception` handler,
+    which calls _safe_commit(... FAILED) — silently overwriting a
+    perfectly good COMPLETED job with FAILED. The drain is pure
+    post-completion enrichment (BSA + Vina-term chips); on any failure we
+    log, roll the session back, and swallow. The job stays COMPLETED with
+    its real scores; the user just doesn't get the extra chips.
+    """
+    try:
+        _drain_pending_interface_extras_impl(pending, session)
+    except Exception as e:  # noqa: BLE001
+        log.exception(
+            "interface-extras drain crashed (non-fatal — job stays COMPLETED): %s", e
+        )
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _drain_pending_interface_extras_impl(pending: list[dict], session: Session) -> None:
     """Background pass that computes the slow interface KPIs after each
     DockingResult row has been committed.
 
@@ -670,6 +694,28 @@ def _drain_pending_interface_extras(pending: list[dict], session: Session) -> No
 
 
 def _drain_pending_validations(pending: list[dict], session: Session) -> None:
+    """Crash-safe wrapper around the deferred-validation drain. NEVER raises.
+
+    Same rationale as _drain_pending_interface_extras: this runs after the
+    job is already COMPLETED, so a crash that propagated would reach
+    run_job_in_background's except handler and overwrite COMPLETED with
+    FAILED. Validation is post-completion enrichment (PoseBusters / ProLIF
+    / strain chips) — on any failure we log, roll back, and swallow; the
+    job stays COMPLETED.
+    """
+    try:
+        _drain_pending_validations_impl(pending, session)
+    except Exception as e:  # noqa: BLE001
+        log.exception(
+            "validation drain crashed (non-fatal — job stays COMPLETED): %s", e
+        )
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _drain_pending_validations_impl(pending: list[dict], session: Session) -> None:
     """Run deferred PoseBusters/ProLIF/strain validation in parallel.
 
     `pending` is a list of dicts (built by _finalize_cell when
