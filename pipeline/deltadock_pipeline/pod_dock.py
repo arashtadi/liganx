@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -475,6 +476,14 @@ def _post_json(url: str, body: dict, timeout_s: int) -> dict:
         "User-Agent": "deltadock-backend/0.1 (+https://deltadock.bio)",
         "Accept": "application/json",
     }
+    # Shared-secret auth for the pod. POD_SHARED_SECRET is set as a Fly
+    # secret on the backend and to the same value on the pod; when present
+    # every pod call carries it, so a leaked proxy URL is useless to
+    # anyone else. Absent → header omitted and the pod fails open — which
+    # is what makes the rollout safe (deploy either side in any order).
+    _pod_secret = os.environ.get("POD_SHARED_SECRET", "").strip()
+    if _pod_secret:
+        headers["X-Pod-Secret"] = _pod_secret
     req = urllib.request.Request(url, data=raw, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as r:

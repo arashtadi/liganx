@@ -27,7 +27,9 @@ runner's poll loop. Old entries are cleaned up by a TTL sweep.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -36,11 +38,30 @@ import uuid
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 
-app = FastAPI()
+# ─────────────────────── shared-secret auth ───────────────────────
+# Same X-Pod-Secret gate as dock_server.py — see that file for the full
+# rationale. The boltz2 server runs on the same RunPod box and has the
+# same exposure (proxy URL is not a secret). Fail-OPEN when
+# POD_SHARED_SECRET is unset so the rollout can't brick predictions;
+# /health stays exempt for liveness probes.
+_POD_SHARED_SECRET = os.environ.get("POD_SHARED_SECRET", "").strip()
+
+
+async def require_pod_secret(request: Request) -> None:
+    if request.url.path == "/health":
+        return
+    if not _POD_SHARED_SECRET:
+        return
+    supplied = request.headers.get("x-pod-secret", "")
+    if not hmac.compare_digest(supplied, _POD_SHARED_SECRET):
+        raise HTTPException(status_code=401, detail="bad or missing X-Pod-Secret")
+
+
+app = FastAPI(dependencies=[Depends(require_pod_secret)])
 
 
 class PredictReq(BaseModel):

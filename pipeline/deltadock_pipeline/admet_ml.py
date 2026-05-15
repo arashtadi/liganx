@@ -229,9 +229,13 @@ def _predict_admet_extended_pod(smiles: str, pod_url: str, timeout: float = 3.0)
     except ImportError:
         return None
     url = pod_url + "/admet/predict"
+    # Shared-secret auth for the pod — see pod_dock._post_json. Absent →
+    # header omitted and the pod fails open, so the rollout is safe.
+    _pod_secret = os.environ.get("POD_SHARED_SECRET", "").strip()
+    _hdrs = {"X-Pod-Secret": _pod_secret} if _pod_secret else {}
     try:
         with httpx.Client(timeout=timeout) as c:
-            r = c.post(url, json={"smiles": smiles})
+            r = c.post(url, json={"smiles": smiles}, headers=_hdrs)
             if r.status_code != 200:
                 log.info("admet pod returned %d for %s", r.status_code, smiles[:40])
                 return None

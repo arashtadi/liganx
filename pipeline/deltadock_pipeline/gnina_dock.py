@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -296,6 +297,11 @@ def _post_json(url: str, body: dict, timeout_s: int) -> dict:
         "User-Agent": "liganx-backend/0.1 (+https://liganx.com)",
         "Accept": "application/json",
     }
+    # Shared-secret auth for the pod — see pod_dock._post_json for the
+    # full rationale. Absent → omitted, pod fails open (safe rollout).
+    _pod_secret = os.environ.get("POD_SHARED_SECRET", "").strip()
+    if _pod_secret:
+        headers["X-Pod-Secret"] = _pod_secret
     req = urllib.request.Request(url, data=raw, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as r:

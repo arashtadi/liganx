@@ -93,7 +93,7 @@ def fetch_pod_fitness(
     if cached:
         return {**cached, "score_source": "cached_esm2_local"}
 
-    from ..config import get_settings
+    from ..config import get_settings, pod_auth_headers
     settings = get_settings()
     pod_url = (settings.pod_dock_url or "").rstrip("/")
     if not pod_url:
@@ -106,6 +106,9 @@ def fetch_pod_fitness(
             resp = client.post(
                 f"{pod_url}/esm2/fitness",
                 json={"gene": gene, "position": position, "wt": wt, "mut": mut},
+                # Shared-secret auth — empty dict until POD_SHARED_SECRET
+                # is set on both ends, so this is a safe no-op until then.
+                headers=pod_auth_headers(),
             )
         if resp.status_code == 400:
             log.info("esm2_pod_client: pod rejected request (400): %s", resp.text[:200])

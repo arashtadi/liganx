@@ -17,14 +17,16 @@ alongside the binary. We chdir before subprocess.run.
 from __future__ import annotations
 
 import base64
+import hmac
 import logging
+import os
 import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -37,7 +39,38 @@ ENGINE_NAME = "QuickVina2-GPU-2.1"
 # Vina prints a 9-row affinity table at the end of stdout; same shape as CPU Vina
 _AFFINITY = re.compile(r"^\s*(\d+)\s+(-?\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$")
 
-app = FastAPI(title="deltadock-pod-dock", version="0.1")
+# ─────────────────────── shared-secret auth ───────────────────────
+# The pod's proxy URL (https://<podid>-7861.proxy.runpod.net) is NOT a
+# secret — it has appeared in git history and handoff docs, and RunPod's
+# proxy does no auth of its own. Without a check here, anyone with the
+# URL could spend this pod's GPU budget (or worse). So every request
+# must carry an X-Pod-Secret header matching the POD_SHARED_SECRET env
+# var.
+#
+# Fail-OPEN when POD_SHARED_SECRET is unset: this lets the new code be
+# deployed to the pod BEFORE the secret is configured, so the rollout
+# can't brick docking. Enforcement switches on the moment the env var is
+# set (and the backend is sending a matching header). /health is always
+# exempt so RunPod / monitoring liveness probes keep working.
+_POD_SHARED_SECRET = os.environ.get("POD_SHARED_SECRET", "").strip()
+
+
+async def require_pod_secret(request: Request) -> None:
+    if request.url.path == "/health":
+        return
+    if not _POD_SHARED_SECRET:
+        return
+    supplied = request.headers.get("x-pod-secret", "")
+    # Constant-time compare — never leak secret length/prefix via timing.
+    if not hmac.compare_digest(supplied, _POD_SHARED_SECRET):
+        raise HTTPException(status_code=401, detail="bad or missing X-Pod-Secret")
+
+
+app = FastAPI(
+    title="deltadock-pod-dock",
+    version="0.1",
+    dependencies=[Depends(require_pod_secret)],
+)
 
 
 class Box(BaseModel):

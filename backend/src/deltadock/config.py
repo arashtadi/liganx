@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     pod_dock_url: str = ""
     pod_dock_timeout_s: int = 60
 
+    # Shared secret for authenticating backend → GPU-pod calls. The pod's
+    # proxy URL is NOT a secret (it has leaked into git history), and
+    # RunPod's proxy does no auth — so the pod's FastAPI servers check an
+    # X-Pod-Secret header against their POD_SHARED_SECRET env var. Set the
+    # SAME value here (Fly secret) and on the pod. Empty = disabled: the
+    # backend sends no header and the pod fails open, so the two sides can
+    # be rolled out independently without a flag day. See pod_auth_headers().
+    pod_shared_secret: str = ""
+
     # When the Pod has the /dock_batch endpoint deployed, we can group cells
     # of the same variant into a single HTTP call so the GPU loads the
     # receptor once per variant instead of once per cell. Big throughput win
@@ -329,3 +338,19 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def pod_auth_headers() -> dict[str, str]:
+    """X-Pod-Secret header for backend → GPU-pod HTTP calls.
+
+    Returns an empty dict when pod_shared_secret is unset, so callers can
+    unconditionally spread it into their request headers and the behavior
+    is a no-op until the secret is configured on both ends.
+
+    Note: the pipeline modules (pod_dock / gnina_dock / boltz2_dock /
+    admet_ml) read POD_SHARED_SECRET from os.environ directly instead of
+    importing this — they're deliberately kept importable without the
+    backend's config module — but it resolves to the same env var.
+    """
+    secret = get_settings().pod_shared_secret.strip()
+    return {"X-Pod-Secret": secret} if secret else {}

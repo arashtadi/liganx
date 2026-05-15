@@ -40,6 +40,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.request
@@ -136,6 +137,11 @@ def _http_request(
     quickly instead of blocking the whole runner.
     """
     headers = {"User-Agent": "Liganx/1.0 (https://liganx.com)"}
+    # Shared-secret auth for the pod — see pod_dock._post_json for the
+    # full rationale. Absent → omitted, pod fails open (safe rollout).
+    _pod_secret = os.environ.get("POD_SHARED_SECRET", "").strip()
+    if _pod_secret:
+        headers["X-Pod-Secret"] = _pod_secret
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
