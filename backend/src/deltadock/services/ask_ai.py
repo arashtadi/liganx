@@ -54,6 +54,53 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 # "which compound looks best?" multi-step reasoning but at ~10× the cost
 # and ~3× the latency. Keep Haiku unless quality complaints surface.
 ASK_MODEL = os.environ.get("ASK_AI_MODEL", "claude-haiku-4-5-20251001")
+# (AI5) Hard-question model. Sonnet is ~3x the cost of Haiku per token
+# but materially better at multi-step reasoning, drug-class comparisons,
+# and "explain why" questions that need a chain of logic. Most chat
+# questions are simple jargon-explanations where Haiku is perfect; this
+# is only used when _looks_hard() flags a question that genuinely benefits.
+ASK_MODEL_HARD = os.environ.get("ASK_AI_MODEL_HARD", "claude-sonnet-4-6")
+
+
+# (AI5) Keywords that suggest the question genuinely benefits from
+# Sonnet-level reasoning. Conservative on purpose — getting Haiku to
+# answer a simple question correctly is much cheaper than getting
+# Sonnet to answer it. We only escalate when the question shape
+# suggests multi-step reasoning, comparison, or open-ended judgment.
+_HARD_KEYWORDS = (
+    "compare", "vs ", " versus ", "which is better", "trade-off", "tradeoff",
+    "explain why", "why does", "why is", "how come",
+    "predict", "would happen", "what happens if",
+    "literature", "publications", "papers", "studies",
+    "mechanism", "rationale", "design",
+    "recommend", "suggest", "next compound", "follow-up",
+)
+# Above ~200 chars (≈2 sentences) the user is usually setting up a
+# nuanced ask. Below that, it's almost always a single-fact question.
+_HARD_LENGTH_THRESHOLD = 200
+
+
+def _looks_hard(question: str) -> bool:
+    """Decide whether this question benefits from the smarter, slower,
+    more expensive model. False on the typical "what does X mean" — those
+    are Haiku's home turf. True when the shape suggests multi-step
+    reasoning, comparison, or open-ended judgment."""
+    if not question:
+        return False
+    q = question.lower()
+    if len(question) >= _HARD_LENGTH_THRESHOLD:
+        return True
+    if q.count("?") >= 2:
+        # Multiple questions in one ask → almost always multi-step.
+        return True
+    return any(kw in q for kw in _HARD_KEYWORDS)
+
+
+def pick_ask_model(question: str) -> str:
+    """Public entry point for tests + the router. Returns the model id
+    to use for this question. Defaults to Haiku; promotes to Sonnet when
+    _looks_hard() agrees."""
+    return ASK_MODEL_HARD if _looks_hard(question) else ASK_MODEL
 ASK_MAX_TOKENS = int(os.environ.get("ASK_AI_MAX_TOKENS", "800"))
 ASK_TIMEOUT_S = float(os.environ.get("ASK_AI_TIMEOUT_S", "25"))
 
@@ -626,8 +673,12 @@ async def ask_claude_about_job(*, context: dict[str, Any], question: str) -> Ask
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # (AI5) Auto-route to Sonnet when the question shape suggests multi-
+    # step reasoning. Most chat questions are simple jargon explanations
+    # that Haiku handles perfectly at ~1/3 the cost.
+    model_id = pick_ask_model(question)
     payload = {
-        "model": ASK_MODEL,
+        "model": model_id,
         "max_tokens": ASK_MAX_TOKENS,
         "system": _ASK_SYSTEM_PROMPT,
         "messages": [
@@ -673,4 +724,4 @@ async def ask_claude_about_job(*, context: dict[str, Any], question: str) -> Ask
             "compound looks best?', or 'what does Vinardo mean?'"
         )
 
-    return AskResult(answer=answer, model=ASK_MODEL)
+    return AskResult(answer=answer, model=model_id)
