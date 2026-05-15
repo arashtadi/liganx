@@ -106,12 +106,15 @@ class Job(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.PENDING, index=True)
     error_message: Optional[str] = None
 
-    # NOTE: stage column is added by migration 004_job_stage.sql but
-    # temporarily NOT declared on the SQLModel class until the migration
-    # has been applied to production Postgres. Otherwise SQLModel emits
-    # SELECT statements that include `stage` and Postgres errors with
-    # "column does not exist" → every JobPage GET 500s. Once migration
-    # 004 is applied, re-add `stage: Optional[str] = None` here.
+    # Live-updated stage slug the runner writes via services.runner.set_stage
+    # as it advances through pre-flight + docking phases ("fetching_pdb",
+    # "preparing_receptor", "docking_3_of_8", "validating_poses", …). The
+    # JobPage progress banner renders a friendly label from it; NULL is the
+    # rest state (PENDING / terminal). Added by migration 004_job_stage.sql,
+    # which is now wired into the unconditional startup-migration runner
+    # (main._STARTUP_MIGRATIONS) and guarded by _verify_schema_matches_models,
+    # so this field can no longer drift ahead of the column.
+    stage: Optional[str] = None
 
     # Owner — UUID referencing auth.users(id) in Supabase. Nullable so legacy
     # rows survive an account deletion (FK is ON DELETE SET NULL). The runner

@@ -43,32 +43,40 @@ if _sentry_dsn:
         log.warning("Sentry init failed (non-fatal): %s", e)
 
 
+# How stale a RUNNING/PENDING job's updated_at must be before the reaper
+# treats it as dead. The runner's set_stage() bumps updated_at at every
+# stage transition (fetching → preparing → docking → validating), so a
+# healthy job touches its row well within this window. 20 min (was 5)
+# gives generous headroom for slow stages — a cold-start Boltz-2 cell or
+# a large ensemble variant — without false-positiving a live job.
+_ORPHAN_STALE_MINUTES = 20
+# How often the periodic reaper runs (in addition to the once-at-startup
+# pass). Catches the "Celery worker died but the API process stayed up"
+# case that a startup-only reaper never sees.
+_ORPHAN_REAP_INTERVAL_SECONDS = 300
+
+
 def _reap_orphan_jobs() -> None:
-    """Mark any RUNNING or PENDING jobs whose updated_at is older than
-    5 minutes as FAILED with a clear "interrupted by deploy" message.
+    """Mark RUNNING or PENDING jobs whose updated_at is older than
+    _ORPHAN_STALE_MINUTES as FAILED with a clear "interrupted" message.
 
-    Why we need this: jobs are dispatched as FastAPI BackgroundTasks
-    or Celery tasks. Two failure modes that leave orphans:
+    Two orphan failure modes this catches:
       - RUNNING orphan: the worker died mid-job (deploy SIGTERM, OOM,
-        Pod hiccup). Pre-Celery this was the common case.
-      - PENDING orphan: the dispatch never fired at all (BackgroundTask
-        wasn't scheduled, Celery enqueue failed silently, or the job
-        was created during a half-deployed state). Found one of these
-        in QA — job had been PENDING for 1.5 days from before Celery
-        deploy.
+        Pod hiccup) and nothing will ever finish the job.
+      - PENDING orphan: the dispatch never fired (BackgroundTask not
+        scheduled, Celery enqueue failed silently, job created during a
+        half-deployed state).
 
-    Both are caught here. The "5 minutes since last touch" heuristic
-    works because the runner bumps updated_at at every stage transition
-    (fetching → preparing → docking → validating → completed). A real
-    running job touches the row every 30-60s; anything stale > 5 min
-    is almost certainly dead. False positives (a genuinely slow stage
-    like a cold-start Boltz-2) get re-tried by the user, which is
-    acceptable given how rarely deploys land mid-stage.
+    The staleness heuristic works because the runner's set_stage() bumps
+    updated_at at every stage transition. (Until 2026-05-15 set_stage was
+    a no-op stub, so updated_at was only written at job start/end and this
+    heuristic was effectively "older than X since the job *started*" —
+    set_stage is now live, restoring the intended "since last activity"
+    semantics.)
 
-    With Celery + Redis (#168) shipped, this is now a belt-and-braces
-    safety net rather than the primary deploy-survival mechanism, but
-    still catches the rarer "Celery worker had a bad day" case.
-    Idempotent — safe to run on every startup.
+    Runs once at startup AND on a periodic background task (see
+    _periodic_orphan_reaper) so a worker that dies while the API process
+    stays up doesn't leave a job stuck RUNNING forever. Idempotent.
     """
     try:
         from sqlmodel import Session
@@ -84,24 +92,37 @@ def _reap_orphan_jobs() -> None:
                     " was killed before this job could finish. Please re-submit.'),"
                     "     updated_at = now()"
                     " WHERE status IN ('RUNNING', 'PENDING')"
-                    "   AND updated_at < now() - INTERVAL '5 minutes'"
+                    "   AND updated_at < now() - make_interval(mins => :stale_mins)"
                     " RETURNING id, status"
                 ),
+                {"stale_mins": _ORPHAN_STALE_MINUTES},
             )
             rows = [(r[0], r[1]) for r in result]
             session.commit()
             if rows:
-                log.warning(
-                    "Reaped %d orphan jobs at startup: %s",
-                    len(rows),
-                    rows,
-                )
+                log.warning("Reaped %d orphan job(s): %s", len(rows), rows)
             else:
-                log.info("No orphan jobs to reap at startup")
+                log.info("Orphan-job reaper: nothing stale")
     except Exception as e:
-        # Never let a reaper failure block startup. We'd rather come up
-        # with a few stuck jobs than refuse to serve traffic.
-        log.exception("Orphan-job reaper failed at startup (non-fatal): %s", e)
+        # Never let a reaper failure block startup or crash the periodic
+        # task. We'd rather come up with a few stuck jobs than refuse to
+        # serve traffic. Surface it loudly so it's visible in Sentry.
+        log.exception("Orphan-job reaper failed (non-fatal): %s", e)
+
+
+async def _periodic_orphan_reaper():
+    """Run _reap_orphan_jobs on a fixed interval forever. Registered as an
+    asyncio task by lifespan, alongside _runpod_watchdog. This is what
+    catches a Celery worker dying mid-job while the API stays up — the
+    once-at-startup reap never sees that."""
+    import asyncio
+    while True:
+        await asyncio.sleep(_ORPHAN_REAP_INTERVAL_SECONDS)
+        try:
+            _reap_orphan_jobs()
+        except Exception as e:  # noqa: BLE001 — defence in depth; the
+            # inner function already swallows, but never let the loop die.
+            log.exception("Periodic orphan reaper iteration failed: %s", e)
 
 
 async def _runpod_watchdog():
@@ -196,54 +217,103 @@ async def _runpod_watchdog():
             log.warning("RunPod watchdog: unexpected: %s", e)
 
 
-def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> None:
-    """Idempotent self-healing migration runner.
+def _split_sql_statements(sql_text: str) -> list[str]:
+    """Split a migration file into individual statements.
 
-    Generalised from the #208 version: gated by an env flag so we don't
-    auto-run migrations on every deploy long-term, but provides a way
-    to apply schema changes without needing flyctl SSH (which had a
-    sustained outage on 2026-05-11). Drop the env flag on the deploy
-    AFTER the migration has applied once.
+    Strips full-line ``--`` comments and the ``BEGIN;`` / ``COMMIT;``
+    wrappers (the runner manages the transaction itself), strips inline
+    ``-- ...`` comments, then splits on ``;`` — but NEVER inside a
+    ``$$``-quoted body, so a ``CREATE FUNCTION ... $$ ... ; ... $$``
+    migration isn't shredded into invalid fragments. The old splitter
+    naively split on every ``;`` and would have corrupted any future
+    PL/pgSQL migration."""
+    lines: list[str] = []
+    for line in sql_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("--"):
+            continue
+        if s.upper() in ("BEGIN;", "COMMIT;", "BEGIN", "COMMIT"):
+            continue
+        # Strip an inline comment, but not a ``--`` inside a quoted string.
+        idx = line.find("--")
+        if idx != -1:
+            before = line[:idx]
+            if before.count("'") % 2 == 0 and before.count('"') % 2 == 0:
+                line = before
+        lines.append(line)
+    cleaned = "\n".join(lines)
 
-    Earlier versions of this helper ran the whole multi-statement SQL
-    in a single `cur.execute()` call. That works for run_migration_010
-    but turned out to fail silently on migration 012 — the CREATE TABLE
-    statement never ran (table absent post-boot) yet no exception fired
-    and the "applied" log was printed. The fix is to split on `;` and
-    execute each statement individually so any single-statement failure
-    raises and surfaces in the log.
+    statements: list[str] = []
+    buf: list[str] = []
+    in_dollar = False
+    i = 0
+    while i < len(cleaned):
+        if cleaned[i:i + 2] == "$$":
+            in_dollar = not in_dollar
+            buf.append("$$")
+            i += 2
+            continue
+        ch = cleaned[i]
+        if ch == ";" and not in_dollar:
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+def _apply_startup_migration(sql_filename: str, label: str) -> None:
+    """Self-healing, idempotent migration runner — runs on EVERY boot.
+
+    History: this used to be gated behind a per-migration
+    ``MIGRATE_<NNN>_ON_STARTUP`` env flag an operator had to remember to
+    set. On 2026-05-15 that footgun caused a ~14-minute production
+    outage — a migration's column was declared on a SQLModel class but
+    the flag was never set, so the column never got created and every
+    query on that table 500'd. The gate is GONE. Every migration wired
+    into ``lifespan`` now runs unconditionally on boot.
+
+    That is only safe because every wired migration is IDEMPOTENT
+    (``CREATE TABLE/INDEX IF NOT EXISTS``, ``ADD COLUMN IF NOT EXISTS``,
+    ``ALTER COLUMN ... DROP NOT NULL``) — re-running them is a cheap
+    no-op. Do NOT wire a destructive or non-idempotent migration (e.g.
+    the early ``001`` with its ``TRUNCATE``) into this path.
+
+    Contract:
+      * Atomic per file — every statement runs inside ONE transaction;
+        any failure rolls the whole file back (no half-applied schema).
+      * FAILS LOUD — on any error this re-raises, so ``lifespan`` aborts,
+        uvicorn never comes up, and the Fly deploy fails / rolls back.
+        A failed migration must fail the DEPLOY, never boot a broken app.
     """
-    import os
-    if os.environ.get(env_flag, "").lower() not in ("1", "true", "yes"):
-        return
     from pathlib import Path
+
     sql_path = Path("/app/backend/migrations") / sql_filename
     if not sql_path.exists():
         sql_path = (
             Path(__file__).resolve().parent.parent.parent / "migrations" / sql_filename
         )
     if not sql_path.exists():
-        log.warning("%s set but SQL file not found at %s", env_flag, sql_path)
+        # A wired migration whose file isn't in the image is a broken
+        # deploy, not something to shrug off with a log line.
+        raise RuntimeError(
+            f"{label}: migration file not found at {sql_path} — "
+            f"is backend/migrations/ COPY'd into the Docker image?"
+        )
+
+    statements = _split_sql_statements(sql_path.read_text())
+    if not statements:
+        log.warning("%s: no statements found in %s", label, sql_filename)
         return
-    sql_text = sql_path.read_text()
 
-    # Strip line-comments + the BEGIN/COMMIT wrappers, then split into
-    # individual statements. Splitting on `;` is naive but adequate for
-    # our migrations (no triggers, no function bodies). Empty fragments
-    # are dropped.
-    cleaned_lines: list[str] = []
-    for line in sql_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if stripped in ("BEGIN;", "COMMIT;"):
-            continue
-        cleaned_lines.append(line)
-    cleaned = "\n".join(cleaned_lines)
-    statements = [s.strip() for s in cleaned.split(";") if s.strip()]
-
+    from .db import engine as db_engine
     try:
-        from .db import engine as db_engine
         with db_engine.connect() as conn:
             raw = conn.connection.dbapi_connection
             cur = raw.cursor()
@@ -251,97 +321,124 @@ def _apply_startup_migration(env_flag: str, sql_filename: str, label: str) -> No
                 for i, stmt in enumerate(statements, 1):
                     cur.execute(stmt)
                     log.info("%s: statement %d/%d ok (%s…)",
-                             label, i, len(statements), stmt[:60].replace("\n", " "))
+                             label, i, len(statements),
+                             stmt[:60].replace("\n", " "))
+                # Commit only after ALL statements succeeded — atomic.
+                # Commit on the raw psycopg2 connection (SQLAlchemy 2.x's
+                # wrapper commit doesn't finalize raw-cursor DDL).
+                raw.commit()
+            except Exception:
+                # Roll the whole file back — never leave a half-applied
+                # schema — then re-raise to fail the boot.
+                try:
+                    raw.rollback()
+                except Exception:
+                    pass
+                raise
             finally:
                 cur.close()
-            # CRITICAL: commit on the raw psycopg2 connection, NOT the
-            # SQLAlchemy wrapper. In SQLAlchemy 2.x the wrapper's commit
-            # only finalizes SQLAlchemy-tracked statements; raw cursor
-            # operations run in their own psycopg2 transaction that
-            # rolls back when the SQLAlchemy connection is returned to
-            # the pool. We hit this exact failure mode on migration 012
-            # — the per-statement log said "ok" but the table never
-            # existed post-boot because the DDL was never actually
-            # committed to disk.
-            raw.commit()
-            conn.commit()
-        # Post-migration sanity: re-issue a trivial query on a fresh
-        # connection to prove the changes are visible from outside this
-        # transaction. If we get an exception here, the migration
-        # didn't commit and the hook log will surface it.
+        # Prove the changes are visible from a fresh connection.
         with db_engine.connect() as verify_conn:
             verify_conn.connection.dbapi_connection.cursor().execute("SELECT 1")
-        log.info("%s applied (%d statements, idempotent, committed)", label, len(statements))
+        log.info("%s applied (%d statements, idempotent, committed)",
+                 label, len(statements))
     except Exception as e:
-        log.error("%s FAILED at startup: %s", label, e)
+        # FAIL LOUD. lifespan does NOT catch this — uvicorn fails to
+        # start, the Fly machine never goes healthy, the deploy fails,
+        # and the previous (working) release stays live. A failed deploy
+        # is a safe outcome; booting a broken app is not.
+        log.critical("%s FAILED at startup — aborting boot: %s", label, e)
+        raise
 
 
-def _ensure_screening_columns() -> None:
-    """#208 — wt_score / delta_score / selectivity_index / extra on screening_result."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_011_ON_STARTUP",
-        sql_filename="011_screening_selectivity.sql",
-        label="Migration 011 (screening selectivity)",
-    )
+def _verify_schema_matches_models() -> None:
+    """Fail-loud guard against ORM↔DB schema drift.
+
+    After migrations run, introspect every SQLModel ``table=True`` class
+    and assert every column it declares actually exists in the live
+    database. If a model declares a column that no migration created,
+    this raises — aborting boot and failing the deploy — instead of
+    letting the app come up and 500 on the first query against that
+    table. This is the runtime backstop for the exact bug class that
+    caused the 2026-05-15 outage; ``backend/scripts/check_schema_migrations.py``
+    catches the same drift earlier (at CI time).
+
+    No-op on SQLite (local dev): there's no ``information_schema`` there,
+    and ``create_all`` builds the full current schema from the models on
+    every dev boot anyway, so drift is structurally impossible in dev.
+    """
+    from sqlmodel import SQLModel
+    from sqlalchemy import text
+    from .db import engine as db_engine
+    from . import models  # noqa: F401  — register tables on the metadata
+
+    if db_engine.dialect.name == "sqlite":
+        log.info("Schema-drift check skipped (SQLite dev DB)")
+        return
+
+    missing: list[str] = []
+    with db_engine.connect() as conn:
+        for table_name, table in SQLModel.metadata.tables.items():
+            rows = conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = :t AND table_schema = 'public'"
+                ),
+                {"t": table_name},
+            ).fetchall()
+            db_cols = {r[0] for r in rows}
+            if not db_cols:
+                missing.append(f"{table_name} (entire table absent)")
+                continue
+            for col in table.columns:
+                if col.name not in db_cols:
+                    missing.append(f"{table_name}.{col.name}")
+    if missing:
+        raise RuntimeError(
+            "ORM↔DB schema drift detected — these model columns/tables are "
+            "missing from the database (a migration didn't run): "
+            + ", ".join(sorted(missing))
+            + ". Boot aborted to fail the deploy rather than serve 500s."
+        )
+    log.info("Schema-drift check passed — all %d model tables match the DB",
+             len(SQLModel.metadata.tables))
 
 
-def _ensure_chat_history_table() -> None:
-    """#224 — user_job_ai_chat (per-user-per-job Liganx AI Beta conversation history)."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_012_ON_STARTUP",
-        sql_filename="012_user_job_ai_chat.sql",
-        label="Migration 012 (ai chat history)",
-    )
+# ── Startup migrations ────────────────────────────────────────────────
+# Every migration listed here runs UNCONDITIONALLY on each boot (no env
+# flag). That is safe ONLY because each is idempotent. If you add a new
+# migration: (1) make it idempotent, (2) add an entry below, (3) keep
+# backend/scripts/check_schema_migrations.py green. Migrations 001-010 are
+# deliberately NOT here — they were hand-applied historically and 001 has
+# a destructive TRUNCATE; the runtime _verify_schema_matches_models() guard
+# covers their columns instead.
+_STARTUP_MIGRATIONS: list[tuple[str, str]] = [
+    ("004_job_stage.sql", "Migration 004 (job.stage)"),
+    ("011_screening_selectivity.sql", "Migration 011 (screening selectivity)"),
+    ("012_user_job_ai_chat.sql", "Migration 012 (ai chat history)"),
+    ("013_compound_job_id_nullable.sql", "Migration 013 (compound.job_id nullable)"),
+    ("014_is_pro.sql", "Migration 014 (is_pro flag)"),
+    ("015_job_ensemble.sql", "Migration 015 (job.ensemble flag)"),
+    ("016_ensemble_access.sql", "Migration 016 (ensemble access flag)"),
+]
 
 
-def _ensure_compound_job_id_nullable() -> None:
-    """v1.16.1 — DROP NOT NULL on compound.job_id so screening
-    submissions (which create orphan Compound rows with no parent Job)
-    don't crash with NotNullViolation."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_013_ON_STARTUP",
-        sql_filename="013_compound_job_id_nullable.sql",
-        label="Migration 013 (compound.job_id nullable)",
-    )
+def _run_startup_migrations() -> None:
+    """Apply every wired migration, in order, on boot. Each is idempotent;
+    each fails loud (see _apply_startup_migration), so a broken migration
+    fails the deploy rather than booting a half-migrated app.
 
-
-def _ensure_is_pro_column() -> None:
-    """v1.24 — Pro tier flag on user_profile. Gates GNINA + Virtual
-    Screening; admin toggles via PATCH /admin/users/{id}/pro."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_014_ON_STARTUP",
-        sql_filename="014_is_pro.sql",
-        label="Migration 014 (is_pro flag)",
-    )
-
-
-def _ensure_job_ensemble_column() -> None:
-    """Ensemble docking — `ensemble` flag on the job table. When set, the
-    runner docks each ligand against an MD-relaxed receptor conformer
-    ensemble instead of a single rigid snapshot. Default FALSE so legacy
-    rows + non-opted-in jobs are unchanged.
-
-    MUST run before any Job query (the SQLModel Job class now declares the
-    `ensemble` field, so a SELECT against a pre-migration table would
-    error). lifespan() calls this right after init_db() and before
-    _reap_orphan_jobs(), so the ordering holds."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_015_ON_STARTUP",
-        sql_filename="015_job_ensemble.sql",
-        label="Migration 015 (job.ensemble flag)",
-    )
-
-
-def _ensure_ensemble_access_column() -> None:
-    """Ensemble docking — per-user `ensemble_enabled` access flag on
-    user_profile. Ungated by default (column DEFAULTs TRUE); admin can
-    revoke per-user via PATCH /admin/users/{id}/ensemble. Reusable for
-    the planned MM-GBSA / FEP-lite phase-2 feature."""
-    _apply_startup_migration(
-        env_flag="MIGRATE_016_ON_STARTUP",
-        sql_filename="016_ensemble_access.sql",
-        label="Migration 016 (ensemble access flag)",
-    )
+    No-op on SQLite (local dev): the migration files are Postgres DDL
+    (``make_interval``, ``UUID``, ``JSONB``, ``TEXT[]``, ``ADD COLUMN IF
+    NOT EXISTS`` …) and would fail against SQLite. In dev, ``create_all``
+    builds the full current schema from the models, so migrations aren't
+    needed there."""
+    from .db import engine as db_engine
+    if db_engine.dialect.name == "sqlite":
+        log.info("Startup migrations skipped (SQLite dev DB — create_all builds the schema)")
+        return
+    for sql_filename, label in _STARTUP_MIGRATIONS:
+        _apply_startup_migration(sql_filename=sql_filename, label=label)
 
 
 @asynccontextmanager
@@ -349,22 +446,28 @@ async def lifespan(_app: FastAPI):
     import asyncio
     log.info("Starting DeltaDock backend %s in %s mode", __version__, settings.app_env)
     init_db()
-    _ensure_screening_columns()
-    _ensure_chat_history_table()
-    _ensure_compound_job_id_nullable()
-    _ensure_is_pro_column()
-    _ensure_job_ensemble_column()
-    _ensure_ensemble_access_column()
+    # Migrations run UNCONDITIONALLY and FAIL LOUD — if any raises, it
+    # propagates out of lifespan, uvicorn never comes up, and the Fly
+    # deploy fails (the previous good release stays live). That is the
+    # correct, safe outcome: a failed deploy beats a booted-broken app.
+    _run_startup_migrations()
+    # After migrations, assert the ORM matches the DB. Catches the exact
+    # drift class (model column with no applied migration) before we
+    # serve a single request. Also fails loud.
+    _verify_schema_matches_models()
     _reap_orphan_jobs()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
+    reaper_task = asyncio.create_task(_periodic_orphan_reaper())
     try:
         yield
     finally:
-        watchdog_task.cancel()
-        try:
-            await watchdog_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in (watchdog_task, reaper_task):
+            task.cancel()
+        for task in (watchdog_task, reaper_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         log.info("Shutting down DeltaDock backend")
 
 

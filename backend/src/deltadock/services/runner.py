@@ -209,16 +209,33 @@ class JobCancelled(Exception):
 
 def set_stage(session: Session, job_id: int, stage: str | None) -> None:
     """Write a short stage slug onto the job row so the JobPage's progress
-    banner can show what's happening RIGHT NOW.
+    banner can show what's happening RIGHT NOW — and, just as importantly,
+    bump ``updated_at`` so the orphan-job reaper can tell a slow-but-alive
+    job from a genuinely dead one.
 
-    NO-OP UNTIL MIGRATION 004 LANDS. The Job model temporarily doesn't
-    declare the stage column (SQLModel would emit SELECT statements
-    referencing a non-existent column → every JobPage GET 500s). Runner
-    keeps calling set_stage at every phase boundary so re-enabling the
-    body is a one-line change once the column is added.
+    Live since 2026-05-15. Previously a no-op stub (the ``stage`` column
+    wasn't declared on the Job model because migration 004 wasn't reliably
+    applied). Migration 004 is now in the unconditional startup-migration
+    runner and ``Job.stage`` is declared again, so this writes for real.
+
+    Fail-soft: a stage write must NEVER crash a docking job. On any error
+    (transient DB blip) we log and move on — the stage is cosmetic and the
+    reaper's staleness window is generous, so a missed bump isn't fatal.
     """
-    _ = (session, job_id, stage)
-    return
+    try:
+        job = session.get(Job, job_id)
+        if job is None:
+            return
+        job.stage = stage
+        job.updated_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("set_stage(%s, %r) failed (non-fatal): %s", job_id, stage, e)
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def is_cancelled(session: Session, job_id: int) -> bool:
