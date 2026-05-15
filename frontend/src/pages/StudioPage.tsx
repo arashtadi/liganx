@@ -528,6 +528,15 @@ export default function StudioPage() {
     }
     return merged;
   });
+  // Per-compound submit-validation failures, keyed by (trimmed) SMILES.
+  // Populated from the backend's 422 invalid_compounds payload so the
+  // SPECIFIC staged rows that can't be docked get flagged inline with
+  // their reason — instead of a vague "1 of 3 failed". Keying by SMILES
+  // means removing or editing the offending compound clears its flag
+  // automatically (its row no longer matches the map).
+  const [invalidCompounds, setInvalidCompounds] = useState<
+    Map<string, { reason: string; suggestion?: string }>
+  >(new Map());
   // (v0.76) When reseed is present, make the reseeded compound active
   // so the canvas loads it and the user lands on the row they came
   // back to edit. Otherwise restore the prior active row.
@@ -1626,6 +1635,7 @@ export default function StudioPage() {
     if (compoundList.length === 0) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (selectedTargets.length === 0) { setDockError("Pick a target."); return; }
     setDockError(null);
+    setInvalidCompounds(new Map());  // fresh validation each submit
     setSubmittingFull(true);
     try {
       // (v0.62-0.64) One Full Job per target. Backend /jobs accepts
@@ -1677,35 +1687,52 @@ export default function StudioPage() {
       // others are submitted but the user views them via /history.
       let primary: { tid: string; job: Job } | null = null;
       let firstError: string | null = null;
+      // Per-compound validation failures from a 422 — collected once and
+      // pushed into invalidCompounds state so the SPECIFIC staged rows get
+      // flagged inline (by name, with the reason + a remove/edit hint).
+      let invalidFromSubmit: Array<{
+        name: string | null; smiles?: string; reason: string; suggestion?: string;
+      }> | null = null;
       for (const r of results) {
         if (r.status === "fulfilled" && !primary) primary = r.value;
         else if (r.status === "rejected" && !firstError) {
-          // Surface the PER-COMPOUND validation reasons, not just the
-          // bare summary line. The backend's 422 carries invalid_compounds
-          // with a specific reason + actionable suggestion per row — e.g.
-          // "126 heavy atoms — too large for Vina-style docking". Without
-          // this the user only saw "1 of 3 compound SMILES failed
-          // validation" and had no idea which compound or why.
+          // The backend's 422 carries invalid_compounds with a specific
+          // reason + actionable suggestion per row. We flag the rows in
+          // the compound list (see invalidCompounds) AND set a short
+          // banner pointing at them — instead of the old vague "1 of 3
+          // compound SMILES failed validation" with no names.
           const reason = r.reason as {
             message?: string;
             detail?: {
               invalid_compounds?: Array<{
-                name: string | null; reason: string; suggestion?: string;
+                name: string | null; smiles?: string;
+                reason: string; suggestion?: string;
               }>;
             };
           };
           const invalid = reason?.detail?.invalid_compounds;
           if (Array.isArray(invalid) && invalid.length > 0) {
-            firstError = invalid
-              .map((ic) => {
-                const who = ic.name ? `"${ic.name}"` : "A compound";
-                return `${who}: ${ic.reason}${ic.suggestion ? ` — ${ic.suggestion}` : ""}`;
-              })
-              .join("  •  ");
+            invalidFromSubmit = invalid;
+            const names = invalid
+              .map((ic) => (ic.name ? `"${ic.name}"` : "an unnamed compound"))
+              .join(", ");
+            firstError =
+              invalid.length === 1
+                ? `${names} can't be docked — see the flagged row below for the reason.`
+                : `${invalid.length} compounds can't be docked (${names}) — see the flagged rows below.`;
           } else {
             firstError = reason?.message || "Submit failed";
           }
         }
+      }
+      if (invalidFromSubmit) {
+        const m = new Map<string, { reason: string; suggestion?: string }>();
+        for (const ic of invalidFromSubmit) {
+          if (ic.smiles) {
+            m.set(ic.smiles.trim(), { reason: ic.reason, suggestion: ic.suggestion });
+          }
+        }
+        setInvalidCompounds(m);
       }
       if (!primary) { setDockError(firstError || "All Full Job submissions failed."); return; }
       const jobKey = (primary.job as any).share_id ?? String((primary.job as any).id ?? "");
@@ -3456,9 +3483,17 @@ export default function StudioPage() {
                       activeCompoundIdx < compounds.length &&
                       !!currentSmiles &&
                       currentSmiles !== compounds[activeCompoundIdx].smiles;
+                    // Submit-validation failure for THIS compound — matched
+                    // by SMILES against the backend's 422 invalid_compounds.
+                    // Flags the exact row (rose ring) + shows the reason
+                    // inline, so the user knows which compound and why, with
+                    // the × remove button right there.
+                    const invalidInfo = invalidCompounds.get((c.smiles || "").trim());
                     return (
-                    <div key={c.id} className={`px-2 py-1.5 flex items-center gap-2 text-[10px] font-mono ${
-                      isEdited ? "bg-amber-950/20"
+                    <div key={c.id}>
+                    <div className={`px-2 py-1.5 flex items-center gap-2 text-[10px] font-mono ${
+                      invalidInfo ? "bg-rose-950/30 ring-1 ring-inset ring-rose-800/50"
+                      : isEdited ? "bg-amber-950/20"
                       : isActive ? "bg-cyan-950/20"
                       : "hover:bg-slate-800/30"
                     }`}>
@@ -3595,6 +3630,19 @@ export default function StudioPage() {
                         className="text-slate-600 hover:text-rose-400 px-1 shrink-0"
                         title="Remove this compound from the suite"
                       >×</button>
+                    </div>
+                    {invalidInfo && (
+                      <div className="px-2 pb-1.5 text-[9px] leading-snug text-rose-300/90">
+                        <span className="text-rose-400 font-semibold">✗ can&apos;t be docked.</span>{" "}
+                        {invalidInfo.reason}
+                        {invalidInfo.suggestion && (
+                          <span className="text-rose-300/70"> {invalidInfo.suggestion}</span>
+                        )}
+                        <span className="text-slate-500">
+                          {" "}— remove it with ✕ above, or click the row to edit the structure.
+                        </span>
+                      </div>
+                    )}
                     </div>
                     );
                   })}
