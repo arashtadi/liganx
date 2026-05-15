@@ -1482,6 +1482,14 @@ export default function StudioPage() {
     wtScore: number | null;
     mutantPoseB64?: string;
     wtPoseB64?: string;
+    // True when that variant's cell failed docking (runner wrote
+    // best_score=0.0 + a *_failed extra, no pose). The score 0.00 is a
+    // placeholder, NOT a result — the table renders "✗ failed" instead
+    // of a fake 0.00, and loadIn3D won't feed the 3D viewer a phantom
+    // poseless dockResult (which rendered a conformer floating at the
+    // origin, miles from the receptor).
+    mutantFailed?: boolean;
+    wtFailed?: boolean;
     // (v1.00) ADMET payload from job.compounds[].admet — drug-likeness +
     // extended risk profile (hERG / BBB / CYP / DILI). Optional; absent
     // when RDKit failed to parse the SMILES on the backend.
@@ -1944,12 +1952,22 @@ export default function StudioPage() {
               mutantScore: null,
               wtScore: null,
             };
+            // A failed cell: the runner writes best_score=0.0 as a
+            // placeholder + a *_failed prefix in `extra`, and there's no
+            // pose. Either signal alone is sufficient; OR them for safety.
+            const cellFailed =
+              (r.best_score === 0 && !posePdbqtB64) ||
+              /^(ligand_prep_failed|docking_failed|mutant_build_failed)/.test(
+                r.extra || "",
+              );
             if (isWt) {
               row.wtScore = r.best_score;
               row.wtPoseB64 = posePdbqtB64;
+              row.wtFailed = cellFailed;
             } else {
               row.mutantScore = r.best_score;
               row.mutantPoseB64 = posePdbqtB64;
+              row.mutantFailed = cellFailed;
             }
             byCompound.set(r.compound_id, row);
           }
@@ -1983,9 +2001,15 @@ export default function StudioPage() {
             const best = focusedIdx >= 0 ? rows[focusedIdx] : rows[0];
             if (focusName) reseedFocusCompoundNameRef.current = null;
             setSelectedRowCompoundId(best.compoundId);
-            const mut: QuickDockResult | null = best.mutantScore != null ? {
+            // Gate on POSE presence, not score-non-null. A failed cell
+            // has best_score=0.0 (a placeholder) but no pose — building a
+            // dockResult from it gives the 3D viewer a poseless result it
+            // renders as a conformer stuck at the origin, floating far
+            // from the receptor. Only build a result when there's a real
+            // pose to show.
+            const mut: QuickDockResult | null = best.mutantPoseB64 ? {
               ok: true,
-              score: best.mutantScore,
+              score: best.mutantScore ?? 0,
               hits: [],
               misses: [],
               pose_pdbqt_b64: best.mutantPoseB64,
@@ -1994,9 +2018,9 @@ export default function StudioPage() {
               receptor_variant: "mutant",
               smiles: best.smiles,  // (v1.27) deterministic edit-detection
             } : null;
-            const wt: QuickDockResult | null = best.wtScore != null ? {
+            const wt: QuickDockResult | null = best.wtPoseB64 ? {
               ok: true,
-              score: best.wtScore,
+              score: best.wtScore ?? 0,
               hits: [],
               misses: [],
               pose_pdbqt_b64: best.wtPoseB64,
@@ -2006,9 +2030,11 @@ export default function StudioPage() {
               smiles: best.smiles,  // (v1.27) deterministic edit-detection
             } : null;
             // Single-target rule: mut → primary slot if any, else WT
-            // takes the primary slot; mirror the prior semantics.
+            // takes the primary slot. When neither has a pose (every
+            // cell failed) leave both null — no phantom dock result.
             if (mut) { setDockResult(mut); setDockResultWt(wt); }
-            else { setDockResult(wt); setDockResultWt(null); }
+            else if (wt) { setDockResult(wt); setDockResultWt(null); }
+            else { setDockResult(null); setDockResultWt(null); }
           }
           // (v0.74) Now safe to flip status — rows are in state, the
           // cleanup-on-status-change race no longer drops results.
@@ -2643,7 +2669,13 @@ export default function StudioPage() {
                 <div className="rounded border border-slate-800 divide-y divide-slate-800/60 max-h-[260px] overflow-y-auto">
                   {fullJobRows.map((row) => {
                     const isSelected = row.compoundId === selectedRowCompoundId;
-                    const delta = (row.mutantScore != null && row.wtScore != null)
+                    // (v1.31) A delta is only meaningful when BOTH
+                    // variants actually docked. If either cell failed,
+                    // the score is a 0 placeholder, not a real binding
+                    // energy — subtracting them produces a fake Δ that
+                    // looks like a result. Suppress it.
+                    const delta = (row.mutantScore != null && row.wtScore != null
+                                   && !row.mutantFailed && !row.wtFailed)
                       ? row.mutantScore - row.wtScore
                       : null;
                     // (v1.22.1) Click targets reshuffled. v0.73 had the
@@ -2663,9 +2695,22 @@ export default function StudioPage() {
                     // doesn't navigate anymore.
                     const loadIn3D = () => {
                       setSelectedRowCompoundId(row.compoundId);
-                      const mut: QuickDockResult | null = row.mutantScore != null ? {
+                      // (v1.31) Gate the 3D result objects on the PRESENCE
+                      // OF A POSE, not on `score != null`. A failed
+                      // compound (oversized peptide, bad SMILES, docking
+                      // crash) comes back with best_score=0 and NO
+                      // pose_pdbqt — `0` is not null, so the old guard
+                      // built a truthy dockResult with an empty pose.
+                      // Downstream, ProductionViewer3D saw hasDock=true
+                      // but had no pose coordinates, so it rendered the
+                      // raw RDKit conformer at the origin — a molecule
+                      // "floating far away" from the receptor. Gating on
+                      // the pose means a poseless compound feeds the
+                      // viewer nothing, and the viewer falls back to its
+                      // live-conformer mode cleanly.
+                      const mut: QuickDockResult | null = row.mutantPoseB64 ? {
                         ok: true,
-                        score: row.mutantScore,
+                        score: row.mutantScore ?? 0,
                         hits: [],
                         misses: [],
                         pose_pdbqt_b64: row.mutantPoseB64,
@@ -2674,9 +2719,9 @@ export default function StudioPage() {
                         receptor_variant: "mutant",
                         smiles: row.smiles,  // (v1.27) deterministic edit-detection
                       } : null;
-                      const wt: QuickDockResult | null = row.wtScore != null ? {
+                      const wt: QuickDockResult | null = row.wtPoseB64 ? {
                         ok: true,
-                        score: row.wtScore,
+                        score: row.wtScore ?? 0,
                         hits: [],
                         misses: [],
                         pose_pdbqt_b64: row.wtPoseB64,
@@ -2686,7 +2731,8 @@ export default function StudioPage() {
                         smiles: row.smiles,  // (v1.27) deterministic edit-detection
                       } : null;
                       if (mut) { setDockResult(mut); setDockResultWt(wt); }
-                      else { setDockResult(wt); setDockResultWt(null); }
+                      else if (wt) { setDockResult(wt); setDockResultWt(null); }
+                      else { setDockResult(null); setDockResultWt(null); }
                       // Keep the 2D editor in sync with the 3D pose.
                       // Previously a docking-results row click only
                       // updated the 3D viewer — the Ketcher canvas stayed
@@ -2730,16 +2776,34 @@ export default function StudioPage() {
                             <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
                               {row.name}
                             </span>
+                            {/* (v1.31) A failed cell shows "✗ failed" in
+                                rose — NOT a fake score. Previously a
+                                failed compound (best_score=0, no pose)
+                                rendered "+0.00" in the normal score
+                                color, which reads as a real — even
+                                good — binding energy. Users clicked it,
+                                got a broken 3D view, and concluded the
+                                product was broken. The score is only a
+                                number when the compound actually
+                                docked; otherwise it's a failure. */}
                             <span className={`tabular-nums w-12 text-right ${
-                              row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
-                            }`} title="Mutant score (kcal/mol)">
-                              {row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
+                              row.mutantFailed ? "text-rose-400"
+                                : row.mutantScore != null ? scoreTier(row.mutantScore) : "text-slate-700"
+                            }`} title={row.mutantFailed
+                              ? "This compound failed to dock against the mutant receptor — no pose was produced."
+                              : "Mutant score (kcal/mol)"}>
+                              {row.mutantFailed ? "✗ failed"
+                                : row.mutantScore != null ? fmtScore(row.mutantScore) : "—"}
                             </span>
                             {includeWt && (
                               <span className={`tabular-nums w-12 text-right ${
-                                row.wtScore != null ? "text-slate-400" : "text-slate-700"
-                              }`} title="WT score (kcal/mol)">
-                                {row.wtScore != null ? fmtScore(row.wtScore) : "—"}
+                                row.wtFailed ? "text-rose-400"
+                                  : row.wtScore != null ? "text-slate-400" : "text-slate-700"
+                              }`} title={row.wtFailed
+                                ? "This compound failed to dock against the WT receptor — no pose was produced."
+                                : "WT score (kcal/mol)"}>
+                                {row.wtFailed ? "✗ failed"
+                                  : row.wtScore != null ? fmtScore(row.wtScore) : "—"}
                               </span>
                             )}
                             {delta != null && (
@@ -5865,6 +5929,17 @@ function ProductionViewer3D({
   useEffect(() => {
     if (dockResult) setViewMode("dock");
   }, [dockResult]);
+
+  // (v1.31) ...and the converse: when there's no dock result at all
+  // (e.g. the user clicked a failed compound row, which now feeds the
+  // viewer `null` instead of a phantom poseless result), force the
+  // header back to "live". Without this, viewMode could be stuck on
+  // "dock" from a previous selection while hasDock is false — the
+  // header said "docked" but there was no pose, and the scene fell
+  // back to the live conformer anyway. The label now matches reality.
+  useEffect(() => {
+    if (!hasDock) setViewMode("live");
+  }, [hasDock]);
 
   // When a fresh dock arrives, clear any stale live-preview conformer
   // so the new docked pose takes the scene. (Edit-detection itself is
