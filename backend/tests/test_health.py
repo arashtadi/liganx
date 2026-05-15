@@ -26,27 +26,37 @@ def test_health_returns_ok():
         assert "version" in body
 
 
-def test_create_and_get_job():
+def test_jobs_post_requires_auth():
+    """Regression guard for the Batch-2 auth lockdown.
+
+    Before 2026-05-15, POST /jobs was unauthenticated — anyone with the
+    URL could create jobs. Batch 2 wired profile_complete_user into the
+    route, so unauthenticated callers must now be rejected at the auth
+    dependency before any DB write or background task runs.
+
+    Sends a syntactically plausible payload with NO Authorization header
+    and asserts the request is rejected. The most important guarantee
+    here is that it never returns 201 — that's the regression we care
+    about — and that the rejection is auth-shaped (401/403), not body
+    validation.
+    """
     payload = {
         "pdb_id": "1M17",
         "chain": "A",
         "uniprot_id": "P00533",
-        "mutations": ["T790M", "L858R"],
-        "compounds": [
-            {"name": "Gefitinib", "smiles": "COc1cc2ncnc(Nc3ccc(F)c(Cl)c3)c2cc1OCCCN1CCOCC1"},
-            {"name": "Osimertinib", "smiles": "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1"},
-        ],
+        "mutations": ["T790M"],
+        "compounds": [{"name": "ethanol", "smiles": "CCO"}],
     }
     with TestClient(app) as client:
         r = client.post("/jobs", json=payload)
-        assert r.status_code == 201, r.text
-        job = r.json()
-        assert job["pdb_id"] == "1M17"
-        assert set(job["mutations"]) == {"T790M", "L858R"}
-        assert len(job["compounds"]) == 2
-
-        # Background task is fire-and-forget; results may or may not be populated yet.
-        # Re-fetch and confirm the shape regardless.
-        r2 = client.get(f"/jobs/{job['id']}")
-        assert r2.status_code == 200
-        assert r2.json()["id"] == job["id"]
+        # The critical regression guard: an unauthenticated POST must
+        # never succeed. Anything else (401, 403, even 422) is fine; 201
+        # would mean the auth lockdown silently broke.
+        assert r.status_code != 201, (
+            f"POST /jobs accepted an unauthenticated request — auth gate is gone. "
+            f"Got {r.status_code}: {r.text[:200]}"
+        )
+        # And specifically: it should be the auth dep that rejected it.
+        assert r.status_code in (401, 403), (
+            f"expected 401/403 from auth, got {r.status_code}: {r.text[:200]}"
+        )

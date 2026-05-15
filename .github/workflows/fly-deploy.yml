@@ -83,27 +83,71 @@ jobs:
         run: pip install -e "backend[dev]"
       - name: Run pytest (DB-free gate)
         # `-m "not requires_db"` skips the tests that boot the app
-        # lifespan (test_health.py) — those need a live Postgres and are
-        # left for a future DB-service job. The remaining tests are
-        # deterministic pure-function checks (the extra-format parser
-        # parity + the $$-aware migration SQL splitter). The fake
-        # DATABASE_URL satisfies config validation without any real
-        # connection — the SQLAlchemy engine is created lazily and is
-        # never dialed by these tests.
+        # lifespan (test_health.py) — those need a live Postgres and run
+        # in the parallel backend-tests-db job below. The remaining tests
+        # are deterministic pure-function checks (the extra-format parser
+        # parity + the $$-aware migration SQL splitter + the test-
+        # isolation regression guard). conftest.py forces a safe
+        # DATABASE_URL regardless of any env value, so the SQLAlchemy
+        # engine that gets created is never dialed by these tests.
         working-directory: backend
         env:
-          DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/ci_unused
           APP_SECRET: ci-test-secret
         run: pytest -m "not requires_db" -q
+
+  backend-tests-db:
+    name: Backend DB-dependent tests
+    runs-on: ubuntu-latest
+    # Brings up a throwaway Postgres alongside the runner and points the
+    # `requires_db` tests at it via TEST_DATABASE_URL (which conftest.py
+    # consumes — see backend/tests/conftest.py). This exercises the FULL
+    # boot lifespan against a real Postgres: SQLModel.create_all builds
+    # the schema from current models, _run_startup_migrations replays the
+    # idempotent ALTERs, _verify_schema_matches_models confirms the ORM
+    # matches the DB, and the reaper init runs. test_health.py then
+    # checks that auth gates the protected routes.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: liganx_test
+        ports:
+          - 5432:5432
+        # Wait until pg_isready before the job starts hitting it.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend + dev deps
+        run: pip install -e "backend[dev]"
+      - name: Run pytest (requires-db tests)
+        working-directory: backend
+        env:
+          # conftest.py reads TEST_DATABASE_URL and unconditionally writes
+          # it into DATABASE_URL before the app config loads — see the
+          # belt-and-suspenders assertion there that rejects prod hosts.
+          TEST_DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/liganx_test
+          APP_SECRET: ci-test-secret
+        run: pytest -m "requires_db" -q
 
   deploy:
     name: Deploy backend to Fly
     runs-on: ubuntu-latest
-    # Blocking dependencies: only deploy after BOTH the scientific-
-    # correctness catalog check AND the backend test / migration-wiring
-    # gate pass. If either fails, the deploy job is skipped entirely —
+    # Blocking dependencies: only deploy after the scientific-correctness
+    # catalog check, the DB-free unit gate, AND the DB-dependent tests
+    # all pass. If any fails, the deploy step is skipped entirely —
     # broken science or a failing test never reaches production.
-    needs: [verify-catalog, backend-tests]
+    needs: [verify-catalog, backend-tests, backend-tests-db]
     concurrency:
       # Cancel any in-flight deploy so a fresh push always wins.
       group: fly-deploy
