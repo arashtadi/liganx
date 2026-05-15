@@ -340,6 +340,16 @@ def create_job(
         from deltadock_pipeline.prep import _parse_smiles_resilient
         from rdkit import Chem
         from rdkit.Chem import AllChem
+        # Same canonical pre-flight the Quick Dock path uses (services
+        # .properties.check_dockability) — atom allowlist + size bounds
+        # (Vina's flexibility model breaks down past ~80 heavy atoms).
+        # Wiring it in here closes the gap that let a 1.8 kDa cyclic
+        # peptide (126 heavy atoms, 29 rotatable bonds) into job #303
+        # only to fail mid-run with an opaque "docking_failed: batch err:
+        # no pose written" cell. Now it's rejected at submit with a clear
+        # reason. Imported inside the try so a dev box without RDKit
+        # still skips eager validation rather than fail-closed.
+        from ..services.properties import check_dockability
         for i, c in enumerate(payload.compounds):
             smi = (c.smiles or "").strip()
             row_base = {"index": i, "name": c.name, "smiles": smi}
@@ -396,6 +406,33 @@ def create_job(
                     "kind": "embed",
                 })
                 continue
+            # Dockability / size pre-flight — the SAME check_dockability the
+            # Quick Dock path runs. Catches molecules that parse + embed
+            # fine but are too large / too complex for Vina-family docking
+            # (>~80 heavy atoms), or contain atoms Vina/GNINA can't score.
+            # Without this they'd run and fail per-cell with an opaque
+            # "docking_failed" badge; here the user gets the real reason
+            # (e.g. "126 heavy atoms — too large for Vina-style docking")
+            # at submit time, before any GPU time is spent.
+            try:
+                dock_check = check_dockability(smi)
+                if not dock_check.get("dockable", True):
+                    invalid.append({
+                        **row_base,
+                        "reason": dock_check.get("reason")
+                        or "This molecule can't be docked by Vina/GNINA.",
+                        "kind": "undockable",
+                        **(
+                            {"suggestion": dock_check["suggestion"]}
+                            if dock_check.get("suggestion")
+                            else {}
+                        ),
+                    })
+                    continue
+            except Exception:
+                # check_dockability never raises by contract — belt-and-
+                # suspenders so a check bug can't block a valid submit.
+                pass
     except ImportError:
         # If the pipeline isn't importable in this environment (dev without
         # bio deps), skip eager validation so we don't fail-closed in dev.

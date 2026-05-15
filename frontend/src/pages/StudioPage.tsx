@@ -1679,7 +1679,33 @@ export default function StudioPage() {
       let firstError: string | null = null;
       for (const r of results) {
         if (r.status === "fulfilled" && !primary) primary = r.value;
-        else if (r.status === "rejected" && !firstError) firstError = (r.reason as Error)?.message || "Submit failed";
+        else if (r.status === "rejected" && !firstError) {
+          // Surface the PER-COMPOUND validation reasons, not just the
+          // bare summary line. The backend's 422 carries invalid_compounds
+          // with a specific reason + actionable suggestion per row — e.g.
+          // "126 heavy atoms — too large for Vina-style docking". Without
+          // this the user only saw "1 of 3 compound SMILES failed
+          // validation" and had no idea which compound or why.
+          const reason = r.reason as {
+            message?: string;
+            detail?: {
+              invalid_compounds?: Array<{
+                name: string | null; reason: string; suggestion?: string;
+              }>;
+            };
+          };
+          const invalid = reason?.detail?.invalid_compounds;
+          if (Array.isArray(invalid) && invalid.length > 0) {
+            firstError = invalid
+              .map((ic) => {
+                const who = ic.name ? `"${ic.name}"` : "A compound";
+                return `${who}: ${ic.reason}${ic.suggestion ? ` — ${ic.suggestion}` : ""}`;
+              })
+              .join("  •  ");
+          } else {
+            firstError = reason?.message || "Submit failed";
+          }
+        }
       }
       if (!primary) { setDockError(firstError || "All Full Job submissions failed."); return; }
       const jobKey = (primary.job as any).share_id ?? String((primary.job as any).id ?? "");

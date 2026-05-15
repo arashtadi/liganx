@@ -318,10 +318,18 @@ export interface ValidationDetail {
      *  - "parse"      — RDKit refused to parse it
      *  - "fragments"  — disconnected pieces (largest_fragment provided)
      *  - "embed"      — parsed fine but no 3D conformer (would fail at
-     *                   ligand prep — caught here instead). */
-    kind?: "empty" | "too_long" | "parse" | "fragments" | "embed";
+     *                   ligand prep — caught here instead)
+     *  - "undockable" — parses + embeds fine but is out of range for
+     *                   Vina-family docking: too large/complex (>~80
+     *                   heavy atoms — Vina's flexibility model breaks
+     *                   down, e.g. a large cyclic peptide), or contains
+     *                   atoms the engine can't score. `suggestion` has
+     *                   the actionable next step. */
+    kind?: "empty" | "too_long" | "parse" | "fragments" | "embed" | "undockable";
     fragment_count?: number;
     largest_fragment?: string;
+    /** Actionable next-step string, present on "undockable" rows. */
+    suggestion?: string;
   }[];
   mutation_issues?: MutationIssue[];
 }
