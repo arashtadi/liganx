@@ -1490,6 +1490,10 @@ export default function StudioPage() {
     // origin, miles from the receptor).
     mutantFailed?: boolean;
     wtFailed?: boolean;
+    // (v1.32) Human-readable reason the compound failed to dock, derived
+    // from the runner's `extra` prefix. Shown in the inline note when the
+    // user clicks a fully-failed row (no pose for either variant).
+    failReason?: string;
     // (v1.00) ADMET payload from job.compounds[].admet — drug-likeness +
     // extended risk profile (hERG / BBB / CYP / DILI). Optional; absent
     // when RDKit failed to parse the SMILES on the backend.
@@ -1968,6 +1972,19 @@ export default function StudioPage() {
               row.mutantScore = r.best_score;
               row.mutantPoseB64 = posePdbqtB64;
               row.mutantFailed = cellFailed;
+            }
+            // (v1.32) Capture a friendly failure reason from the runner's
+            // `extra` prefix so the inline note can tell the user WHY a
+            // compound failed (not just "it failed").
+            if (cellFailed && !row.failReason) {
+              const ex = r.extra || "";
+              row.failReason = /^ligand_prep_failed/.test(ex)
+                ? "Ligand prep failed — RDKit couldn't build a 3D structure from this SMILES."
+                : /^mutant_build_failed/.test(ex)
+                ? "Mutant receptor build failed for this compound."
+                : /^docking_failed/.test(ex)
+                ? "Docking produced no pose — usually means the molecule is too large or has chemistry the docking engine can't handle (e.g. big cyclic peptides)."
+                : "This compound failed to dock — no pose was produced.";
             }
             byCompound.set(r.compound_id, row);
           }
@@ -2693,7 +2710,27 @@ export default function StudioPage() {
                     // (filled when active) — no longer a separate click
                     // target. ↗ removed from the body since the body
                     // doesn't navigate anymore.
+                    // (v1.32) A row with no pose for EITHER variant is a
+                    // fully-failed compound — there is nothing to load
+                    // into the 3D viewer or the 2D editor.
+                    const rowHasNoPose = !row.mutantPoseB64 && !row.wtPoseB64;
                     const loadIn3D = () => {
+                      // (v1.32) Fully-failed row → non-destructive click.
+                      // The old behavior cleared dockResult/dockResultWt
+                      // and loaded the (often unparseable) failed SMILES
+                      // into the 2D editor. That wiped the successful
+                      // compounds' poses out of the 3D viewer and swapped
+                      // the canvas — so clicking the failed row felt like
+                      // the whole app reset to "just the failed one." A
+                      // failed compound has nothing to show, so clicking
+                      // it now only moves the selection highlight; the 3D
+                      // + 2D views stay on whatever successful compound
+                      // was last loaded, and the inline note below
+                      // explains why this row has no pose.
+                      if (rowHasNoPose) {
+                        setSelectedRowCompoundId(row.compoundId);
+                        return;
+                      }
                       setSelectedRowCompoundId(row.compoundId);
                       // (v1.31) Gate the 3D result objects on the PRESENCE
                       // OF A POSE, not on `score != null`. A failed
@@ -2771,7 +2808,9 @@ export default function StudioPage() {
                             type="button"
                             onClick={loadIn3D}
                             className="flex-1 flex items-center gap-2 text-left px-1 py-1 hover:bg-slate-800/40 transition-colors"
-                            title={`Load ${row.name}'s pose into the 3D viewer above (stays in Studio).`}
+                            title={rowHasNoPose
+                              ? `${row.name} failed to dock — no pose to display. Click for details.`
+                              : `Load ${row.name}'s pose into the 3D viewer above (stays in Studio).`}
                           >
                             <span className={`flex-1 text-left truncate ${isSelected ? "text-cyan-200" : "text-slate-200"}`}>
                               {row.name}
@@ -2872,6 +2911,25 @@ export default function StudioPage() {
                             )}
                           </button>
                         </div>
+                        {/* (v1.32) Inline failure note. Shown when the
+                            user selects a fully-failed row (no pose for
+                            either variant). Clicking such a row is
+                            intentionally non-destructive — it doesn't
+                            touch the 3D viewer or 2D editor — so this
+                            note is the feedback that the click landed,
+                            and it explains WHY there's nothing to show
+                            instead of leaving the user staring at an
+                            unchanged screen wondering if the click
+                            registered. */}
+                        {isSelected && rowHasNoPose && (
+                          <div className="px-3 py-2 bg-rose-950/30 border-t border-rose-900/50 text-rose-200 text-[10px] leading-relaxed">
+                            <span className="font-semibold">✗ {row.name} failed to dock.</span>{" "}
+                            {row.failReason || "No pose was produced for either receptor variant."}{" "}
+                            <span className="text-rose-300/70">
+                              There's no 3D pose to display — the viewer above still shows the last compound you opened. Use “Full job →” for the full report, or edit/remove this compound and re-run.
+                            </span>
+                          </div>
+                        )}
                         {admetExpanded && row.admet && (
                           <div className="px-3 py-2 bg-slate-950/40 border-t border-slate-800/60 text-slate-200">
                             <AdmetChips admet={row.admet} layout="card" />
