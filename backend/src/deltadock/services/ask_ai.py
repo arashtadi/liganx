@@ -119,6 +119,14 @@ compounds. You have access to a structured snapshot of what's on the page \
 # What you should do
 - Answer based on the PAGE CONTEXT. Quote specific numbers, residue \
 codes, mutation codes, and badge labels from it when relevant.
+- (AI1) When a CHEMIST REVIEW block is attached to the user message, \
+the user has asked for a pose review. USE THAT BLOCK as the spine of \
+your answer — quote its verdict, its specific concerns, and its \
+concrete suggestions. Don't paraphrase the structured fields into \
+mush; preserve the specificity (e.g. "strain 9.1 kcal/mol — pose is \
+forced into a high-energy conformer"). The review was produced by the \
+same chemist-agent service that runs at GET /jobs/{key}/review and is \
+designed to be authoritative for first-pass sanity checks.
 - Define terms that appear on the page (Δ, Vinardo, PoseBusters, \
 outside-pocket, hERG, BBB, CYP, AMES, etc.) in 1-3 sentences when asked.
 - Compare compounds, rank them, or summarize a row's strengths and \
@@ -637,18 +645,62 @@ def build_job_context(job: Any) -> dict[str, Any]:
     }
 
 
-def _build_ask_user_prompt(*, context: dict[str, Any], question: str) -> str:
+# (AI1) Phrases that suggest the user wants a chemist-style review of the
+# pose rather than a quick Q&A about the page. When any of these match,
+# the router will run the chemist_review service (S1) and inject its
+# structured verdict into the chat context — Claude then synthesises a
+# plain-English answer that's grounded in the deep review.
+_REVIEW_INTENT_KEYWORDS = (
+    "review this", "review the pose", "review the result", "review pose",
+    "chemist review", "chemist's review", "expert review", "second opinion",
+    "is this pose good", "is this pose ok", "is this pose reasonable",
+    "is the pose good", "what's wrong with this pose",
+    "should i trust this pose", "trust this pose", "trust the pose",
+    "is this trustworthy", "is this reliable",
+    "evaluate this pose", "rate this pose", "judge this pose",
+    "geometry of this pose", "geometry look right",
+    "audit this pose", "critique this pose", "deep review",
+)
+
+
+def is_chemist_review_intent(question: str) -> bool:
+    """Detect a 'review this pose' question. Keyword-based on purpose —
+    these phrasings cover the bulk of the natural-language openers, and
+    a misfire is cheap (the user just gets a thorough answer where they
+    asked a casual one)."""
+    if not question:
+        return False
+    return any(kw in question.lower() for kw in _REVIEW_INTENT_KEYWORDS)
+
+
+def _build_ask_user_prompt(
+    *,
+    context: dict[str, Any],
+    question: str,
+    chemist_review_snippet: Optional[str] = None,
+) -> str:
     """Compose the user message: the structured payload first (so the
     model anchors on it before reading the question), then the user's
     actual prompt. Keeping the payload first matches the Anthropic
-    cookbook recommendation for grounded-Q&A."""
-    return (
+    cookbook recommendation for grounded-Q&A.
+
+    (AI1) When `chemist_review_snippet` is provided, it's inserted between
+    the page context and the question — Claude is instructed via the
+    system prompt to ground 'review this' answers in the snippet."""
+    out = (
         "PAGE CONTEXT (JSON snapshot of what the user is looking at — "
         "answer only from this, no extrapolation):\n"
         + json.dumps(context, separators=(",", ":"))
-        + "\n\nQUESTION:\n"
-        + question.strip()
     )
+    if chemist_review_snippet:
+        out += (
+            "\n\nCHEMIST REVIEW (pre-computed structured first-pass review "
+            "of the best pose — use as the spine of your answer when the "
+            "user is asking for a pose review):\n"
+            + chemist_review_snippet.strip()
+        )
+    out += "\n\nQUESTION:\n" + question.strip()
+    return out
 
 
 class AskResult(BaseModel):
@@ -657,7 +709,12 @@ class AskResult(BaseModel):
     model: str
 
 
-async def ask_claude_about_job(*, context: dict[str, Any], question: str) -> AskResult:
+async def ask_claude_about_job(
+    *,
+    context: dict[str, Any],
+    question: str,
+    chemist_review_snippet: Optional[str] = None,
+) -> AskResult:
     """Single-shot Q&A call. Returns AskResult with the model's plain-text
     answer, or raises RuntimeError for auth/network/quota failures (router
     maps those to 503/502)."""
@@ -683,7 +740,9 @@ async def ask_claude_about_job(*, context: dict[str, Any], question: str) -> Ask
         "system": _ASK_SYSTEM_PROMPT,
         "messages": [
             {"role": "user", "content": _build_ask_user_prompt(
-                context=context, question=question,
+                context=context,
+                question=question,
+                chemist_review_snippet=chemist_review_snippet,
             )},
         ],
     }

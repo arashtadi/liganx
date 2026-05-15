@@ -34,7 +34,9 @@ from sqlmodel import Session
 
 from ..auth import CurrentUser, current_user
 from ..db import get_session
-from ..services.ask_ai import ASK_MODEL, ask_claude_about_job, build_job_context
+from ..services.ask_ai import (
+    ASK_MODEL, ask_claude_about_job, build_job_context, is_chemist_review_intent,
+)
 from ..services.rate_limit import RateLimit, rate_limit
 
 log = logging.getLogger(__name__)
@@ -98,6 +100,85 @@ def _resolve_job_for_ask(session: Session, key: str):
         if job:
             return job
     return session.exec(select(Job).where(Job.share_id == key)).first()
+
+
+async def _build_chemist_review_snippet(session: Session, job) -> Optional[str]:
+    """(AI1) Run the chemist-reviewer service for the job's best pose
+    and format its output as a string snippet the chat can include in
+    the user prompt.
+
+    All failure modes are silent — if the API key is missing, the pose
+    isn't available, or Anthropic errors out, we return None and the
+    chat falls back to plain Q&A. Better a slightly-less-helpful
+    answer than a 500."""
+    import os
+    from sqlmodel import select
+    from ..catalog import get_target
+    from ..models import Compound, DockingResult
+    from ..services.chemist_review import review_pose
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    # Best (most-negative) real result — same picker as the /review endpoint.
+    result = session.exec(
+        select(DockingResult)
+        .where(DockingResult.job_id == job.id)
+        .where(DockingResult.best_score < 0)
+        .order_by(DockingResult.best_score.asc())                  # type: ignore[attr-defined]
+    ).first()
+    if not result:
+        return None
+    compound = session.get(Compound, result.compound_id)
+    if not compound:
+        return None
+    target = get_target(job.pdb_id)
+
+    try:
+        review = await review_pose(
+            compound_smiles=compound.smiles,
+            compound_name=compound.name or f"compound #{compound.id}",
+            target_id=target.id if target else (job.pdb_id or "unknown"),
+            target_name=target.name if target else (job.pdb_id or "Unknown target"),
+            target_uniprot=(target.uniprot if target else (job.uniprot_id or "")),
+            pdb_id=job.pdb_id,
+            chain=job.chain,
+            variant=result.variant,
+            indications=(target.indications if target else []),
+            docked_score=result.best_score,
+            extra=result.extra,
+            api_key=api_key,
+        )
+    except RuntimeError as e:
+        log.info("chemist_review skipped in chat path: %s", e)
+        return None
+
+    # Format the structured review into a tight text block. Compact on
+    # purpose — Claude's context window is precious, and the chat's
+    # second LLM call will paraphrase this into the actual answer.
+    lines = [
+        f"Compound: {compound.name or f'#{compound.id}'} ({compound.smiles})",
+        f"Variant: {result.variant}",
+        f"Docked score: {result.best_score:+.2f} kcal/mol",
+        f"Verdict: {review.verdict}",
+        f"Headline: {review.headline}",
+        f"Summary: {review.summary}",
+    ]
+    if review.strengths:
+        lines.append("Strengths:")
+        lines.extend(f"  - {s}" for s in review.strengths)
+    if review.concerns:
+        lines.append("Concerns:")
+        lines.extend(f"  - {c}" for c in review.concerns)
+    if review.suggestions:
+        lines.append("Suggestions:")
+        lines.extend(f"  - {s}" for s in review.suggestions)
+    if review.criteria:
+        lines.append("Per-criterion:")
+        for k, v in review.criteria.items():
+            lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
 
 
 def _load_chat_messages(session: Session, user_id: str, job_share_id: str) -> list[dict[str, Any]]:
@@ -299,9 +380,21 @@ async def ask_about_job(
     # cost predictable.
 
     context = build_job_context(job)
+
+    # (AI1) If the user is asking for a pose review, run the chemist-
+    # reviewer service first and inject its structured verdict into
+    # the chat call. Two Claude calls per question (chemist + chat),
+    # but only for the specific intent — most chat questions stay
+    # single-call.
+    chemist_snippet: str | None = None
+    if is_chemist_review_intent(payload.question):
+        chemist_snippet = await _build_chemist_review_snippet(session, job)
+
     try:
         result = await ask_claude_about_job(
-            context=context, question=payload.question,
+            context=context,
+            question=payload.question,
+            chemist_review_snippet=chemist_snippet,
         )
     except RuntimeError as e:
         # Maps AI service errors (network, auth, quota) to 503. The
