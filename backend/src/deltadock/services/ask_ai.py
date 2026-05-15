@@ -135,6 +135,53 @@ cell is effectively a standard single-conformation dock.
 - The `score` shown for an ensemble row IS already the best across the \
 ensemble — do not describe it as one conformer's score.
 
+# Other result-row fields
+- `vinardo_score`: a second-pass smina/Vinardo rescore of the same pose \
+(kcal/mol, lower = stronger). Often separates close analogs better than \
+raw Vina.
+- `foldx_ddg`: FoldX ΔΔG of the mutation in kcal/mol — the energy cost of \
+the substitution to the protein's fold. Larger positive = the mutation \
+is more destabilising. Only present on mutant cells from FoldX-built \
+receptors.
+- `pose_summary`: a human-readable sentence the pose validator wrote \
+about this cell — quote it directly when the user asks "what's the \
+summary" or "describe this pose".
+- `interface_bsa_angstroms2`: buried surface area of the protein-ligand \
+interface (Å²). >600 Å² is a healthy druggable contact patch; <300 Å² is \
+usually a glancing pose.
+- `interface_hbonds`: count of H-bonds across the interface (ProLIF). \
+≥3 usually generalises better across analogs than hydrophobic-only \
+contacts.
+- `vina_score_terms`: the Vina score decomposition (g1/g2/rep/hyd/hb are \
+raw PRE-weighting contributions; `total` is the final weighted kcal/mol). \
+The g*/rep/hyd/hb rows do NOT sum to `total`.
+- `water_displacement` ({displaced, pocket_count}): crystallographic \
+waters in the pocket sphere this pose displaces. This is Phase-0 \
+geometric overlap, NOT WaterMap — don't over-claim from it.
+- `contacts_count` / `contacts_sample`: how many receptor residues the \
+pose contacts, and a sample of the first few residue codes.
+- `prolif_status` (in flags): "empty" or "err:..." means ProLIF produced \
+no interaction fingerprint — explains an empty contacts list.
+- Boltz-2 rows: `boltz2_affinity_log10_ic50_um` (lower = stronger), \
+`boltz2_binder_probability` (0-1, binder vs decoy), \
+`boltz2_pocket_residue_count`, `boltz2_mut_vs_wt_rmsd_angstroms`.
+
+# pdb_quality (cross-docking sanity check)
+- Top-level `pdb_quality`: the platform re-docked the target's own \
+co-crystal ligand and measured heavy-atom RMSD vs the crystal pose. \
+`rmsd_angstroms` < 2 = pocket geometry is trustworthy; 2-4 = uncertain; \
+> 4 = the docking box is likely mis-defined and EVERY score in the matrix \
+should be treated with suspicion. If `pdb_quality` is null the check \
+hasn't run yet — say so rather than guessing.
+
+# Compound ADMET
+- Each compound carries an `admet` block: RDKit descriptors (mw, logp, \
+tpsa, qed, hba/hbd, rotatable bonds), Lipinski/Veber pass flags, and \
+PAINS hits. When `admet.extended` is present it has rule-based hERG / \
+BBB / CYP3A4 / CYP2D6 / DILI risk labels. Answer drug-likeness and \
+liability questions from this block; don't pull ADMET numbers from \
+general knowledge.
+
 # Tone and length
 - Be a working chemist's co-pilot, not a textbook. 1-4 short paragraphs \
 unless they asked for an exhaustive answer.
@@ -274,6 +321,63 @@ def _summarize_extra(extra: Optional[str]) -> dict[str, Any]:
             # Winning conformer label: "input" (un-relaxed crystal) or
             # "confN" (an MD-relaxed conformer).
             out.setdefault("ensemble", {})["best"] = val
+        elif key == "foldx_ddg":
+            # FoldX ΔΔG of the mutation, kcal/mol. Shown on mutant cells.
+            try:
+                out["foldxDDG"] = float(val)
+            except ValueError:
+                pass
+        elif key == "summary":
+            # Human-readable pose summary the validator wrote — this is
+            # the prose the PoseDetail panel shows verbatim.
+            out["summary"] = val
+        elif key == "prolif":
+            # ProLIF interaction-fingerprint status (e.g. "empty",
+            # "err:...") — the UI uses it to explain an empty contacts list.
+            out["prolifStatus"] = val
+        elif key == "iface_bsa":
+            # Buried surface area of the protein-ligand interface, Å².
+            try:
+                out["interfaceBsa"] = float(val)
+            except ValueError:
+                pass
+        elif key == "iface_hb":
+            # H-bond count across the interface (from ProLIF).
+            try:
+                out["interfaceHbonds"] = int(val)
+            except ValueError:
+                pass
+        elif key == "pocket_residues":
+            # Boltz-2: number of pocket residues passed as the constraint.
+            try:
+                out["pocketResidues"] = int(val)
+            except ValueError:
+                pass
+        elif key == "boltz2_aligned_to_wt":
+            # Boltz-2: mutant→WT Cα-alignment RMSD, Å. Format "1.2A".
+            m = re.match(r"^([\d.]+)A?$", val)
+            if m:
+                try:
+                    out["boltz2AlignedRmsd"] = float(m.group(1))
+                except ValueError:
+                    pass
+        elif key == "vina_terms":
+            # Vina score decomposition from smina --score_only. Format:
+            # "g1:-42.04,g2:-1115.74,rep:4.46,hyd:-19.39,hb:-2.07,total:-8.42"
+            terms: dict[str, float] = {}
+            for tok in val.split(","):
+                kv = tok.split(":")
+                if len(kv) != 2:
+                    continue
+                k2 = kv[0].strip()
+                if k2 not in ("g1", "g2", "rep", "hyd", "hb", "total"):
+                    continue
+                try:
+                    terms[k2] = float(kv[1])
+                except ValueError:
+                    pass
+            if terms:
+                out["vinaTerms"] = terms
 
     # Promote PoseBusters "skipped" exactly like the TS parser does, so
     # the AI sees the same UX category the matrix shows.
@@ -287,6 +391,35 @@ def _summarize_extra(extra: Optional[str]) -> dict[str, Any]:
         out["confidence"] = "skipped"
 
     return out
+
+
+def _admet_for_ask(smiles: str) -> Optional[dict[str, Any]]:
+    """Compute the headline ADMET / drug-likeness block for a SMILES so the
+    AI sees the same chips the JobPage shows (MW, LogP, QED, Lipinski/Veber,
+    PAINS, plus the rule-based hERG/BBB/CYP/DILI `extended` block when
+    available). Mirrors routers/jobs.py::_admet_for. LRU-cached downstream,
+    so repeated calls for the same compound are ~free. Returns None on any
+    failure (RDKit missing in a stripped env) — the AI just won't see ADMET
+    for that compound, same as the UI rendering an em-dash."""
+    try:
+        from deltadock_pipeline.admet import compute_admet
+        return compute_admet(smiles)
+    except Exception:
+        return None
+
+
+def _pdb_quality_for_ask(pdb_id: str, chain: str) -> Optional[dict[str, Any]]:
+    """Load the cached cross-docking sanity-check result for (pdb_id, chain)
+    — the same `pdb_quality` badge the JobPage header shows (re-docks the
+    co-crystal ligand, reports heavy-atom RMSD vs the crystal pose). Returns
+    None when the background check hasn't run/cached yet. Mirrors
+    routers/jobs.py::_pdb_quality_for."""
+    try:
+        from deltadock_pipeline.crossdock import load_cached
+        pid = pdb_id if pdb_id.startswith("USR_") else pdb_id.upper()
+        return load_cached(pid, (chain or "A").upper())
+    except Exception:
+        return None
 
 
 def build_job_context(job: Any) -> dict[str, Any]:
@@ -334,26 +467,23 @@ def build_job_context(job: Any) -> dict[str, Any]:
         ),
     }
 
-    # Compounds — name + smiles + a TRIMMED admet view. We deliberately
-    # don't ship the full 41-endpoint dump on every call (~6kb each);
-    # instead we ship the headline 5-channel block (hERG, BBB, CYP3A4,
-    # AMES, oral bioavailability) which is what the chips show by
-    # default. The expanded view is loaded lazily by the frontend; if
-    # the user opens it and then asks a follow-up, the panel re-sends
-    # the now-visible payload.
+    # Compounds — name + smiles + the headline ADMET / drug-likeness block
+    # (the same descriptors the JobPage's AdmetChips render: MW, LogP, QED,
+    # Lipinski/Veber, PAINS, and the rule-based hERG/BBB/CYP/DILI `extended`
+    # block when available). We compute it here via compute_admet — the
+    # `askJob` request only carries the question, so if we don't compute it
+    # the model is blind to every ADMET chip on the page. compute_admet is
+    # LRU-cached, so this is ~free on repeat calls. We deliberately do NOT
+    # ship the full 41-endpoint admet_ml dump (~6kb each) — just the
+    # headline block that the chips show by default.
     compounds_block: list[dict[str, Any]] = []
     for c in job.compounds:
-        admet = getattr(c, "_cached_admet", None)
-        # The Job ORM model doesn't attach admet to Compound directly —
-        # the JobOut serializer does. For the ask payload we either
-        # leave admet out or pass it through if the caller pre-loaded
-        # it. Frontend always re-sends ADMET separately, so don't
-        # block on it here.
         entry: dict[str, Any] = {
             "id": c.id,
             "name": c.name or f"compound_{c.id}",
             "smiles": c.smiles,
         }
+        admet = _admet_for_ask(c.smiles)
         if admet:
             entry["admet"] = admet
         compounds_block.append(entry)
@@ -394,9 +524,46 @@ def build_job_context(job: Any) -> dict[str, Any]:
             # `spread` = best↔worst score gap (kcal/mol), `best` = the
             # winning conformer ("input" = un-relaxed crystal snapshot).
             row["ensemble"] = ext["ensemble"]
+        # Remaining per-cell signals the JobPage surfaces (PoseDetail
+        # drawer, interface chips, FoldX ΔΔG, the human-readable pose
+        # summary, Boltz-2 affinity heads). Without these the AI is
+        # blind to whole panels of the results page.
+        if "foldxDDG" in ext:
+            row["foldx_ddg"] = ext["foldxDDG"]
+        if "summary" in ext:
+            row["pose_summary"] = ext["summary"]
+        if "prolifStatus" in ext:
+            flags["prolif_status"] = ext["prolifStatus"]
+        if "interfaceBsa" in ext:
+            row["interface_bsa_angstroms2"] = ext["interfaceBsa"]
+        if "interfaceHbonds" in ext:
+            row["interface_hbonds"] = ext["interfaceHbonds"]
+        if "vinaTerms" in ext and isinstance(ext["vinaTerms"], dict):
+            row["vina_score_terms"] = ext["vinaTerms"]
+        if "water" in ext and isinstance(ext["water"], dict):
+            row["water_displacement"] = ext["water"]
+        if "affValue" in ext:
+            row["boltz2_affinity_log10_ic50_um"] = ext["affValue"]
+        if "affProb" in ext:
+            row["boltz2_binder_probability"] = ext["affProb"]
+        if "pocketResidues" in ext:
+            row["boltz2_pocket_residue_count"] = ext["pocketResidues"]
+        if "boltz2AlignedRmsd" in ext:
+            row["boltz2_mut_vs_wt_rmsd_angstroms"] = ext["boltz2AlignedRmsd"]
+        if "contacts_count" in ext:
+            row["contacts_count"] = ext["contacts_count"]
+            if "contacts_sample" in ext:
+                row["contacts_sample"] = ext["contacts_sample"]
         if flags:
             row["flags"] = flags
         results_block.append(row)
+
+    # Cross-docking sanity check — the `pdb_quality` badge in the JobPage
+    # header. Re-docks the co-crystal ligand and reports heavy-atom RMSD vs
+    # the crystal pose: <2 Å = trustworthy pocket geometry, >4 Å = the box
+    # is probably mis-defined and every score in the matrix is suspect. The
+    # AI should be able to answer "can I trust these scores?" from this.
+    pdb_quality = _pdb_quality_for_ask(job.pdb_id, job.chain)
 
     return {
         "job": {
@@ -417,6 +584,7 @@ def build_job_context(job: Any) -> dict[str, Any]:
             "title": job.title,
         },
         "score_direction": score_direction,
+        "pdb_quality": pdb_quality,
         "compounds": compounds_block,
         "results": results_block,
     }
