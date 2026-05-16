@@ -55,12 +55,17 @@ from .ask_ai import _summarize_extra
 log = logging.getLogger(__name__)
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-# Haiku — fast (~2s) and ~$0.002 per review. Sonnet is overkill here; the
-# heavy lifting (the actual chemistry computations) is already done.
+# (S1.1) Upgraded to Sonnet. The chemist review is a deep-analysis call
+# the user has explicitly asked for ('is this pose good?') — accuracy
+# matters far more than cost. Sonnet is ~3x Haiku's per-token price but
+# materially better at multi-step reasoning, chemistry comparisons, and
+# producing the strict JSON schema reliably. Per-call cost is still
+# ~$0.015, and we invoke this only on demand (not every page load).
+# Override with CHEMIST_REVIEW_MODEL env if you need to dial back.
 ANTHROPIC_MODEL = os.environ.get(
-    "CHEMIST_REVIEW_MODEL", "claude-haiku-4-5-20251001"
+    "CHEMIST_REVIEW_MODEL", "claude-sonnet-4-6"
 )
-DEFAULT_TIMEOUT_S = 30.0
+DEFAULT_TIMEOUT_S = 45.0     # Sonnet is slightly slower; raise from 30s.
 
 
 Verdict = Literal[
@@ -98,41 +103,76 @@ class ChemistReview:
 # ──────────────────────── prompt construction ────────────────────────
 
 _SYSTEM_PROMPT = """\
-You are a medicinal-chemistry reviewer doing a first-pass quality check on
-a molecular-docking result. The geometric and biophysical analysis has
-ALREADY been computed (pose-in-pocket, ProLIF contacts, MMFF94 strain,
-PoseBusters verdict, FoldX ΔΔG, BSA, H-bond count, Vina-term split). Your
-job is to synthesise these into a chemist's verdict.
+You are a senior medicinal-chemistry reviewer doing a first-pass quality
+check on a molecular-docking result. The geometric and biophysical
+analysis has ALREADY been computed (pose-in-pocket, ProLIF contacts,
+MMFF94 strain, PoseBusters verdict, FoldX ΔΔG, BSA, H-bond count,
+Vina-term split). Your job is to synthesise these into a chemist's
+verdict that a working medicinal chemist would actually find useful.
 
-Be skeptical but constructive. Specifically:
-  • Don't approve poses with bad geometry or off-pocket binding just to
-    be polite. Call out artefacts directly.
-  • Don't penalise reasonable poses for missing data — "skipped" or
-    "unknown" PoseBusters is not a failure, it's a missing reading.
-  • For each concern, say WHY (e.g. "strain 9.1 kcal/mol — pose is
-    forced into a high-energy conformer the molecule wouldn't actually
-    occupy in solution"), not just THAT.
-  • Suggestions should be concrete and actionable ("try editing the
-    para-Cl to a smaller F to relieve the clash with M793"), not
-    generic ("consider further optimization").
-  • When known, draw on the literature for the target — what residues
-    are expected to be in the binding pocket? Does this pose hit them?
+# HARD RULES (these are load-bearing)
 
+  1. BE SPECIFIC, NOT GENERIC. Quote actual residue codes (e.g.
+     "hinge H-bond to MET793"), actual numbers ("strain 9.1 kcal/mol —
+     above the 7 kcal threshold"), and actual chemistry ("the para-Cl
+     on the benzyl group"). Never write "the pose has good interactions"
+     — say WHICH interactions. Never write "the score is reasonable" —
+     compare to a number ("competitive with sub-µM kinase inhibitors").
+  2. NAME THE CONTACT RESIDUES. If the ProLIF contacts list is in the
+     input, REFERENCE specific residues in the strengths/concerns/
+     summary. Don't paraphrase as "the pose makes several contacts" —
+     write "the pose contacts T790 (Hydr), MET793 (HBAc, 2.7 Å), and
+     LYS745 (Hydr)". If contacts aren't shown, say so plainly.
+  3. KINASE TARGETS — when the target is a protein kinase (most catalog
+     targets are), USE kinase-specific framing: hinge H-bond (canonical
+     contact for ATP-site binders), DFG-in/out conformation, αC helix
+     position, gatekeeper residue, selectivity loop. Comment on whether
+     the pose is consistent with type I (DFG-in ATP-site), type II
+     (DFG-out back pocket), type III (allosteric, off-ATP), or covalent
+     binders. For specific famous mutations (T790M, G12C, V600E, T315I,
+     C481S, D816V), note their canonical mechanism in 1 line if
+     relevant.
+  4. CALL OUT ARTEFACTS DIRECTLY. Off-pocket binding, strain > 7
+     kcal/mol, PoseBusters "Suspect", clashes — never ignore. If
+     PoseBusters is "skipped" or "unknown", note it's missing data
+     not a failure.
+  5. CONCRETE SUGGESTIONS. "Try editing the para-Cl to a smaller F to
+     relieve the clash with M793" — not "consider further optimization".
+     Each suggestion should name a specific change.
+  6. IF THE 2D STRUCTURE IS ATTACHED, look at it. Comment on the
+     visible scaffold, ring system, chirality, and where a suggested
+     modification would land — not just SMILES strings.
+
+# WHEN DATA IS THIN
+Don't fabricate. If PoseBusters/strain/ProLIF/etc. are missing, say so
+("no PoseBusters verdict — geometric quality is unconfirmed") and base
+the verdict on what's actually in the inputs. A "borderline" verdict
+with honest reasoning is more useful than a confident verdict built on
+guesses.
+
+# OUTPUT
 Return STRICT JSON ONLY (no prose, no markdown fences, no explanation).
 Schema:
 {
   "verdict": "confident-hit" | "plausible" | "borderline" | "suspect" | "failed",
   "headline": "<one short sentence, the bottom line>",
-  "summary": "<2-3 sentences, plain English, what a chemist would say>",
-  "strengths": ["<specific positive finding>", ...],
-  "concerns":  ["<specific issue with reasoning>", ...],
-  "suggestions": ["<concrete next-step idea>", ...],
+  "summary": "<2-3 sentences, plain English. Reference specific
+              residues / numbers / chemistry from the input.>",
+  "strengths": ["<specific positive finding — cite a residue, number,
+                  or specific structural feature>", ...],
+  "concerns":  ["<specific issue WITH REASONING (why it matters), not
+                  just what>", ...],
+  "suggestions": ["<concrete actionable modification, named change>",
+                   ...],
   "criteria": {
-    "pose_fit": "<one short phrase about whether the pose is in the canonical pocket>",
-    "geometry": "<one short phrase about clashes / strain>",
-    "interactions": "<one short phrase about contacts + H-bonds + BSA>",
-    "score": "<one short phrase about whether the Vina score reflects real interactions>",
-    "drug_likeness": "<one short phrase about the compound itself>"
+    "pose_fit": "<canonical pocket? off-pocket? cite pose_offset_a or
+                  contact residues>",
+    "geometry": "<strain value, PoseBusters verdict; what does it mean>",
+    "interactions": "<H-bonds (count + key residues), BSA, contact set>",
+    "score": "<is the Vina score consistent with the molecule's size
+              and the contacts? compared to what?>",
+    "drug_likeness": "<MW, rotatable bonds, scaffold maturity, ADMET
+                      red flags if visible>"
   }
 }
 """
@@ -296,7 +336,7 @@ async def review_pose(
             model=ANTHROPIC_MODEL,
         )
 
-    user_msg = _build_user_message(
+    user_text = _build_user_message(
         compound_smiles=compound_smiles,
         compound_name=compound_name,
         target_id=target_id,
@@ -310,11 +350,33 @@ async def review_pose(
         extras=extras,
     )
 
+    # (S1.1) Attach the 2D structure as a vision input so the reviewer
+    # can comment on the actual scaffold / chirality / ring system —
+    # not just SMILES strings. Best-effort: if RDKit can't render the
+    # SMILES, the call falls back to text-only Claude. Defensive
+    # because the chemist review is on the critical 'is this pose
+    # good?' path and we don't want a bad SMILES to fail the whole
+    # review.
+    content: Any
+    try:
+        from .structure_image import image_block, smiles_to_png_b64
+        b64 = smiles_to_png_b64(compound_smiles)
+        if b64:
+            content = [
+                {"type": "text", "text": user_text},
+                image_block(b64),
+            ]
+        else:
+            content = user_text
+    except Exception as e:                                          # noqa: BLE001
+        log.info("chemist_review: 2D image render failed; text-only: %s", e)
+        content = user_text
+
     payload = {
         "model": ANTHROPIC_MODEL,
-        "max_tokens": 1024,
+        "max_tokens": 1500,         # bigger so the more-detailed prompt has room
         "system": _SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_msg}],
+        "messages": [{"role": "user", "content": content}],
     }
     headers = {
         "x-api-key": api_key,

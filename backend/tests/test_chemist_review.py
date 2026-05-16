@@ -216,6 +216,78 @@ def test_failure_suggestions_are_actionable_per_kind():
 # ────────────────────── ChemistReview dataclass ─────────────────────
 
 
+# ────────────────────── S1.1 — prompt quality ─────────────────────
+
+
+def test_prompt_includes_contact_residues_specifically():
+    """The hardest test we have: if ProLIF contacts are in the input, the
+    user message must include them by residue code so the LLM has the
+    raw material to comment on them. Generic prompts produce generic
+    answers; this pins down the specificity."""
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Test",
+        target_id="egfr",
+        target_name="EGFR",
+        target_uniprot="P00533",
+        pdb_id="1M17", chain="A", variant="T790M",
+        indications=["NSCLC"],
+        docked_score=-8.0,
+        extras={
+            "contacts": [
+                {"residue": "MET793", "type": "HBAc", "distance": 2.7},
+                {"residue": "T790", "type": "Hydr"},
+                {"residue": "LYS745", "type": "Hydr"},
+            ],
+            "iface_hb": 2,
+            "iface_bsa": 312.5,
+        },
+    )
+    # Every contact residue must appear by name
+    for residue in ("MET793", "T790", "LYS745"):
+        assert residue in msg, f"contact residue {residue} missing from prompt"
+    # And the H-bond interaction type should be visible
+    assert "HBAc" in msg
+
+
+def test_system_prompt_contains_kinase_aware_guidance():
+    """The S1.1 prompt rebuild added explicit kinase-aware framing —
+    hinge H-bond, DFG, gatekeeper, type I/II/III binder classification.
+    Most catalog targets are kinases; this is the load-bearing framing."""
+    from deltadock.services.chemist_review import _SYSTEM_PROMPT
+    for keyword in ("hinge", "DFG", "gatekeeper", "type I", "covalent"):
+        assert keyword.lower() in _SYSTEM_PROMPT.lower(), (
+            f"system prompt is missing the kinase term {keyword!r} — "
+            "the agent will produce generic answers without it"
+        )
+
+
+def test_system_prompt_pushes_for_specific_residue_commentary():
+    """The S1.1 prompt has explicit instructions to NAME residues and
+    cite specific numbers. Pin down that the load-bearing phrasing is
+    present so a prompt edit can't silently dilute the agent's quality."""
+    from deltadock.services.chemist_review import _SYSTEM_PROMPT
+    p = _SYSTEM_PROMPT.lower()
+    # Must mention specific instruction to cite numbers and residues
+    assert "specific" in p
+    assert "residue" in p
+    assert "met793" in p or "name the contact residues" in p
+    # Must call out artefacts (the "be skeptical" clause)
+    assert "artefact" in p or "artifact" in p
+
+
+def test_system_prompt_uses_smarter_default_model():
+    """S1.1 promoted the chemist reviewer to Sonnet. Pin the default so
+    a regression to Haiku is loud."""
+    from deltadock.services.chemist_review import ANTHROPIC_MODEL
+    # Either Sonnet or any explicit override; never silently default
+    # back to Haiku.
+    assert "sonnet" in ANTHROPIC_MODEL.lower() or "opus" in ANTHROPIC_MODEL.lower(), (
+        f"chemist agent should default to sonnet/opus, got {ANTHROPIC_MODEL!r}. "
+        "If a downgrade is intentional, update this test deliberately."
+    )
+
+
 def test_chemist_review_serializes_round_trip():
     """The dataclass survives asdict() — the endpoint relies on this."""
     r = ChemistReview(
