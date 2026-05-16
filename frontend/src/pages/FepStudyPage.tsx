@@ -288,6 +288,33 @@ export default function FepStudyPage() {
     && (runningPct == null || runningPct < 20)
     && estRemainingSec > 0;
 
+  // (L1) Detect "opaque MD stage" — running_complex_leg and
+  // running_solvent_leg are the two pure-MD stages where the pod has
+  // zero sub-stage reporting (no openmm step-count hook yet). In
+  // these stages `progress_pct` stays flat at the stage-entry value
+  // for HOURS while elapsed climbs, so the J15 extrapolation
+  // formula `(elapsed/pct) × (100-pct)` produces a "remaining" that
+  // grows linearly with elapsed — the user sees the ETA push back
+  // every hour and assumes something's stuck.
+  //
+  // Honest fix: when we're on one of these stages, don't show a
+  // precise-looking ETA at all. Show the typical wall-time range and
+  // make clear that fine-grained progress isn't available. Once the
+  // stage transitions (to building_solvent_dag or analysing_legs),
+  // the formula starts working again because pct advances.
+  //
+  // Long-term fix (L2): heartbeat thread on the pod surfaces
+  // stage_elapsed_seconds so we can at least show "running MD for
+  // 4h 12min" instead of just a generic message.
+  const _OPAQUE_MD_STAGES = new Set([
+    "running_complex_leg",
+    "running_solvent_leg",
+  ]);
+  const runningEdgeOnOpaqueMdStage =
+    runningEdge != null
+    && runningEdge.stage != null
+    && _OPAQUE_MD_STAGES.has(runningEdge.stage);
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 animate-fade-in">
       {/* (J16) Shimmer keyframes for the running-edge progress bar.
@@ -453,7 +480,29 @@ export default function FepStudyPage() {
                   {fmtDuration(elapsedSec)}
                 </span>
               </span>
-              {edgesRemaining > 0 && estRemainingSec > 0 && (
+              {/* (L1) When the running edge is in an opaque MD stage,
+                  the pct-based ETA grows misleadingly. Suppress the
+                  precise number and show the typical wall-time range
+                  + a note that fine-grained progress is missing. */}
+              {edgesRemaining > 0 && runningEdgeOnOpaqueMdStage && (
+                <>
+                  <span>·</span>
+                  <span>
+                    MD sampling in progress —{" "}
+                    <span className="font-medium text-slate-700 dark:text-slate-200">
+                      typical 6–10&nbsp;h per leg
+                    </span>{" "}
+                    on this GPU
+                  </span>
+                  <span>·</span>
+                  <span className="italic">
+                    no sub-stage progress reporting yet (L2 will add it)
+                  </span>
+                </>
+              )}
+              {edgesRemaining > 0
+                && !runningEdgeOnOpaqueMdStage
+                && estRemainingSec > 0 && (
                 <>
                   <span>·</span>
                   <span>
