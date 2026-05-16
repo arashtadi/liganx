@@ -182,7 +182,10 @@ export default function HistoryPage() {
           accent + white background so it reads as the focused surface
           even on the dark theme. */}
       <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-1 text-sm font-semibold">
-        {(["jobs", "screenings", "fep"] as HistoryTab[]).map((tab) => (
+        {/* (L4 2026-05-16) FEP tab hidden while FEP+ is broken on the pod
+            (CUDA PTX crash). Restore by including "fep" in the array below
+            once J18 lands and a real-physics edge converges. */}
+        {(["jobs", "screenings"] as HistoryTab[]).map((tab) => (
           <button
             key={tab}
             type="button"

@@ -394,19 +394,23 @@ function Header() {
           <NavLink to="/blog" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Blog
           </NavLink>
-          {/* (H2) FEP+ — Pro-gated free-energy perturbation. Sits with
-              the other science features. BETA chip because it's still
-              gated per-user and the published-reference smoke test
-              hasn't been re-run by an external customer yet. Visible
-              to all users so they can preview the cost; clicking lands
-              on /fep/new which shows the form regardless of access
-              state (the Submit button is gated). */}
-          <NavLink to="/fep/new" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2 relative`}>
-            <span>FEP+</span>
-            <span className="ml-1 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
-              BETA
-            </span>
-          </NavLink>
+          {/* (L4 2026-05-16) FEP+ menu link TEMPORARILY HIDDEN — the
+              openmm CUDA_ERROR_UNSUPPORTED_PTX_VERSION crash is back
+              on the pod, every real edge is failing. Routes /fep/new
+              and /fep/:shareId are still mounted in App.tsx so an
+              already-submitted study's share URL keeps working for
+              the operator; we just don't advertise FEP+ to new users
+              until J18 (CUDA-matched openmm rebuild) lands.
+              Restore: uncomment the NavLink block below + the mobile
+              version after the next real-physics edge completes. */}
+          {false && (
+            <NavLink to="/fep/new" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2 relative`}>
+              <span>FEP+</span>
+              <span className="ml-1 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
+                BETA
+              </span>
+            </NavLink>
+          )}
           {user && (
             <NavLink to="/history" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
               History
@@ -494,12 +498,15 @@ function Header() {
                   </span>
                 </NavLink>
                 <NavLink to="/blog" className={mobileLinkCls}>Blog</NavLink>
-                <NavLink to="/fep/new" className={mobileLinkCls}>
-                  <span>FEP+</span>
-                  <span className="ml-2 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
-                    BETA
-                  </span>
-                </NavLink>
+                {/* (L4) FEP+ link hidden until CUDA crash is fixed — see desktop comment above. */}
+                {false && (
+                  <NavLink to="/fep/new" className={mobileLinkCls}>
+                    <span>FEP+</span>
+                    <span className="ml-2 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
+                      BETA
+                    </span>
+                  </NavLink>
+                )}
                 {user && <NavLink to="/history" className={mobileLinkCls}>History</NavLink>}
                 {user && <NavLink to="/settings" className={mobileLinkCls}>Settings</NavLink>}
                 {user && (user.email || "").toLowerCase() === ADMIN_EMAIL && (
