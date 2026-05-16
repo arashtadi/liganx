@@ -642,7 +642,16 @@ export interface FepStudyGraph {
     ddg_uncertainty: number | null;
     hysteresis_kcal_mol: number | null;
     status: string;                    // "pending" | "running" | "ok" | "failed" | "skipped"
+    // (J13) ISO 8601 timestamps for per-edge elapsed display.
+    started_at: string | null;
+    completed_at: string | null;
   }[];
+  // (J13) Submission timestamp + protocol knobs so the UI can render
+  // elapsed wall-time + an estimated remaining time from the same
+  // single GET that fills the rest of the page.
+  created_at: string | null;
+  n_lambda_windows: number | null;
+  ns_per_window: number | null;
 }
 
 export const api = {

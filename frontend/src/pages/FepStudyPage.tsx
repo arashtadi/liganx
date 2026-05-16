@@ -35,6 +35,18 @@ export default function FepStudyPage() {
   const [err, setErr] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<boolean>(false);
 
+  // (J13) Live "now" ticker — re-renders every second so the elapsed
+  // counter ('Running for 12 min 14 s') updates without waiting for
+  // the next 30s poll. Only ticks while the study is running, to
+  // avoid pointless re-renders on completed/failed pages.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!graph) return;
+    if (!["pending", "preparing", "running"].includes(graph.status)) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [graph?.status]);
+
   // ─── Poll loop. 30s — these studies run for days. ────────────────
   useEffect(() => {
     if (!shareId) return;
@@ -162,6 +174,58 @@ export default function FepStudyPage() {
     return graph.status;
   })();
 
+  // (J13) Elapsed wall time + a coarse "estimated remaining" so the
+  // user has something better than "is it stuck?" while waiting.
+  //
+  // The estimate is intentionally simple: each edge costs roughly
+  //   (n_windows × ns_per_window × 2 legs × ~60 sec/ns of sampling)
+  //   + ~12 min fixed setup (PDBFixer + 2× antechamber + force field
+  //     assignment + solvation + equilibration)
+  // The "60 sec/ns" comes from ~300 ns/day on a 4090. Setup cost
+  // dominates for the short-protocol tests we do at 4×50ps.
+  //
+  // J12 (async polling) will replace this with a real sub-stage
+  // progress bar driven by openmm reporters.
+  function fmtDuration(seconds: number): string {
+    if (!isFinite(seconds) || seconds < 0) return "—";
+    if (seconds < 60) return `${Math.round(seconds)} s`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    if (m < 60) return s > 0 ? `${m} min ${s} s` : `${m} min`;
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return `${h} h ${mm} min`;
+  }
+  function fmtAbsoluteEta(seconds: number): string {
+    if (!isFinite(seconds) || seconds < 0) return "";
+    const eta = new Date(now + seconds * 1000);
+    const opts: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+    return eta.toLocaleTimeString(undefined, opts);
+  }
+  const createdAtMs = graph.created_at ? Date.parse(graph.created_at) : null;
+  const elapsedSec = createdAtMs ? Math.max(0, (now - createdAtMs) / 1000) : null;
+  const nWin = graph.n_lambda_windows ?? 12;
+  const nsWin = graph.ns_per_window ?? 7.0;
+  const perEdgeSetupSec = 12 * 60;
+  const perEdgeSamplingSec = nWin * nsWin * 2 * 60;
+  const perEdgeBaselineSec = perEdgeSetupSec + perEdgeSamplingSec;
+  const edgesRemaining = edgeCounts.pending + edgeCounts.running;
+  // For the running edge we have started_at — use it to subtract
+  // already-elapsed time from the baseline so the ETA shrinks as
+  // the edge progresses.
+  const runningEdge = graph.edges.find((e) => e.status === "running");
+  const runningEdgeStartedMs =
+    runningEdge?.started_at ? Date.parse(runningEdge.started_at) : null;
+  const runningEdgeElapsedSec =
+    runningEdgeStartedMs ? Math.max(0, (now - runningEdgeStartedMs) / 1000) : 0;
+  const estRemainingSec =
+    edgesRemaining > 0
+      ? Math.max(
+          0,
+          edgesRemaining * perEdgeBaselineSec - runningEdgeElapsedSec,
+        )
+      : 0;
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 animate-fade-in">
       {/* Status banner. */}
@@ -245,6 +309,45 @@ export default function FepStudyPage() {
                   </span>
                 )}
               </div>
+            </div>
+          )}
+          {/* (J13) Elapsed wall time + estimated remaining. Only
+              renders while the study is in flight — completed/failed
+              pages hide it since the numbers stop being meaningful.
+              The ETA is a coarse baseline (~12 min setup + sampling
+              per edge); J12 will replace this with sub-stage progress
+              from a polled pod endpoint. */}
+          {isRunning && elapsedSec != null && (
+            <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-3 flex-wrap">
+              <span>
+                Running for{" "}
+                <span className="font-medium text-slate-700 dark:text-slate-200 tabular-nums">
+                  {fmtDuration(elapsedSec)}
+                </span>
+              </span>
+              {edgesRemaining > 0 && estRemainingSec > 0 && (
+                <>
+                  <span>·</span>
+                  <span>
+                    Est. remaining{" "}
+                    <span className="font-medium text-slate-700 dark:text-slate-200 tabular-nums">
+                      ~{fmtDuration(estRemainingSec)}
+                    </span>
+                    {fmtAbsoluteEta(estRemainingSec) && (
+                      <>
+                        {" "}
+                        <span className="text-slate-400">
+                          (≈ {fmtAbsoluteEta(estRemainingSec)})
+                        </span>
+                      </>
+                    )}
+                  </span>
+                  <span>·</span>
+                  <span className="italic">
+                    coarse estimate — mostly setup time per edge
+                  </span>
+                </>
+              )}
             </div>
           )}
           {graph.cycle_closure_rmsd != null && (

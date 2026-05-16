@@ -106,6 +106,14 @@ class FepEdgeResult(BaseModel):
     ddg_uncertainty: Optional[float] = None
     hysteresis_kcal_mol: Optional[float] = None
     status: str = "pending"
+    # (J13) Timing for the running-edge ETA display on FepStudyPage.
+    # ISO 8601 timestamps; None if the edge hasn't reached that state
+    # yet. started_at is set when the runner dispatches the edge to
+    # the pod; completed_at is set when the pod returns (success or
+    # failure). The frontend uses these to render an elapsed-time
+    # counter for the live edge.
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class FepStudyGraphResponse(BaseModel):
@@ -115,6 +123,15 @@ class FepStudyGraphResponse(BaseModel):
     cycle_closure_rmsd: Optional[float] = None
     nodes: list[FepNodeResult] = Field(default_factory=list)
     edges: list[FepEdgeResult] = Field(default_factory=list)
+    # (J13) Study-level timing + protocol info so the FepStudyPage can
+    # render elapsed wall-time + estimated-remaining without a separate
+    # API call. created_at is the submission timestamp; the protocol
+    # knobs let the UI compute the per-edge baseline (~2 GPU-hours per
+    # 12×7ns edge, scaled linearly) and combine with the edge counts
+    # to estimate remaining wall-clock.
+    created_at: Optional[str] = None
+    n_lambda_windows: Optional[int] = None
+    ns_per_window: Optional[float] = None
 
 
 class FepStudySummary(BaseModel):
@@ -825,6 +842,8 @@ def _serialise_graph(
             ddg_uncertainty=e.ddg_uncertainty,
             hysteresis_kcal_mol=e.hysteresis_kcal_mol,
             status=e.status,
+            started_at=(e.started_at.isoformat() if e.started_at else None),
+            completed_at=(e.completed_at.isoformat() if e.completed_at else None),
         ))
 
     return FepStudyGraphResponse(
@@ -834,4 +853,7 @@ def _serialise_graph(
         cycle_closure_rmsd=job.cycle_closure_rmsd,
         nodes=node_results,
         edges=edge_results,
+        created_at=(job.created_at.isoformat() if job.created_at else None),
+        n_lambda_windows=job.n_lambda_windows,
+        ns_per_window=job.ns_per_window,
     )
