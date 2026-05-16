@@ -16,8 +16,10 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { useQuery } from "@tanstack/react-query";
+import { api, type CatalogTarget } from "../api";
 import { Spinner } from "../components/Icons";
+import AutocompleteInput from "../components/AutocompleteInput";
 import { usePageMeta } from "../lib/usePageMeta";
 
 interface AnalogRow {
@@ -25,16 +27,58 @@ interface AnalogRow {
   smiles: string;
 }
 
-const TARGETS = [
-  { id: "egfr", pdb: "2ITY", name: "EGFR kinase domain" },
-  { id: "kras", pdb: "4OBE", name: "KRAS GTPase" },
-  { id: "braf", pdb: "4WO5", name: "BRAF kinase" },
-  { id: "abl",  pdb: "2HYY", name: "ABL1 kinase" },
-  { id: "alk",  pdb: "2XP2", name: "ALK kinase" },
-  { id: "met",  pdb: "2WGJ", name: "MET kinase" },
-  { id: "btk",  pdb: "5P9J", name: "Bruton's tyrosine kinase" },
-  { id: "kit",  pdb: "1T46", name: "KIT (CD117) kinase" },
-];
+/** (UX) Compound suggestion shape for the AutocompleteInput. Source
+ *  tells the user where the suggestion came from — "catalog" for the
+ *  curated reference compounds for the current target (e.g. Osimertinib
+ *  appears under EGFR, Sotorasib under KRAS) or "library" for the
+ *  user's own saved compounds from /me/compounds. */
+interface CompoundSuggestion {
+  name: string;
+  smiles: string;
+  source: "catalog" | "library";
+}
+
+/** Build the suggestion list for the hit + analog name fields. Pulls
+ *  from (a) the catalog target's reference compounds — the FDA-approved
+ *  drugs for this target — and (b) the user's saved library across all
+ *  targets. Substring match (case-insensitive) on both name and SMILES
+ *  so the user can search by either. */
+function suggestCompounds(
+  q: string,
+  target: CatalogTarget | undefined,
+  saved: { id: number; name: string; smiles: string }[],
+): CompoundSuggestion[] {
+  const query = q.trim().toLowerCase();
+  const out: CompoundSuggestion[] = [];
+
+  // Catalog reference compounds for the SELECTED target first — most
+  // relevant for an FEP study against that target.
+  for (const c of target?.compounds ?? []) {
+    if (
+      !query ||
+      c.name.toLowerCase().includes(query) ||
+      c.smiles.toLowerCase().includes(query)
+    ) {
+      out.push({ name: c.name, smiles: c.smiles, source: "catalog" });
+    }
+  }
+  // Then the user's saved library — matches across all targets so a
+  // chemist with their own analog series can find them.
+  for (const c of saved) {
+    if (
+      !query ||
+      (c.name || "").toLowerCase().includes(query) ||
+      c.smiles.toLowerCase().includes(query)
+    ) {
+      out.push({
+        name: c.name || `Compound #${c.id}`,
+        smiles: c.smiles,
+        source: "library",
+      });
+    }
+  }
+  return out.slice(0, 20);                                          // top-20 cap
+}
 
 export default function NewFepStudyPage() {
   usePageMeta({
@@ -43,10 +87,48 @@ export default function NewFepStudyPage() {
   });
   const navigate = useNavigate();
 
+  // (UX) Load the live catalog so the Target dropdown matches what
+  // Studio shows + the Variant dropdown is the mutations curated for
+  // the selected target, not a free-text field. Falls back to a
+  // minimal EGFR-only catalog if /catalog is unreachable so the
+  // page still renders.
+  const { data: catalog = [] } = useQuery({
+    queryKey: ["fep-catalog"],
+    queryFn: api.catalog,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // (UX) The user's saved compound library — drives the
+  // AutocompleteInput on the hit + analog name fields. Picking a
+  // saved compound auto-fills the SMILES. Same pattern as Studio.
+  const { data: savedCompounds = [] } = useQuery({
+    queryKey: ["my-compounds"],
+    queryFn: api.getMyCompounds,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // Target selection — default to EGFR T790M, the published reference
   // we validate against in the smoke test.
   const [targetId, setTargetId] = useState<string>("egfr");
   const [variant, setVariant] = useState<string>("T790M");
+
+  // (UX) When the user picks a target whose catalog mutations don't
+  // include the current variant, fall back to WT so the variant
+  // dropdown never shows a stale code that doesn't exist on the new
+  // target. e.g. user has T790M selected then switches to KRAS —
+  // T790M isn't a KRAS mutation, so reset to WT.
+  const currentTarget = useMemo(
+    () => catalog.find((t) => t.id === targetId),
+    [catalog, targetId],
+  );
+  useEffect(() => {
+    if (!currentTarget) return;
+    const validCodes = ["WT", ...currentTarget.mutations.map((m) => m.code)];
+    if (!validCodes.includes(variant)) {
+      setVariant("WT");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetId, currentTarget]);
 
   // Hit + analogs. Pre-populated with a published osimertinib-against-
   // EGFR-T790M reference set so the page is immediately submittable —
@@ -78,6 +160,37 @@ export default function NewFepStudyPage() {
     },
   ]);
 
+  // (UX) Auto-fill SMILES when the user picks (or types) an exact
+  // compound name match. Watches all known compound suggestions for
+  // the current target + saved library; when a name field's value
+  // matches case-insensitively, the SMILES is auto-populated.
+  // Mirrors how Studio behaves — picking "Osimertinib" from the
+  // dropdown drops in its SMILES without a second action.
+  useEffect(() => {
+    const all = suggestCompounds("", currentTarget, savedCompounds);
+    const byName = new Map<string, string>();
+    for (const c of all) byName.set(c.name.toLowerCase(), c.smiles);
+    // Hit name — only auto-fill if SMILES is empty OR the name was
+    // just changed to a different known compound. (Avoid clobbering
+    // a hand-edited SMILES while the user is still typing the name.)
+    const hitMatch = byName.get(hitName.trim().toLowerCase());
+    if (hitMatch && !hitSmiles.trim()) {
+      setHitSmiles(hitMatch);
+    }
+    // Same for each analog.
+    let changed = false;
+    const next = analogs.map((a) => {
+      const m = byName.get(a.name.trim().toLowerCase());
+      if (m && !a.smiles.trim()) {
+        changed = true;
+        return { ...a, smiles: m };
+      }
+      return a;
+    });
+    if (changed) setAnalogs(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hitName, analogs.map((a) => a.name).join("|"), currentTarget, savedCompounds]);
+
   // Protocol knobs — sane defaults, hidden behind an expander.
   const [nLambdaWindows, setNLambdaWindows] = useState<number>(12);
   const [nsPerWindow, setNsPerWindow] = useState<number>(7.0);
@@ -91,7 +204,10 @@ export default function NewFepStudyPage() {
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
   // ─── Live cost estimate. Debounced 600ms on changes. ─────────────
-  const target = useMemo(() => TARGETS.find((t) => t.id === targetId), [targetId]);
+  // `target` is now sourced from the live catalog rather than a
+  // hand-maintained static list — Variants are pulled straight from
+  // target.mutations.
+  const target = currentTarget;
   const validAnalogs = useMemo(() => analogs.filter((a) => a.smiles.trim().length > 0), [analogs]);
 
   const [estimate, setEstimate] = useState<{
@@ -113,7 +229,7 @@ export default function NewFepStudyPage() {
     setEstimateInflight(true);
     const t = setTimeout(() => {
       api.fepEstimate({
-        pdb_id: target.pdb,
+        pdb_id: target.pdb_id,
         chain: "A",
         variant: variant || "WT",
         hit_smiles: hitSmiles,
@@ -132,7 +248,7 @@ export default function NewFepStudyPage() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    target?.pdb,
+    target?.pdb_id,
     variant,
     hitSmiles,
     validAnalogs.map((a) => a.smiles).join("|"),
@@ -158,7 +274,7 @@ export default function NewFepStudyPage() {
     setSubmitting(true);
     setSubmitErr(null);
     api.fepCreate({
-      pdb_id: target.pdb,
+      pdb_id: target.pdb_id,
       chain: "A",
       variant: variant || "WT",
       hit_smiles: hitSmiles,
@@ -229,21 +345,44 @@ export default function NewFepStudyPage() {
               value={targetId}
               onChange={(e) => setTargetId(e.target.value)}
               className="input mt-1 w-full"
+              disabled={catalog.length === 0}
             >
-              {TARGETS.map((t) => (
-                <option key={t.id} value={t.id}>{t.name} ({t.pdb})</option>
-              ))}
+              {catalog.length === 0 ? (
+                <option>Loading catalog…</option>
+              ) : (
+                catalog.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.pdb_id})
+                  </option>
+                ))
+              )}
             </select>
           </label>
+          {/* (UX) Variant dropdown — populated from the selected
+              target's catalog mutations + WT. Mirrors the Studio
+              pattern where you pick from curated mutations rather
+              than typing a free-text code that might not exist on
+              this target. */}
           <label className="block">
             <span className="text-xs text-slate-500 dark:text-slate-400">Variant</span>
-            <input
-              type="text"
+            <select
               value={variant}
               onChange={(e) => setVariant(e.target.value)}
-              placeholder="WT or e.g. T790M"
               className="input mt-1 w-full font-mono"
-            />
+              disabled={!currentTarget}
+            >
+              <option value="WT">WT — wild type</option>
+              {currentTarget?.mutations.map((m) => (
+                <option key={m.code} value={m.code}>
+                  {m.code} — {m.label}
+                </option>
+              ))}
+            </select>
+            {currentTarget && variant !== "WT" && (
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                {currentTarget.mutations.find((m) => m.code === variant)?.significance}
+              </p>
+            )}
           </label>
         </div>
       </section>
@@ -254,13 +393,25 @@ export default function NewFepStudyPage() {
           2. Hit compound (graph centre)
         </h2>
         <label className="block">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Name (optional)</span>
-          <input
-            type="text"
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Name (pick from your library or catalog reference compounds)
+          </span>
+          <AutocompleteInput<CompoundSuggestion>
             value={hitName}
-            onChange={(e) => setHitName(e.target.value)}
+            onChange={setHitName}
+            fetchSuggestions={async (q) => suggestCompounds(q, currentTarget, savedCompounds)}
+            getValue={(item) => item.name}
+            renderItem={(item) => (
+              <div className="flex items-baseline gap-2">
+                <span className="font-semibold text-delta-700 shrink-0">{item.name}</span>
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  {item.source}
+                </span>
+                <span className="text-[11px] text-slate-500 truncate font-mono">{item.smiles}</span>
+              </div>
+            )}
             placeholder="Osimertinib"
-            className="input mt-1 w-full"
+            className="mt-1 w-full"
           />
         </label>
         <label className="block">
@@ -292,13 +443,25 @@ export default function NewFepStudyPage() {
         <div className="space-y-2">
           {analogs.map((a, i) => (
             <div key={i} className="flex items-center gap-2">
-              <input
-                type="text"
-                value={a.name}
-                onChange={(e) => setAnalog(i, { name: e.target.value })}
-                placeholder={`Analog ${i + 1}`}
-                className="input flex-shrink-0 w-32"
-              />
+              {/* (UX) Analog name field — same AutocompleteInput as
+                  the hit, backed by catalog reference compounds +
+                  saved library. Picking a known compound auto-fills
+                  the SMILES on the right. */}
+              <div className="flex-shrink-0 w-40">
+                <AutocompleteInput<CompoundSuggestion>
+                  value={a.name}
+                  onChange={(v) => setAnalog(i, { name: v })}
+                  fetchSuggestions={async (q) => suggestCompounds(q, currentTarget, savedCompounds)}
+                  getValue={(item) => item.name}
+                  renderItem={(item) => (
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-semibold text-delta-700 truncate">{item.name}</span>
+                      <span className="text-[9px] uppercase text-slate-400">{item.source}</span>
+                    </div>
+                  )}
+                  placeholder={`Analog ${i + 1}`}
+                />
+              </div>
               <input
                 type="text"
                 value={a.smiles}
