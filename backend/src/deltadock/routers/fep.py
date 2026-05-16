@@ -39,7 +39,7 @@ from ..services.fep_runner import (
     cancel_fep_study as _cancel_fep_study,
     get_fep_study_status,
     is_fep_enabled,
-    run_study,
+    run_study_safe,
 )
 
 log = logging.getLogger(__name__)
@@ -745,10 +745,11 @@ def create_fep_study(
 
     def _run_in_thread(job_id: int):
         with _S(db_engine) as s:
-            try:
-                run_study(job_id, s)
-            except Exception:                                        # noqa: BLE001
-                log.exception("Threaded FEP runner crashed for job %s", job_id)
+            # (M20) run_study_safe wraps the runner with an
+            # exception → persist-FAILED handler, so any crash gets
+            # surfaced to the user via the study page + Telegram
+            # alert instead of leaving the row stuck in PREPARING.
+            run_study_safe(job_id, s)
 
     threading.Thread(target=_run_in_thread, args=(fep_job.id,), daemon=True).start()
     log.info("FepJob %s dispatched via daemon thread (Celery deferred for v1)", fep_job.id)

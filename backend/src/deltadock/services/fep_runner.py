@@ -1026,6 +1026,88 @@ def run_study(fep_job_id: int, session: Session) -> None:
             log.warning("FEP failure notify failed for job %s: %s", job.id, notify_e)
 
 
+def run_study_safe(fep_job_id: int, session: Session) -> None:
+    """(M20) Exception-catching wrapper around run_study.
+
+    The bare `run_study` happily lets exceptions propagate up — fine
+    when a top-level Celery task records the failure, but with the
+    daemon-thread dispatch we use today (see routers/fep.py), an
+    uncaught exception just gets logged and the FepJob stays in
+    PREPARING/RUNNING forever from the user's perspective.
+
+    This wrapper guarantees the user always gets a terminal state:
+    success, partial, or FAILED-with-message. On exception it:
+      1. Persists FepJob.status = FAILED with the traceback tail
+         in error_message so the FepStudyPage shows a real error
+         instead of an eternal spinner.
+      2. Fires the M10 Telegram alert (best-effort, never raises).
+      3. Logs the full traceback for operator triage.
+
+    All thread/Celery entrypoints should call THIS, not run_study
+    directly. Idempotent on already-terminal jobs: the FAILED
+    persist is a no-op if status is already COMPLETED/FAILED/CANCELLED."""
+    import traceback as _tb
+    try:
+        run_study(fep_job_id, session)
+    except Exception as e:                                                # noqa: BLE001
+        log.exception("run_study crashed for FepJob %s — persisting FAILED", fep_job_id)
+        try:
+            tb_tail = _tb.format_exc()
+            # Keep the LAST ~1500 chars (most actionable part: the
+            # raising line + immediate frames). Front the message
+            # with the exception class for quick scanning.
+            tb_tail = f"{type(e).__name__}: {e}\n...\n{tb_tail[-1500:]}"
+            job = session.get(FepJob, fep_job_id)
+            if job and job.status not in (
+                FepJobStatus.COMPLETED,
+                FepJobStatus.FAILED,
+                FepJobStatus.CANCELLED,
+            ):
+                job.status = FepJobStatus.FAILED
+                job.error_message = (
+                    f"Backend runner crashed: {type(e).__name__}: {e}. "
+                    "Please re-submit. Operator should check Telegram + "
+                    "Fly logs for traceback."
+                )
+                job.stage = "crashed"
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
+
+                # Fire-and-forget alert.
+                try:
+                    from .notifications import notify_fep_failed
+                    from ..models import User, Compound
+                    user_row = (
+                        session.get(User, job.user_id) if job.user_id else None
+                    )
+                    hit_row = session.get(Compound, job.hit_compound_id)
+                    notify_fep_failed(
+                        fep_job_id=job.id or -1,
+                        share_id=job.share_id,
+                        pdb_id=job.pdb_id,
+                        variant=job.variant,
+                        user_email=(user_row.email if user_row else None),
+                        user_id=job.user_id,
+                        hit_name=(hit_row.name if hit_row else None),
+                        n_analogs=0,
+                        edges_completed=0,
+                        edges_total=0,
+                        error_message=tb_tail[:600],
+                        error_kind="runner_crash",
+                        cost_usd_so_far=job.estimated_usd_cost,
+                    )
+                except Exception as ne:                                   # noqa: BLE001
+                    log.warning("M20 crash-notify failed for %s: %s", fep_job_id, ne)
+        except Exception as persist_e:                                    # noqa: BLE001
+            # Even the FAILED-persist failed — last-ditch log so the
+            # operator at least sees this in Fly logs.
+            log.exception(
+                "M20: failed to persist FAILED state for FepJob %s: %s",
+                fep_job_id, persist_e,
+            )
+
+
 def start_fep_study(*args, **kwargs):                                # noqa: D401
     """Legacy alias kept for older 501-stub callers. Use run_study(job_id)."""
     return run_study(*args, **kwargs)

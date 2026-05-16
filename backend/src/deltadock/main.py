@@ -162,6 +162,100 @@ def _reap_orphan_fep_studies() -> None:
         log.exception("Orphan FEP-study reaper failed (non-fatal): %s", e)
 
 
+def _resume_recent_fep_studies() -> None:
+    """(M18) Re-dispatch FEP studies that were RECENT enough to still
+    be salvageable when the backend restarted mid-run.
+
+    Two complementary failure modes:
+      • _reap_orphan_fep_studies marks STALE (>90 min) studies as
+        FAILED — the runner is presumed dead beyond recovery.
+      • _resume_recent_fep_studies (this fn) handles the OPPOSITE
+        case: studies submitted in the last ~10 minutes whose
+        daemon-thread runner was killed by THIS process's restart
+        (Fly redeploy). Those studies are in PENDING/PREPARING but
+        their `updated_at` is recent — they haven't crossed the
+        reaper's stale bar yet. Left alone, they'd sit stuck until
+        the 90-min timeout reaps them as FAILED. We can do better:
+        re-spawn the runner thread now.
+
+    Detection: status in PENDING/PREPARING/RUNNING AND zero edges
+    have pod_job_id (no dispatch ever reached the pod from this row).
+    The pod_job_id is set by fep_runner.dispatch_edge after the
+    pod's /fep_edge_start returns, so its absence proves nothing
+    real-physics has happened yet.
+
+    Idempotent: re-running this fn quickly is safe because the
+    daemon thread it spawns is short-circuited by run_study's own
+    cancellation/state checks. Worst case: a few extra thread
+    spawns that no-op."""
+    try:
+        from sqlmodel import Session, select
+        from sqlalchemy import text
+        from .db import engine
+        from .models import FepJob, FepJobStatus, FepPerturbation
+        import threading
+        from sqlmodel import Session as _S
+
+        with Session(engine) as session:
+            # Find FepJobs in dispatch-pending states. We filter to
+            # the last 24 hours so a stuck-decades-ago row doesn't
+            # get re-attempted indefinitely; combined with the 90-min
+            # reaper, anything older becomes FAILED.
+            recent_pending = session.exec(
+                select(FepJob)
+                .where(FepJob.status.in_((                                # type: ignore[attr-defined]
+                    FepJobStatus.PENDING,
+                    FepJobStatus.PREPARING,
+                    FepJobStatus.RUNNING,
+                )))
+                .where(FepJob.updated_at >= text("now() - make_interval(hours => 24)"))
+            ).all()
+
+            resumable_ids: list[int] = []
+            for job in recent_pending:
+                # Skip if any edge has been dispatched to the pod —
+                # that means real work has started; let the running
+                # thread/pod finish or the reaper catch a true death.
+                if job.id is None:
+                    continue
+                edge_count_with_pod_id = session.exec(
+                    select(FepPerturbation)
+                    .where(FepPerturbation.fep_job_id == job.id)
+                    .where(FepPerturbation.pod_job_id.is_not(None))      # type: ignore[union-attr]
+                ).first()
+                if edge_count_with_pod_id is not None:
+                    continue
+                resumable_ids.append(job.id)
+
+            if not resumable_ids:
+                log.info("FEP resume sweep: no recent pre-dispatch studies to re-spawn")
+                return
+
+            log.warning(
+                "FEP resume sweep: re-spawning runner thread for %d study/studies %s",
+                len(resumable_ids), resumable_ids,
+            )
+
+            # Spawn one daemon thread per resumable study. Same shape
+            # as the daemon-thread dispatch in create_fep_study.
+            from .services.fep_runner import run_study_safe as _run_study_safe
+
+            def _resume_in_thread(job_id: int) -> None:
+                with _S(engine) as s:
+                    # (M20) Exception → persist FAILED, fire alert.
+                    _run_study_safe(job_id, s)
+
+            for jid in resumable_ids:
+                threading.Thread(
+                    target=_resume_in_thread,
+                    args=(jid,),
+                    daemon=True,
+                    name=f"fep_resume_{jid}",
+                ).start()
+    except Exception as e:                                                # noqa: BLE001
+        log.exception("FEP resume sweep failed (non-fatal): %s", e)
+
+
 async def _periodic_orphan_reaper():
     """Run _reap_orphan_jobs on a fixed interval forever. Registered as an
     asyncio task by lifespan, alongside _runpod_watchdog. This is what
@@ -515,9 +609,16 @@ async def lifespan(_app: FastAPI):
     # serve a single request. Also fails loud.
     _verify_schema_matches_models()
     _reap_orphan_jobs()
-    # (I1) Same recovery sweep for FEP+ studies. Catches the
-    # daemon-thread-died-mid-study failure mode after a Fly restart.
+    # (I1) Reap stale FEP studies (>90 min in PENDING/PREPARING/RUNNING) —
+    # presumed dead beyond recovery, mark FAILED.
     _reap_orphan_fep_studies()
+    # (M18) Re-spawn runner threads for RECENT (<90 min) FEP studies
+    # whose daemon-thread runner died with THIS process's restart.
+    # Without this, a study submitted seconds before a Fly redeploy
+    # would sit in PREPARING for 90 minutes before the reaper kills
+    # it. Now: backend restarts → recent studies get a fresh runner
+    # thread → they continue from where they left off.
+    _resume_recent_fep_studies()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     reaper_task = asyncio.create_task(_periodic_orphan_reaper())
     # S3 — failover watchdog. Companion to the cost watchdog: where the
