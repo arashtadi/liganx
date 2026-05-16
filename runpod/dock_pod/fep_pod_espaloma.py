@@ -51,9 +51,29 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal as _signal
 import tempfile
+import threading as _threading
 import time
 from pathlib import Path
+
+
+# (M11) Mirror of fep_pod.py thread-safety patch for signal.signal.
+# LOMAP's SIGALRM timeout crashes when invoked from a non-main thread,
+# which is the only context we ever call run_edge from (fep_server's
+# daemon worker thread). See fep_pod.py for full background.
+_ORIGINAL_SIGNAL_SIGNAL = _signal.signal
+
+
+def _thread_safe_signal_signal(signalnum, handler):
+    if _threading.current_thread() is _threading.main_thread():
+        return _ORIGINAL_SIGNAL_SIGNAL(signalnum, handler)
+    return _signal.SIG_DFL
+
+
+if getattr(_signal.signal, "_liganx_thread_safe_patched", False) is False:
+    _signal.signal = _thread_safe_signal_signal                      # type: ignore[assignment]
+    _signal.signal._liganx_thread_safe_patched = True                # type: ignore[attr-defined]
 from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod_espaloma")

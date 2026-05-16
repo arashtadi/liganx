@@ -150,14 +150,21 @@ def _read_status(job_id: str) -> Optional[dict]:
 
 
 def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
-    """Daemon-thread target. Same stage-callback pattern as the Sage
-    server's worker — writes status JSON atomically on each stage."""
+    """Daemon-thread target. Same stage-callback + (M7) heartbeat
+    pattern as the Sage server's worker — writes status JSON atomically
+    on each stage transition AND every 60s for ongoing stages."""
     started = time.time()
 
+    current_stage = ["queued"]
+    stage_started_at = [time.time()]
+
     def _cb(stage: str) -> None:
+        current_stage[0] = stage
+        stage_started_at[0] = time.time()
         _write_status(job_id, {
             "status": "running",
             "stage": stage,
+            "stage_elapsed_seconds": 0.0,
             "engine": "espaloma",
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
@@ -166,10 +173,40 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
     _write_status(job_id, {
         "status": "running",
         "stage": "queued",
+        "stage_elapsed_seconds": 0.0,
         "engine": "espaloma",
         "started_at": started,
         "elapsed_seconds": 0.0,
     })
+
+    # (M7) Heartbeat thread — see fep_server.py for full docs.
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_heartbeat.wait(60):
+            now = time.time()
+            stage_age = now - stage_started_at[0]
+            if stage_age < 30:
+                continue
+            try:
+                _write_status(job_id, {
+                    "status": "running",
+                    "stage": current_stage[0],
+                    "stage_elapsed_seconds": round(stage_age, 1),
+                    "engine": "espaloma",
+                    "started_at": started,
+                    "elapsed_seconds": round(now - started, 1),
+                })
+            except Exception as hb_e:                                # noqa: BLE001
+                log.warning("heartbeat write failed for %s (Espaloma): %s", job_id, hb_e)
+
+    hb_thread = threading.Thread(
+        target=_heartbeat,
+        name=f"fep_espaloma_heartbeat_{job_id[:8]}",
+        daemon=True,
+    )
+    hb_thread.start()
+
     try:
         result = fep_pod_engine.run_edge(
             req.receptor_pdb,
@@ -187,6 +224,7 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
         _write_status(job_id, {
             "status": "done",
             "stage": "done" if result.get("ok") else "failed",
+            "stage_elapsed_seconds": 0.0,
             "engine": "espaloma",
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
@@ -197,6 +235,7 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
         _write_status(job_id, {
             "status": "done",
             "stage": "crashed",
+            "stage_elapsed_seconds": 0.0,
             "engine": "espaloma",
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
@@ -208,6 +247,8 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
                 "wall_seconds": round(time.time() - started, 1),
             },
         })
+    finally:
+        stop_heartbeat.set()
 
 
 @app.post("/fep_edge_start")

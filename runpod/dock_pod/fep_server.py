@@ -195,13 +195,32 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
     """Daemon-thread target. Calls fep_pod.run_edge with a
     stage_callback that updates the status file, then writes the final
     result (success or structured error). Never raises — any unexpected
-    exception is caught and persisted as status='failed'."""
+    exception is caught and persisted as status='failed'.
+
+    (M7) A heartbeat thread runs in parallel: every 60s, if no new
+    stage transition has fired, it writes a status update that
+    includes `stage_elapsed_seconds` (time since last stage change).
+    Lets the UI distinguish "stuck for 5 min" from "stuck for 5 hours"
+    inside running_complex_leg / running_solvent_leg — the two
+    opaque MD stages with no sub-stage reporting from openfe."""
     started = time.time()
 
+    # (M7) Mutable closure state shared between the stage callback and
+    # the heartbeat thread. A simple list is the easiest way to keep
+    # the closure capture working without `nonlocal` plumbing in two
+    # places. Lock isn't strictly required — both writers append-style
+    # update is fine here because writes are atomic via tmp+rename in
+    # _write_status, and last-writer-wins is acceptable.
+    current_stage = ["queued"]
+    stage_started_at = [time.time()]
+
     def _cb(stage: str) -> None:
+        current_stage[0] = stage
+        stage_started_at[0] = time.time()
         _write_status(job_id, {
             "status": "running",
             "stage": stage,
+            "stage_elapsed_seconds": 0.0,
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
         })
@@ -209,9 +228,46 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
     _write_status(job_id, {
         "status": "running",
         "stage": "queued",
+        "stage_elapsed_seconds": 0.0,
         "started_at": started,
         "elapsed_seconds": 0.0,
     })
+
+    # (M7) Heartbeat thread. Runs every 60s; only writes when the
+    # current stage has been stuck for > 30s (avoids churn during
+    # fast transitions through setup stages like LOMAP). Threading
+    # Event for clean shutdown — main thread signals stop after
+    # run_edge returns and the heartbeat exits its wait promptly.
+    stop_heartbeat = threading.Event()
+    HEARTBEAT_SECONDS = 60
+    HEARTBEAT_MIN_STAGE_AGE_SECONDS = 30
+
+    def _heartbeat() -> None:
+        while not stop_heartbeat.wait(HEARTBEAT_SECONDS):
+            now = time.time()
+            stage_age = now - stage_started_at[0]
+            if stage_age < HEARTBEAT_MIN_STAGE_AGE_SECONDS:
+                continue
+            try:
+                _write_status(job_id, {
+                    "status": "running",
+                    "stage": current_stage[0],
+                    "stage_elapsed_seconds": round(stage_age, 1),
+                    "started_at": started,
+                    "elapsed_seconds": round(now - started, 1),
+                })
+            except Exception as hb_e:                                # noqa: BLE001
+                # Best-effort — never let a heartbeat write failure
+                # take down the whole worker.
+                log.warning("heartbeat write failed for %s: %s", job_id, hb_e)
+
+    hb_thread = threading.Thread(
+        target=_heartbeat,
+        name=f"fep_heartbeat_{job_id[:8]}",
+        daemon=True,
+    )
+    hb_thread.start()
+
     try:
         result = fep_pod.run_edge(
             req.receptor_pdb,
@@ -233,6 +289,7 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
         _write_status(job_id, {
             "status": "done",
             "stage": "done" if result.get("ok") else "failed",
+            "stage_elapsed_seconds": 0.0,
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
             "result": result,
@@ -242,6 +299,7 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
         _write_status(job_id, {
             "status": "done",
             "stage": "crashed",
+            "stage_elapsed_seconds": 0.0,
             "started_at": started,
             "elapsed_seconds": round(time.time() - started, 1),
             "result": {
@@ -251,6 +309,11 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
                 "wall_seconds": round(time.time() - started, 1),
             },
         })
+    finally:
+        # (M7) Always stop the heartbeat thread, even on crashes.
+        # The daemon=True flag means it would die with the process
+        # anyway, but explicit shutdown is cleaner.
+        stop_heartbeat.set()
 
 
 @app.post("/fep_edge_start")

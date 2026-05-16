@@ -111,12 +111,55 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal as _signal
 import tempfile
+import threading as _threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod")
+
+
+# (M11 2026-05-16) Thread-safety patch for signal.signal.
+#
+# Background: LOMAP's atom mapper (openfe.setup.LomapAtomMapper) sets a
+# SIGALRM-based timeout via signal.signal(SIGALRM, ...). Python's signal
+# module raises ValueError("signal only works in main thread of the main
+# interpreter") when signal.signal() is called from any non-main thread.
+#
+# fep_server's /fep_edge_start endpoint spawns a daemon worker thread
+# to run the edge asynchronously (the API can't block 10+ hours waiting
+# for an HTTP response). Every call into run_edge therefore runs from a
+# non-main thread, and LOMAP crashes ~2 seconds in. The L5 platform fix
+# unmasked this because before L5, the edge died sooner with PTX 222.
+#
+# The clean fix: wrap signal.signal so calls from non-main threads
+# become a no-op (returning a fake "previous handler" sentinel) while
+# main-thread calls continue to work normally. LOMAP's timeout becomes
+# inert in worker threads; for the small ligand pairs typical of FEP,
+# LOMAP completes in milliseconds and never needs the timeout. The
+# fep_server.py worker-level timeout already covers the long-mapping
+# pathological case at a higher level.
+_ORIGINAL_SIGNAL_SIGNAL = _signal.signal
+
+
+def _thread_safe_signal_signal(signalnum, handler):
+    """Thread-safe wrapper for signal.signal: forwards to the real
+    implementation when called from the main thread, no-ops from
+    worker threads (returns the default handler sentinel so callers
+    don't crash)."""
+    if _threading.current_thread() is _threading.main_thread():
+        return _ORIGINAL_SIGNAL_SIGNAL(signalnum, handler)
+    # Non-main thread — silently ignore. Returning SIG_DFL is a safe
+    # sentinel that won't trigger errors in libraries that check the
+    # "previous handler" return value.
+    return _signal.SIG_DFL
+
+
+if getattr(_signal.signal, "_liganx_thread_safe_patched", False) is False:
+    _signal.signal = _thread_safe_signal_signal                      # type: ignore[assignment]
+    _signal.signal._liganx_thread_safe_patched = True                # type: ignore[attr-defined]
 
 # (L5 2026-05-16) Force the openmm Platform via the openfe protocol
 # settings, NOT via an env var. The J17 trick of setting
