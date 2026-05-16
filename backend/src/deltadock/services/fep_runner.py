@@ -300,6 +300,57 @@ _STAGE_PCT: dict[str, int] = {
 }
 
 
+def _pod_url_for_engine(engine: Optional[str]) -> tuple[str, str]:
+    """(K4) Pick which FEP pod URL receives this study's edges.
+
+    Returns ``(pod_url, resolved_engine_label)`` — the second element is
+    "sage" or "espaloma" reflecting which tier actually ran (which may
+    differ from the requested engine if the Espaloma pod isn't
+    configured and we fell back).
+
+    Routing rules:
+        engine in (None, "", "sage") → POD_FEP_URL (Sage tier, default)
+        engine == "espaloma"          → POD_FEP_ESPALOMA_URL if non-empty
+                                        else fall back to POD_FEP_URL with
+                                        a logged warning
+        engine == "mace"              → not configured yet; fall back to
+                                        Sage with a logged warning (future K6)
+        anything else                 → fall back to Sage (the router
+                                        whitelists upstream so this is
+                                        defence-in-depth)
+
+    All paths preserve the Sage code path's existing behaviour: an
+    unset engine or unconfigured Espaloma URL silently routes to the
+    Sage pod, identical to pre-K4 dispatch. The Sage pod URL itself
+    is read from POD_FEP_URL (unchanged from before)."""
+    sage_url = os.environ.get("POD_FEP_URL", "").strip()
+    espaloma_url = os.environ.get("POD_FEP_ESPALOMA_URL", "").strip()
+
+    normalised = (engine or "sage").strip().lower()
+    if normalised in ("", "sage"):
+        return sage_url, "sage"
+    if normalised == "espaloma":
+        if espaloma_url:
+            return espaloma_url, "espaloma"
+        log.warning(
+            "force_field_engine='espaloma' requested but POD_FEP_ESPALOMA_URL "
+            "is not configured — falling back to Sage pod. Operator: "
+            "`fly secrets set POD_FEP_ESPALOMA_URL=...` (see runpod/"
+            "DEPLOY_FEP_ESPALOMA.md) to enable the Espaloma tier."
+        )
+        return sage_url, "sage"
+    if normalised == "mace":
+        log.warning(
+            "force_field_engine='mace' requested but the MACE-OFF tier "
+            "isn't deployed yet — falling back to Sage."
+        )
+        return sage_url, "sage"
+    log.warning(
+        "Unknown force_field_engine=%r — falling back to Sage.", engine
+    )
+    return sage_url, "sage"
+
+
 def dispatch_edge(
     *,
     receptor_pdb_text: str,
@@ -644,37 +695,50 @@ def run_study(fep_job_id: int, session: Session) -> None:
     each edge is days of compute and partial-edge results are
     scientifically meaningless).
     """
-    settings_pod_fep_url = os.environ.get("POD_FEP_URL", "").strip()
-    if not settings_pod_fep_url:
-        # WARNING not ERROR — this is an expected operational state
-        # until the FEP pod is deployed (see runpod/DEPLOY_FEP_POD.md).
-        # ERROR would page Sentry on every test submission while the
-        # pod is being set up, which is noise. The study itself is
-        # still correctly marked FAILED with an actionable message;
-        # the user gets the feedback they need without a midnight
-        # alert for the operator.
-        #
-        # If FEP_MOCK_MODE=1, this branch is unreachable because
-        # dispatch_edge short-circuits to a synthetic result before
-        # ever needing POD_FEP_URL.
-        log.warning("run_study: POD_FEP_URL not set; marking study FAILED with actionable message")
-        job = session.get(FepJob, fep_job_id)
-        if job:
-            job.status = FepJobStatus.FAILED
-            job.error_message = (
-                "POD_FEP_URL not configured on this server. "
-                "Operator: deploy the dedicated FEP pod first; see "
-                "runpod/DEPLOY_FEP_POD.md. (Or set FEP_MOCK_MODE=1 "
-                "for a synthetic test run.)"
-            )
-            session.add(job)
-            session.commit()
-        return
-
+    # (K4) Engine-aware URL routing. We need to read the FepJob first
+    # so we know which tier (Sage/Espaloma) to dispatch to. The previous
+    # code read POD_FEP_URL unconditionally before fetching the job; we
+    # reverse the order here so engine routing has access to the
+    # column. The fail-fast behaviour when no pod is configured is
+    # preserved: _pod_url_for_engine() always returns the Sage URL as
+    # the fallback, and we still mark the study FAILED if THAT is
+    # empty too.
     job = session.get(FepJob, fep_job_id)
     if not job:
         log.error("run_study: FepJob %s not found", fep_job_id)
         return
+
+    settings_pod_fep_url, resolved_engine = _pod_url_for_engine(
+        getattr(job, "force_field_engine", None)
+    )
+    if not settings_pod_fep_url:
+        # Sage URL not configured — the entire FEP stack is unavailable.
+        # WARNING not ERROR for the same reason as pre-K4: this is an
+        # expected operational state until the pod is deployed.
+        # If FEP_MOCK_MODE=1, dispatch_edge short-circuits before
+        # needing the URL at all.
+        log.warning(
+            "run_study: pod URL for engine=%r not set; marking study FAILED",
+            resolved_engine,
+        )
+        job.status = FepJobStatus.FAILED
+        job.error_message = (
+            "POD_FEP_URL not configured on this server. "
+            "Operator: deploy the dedicated FEP pod first; see "
+            "runpod/DEPLOY_FEP_POD.md. (Or set FEP_MOCK_MODE=1 "
+            "for a synthetic test run.)"
+        )
+        session.add(job)
+        session.commit()
+        return
+
+    log.info(
+        "run_study: FepJob %s requested_engine=%r resolved_engine=%r pod_url=%s",
+        fep_job_id,
+        getattr(job, "force_field_engine", None),
+        resolved_engine,
+        settings_pod_fep_url,
+    )
 
     # ─── 1. Preparing: build the graph if it doesn't exist yet. ────
     if job.status == FepJobStatus.PENDING:
