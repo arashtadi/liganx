@@ -626,8 +626,8 @@ def run_study(fep_job_id: int, session: Session) -> None:
             pdb_id=job.pdb_id,
             chain=job.chain or "A",
             mutation=None if job.variant == "WT" else job.variant,
-            pdb_cache=Path(s.pose_cache) / "pdb",
-            receptor_cache=Path(s.pose_cache) / "receptors",
+            pdb_cache=Path(s.pose_cache_dir) / "pdb",
+            receptor_cache=Path(s.pose_cache_dir) / "receptors",
         )
         receptor_pdb_text = rprep.receptor_pdb.read_text()
     except Exception as e:                                           # noqa: BLE001
