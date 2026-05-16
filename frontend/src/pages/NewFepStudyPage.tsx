@@ -417,6 +417,14 @@ export default function NewFepStudyPage() {
             )}
             placeholder="Osimertinib"
             className="mt-1 w-full"
+            // (UX) Picker-mode behaviour — show the catalog +
+            // library list immediately on click/focus, no typing
+            // required. Matches how the Target dropdown reveals its
+            // options the moment you click it. minChars=0 means
+            // empty query returns ALL suggestions (capped at 20 in
+            // suggestCompounds).
+            openOnFocus
+            minChars={0}
           />
         </label>
         <label className="block">
@@ -472,6 +480,10 @@ export default function NewFepStudyPage() {
                     </div>
                   )}
                   placeholder={`Analog ${i + 1}`}
+                  // (UX) Picker-mode — click reveals all options
+                  // immediately, no typing needed. Same as hit row.
+                  openOnFocus
+                  minChars={0}
                 />
               </div>
               <input
