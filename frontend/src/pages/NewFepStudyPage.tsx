@@ -48,13 +48,34 @@ export default function NewFepStudyPage() {
   const [targetId, setTargetId] = useState<string>("egfr");
   const [variant, setVariant] = useState<string>("T790M");
 
-  // Hit + analogs.
+  // Hit + analogs. Pre-populated with a published osimertinib-against-
+  // EGFR-T790M reference set so the page is immediately submittable —
+  // same pattern as Studio's first-load defaults. These are
+  // illustrative congeneric variants (single-atom modifications to
+  // the indole, aniline, and amine substituents); the user is
+  // expected to swap them for their own analog series before clicking
+  // Run. The cost preview becomes meaningful as soon as the form
+  // loads instead of waiting for the user to type SMILES.
   const [hitName, setHitName] = useState<string>("Osimertinib");
   const [hitSmiles, setHitSmiles] = useState<string>(
     "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
   );
   const [analogs, setAnalogs] = useState<AnalogRow[]>([
-    { name: "", smiles: "" },
+    // Demo analog 1: indole N-methyl removed (smoke-test variant).
+    {
+      name: "Osi-des-methyl",
+      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cnc3ccccc23)n1",
+    },
+    // Demo analog 2: 7-fluoro indole — illustrative congeneric variant.
+    {
+      name: "Osi-7F-indole",
+      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3cccc(F)c23)n1",
+    },
+    // Demo analog 3: hydroxyethyl amine — illustrative.
+    {
+      name: "Osi-hydroxyethyl",
+      smiles: "COc1cc(N(CCO)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
+    },
   ]);
 
   // Protocol knobs — sane defaults, hidden behind an expander.
@@ -188,6 +209,11 @@ export default function NewFepStudyPage() {
           Relative free-energy perturbation against a hit + up to 10 analogs.
           ΔΔG predictions at sub-1 kcal/mol RMSE — the same calibration teams pay
           Schrödinger six figures for. Cost: ~$100 per study, gated per-user.
+        </p>
+        <p className="text-xs text-violet-700/80 dark:text-violet-300/80 mt-1 italic">
+          Pre-filled below: Osimertinib + 3 illustrative analogs against EGFR T790M
+          — the published reference case. Edit these or swap in your own SMILES,
+          then check the projected cost before running.
         </p>
       </div>
 
