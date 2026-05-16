@@ -58,6 +58,97 @@ def is_fep_enabled() -> bool:
     return os.environ.get("FEP_ENABLED", "").strip().lower() in {"1", "true", "yes"}
 
 
+def is_fep_mock_mode() -> bool:
+    """(H4) Mock mode for testing the full FEP pipeline without
+    spending GPU-hours. When FEP_MOCK_MODE=1, dispatch_edge()
+    bypasses the pod and returns synthetic but realistic ΔΔG values
+    deterministic on the (ligand_a_smiles, ligand_b_smiles) pair —
+    so the same study produces the same answers across runs.
+
+    Use cases:
+      • Demo / sales — show a chemist what the workflow looks like
+        without a $100 GPU bill
+      • Frontend dev — iterate on FepStudyPage layout without
+        waiting hours per cycle
+      • Integration tests — exercise the runner + DB + polling end
+        to end in seconds
+      • Operator pre-deploy — verify a Fly deploy hasn't broken the
+        runner before the pod is built
+
+    The mock honours cycle closure approximately (edge ΔΔG values
+    are derived from per-compound 'true ΔG_bind' values + noise, so
+    cycles satisfy ΔΔG_AB + ΔΔG_BC + ΔΔG_CA ≈ 0). The UI gets a
+    'DEMO MODE' banner so no one mistakes these for real physics.
+
+    Set FEP_MOCK_MODE=1 in Fly secrets while testing; unset for
+    production."""
+    return os.environ.get("FEP_MOCK_MODE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _mock_edge_result(ligand_a_sdf: str, ligand_b_sdf: str) -> dict:
+    """Deterministic synthetic FEP edge result for FEP_MOCK_MODE.
+
+    Approach: hash each ligand to a 'true ΔG_bind' on a Gaussian-ish
+    scale (~N(-8, 1.5)), then the edge ΔΔG = ΔG_b - ΔG_a + small
+    Gaussian noise. This produces:
+      • Realistic per-edge values (~±2 kcal/mol around the true ΔΔG)
+      • Cycle closure that's approximately satisfied (the noise is
+        edge-specific so cycle residuals are small but non-zero)
+      • Determinism across runs (same SMILES pair → same answer)
+
+    Returns the same dict shape that fep_pod.run_edge() returns on
+    success, with method='MOCK' so the runner can flag it
+    downstream and the UI can render a DEMO banner."""
+    import hashlib
+    import random
+    import time
+
+    def _deterministic_dg(sdf: str) -> float:
+        h = hashlib.sha256(sdf.encode("utf-8")).digest()
+        # Map first 8 bytes to a float in approximately N(-8, 1.5).
+        # ΔG_bind values for kinase inhibitors typically range
+        # -6 to -12 kcal/mol; we sit in that band.
+        u = int.from_bytes(h[:8], "big") / (2 ** 64)
+        # Box-Muller-ish: two independent uniforms → one normal-ish
+        v = int.from_bytes(h[8:16], "big") / (2 ** 64)
+        z = (u - 0.5) * 4.0 + (v - 0.5) * 2.0       # rough N(0, ~1.5)
+        return -8.0 + z
+
+    dg_a = _deterministic_dg(ligand_a_sdf)
+    dg_b = _deterministic_dg(ligand_b_sdf)
+
+    # Seed the noise from the edge identity so re-running gets the
+    # same answer. The noise represents what MBAR would report as
+    # statistical uncertainty + force-field bias on a real run.
+    edge_seed = int.from_bytes(
+        hashlib.sha256((ligand_a_sdf + "→" + ligand_b_sdf).encode("utf-8")).digest()[:8],
+        "big",
+    )
+    rng = random.Random(edge_seed)
+    noise = rng.gauss(0, 0.15)                       # ±0.15 kcal/mol typical
+    ddg = (dg_b - dg_a) + noise
+
+    # Per-leg energies — give realistic complex/solvent splits.
+    # Solvent leg is typically smaller magnitude (~10-30 kJ/mol) than
+    # complex (~100-300 kJ/mol). The DIFFERENCE is ΔΔG_binding.
+    ddg_kj = ddg * 4.184
+    ddg_solvent_kj = rng.gauss(0, 20.0)             # ±20 kJ/mol typical
+    ddg_complex_kj = ddg_solvent_kj + ddg_kj
+
+    return {
+        "ok": True,
+        "ddg_complex_kcal_mol": round(ddg_complex_kj / 4.184, 3),
+        "ddg_solvent_kcal_mol": round(ddg_solvent_kj / 4.184, 3),
+        "ddg_binding_kcal_mol": round(ddg, 3),
+        "ddg_uncertainty": round(abs(rng.gauss(0.20, 0.05)), 3),  # ~0.1-0.3
+        "hysteresis_kcal_mol": round(abs(rng.gauss(0.15, 0.08)), 3),  # ~0-0.3
+        "convergence_flag": "ok",
+        "mbar_diagnostics_json": '{"mock": true, "method": "deterministic_hash"}',
+        "method": "MOCK / FEP_MOCK_MODE=1 / not real physics",
+        "wall_seconds": rng.uniform(1.5, 2.5),
+    }
+
+
 class FepNotImplementedError(NotImplementedError):
     """Raised when an FEP code path requires Phase B-pod-image work
     that hasn't landed. Caught by the router and surfaced as a clean
@@ -204,7 +295,17 @@ def dispatch_edge(
     Blackwell edge is 8-12 GPU-hours of wall time. The Fly/proxy
     config must allow long-lived connections; if not, switch to an
     async pod-side worker + result-polling pattern (planned Phase B.1).
+
+    (H4) When FEP_MOCK_MODE=1 we short-circuit before any pod call
+    and return a deterministic synthetic result. Used for $0 testing
+    of the orchestration + UI without spending GPU-hours.
     """
+    if is_fep_mock_mode():
+        log.info("FEP_MOCK_MODE active — returning synthetic edge result")
+        import time
+        time.sleep(1.0)                              # simulate pod latency
+        return _mock_edge_result(ligand_a_sdf, ligand_b_sdf)
+
     from ..config import pod_auth_headers
     import httpx
 
