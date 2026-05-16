@@ -171,39 +171,58 @@ def run_edge(
             t0,
         )
 
-    # ─── Teach gufe's JSON encoder how to serialize openff Molecule. ─
-    # On openfe 1.11 + gufe 1.x conda envs, the GufeJSONEncoder doesn't
-    # know about openff.toolkit.Molecule by default. When openfe builds
-    # the ChemicalSystem token cache (or LigandAtomMapping serializes
-    # its components), the encoder raises:
+    # ─── Register a JSONCodec for openff.Molecule with gufe. ─────────
+    # On openfe 1.11 + gufe 1.x conda envs, gufe's `JSON_HANDLER` ships
+    # codecs for Quantity/Unit/UUID/Path/Settings/etc., but NOT for
+    # openff.toolkit.Molecule. When openfe builds the ChemicalSystem
+    # token cache during protocol.create(), it calls gufe.tokenization
+    # which JSON-encodes the Molecule and trips:
     #     TypeError: Object of type Molecule is not JSON serializable
-    # before the simulation can even start. Patch the encoder to call
-    # Molecule.to_dict() for openff Molecule instances. Idempotent —
-    # safe to run on every call.
+    # before any simulation runs. The right fix is to add a Molecule
+    # codec to JSON_HANDLER.codecs using the public add_codec() API —
+    # it appends to self.codecs and rebuilds encoder/decoder from
+    # scratch (see gufe.tokenization.JSONSerializerDeserializer). We
+    # use mapped SMILES so round-trip preserves atom ordering, which
+    # matters for hash stability across openfe's DAG builds.
     try:
-        from gufe.serialization.json import JSON_HANDLER as _GUFE_JSON_HANDLER
-        if not getattr(_GUFE_JSON_HANDLER, "_liganx_molecule_patched", False):
-            _orig_default = _GUFE_JSON_HANDLER.encoder.default
+        from gufe.tokenization import JSON_HANDLER as _GUFE_JSON_HANDLER
+        from gufe.serialization.json import JSONCodec as _GUFE_JSONCodec
 
-            def _liganx_default(obj):  # type: ignore[no-redef]
-                if isinstance(obj, Molecule):
-                    # openff.toolkit Molecule.to_dict returns an OrderedDict
-                    # of native types that JSON serializes fine.
-                    return {
-                        ":is_custom:": True,
-                        "__class__": "Molecule",
-                        "__module__": "openff.toolkit",
-                        "to_dict": obj.to_dict(),
-                    }
-                return _orig_default(obj)
+        if not getattr(_GUFE_JSON_HANDLER, "_liganx_molecule_codec_added", False):
+            def _mol_to_dict(mol):
+                # mapped=True embeds atom-map indices (`[C:1]...`) so
+                # from_mapped_smiles round-trips atom order. Without
+                # this, openfe's hash key would change between runs
+                # for the same Molecule instance.
+                return {
+                    ":is_custom:": True,
+                    "openff_mapped_smiles": mol.to_smiles(mapped=True),
+                }
 
-            _GUFE_JSON_HANDLER.encoder.default = _liganx_default
-            _GUFE_JSON_HANDLER._liganx_molecule_patched = True
-            log.info("Patched gufe JSON encoder for openff.Molecule")
-    except Exception as _patch_e:                                    # noqa: BLE001
-        # Patching is best-effort — if gufe's internal layout changed,
-        # fall through and surface the original error if it triggers.
-        log.warning("gufe Molecule encoder patch skipped: %s", _patch_e)
+            def _mol_from_dict(dct):
+                return Molecule.from_mapped_smiles(
+                    dct["openff_mapped_smiles"],
+                    allow_undefined_stereo=True,
+                )
+
+            OPENFF_MOLECULE_CODEC = _GUFE_JSONCodec(
+                cls=Molecule,
+                to_dict=_mol_to_dict,
+                from_dict=_mol_from_dict,
+                is_my_obj=lambda obj: isinstance(obj, Molecule),
+                is_my_dict=lambda dct: (
+                    isinstance(dct, dict)
+                    and dct.get(":is_custom:") is True
+                    and "openff_mapped_smiles" in dct
+                ),
+            )
+            _GUFE_JSON_HANDLER.add_codec(OPENFF_MOLECULE_CODEC)
+            _GUFE_JSON_HANDLER._liganx_molecule_codec_added = True
+            log.info("Registered openff.Molecule JSONCodec with gufe JSON_HANDLER")
+    except Exception as _codec_e:                                    # noqa: BLE001
+        # Best-effort — if gufe's internal API moves, surface the
+        # original "not JSON serializable" error rather than masking it.
+        log.warning("gufe Molecule codec registration skipped: %s", _codec_e)
 
     # ─── Parameterise ligands + reject charge-changing pairs. ──────
     with tempfile.TemporaryDirectory() as td:
