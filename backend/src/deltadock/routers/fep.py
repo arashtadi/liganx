@@ -176,6 +176,13 @@ class FepStudyGraphResponse(BaseModel):
     # (M15) Hit compound — needed for "FEP planning map" diagram so we
     # know which node is the central one.
     hit_compound_id: Optional[int] = None
+    # (N1) Surface the persisted error_message from FepJob so the
+    # FepStudyPage can show what crashed. Without this, status=failed
+    # + stage=crashed leaves the chemist with "Failed — see error
+    # message below" and no actual message. The runner already writes
+    # error_message in M20's catch-all (run_study_safe) and in the
+    # mid-study FAILED branches (run_study); we just weren't exposing it.
+    error_message: Optional[str] = None
 
 
 class FepStudySummary(BaseModel):
@@ -960,4 +967,5 @@ def _serialise_graph(
         network_topology=job.network_topology,
         estimated_usd_cost=job.estimated_usd_cost,
         hit_compound_id=job.hit_compound_id,
+        error_message=job.error_message,
     )

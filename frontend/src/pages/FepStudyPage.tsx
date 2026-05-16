@@ -595,6 +595,23 @@ export default function FepStudyPage() {
         )}
       </div>
 
+      {/* (N1) Error banner — when the study has failed, show the
+          persisted error_message from the runner. Without this, the
+          page just says "Failed — see error message below" and the
+          chemist has no actual error message to look at. The runner
+          (run_study + run_study_safe) writes either a classified M5
+          reason or a Python traceback tail (last 600 chars). */}
+      {graph.status === "failed" && graph.error_message && (
+        <div className="card bg-rose-50/80 dark:bg-rose-950/30 ring-1 ring-rose-300 dark:ring-rose-800">
+          <div className="text-[10px] uppercase tracking-wider text-rose-700 dark:text-rose-300 font-semibold">
+            Error
+          </div>
+          <pre className="mt-2 text-xs font-mono text-rose-900 dark:text-rose-200 whitespace-pre-wrap break-words leading-snug">
+            {graph.error_message}
+          </pre>
+        </div>
+      )}
+
       {/* (M13) Hit row with 2D structure preview. The chemist reads
           the molecule visually, not by parsing SMILES — RDKit-rendered
           SVG via /lookup/inspect-smiles. */}

@@ -683,6 +683,12 @@ export interface FepStudyGraph {
   // (M15/M17) Hit compound id — load-bearing for the 2D perturbation
   // map so we know which node is the central one.
   hit_compound_id: number | null;
+  // (N1) Persisted error message from the runner (run_study_safe's
+  // traceback tail, or one of the M5 classified failure reasons).
+  // Null for healthy studies. The FepStudyPage renders this as an
+  // error banner when status === "failed" so the chemist actually
+  // knows what crashed.
+  error_message: string | null;
 }
 
 export const api = {
