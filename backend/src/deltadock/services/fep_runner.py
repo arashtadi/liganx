@@ -199,18 +199,44 @@ def build_perturbation_graph(
     if topology == "manual" and manual_edges:
         return [(a, b, 1.0) for a, b in manual_edges]
 
-    # Try the real LOMAP path; fall back to a radial 1.0-score graph
-    # if openfe/lomap aren't installed.
+    # Try the real LOMAP path; fall back to a placeholder graph if
+    # openfe/lomap aren't installed (Fly backend is a small machine
+    # that typically can't host the heavy openfe/CUDA stack — the
+    # real LOMAP scoring happens on the pod inside fep_pod.run_edge).
     try:
         from openfe.setup import LomapAtomMapper
         from openff.toolkit import Molecule
     except ImportError:
         log.warning(
             "fep_runner.build_perturbation_graph: openfe not installed; "
-            "returning a radial graph with placeholder LOMAP scores. "
-            "Real edge scoring requires the pod-side deps."
+            "returning a placeholder graph that still respects topology=%s. "
+            "Real LOMAP scoring happens on the pod when each edge runs.",
+            topology,
         )
-        return [(0, i, 1.0) for i in range(1, n)]
+        # (M19) Fallback graph must respect topology — previously this
+        # always returned radial-only, breaking radial_plus_mst cycle-
+        # closure tests. For N analogs:
+        #   - radial: N edges (one per analog → hit)
+        #   - radial_plus_mst: N radial + N analog-chain edges that
+        #     form a cycle among analogs (1→2→3→...→N→1). Gives at
+        #     least one closed cycle for cycle-closure RMSD analysis,
+        #     no matter how many analogs.
+        edges = [(0, i, 1.0) for i in range(1, n)]
+        if topology != "radial" and n >= 3:
+            # Chain through analogs, then close back to analog #1.
+            # For 2 analogs (n=3) this is just (1,2) — single triangle.
+            # For 3 analogs (n=4) this is (1,2), (2,3), (3,1) — adds
+            # cycle among them.
+            for i in range(1, n - 1):
+                edges.append((i, i + 1, 1.0))
+            # Close back to analog 1 ONLY when chain has ≥ 2 edges
+            # (i.e., 3+ analogs). For 2 analogs the chain is just
+            # (1,2) which already closes the triangle with the radial
+            # spokes — duplicating it as a closure would be a no-op
+            # edge that confuses the cycle-closure analysis.
+            if n - 1 >= 3:
+                edges.append((n - 1, 1, 1.0))
+        return edges
 
     try:
         mols = [Molecule.from_smiles(s, allow_undefined_stereo=True) for s in all_smiles]
