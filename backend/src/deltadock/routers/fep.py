@@ -140,6 +140,10 @@ class FepStudyGraphResponse(BaseModel):
     created_at: Optional[str] = None
     n_lambda_windows: Optional[int] = None
     ns_per_window: Optional[float] = None
+    # (J14) Per-user sequential number. Rendered as 'FEP #42' on the
+    # study page. 0 means "no number" (legacy rows from before
+    # migration 021).
+    seq_number: Optional[int] = None
 
 
 class FepStudySummary(BaseModel):
@@ -161,6 +165,9 @@ class FepStudySummary(BaseModel):
     stage: Optional[str] = None
     cycle_closure_rmsd: Optional[float] = None
     title: Optional[str] = None
+    # (J14) Per-user sequential number; renders as 'FEP #42' in the
+    # History tab. None for legacy rows that predate migration 021.
+    seq_number: Optional[int] = None
 
 
 class FepEstimateResponse(BaseModel):
@@ -592,6 +599,20 @@ def create_fep_study(
     # ─── Create FepJob row. ─────────────────────────────────────────
     # estimated_usd_cost is frozen at submit time — used for the
     # monthly per-user cap.
+    #
+    # (J14) Compute the user's next seq_number atomically: MAX +1 of
+    # their existing FEP studies. Done in the same transaction as the
+    # INSERT so concurrent submits don't collide on the same number —
+    # if two POSTs land at once, one commits first, the second's
+    # SELECT MAX sees the updated value, and they get distinct seqs.
+    # Worst case under heavy contention: a number could be skipped if
+    # an in-progress transaction rolls back, which is the same
+    # behaviour as docking Job.seq_number.
+    from sqlmodel import func as _sql_func
+    next_seq = (session.exec(
+        select(_sql_func.coalesce(_sql_func.max(FepJob.seq_number), 0))
+        .where(FepJob.user_id == user.id)
+    ).one() or 0) + 1
     fep_job = FepJob(
         user_id=user.id,
         pdb_id=payload.pdb_id,
@@ -604,6 +625,7 @@ def create_fep_study(
         network_topology=payload.network_topology,
         status=FepJobStatus.PENDING,
         estimated_usd_cost=est.usd_cost_estimated,
+        seq_number=next_seq,
     )
     session.add(fep_job)
     session.commit()
@@ -740,6 +762,7 @@ def list_fep_studies(
             stage=r.stage,
             cycle_closure_rmsd=r.cycle_closure_rmsd,
             title=r.title,
+            seq_number=(r.seq_number if r.seq_number else None),
         ))
     return out
 
@@ -866,4 +889,5 @@ def _serialise_graph(
         created_at=(job.created_at.isoformat() if job.created_at else None),
         n_lambda_windows=job.n_lambda_windows,
         ns_per_window=job.ns_per_window,
+        seq_number=(job.seq_number if job.seq_number else None),
     )

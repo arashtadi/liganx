@@ -532,6 +532,14 @@ class FepJob(SQLModel, table=True):
     # Aggregated for the per-user monthly cap (FEP_MAX_USD_PER_USER_PER_MONTH).
     estimated_usd_cost: float = 0.0
 
+    # (J14) Per-user human-friendly sequential number, like
+    # docking-job seq_number. Computed at submit time in the router
+    # as MAX(existing) + 1, so each user's FEP studies count from 1
+    # without leaking platform-wide submission rates. Indexed on
+    # (user_id, seq_number) for fast lookup. 0 = no number (legacy
+    # rows from before the migration land with 0).
+    seq_number: int = Field(default=0, index=True)
+
     title: Optional[str] = Field(default=None, max_length=240)
     # tags is TEXT[] in Postgres; SQLAlchemy ARRAY(String) for the model
     # type. FastAPI returns it as list[str].

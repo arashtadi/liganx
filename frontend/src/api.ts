@@ -617,6 +617,8 @@ export interface FepStudySummary {
   stage: string | null;
   cycle_closure_rmsd: number | null;
   title: string | null;
+  // (J14) Per-user sequential number — null for legacy rows.
+  seq_number: number | null;
 }
 
 /** (G7) FEP study graph + ΔΔG result shape returned by /fep/studies. */
@@ -657,6 +659,8 @@ export interface FepStudyGraph {
   created_at: string | null;
   n_lambda_windows: number | null;
   ns_per_window: number | null;
+  // (J14) Per-user sequential number. Null for legacy rows.
+  seq_number: number | null;
 }
 
 export const api = {

@@ -1296,6 +1296,14 @@ function FepStudyRow({ study }: { study: import("../api").FepStudySummary }) {
       >
         <div className="flex items-baseline justify-between gap-3 flex-wrap">
           <div className="flex items-baseline gap-2 flex-wrap">
+            {/* (J14) Per-user FEP # — leading badge so the row reads
+                like a docking job. Falls back to the bare target/
+                variant for legacy rows that predate migration 021. */}
+            {study.seq_number && (
+              <span className="font-mono font-bold text-violet-700 dark:text-violet-300 tabular-nums">
+                FEP #{study.seq_number}
+              </span>
+            )}
             <span className="font-mono font-semibold text-violet-700 dark:text-violet-300">
               {study.pdb_id} · {study.variant}
             </span>

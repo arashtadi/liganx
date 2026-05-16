@@ -209,18 +209,17 @@ export default function FepStudyPage() {
     return graph.status;
   })();
 
-  // (J13) Elapsed wall time + a coarse "estimated remaining" so the
-  // user has something better than "is it stuck?" while waiting.
+  // (J13 + J15) Elapsed wall time + estimated remaining.
   //
-  // The estimate is intentionally simple: each edge costs roughly
-  //   (n_windows × ns_per_window × 2 legs × ~60 sec/ns of sampling)
-  //   + ~12 min fixed setup (PDBFixer + 2× antechamber + force field
-  //     assignment + solvation + equilibration)
-  // The "60 sec/ns" comes from ~300 ns/day on a 4090. Setup cost
-  // dominates for the short-protocol tests we do at 4×50ps.
-  //
-  // J12 (async polling) will replace this with a real sub-stage
-  // progress bar driven by openmm reporters.
+  // J15 fix: the original ETA used a fixed 12-min setup baseline,
+  // which is much too short for antechamber on Osi-sized ligands
+  // (10-30 min for AM1-BCC). Once real elapsed exceeded the
+  // baseline, ETA bottomed out at 0 and stayed there — looked
+  // broken. New approach: when the pod reports a `progress_pct`
+  // (J12), extrapolate from actual elapsed instead of a fixed
+  // baseline. If 10 min got us to 15%, we honestly project another
+  // ~57 min. Only fall back to the static baseline before the first
+  // stage update lands.
   function fmtDuration(seconds: number): string {
     if (!isFinite(seconds) || seconds < 0) return "—";
     if (seconds < 60) return `${Math.round(seconds)} s`;
@@ -241,33 +240,80 @@ export default function FepStudyPage() {
   const elapsedSec = createdAtMs ? Math.max(0, (now - createdAtMs) / 1000) : null;
   const nWin = graph.n_lambda_windows ?? 12;
   const nsWin = graph.ns_per_window ?? 7.0;
-  const perEdgeSetupSec = 12 * 60;
+  // Static fallback baseline used only when there's no stage info yet
+  // (before the first poll from the pod comes back). Setup cost is
+  // ~20 min for Osi-sized antechamber on the 4090; sampling adds
+  // 2×60s/ns × windows × ns.
+  const perEdgeSetupSec = 20 * 60;
   const perEdgeSamplingSec = nWin * nsWin * 2 * 60;
   const perEdgeBaselineSec = perEdgeSetupSec + perEdgeSamplingSec;
   const edgesRemaining = edgeCounts.pending + edgeCounts.running;
-  // For the running edge we have started_at — use it to subtract
-  // already-elapsed time from the baseline so the ETA shrinks as
-  // the edge progresses.
+
+  // For the running edge, prefer progress-extrapolated ETA over the
+  // static baseline. The pod reports progress_pct at each stage; we
+  // measure elapsed-since-edge-started and project remaining as
+  // (elapsed / pct) × (100 - pct). This adapts to the actual machine
+  // speed instead of assuming a hardcoded budget.
   const runningEdge = graph.edges.find((e) => e.status === "running");
   const runningEdgeStartedMs =
     runningEdge?.started_at ? Date.parse(runningEdge.started_at) : null;
   const runningEdgeElapsedSec =
     runningEdgeStartedMs ? Math.max(0, (now - runningEdgeStartedMs) / 1000) : 0;
+  const runningPct = runningEdge?.progress_pct ?? null;
+
+  let runningEdgeRemainingSec: number;
+  if (runningEdge && runningPct != null && runningPct >= 5 && runningPct < 100
+      && runningEdgeElapsedSec > 10) {
+    // Extrapolate from progress. Cap at 12 hours to keep the display
+    // sane on pathological cases (1% after 1 hour would project 99h).
+    runningEdgeRemainingSec = Math.min(
+      12 * 3600,
+      (runningEdgeElapsedSec / runningPct) * (100 - runningPct),
+    );
+  } else if (runningEdge) {
+    // Running but no useful pct yet — fall back to baseline minus
+    // elapsed. Never goes below zero, never increases.
+    runningEdgeRemainingSec = Math.max(0, perEdgeBaselineSec - runningEdgeElapsedSec);
+  } else {
+    // No running edge yet (preparing) — full baseline.
+    runningEdgeRemainingSec = perEdgeBaselineSec;
+  }
+  const pendingEdgesRemainingSec = edgeCounts.pending * perEdgeBaselineSec;
   const estRemainingSec =
-    edgesRemaining > 0
-      ? Math.max(
-          0,
-          edgesRemaining * perEdgeBaselineSec - runningEdgeElapsedSec,
-        )
-      : 0;
+    edgesRemaining > 0 ? runningEdgeRemainingSec + pendingEdgesRemainingSec : 0;
+  // Honest framing in the UI when extrapolating from a still-low pct:
+  // a 5% reading at 30s gives a wildly noisy estimate, so we tag it.
+  const etaIsNoisy =
+    runningEdge != null
+    && (runningPct == null || runningPct < 20)
+    && estRemainingSec > 0;
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 animate-fade-in">
+      {/* (J16) Shimmer keyframes for the running-edge progress bar.
+          Injected inline rather than via tailwind.config.js so this
+          page is self-contained. The translate range needs to start
+          off-screen left and end off-screen right of the bar's own
+          width; 100% is the bar's width, so -100%→100% draws a full
+          sweep. */}
+      <style>{`
+        @keyframes feb_shimmer {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+      `}</style>
       {/* Status banner. */}
       <div className="card flex items-start justify-between flex-wrap gap-3">
         <div className="flex-1 min-w-[300px]">
           <h1 className="text-2xl font-bold text-ink dark:text-slate-100 flex items-center gap-2">
-            FEP+ study
+            {/* (J14) Show per-user FEP # if available — same UX as
+                docking jobs. Falls back to plain 'FEP+ study' for
+                legacy rows that predate migration 021. */}
+            {graph.seq_number ? (
+              <>FEP <span className="tabular-nums">#{graph.seq_number}</span></>
+            ) : (
+              <>FEP+ study</>
+            )}
             <span className={`badge text-[10px] uppercase tracking-wider font-bold ${
               graph.status === "completed" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
               : graph.status === "failed" ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
@@ -285,8 +331,19 @@ export default function FepStudyPage() {
               study is. Replaces a bare 'PENDING' badge with a
               readable account of what the runner is doing right
               now and how many edges remain. */}
-          <p className="text-sm text-slate-700 dark:text-slate-200 mt-2">
-            {friendlyStatusLine}
+          <p className="text-sm text-slate-700 dark:text-slate-200 mt-2 flex items-center gap-2">
+            {/* (J16) Spinner whenever the study is in flight so the
+                page has a visible heartbeat — without this the
+                running-edge label can sit unchanged for minutes
+                between stage transitions and the user assumes
+                something's stuck. */}
+            {isRunning && (
+              <Spinner
+                size={14}
+                className="text-violet-500 dark:text-violet-400 shrink-0"
+              />
+            )}
+            <span>{friendlyStatusLine}</span>
           </p>
           {/* Progress bar — only when the study has edges to track.
               Shows three coloured segments: green (converged),
@@ -310,11 +367,27 @@ export default function FepStudyPage() {
                   />
                 )}
                 {edgeCounts.running > 0 && (
+                  // (J16) Shimmer effect — a moving violet gradient
+                  // overlays the running segment so the bar reads as
+                  // "alive" even when the underlying progress_pct
+                  // hasn't changed for a while. Uses Tailwind's
+                  // bg-gradient + animate-pulse plus a custom
+                  // animate-shimmer applied via inline style so we
+                  // don't need a tailwind.config.js change.
                   <div
-                    className="h-full bg-violet-500 dark:bg-violet-400 animate-pulse"
+                    className="h-full bg-violet-500 dark:bg-violet-400 relative overflow-hidden"
                     style={{ width: `${(100 * edgeCounts.running) / edgeCounts.total}%` }}
                     title={`${edgeCounts.running} running`}
-                  />
+                  >
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        background:
+                          "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.45) 50%, transparent 100%)",
+                        animation: "feb_shimmer 1.6s linear infinite",
+                      }}
+                    />
+                  </div>
                 )}
               </div>
               <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-3">
@@ -379,7 +452,9 @@ export default function FepStudyPage() {
                   </span>
                   <span>·</span>
                   <span className="italic">
-                    coarse estimate — mostly setup time per edge
+                    {etaIsNoisy
+                      ? "noisy — first stages dominate, will settle once sampling starts"
+                      : "extrapolated from live stage progress"}
                   </span>
                 </>
               )}
