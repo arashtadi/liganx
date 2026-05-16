@@ -626,8 +626,15 @@ def run_study(fep_job_id: int, session: Session) -> None:
             pdb_id=job.pdb_id,
             chain=job.chain or "A",
             mutation=None if job.variant == "WT" else job.variant,
-            pdb_cache=Path(s.pose_cache_dir) / "pdb",
-            receptor_cache=Path(s.pose_cache_dir) / "receptors",
+            # Use the SAME cache layout as quick_dock / optimize: a dedicated
+            # `cache/` subdirectory under pose_cache_dir. Earlier this used
+            # `<pose_cache_dir>/pdb` which collided with the runner.py job-
+            # output convention — that path already exists as a DIRECTORY
+            # on the prod Fly volume (`/var/lib/liganx/poses/pdb/2ITY.pdb/`
+            # is a directory, not a file), so the file write failed with
+            # IsADirectoryError. The `cache/` prefix keeps FEP isolated.
+            pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
+            receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
         )
         receptor_pdb_text = rprep.receptor_pdb.read_text()
     except Exception as e:                                           # noqa: BLE001
