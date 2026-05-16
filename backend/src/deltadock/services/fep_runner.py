@@ -562,14 +562,26 @@ def run_study(fep_job_id: int, session: Session) -> None:
     """
     settings_pod_fep_url = os.environ.get("POD_FEP_URL", "").strip()
     if not settings_pod_fep_url:
-        log.error("run_study: POD_FEP_URL not set; cannot dispatch")
+        # WARNING not ERROR — this is an expected operational state
+        # until the FEP pod is deployed (see runpod/DEPLOY_FEP_POD.md).
+        # ERROR would page Sentry on every test submission while the
+        # pod is being set up, which is noise. The study itself is
+        # still correctly marked FAILED with an actionable message;
+        # the user gets the feedback they need without a midnight
+        # alert for the operator.
+        #
+        # If FEP_MOCK_MODE=1, this branch is unreachable because
+        # dispatch_edge short-circuits to a synthetic result before
+        # ever needing POD_FEP_URL.
+        log.warning("run_study: POD_FEP_URL not set; marking study FAILED with actionable message")
         job = session.get(FepJob, fep_job_id)
         if job:
             job.status = FepJobStatus.FAILED
             job.error_message = (
                 "POD_FEP_URL not configured on this server. "
                 "Operator: deploy the dedicated FEP pod first; see "
-                "runpod/DEPLOY_FEP_POD.md."
+                "runpod/DEPLOY_FEP_POD.md. (Or set FEP_MOCK_MODE=1 "
+                "for a synthetic test run.)"
             )
             session.add(job)
             session.commit()
