@@ -475,12 +475,16 @@ def _run_openfe_edge(
     solvent_results = _execute_dag(solvent_dag, work_dir / "solvent")
 
     stage_callback("analysing_legs")
+    # (M1 fix) Gather DAG results → ProtocolResult before summarising.
+    # openfe 1.11 doesn't expose dag_result.protocol_result.
+    complex_protocol_result = protocol.gather([complex_results])
+    solvent_protocol_result = protocol.gather([solvent_results])
     return (
-        _summarise_leg(complex_results),
-        _summarise_leg(solvent_results),
+        _summarise_leg(complex_protocol_result),
+        _summarise_leg(solvent_protocol_result),
         {
-            "complex": _leg_diagnostics(complex_results),
-            "solvent": _leg_diagnostics(solvent_results),
+            "complex": _leg_diagnostics(complex_protocol_result),
+            "solvent": _leg_diagnostics(solvent_protocol_result),
         },
     )
 
@@ -507,11 +511,11 @@ def _execute_dag(dag, work_dir: Path):
     )
 
 
-def _summarise_leg(dag_result) -> dict:
-    """Same MBAR + hysteresis extraction as Sage tier."""
+def _summarise_leg(protocol_result) -> dict:
+    """Same MBAR + hysteresis extraction as Sage tier. Takes a gathered
+    ProtocolResult (caller calls protocol.gather([dag_result]))."""
     from openff.units import unit as offunit
 
-    protocol_result = dag_result.protocol_result
     dg = protocol_result.get_estimate()
     dg_kj = dg.to(offunit.kilojoule_per_mole).m
 
@@ -543,14 +547,14 @@ def _summarise_leg(dag_result) -> dict:
     }
 
 
-def _leg_diagnostics(dag_result) -> dict:
-    """Same diagnostics shape as Sage tier."""
+def _leg_diagnostics(protocol_result) -> dict:
+    """Same diagnostics shape as Sage tier. Takes a gathered
+    ProtocolResult, not a raw ProtocolDAGResult."""
     try:
-        pr = dag_result.protocol_result
         return {
-            "n_replicas": getattr(pr, "n_replicas", None),
-            "overlap_min": float(getattr(pr, "min_overlap", 0.0)),
-            "n_effective": int(getattr(pr, "n_effective", 0)),
+            "n_replicas": getattr(protocol_result, "n_replicas", None),
+            "overlap_min": float(getattr(protocol_result, "min_overlap", 0.0)),
+            "n_effective": int(getattr(protocol_result, "n_effective", 0)),
         }
     except Exception:                                                # noqa: BLE001
         return {"diagnostics_unavailable": True}

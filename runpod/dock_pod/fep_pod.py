@@ -673,12 +673,21 @@ def _run_openfe_edge(
     solvent_results = _execute_dag(solvent_dag, work_dir / "solvent")
 
     stage_callback("analysing_legs")
+    # (M1 fix 2026-05-16) On openfe 1.11, ProtocolDAGResult does NOT
+    # have a `.protocol_result` attribute. The previous fep_pod
+    # implementation crashed at `dag_result.protocol_result` after a
+    # full 36-min real-physics run. The correct API is
+    # `protocol.gather([dag_result])` which returns the aggregated
+    # RelativeHybridTopologyProtocolResult, which DOES expose
+    # `.get_estimate()` / `.get_uncertainty()`.
+    complex_protocol_result = protocol.gather([complex_results])
+    solvent_protocol_result = protocol.gather([solvent_results])
     return (
-        _summarise_leg(complex_results),
-        _summarise_leg(solvent_results),
+        _summarise_leg(complex_protocol_result),
+        _summarise_leg(solvent_protocol_result),
         {
-            "complex": _leg_diagnostics(complex_results),
-            "solvent": _leg_diagnostics(solvent_results),
+            "complex": _leg_diagnostics(complex_protocol_result),
+            "solvent": _leg_diagnostics(solvent_protocol_result),
         },
     )
 
@@ -707,13 +716,17 @@ def _execute_dag(dag, work_dir: Path):
     )
 
 
-def _summarise_leg(dag_result) -> dict:
+def _summarise_leg(protocol_result) -> dict:
     """Extract ΔG + MBAR error + forward/reverse hysteresis from a
-    completed protocol DAG. Returns kJ/mol throughout — convert at
-    the boundary."""
+    gathered ProtocolResult (NOT a raw ProtocolDAGResult — caller must
+    call protocol.gather([dag_result]) first). Returns kJ/mol throughout
+    — convert at the boundary.
+
+    (M1 fix 2026-05-16) Renamed parameter from `dag_result` because
+    openfe 1.11's ProtocolDAGResult doesn't have `.protocol_result`;
+    the gathered object IS the ProtocolResult."""
     from openff.units import unit as offunit
 
-    protocol_result = dag_result.protocol_result
     dg = protocol_result.get_estimate()
     dg_kj = dg.to(offunit.kilojoule_per_mole).m
 
@@ -762,17 +775,19 @@ def _summarise_leg(dag_result) -> dict:
     }
 
 
-def _leg_diagnostics(dag_result) -> dict:
+def _leg_diagnostics(protocol_result) -> dict:
     """Per-leg MBAR diagnostics — overlap matrix between adjacent
     lambda windows, decorrelation times, n_effective_samples.
     Returned as a JSON-serialisable dict the UI's diagnostics panel
-    can render."""
+    can render.
+
+    (M1 fix) Takes a gathered ProtocolResult directly, NOT a
+    ProtocolDAGResult. See _summarise_leg comment for context."""
     try:
-        pr = dag_result.protocol_result
         return {
-            "n_replicas": getattr(pr, "n_replicas", None),
-            "overlap_min": float(getattr(pr, "min_overlap", 0.0)),
-            "n_effective": int(getattr(pr, "n_effective", 0)),
+            "n_replicas": getattr(protocol_result, "n_replicas", None),
+            "overlap_min": float(getattr(protocol_result, "min_overlap", 0.0)),
+            "n_effective": int(getattr(protocol_result, "n_effective", 0)),
         }
     except Exception:                                                # noqa: BLE001
         return {"diagnostics_unavailable": True}
