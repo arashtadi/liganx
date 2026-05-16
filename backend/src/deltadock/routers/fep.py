@@ -333,6 +333,103 @@ def _create_compound(session: Session, smiles: str, name: Optional[str]) -> Comp
     return c
 
 
+# ────────────────────────────────────────────────────────────────────
+# Inline SMILES validation — used by NewFepStudyPage to grey out the
+# Run button if any hit/analog SMILES won't survive the pod-side
+# RDKit → 3D embed step. Mirrors the same parse + AddHs + EmbedMolecule
+# + MMFFOptimize chain that fep_runner._smiles_to_sdf uses, so a
+# SMILES that passes here is one that will actually dispatch.
+#
+# A pre-flight check rather than a server-side reject avoids the
+# previous failure mode where a user submitted a $50+ study against a
+# bad demo SMILES and only got a "FAILED" status with no actionable
+# message. Now the Run button is disabled until every SMILES is
+# green-ticked and the user sees per-row errors inline.
+# ────────────────────────────────────────────────────────────────────
+class _SmilesValidationItem(BaseModel):
+    """One SMILES to validate. `key` is whatever the frontend wants to
+    use to map results back to its row state (e.g. "hit", "analog_2").
+    The backend echoes it untouched."""
+    key: str
+    smiles: str
+
+
+class _SmilesValidationRequest(BaseModel):
+    """Batched per-form check. We accept up to 12 (1 hit + 10 analogs +
+    1 padding) so a single round-trip covers the whole form."""
+    items: list[_SmilesValidationItem]
+
+
+class _SmilesValidationResult(BaseModel):
+    key: str
+    ok: bool
+    error: Optional[str] = None         # human-readable, suitable for tooltip
+
+
+class _SmilesValidationResponse(BaseModel):
+    results: list[_SmilesValidationResult]
+
+
+def _validate_one_smiles(smiles: str) -> tuple[bool, Optional[str]]:
+    """Return (ok, error_or_None). Tries parse + 3D embed; same checks
+    as the pod-side _smiles_to_sdf so the pre-flight is a faithful
+    proxy for what will actually happen on dispatch."""
+    smi = (smiles or "").strip()
+    if not smi:
+        return False, "SMILES is empty"
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError:                                              # noqa: BLE001
+        # RDKit should always be present on the backend; if it isn't,
+        # don't block submission — fall open so a transient install
+        # issue doesn't ground the whole feature.
+        return True, None
+    try:
+        mol = Chem.MolFromSmiles(smi)
+    except Exception as e:                                           # noqa: BLE001
+        return False, f"SMILES parse error: {type(e).__name__}: {e}"
+    if mol is None:
+        # RDKit prints the kekulize error to stderr but doesn't raise.
+        # The most common cause is exactly the indole-NH bug we hit
+        # with the demo data; explain it to the user.
+        return False, (
+            "Invalid SMILES — RDKit can't parse or kekulize this. "
+            "Check aromatic-ring nitrogens for a missing [nH] hydrogen "
+            "or other valence problems."
+        )
+    try:
+        mol_h = Chem.AddHs(mol)
+        rc = AllChem.EmbedMolecule(mol_h, randomSeed=42)
+        if rc < 0:
+            return False, "3D embed failed — molecule may be too strained or fragmented."
+    except Exception as e:                                           # noqa: BLE001
+        return False, f"3D embed crashed: {type(e).__name__}: {e}"
+    return True, None
+
+
+@router.post("/studies/validate-smiles", response_model=_SmilesValidationResponse)
+def validate_fep_smiles(
+    payload: _SmilesValidationRequest,
+    user: Annotated[CurrentUser, Depends(current_user)],
+) -> _SmilesValidationResponse:
+    """Validate a batch of SMILES against RDKit's parse + 3D-embed
+    pipeline. Used by NewFepStudyPage to disable the Run button when
+    any row would fail at the pod's SMILES → SDF embed step.
+
+    No DB writes, no pod calls, no gate — just rdkit. Fast (~50ms per
+    SMILES for the embed). The endpoint requires sign-in so it can't
+    be abused as a public SMILES-validation API, but doesn't check
+    fep_access — a user without access can still get inline errors
+    while drafting before they request access."""
+    results = [
+        _SmilesValidationResult(key=item.key, ok=ok, error=err)
+        for item in payload.items
+        for ok, err in [_validate_one_smiles(item.smiles)]
+    ]
+    return _SmilesValidationResponse(results=results)
+
+
 @router.post("/studies", response_model=FepStudyGraphResponse)
 def create_fep_study(
     payload: FepStudyRequest,

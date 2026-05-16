@@ -171,6 +171,40 @@ def run_edge(
             t0,
         )
 
+    # ─── Teach gufe's JSON encoder how to serialize openff Molecule. ─
+    # On openfe 1.11 + gufe 1.x conda envs, the GufeJSONEncoder doesn't
+    # know about openff.toolkit.Molecule by default. When openfe builds
+    # the ChemicalSystem token cache (or LigandAtomMapping serializes
+    # its components), the encoder raises:
+    #     TypeError: Object of type Molecule is not JSON serializable
+    # before the simulation can even start. Patch the encoder to call
+    # Molecule.to_dict() for openff Molecule instances. Idempotent —
+    # safe to run on every call.
+    try:
+        from gufe.serialization.json import JSON_HANDLER as _GUFE_JSON_HANDLER
+        if not getattr(_GUFE_JSON_HANDLER, "_liganx_molecule_patched", False):
+            _orig_default = _GUFE_JSON_HANDLER.encoder.default
+
+            def _liganx_default(obj):  # type: ignore[no-redef]
+                if isinstance(obj, Molecule):
+                    # openff.toolkit Molecule.to_dict returns an OrderedDict
+                    # of native types that JSON serializes fine.
+                    return {
+                        ":is_custom:": True,
+                        "__class__": "Molecule",
+                        "__module__": "openff.toolkit",
+                        "to_dict": obj.to_dict(),
+                    }
+                return _orig_default(obj)
+
+            _GUFE_JSON_HANDLER.encoder.default = _liganx_default
+            _GUFE_JSON_HANDLER._liganx_molecule_patched = True
+            log.info("Patched gufe JSON encoder for openff.Molecule")
+    except Exception as _patch_e:                                    # noqa: BLE001
+        # Patching is best-effort — if gufe's internal layout changed,
+        # fall through and surface the original error if it triggers.
+        log.warning("gufe Molecule encoder patch skipped: %s", _patch_e)
+
     # ─── Parameterise ligands + reject charge-changing pairs. ──────
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
