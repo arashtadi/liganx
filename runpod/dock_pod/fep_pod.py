@@ -436,7 +436,26 @@ def _run_openfe_edge(
             )
 
     # ─── 2. Build chemical systems for the two legs. ────────────────
-    protein = ProteinComponent.from_pdb_file(str(receptor_pdb_path))
+    # The receptor PDB coming from the backend's receptor_prep_for_target
+    # is cleaned but typically lacks hydrogens (heavy-atom only). openfe's
+    # ProteinComponent → openmm force-field assignment then trips:
+    #     ValueError: No template found for residue 0 (GLU). The set of
+    #     heavy atoms matches GLU, but the residue is missing 6 H atoms.
+    # PDBFixer adds canonical hydrogens (at pH 7.0) using openmm-standard
+    # atom names that match amber14sb's residue templates. We write the
+    # fixed receptor next to the original so the path passed to openfe
+    # is the H-bearing one.
+    from pdbfixer import PDBFixer
+    from openmm.app import PDBFile
+    fixer = PDBFixer(filename=str(receptor_pdb_path))
+    fixer.findMissingResidues()
+    fixer.findMissingAtoms()
+    fixer.addMissingAtoms()
+    fixer.addMissingHydrogens(pH=7.0)
+    receptor_h_path = receptor_pdb_path.parent / "receptor_with_h.pdb"
+    with open(receptor_h_path, "w") as _f:
+        PDBFile.writeFile(fixer.topology, fixer.positions, _f)
+    protein = ProteinComponent.from_pdb_file(str(receptor_h_path))
     solvent = SolventComponent(
         positive_ion="Na+",
         negative_ion="Cl-",
