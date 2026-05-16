@@ -273,6 +273,80 @@ def notify_job_failed(
     return _send("\n".join(parts))
 
 
+def notify_fep_failed(
+    *,
+    fep_job_id: int,
+    share_id: str,
+    pdb_id: str,
+    variant: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    hit_name: Optional[str],
+    n_analogs: int,
+    edges_completed: int,
+    edges_total: int,
+    error_message: str,
+    error_kind: Optional[str] = None,
+    cost_usd_so_far: Optional[float] = None,
+) -> bool:
+    """(M10) Fire-and-forget Telegram alert when a FEP study lands in
+    FAILED state. Includes how much GPU time was consumed before the
+    failure so the operator knows the dollar impact.
+
+    Same layout philosophy as notify_job_failed — most-useful triage
+    info at the top of the lock-screen notification preview."""
+    pdb_e = _escape_html(pdb_id or "—")
+    variant_e = _escape_html(variant or "WT")
+    user_e = _escape_html(user_email or user_id or "—")
+    hit_e = _escape_html(hit_name or "—")
+    err_e = _escape_html(_truncate(error_message or "(no message)", 600))
+    kind_e = _escape_html(error_kind or "runtime")
+
+    cost_line = ""
+    if cost_usd_so_far is not None:
+        cost_line = f"💸 GPU spent so far: <b>${cost_usd_so_far:.2f}</b>"
+
+    parts = [
+        "❌ <b>FEP Study FAILED</b>",
+        "",
+        f"🆔 FEP id: <code>{fep_job_id}</code>  ·  share: <code>{_escape_html(share_id or '—')}</code>",
+        f"🎯 Target: <b>{pdb_e}</b>  ·  variant: {variant_e}",
+        f"🧪 Hit: <b>{hit_e}</b>  +  {n_analogs} analog(s)",
+        f"📊 Progress: <b>{edges_completed}/{edges_total}</b> edges converged before crash",
+        f"👤 User: <code>{user_e}</code>",
+    ]
+    if cost_line:
+        parts.append(cost_line)
+    parts.extend([
+        "",
+        f"💥 <b>Error</b> ({kind_e}):",
+        f"<code>{err_e}</code>",
+    ])
+
+    return _send("\n".join(parts))
+
+
+def notify_fep_pod_unhealthy(
+    *,
+    detail: str,
+    pod_url: str,
+) -> bool:
+    """(M10) Fire when an FEP study fails because the pod is unreachable
+    or /health returns deps_ok=false. Distinct from a per-edge failure
+    because the action is different — operator needs to look at the pod,
+    not at the user's molecule."""
+    parts = [
+        "⚠️ <b>FEP pod unhealthy</b>",
+        "",
+        f"🔗 Pod URL: <code>{_escape_html(pod_url)}</code>",
+        "",
+        f"📋 Detail: <code>{_escape_html(_truncate(detail, 500))}</code>",
+        "",
+        "🧰 Operator: SSH/web-terminal in, check fep_server process + /workspace/fep_server_boot.log",
+    ]
+    return _send("\n".join(parts))
+
+
 def notify_sentry_alert(
     *,
     title: str,

@@ -953,6 +953,52 @@ def run_study(fep_job_id: int, session: Session) -> None:
         job.id, job.status, n_ok, n_total, job.cycle_closure_rmsd,
     )
 
+    # (M10) Telegram alert on full or all-edges-failed termination.
+    # Skipped on CANCELLED (user-intentional, not actionable) and on
+    # full success (no triage needed). Fire-and-forget — failures in
+    # the notification path shouldn't propagate to the runner.
+    if job.status == FepJobStatus.FAILED:
+        try:
+            from .notifications import notify_fep_failed
+            from ..models import User, Compound
+            user_row = None
+            if job.user_id:
+                user_row = session.get(User, job.user_id)
+            hit_row = session.get(Compound, job.hit_compound_id)
+            # Tail of the last failed edge's pod_log_tail for actionable
+            # error info. Each edge stores its own; we surface the most
+            # recent one as the primary error indicator.
+            tail_err = "All edges failed."
+            tail_kind = "runtime"
+            for _e in reversed(edges):
+                if _e.status == "failed" and _e.pod_log_tail:
+                    # pod_log_tail format from runner is "[kind] message"
+                    plt = _e.pod_log_tail
+                    if plt.startswith("[") and "] " in plt:
+                        bracket_end = plt.index("] ")
+                        tail_kind = plt[1:bracket_end]
+                        tail_err = plt[bracket_end + 2:]
+                    else:
+                        tail_err = plt
+                    break
+            notify_fep_failed(
+                fep_job_id=job.id,
+                share_id=job.share_id,
+                pdb_id=job.pdb_id,
+                variant=job.variant,
+                user_email=(user_row.email if user_row else None),
+                user_id=job.user_id,
+                hit_name=(hit_row.name if hit_row else None),
+                n_analogs=max(0, len(nodes) - 1),
+                edges_completed=n_ok,
+                edges_total=n_total,
+                error_message=tail_err,
+                error_kind=tail_kind,
+                cost_usd_so_far=job.estimated_usd_cost,
+            )
+        except Exception as notify_e:                                # noqa: BLE001
+            log.warning("FEP failure notify failed for job %s: %s", job.id, notify_e)
+
 
 def start_fep_study(*args, **kwargs):                                # noqa: D401
     """Legacy alias kept for older 501-stub callers. Use run_study(job_id)."""
