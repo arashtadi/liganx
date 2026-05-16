@@ -118,11 +118,55 @@ export default function FepStudyPage() {
 
   const isRunning = ["pending", "preparing", "running"].includes(graph.status);
 
+  // (Progress display) Aggregate edge statuses so the user gets a real
+  // sense of progress instead of a bare 'PENDING' chip. Counts edges in
+  // each terminal/transient state and builds a readable status line.
+  const edgeCounts = {
+    ok: graph.edges.filter((e) => e.status === "ok").length,
+    running: graph.edges.filter((e) => e.status === "running").length,
+    failed: graph.edges.filter((e) => e.status === "failed").length,
+    pending: graph.edges.filter((e) => e.status === "pending").length,
+    total: graph.edges.length,
+  };
+  const pctComplete = edgeCounts.total > 0
+    ? Math.round(100 * (edgeCounts.ok + edgeCounts.failed) / edgeCounts.total)
+    : 0;
+  const friendlyStatusLine = (() => {
+    if (graph.status === "pending") {
+      return edgeCounts.total > 0
+        ? `Queued — ${edgeCounts.total} edges waiting for the FEP runner`
+        : "Queued — runner hasn't picked up the study yet";
+    }
+    if (graph.status === "preparing") {
+      return graph.stage === "building_perturbation_graph"
+        ? "Building the LOMAP atom map + perturbation graph…"
+        : "Preparing — parameterising ligands + receptor…";
+    }
+    if (graph.status === "running") {
+      if (edgeCounts.running > 0) {
+        return `Edge ${edgeCounts.ok + 1} of ${edgeCounts.total} running · ${edgeCounts.ok} done · ${edgeCounts.pending} queued`;
+      }
+      return `${edgeCounts.ok}/${edgeCounts.total} edges done · ${edgeCounts.pending} queued`;
+    }
+    if (graph.status === "completed") {
+      return edgeCounts.failed > 0
+        ? `Completed (partial) — ${edgeCounts.ok}/${edgeCounts.total} edges converged, ${edgeCounts.failed} failed`
+        : `Completed — all ${edgeCounts.total} edges converged`;
+    }
+    if (graph.status === "failed") {
+      return "Failed — see error message below";
+    }
+    if (graph.status === "cancelled") {
+      return `Cancelled at ${edgeCounts.ok}/${edgeCounts.total} edges`;
+    }
+    return graph.status;
+  })();
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 animate-fade-in">
       {/* Status banner. */}
       <div className="card flex items-start justify-between flex-wrap gap-3">
-        <div>
+        <div className="flex-1 min-w-[300px]">
           <h1 className="text-2xl font-bold text-ink dark:text-slate-100 flex items-center gap-2">
             FEP+ study
             <span className={`badge text-[10px] uppercase tracking-wider font-bold ${
@@ -138,6 +182,71 @@ export default function FepStudyPage() {
             {graph.share_id}
             {graph.stage && <> · {graph.stage}</>}
           </p>
+          {/* Progress line — plain-English summary of where the
+              study is. Replaces a bare 'PENDING' badge with a
+              readable account of what the runner is doing right
+              now and how many edges remain. */}
+          <p className="text-sm text-slate-700 dark:text-slate-200 mt-2">
+            {friendlyStatusLine}
+          </p>
+          {/* Progress bar — only when the study has edges to track.
+              Shows three coloured segments: green (converged),
+              violet (running), slate (queued). Failed edges go
+              into the green bucket since they're complete. */}
+          {edgeCounts.total > 0 && (
+            <div className="mt-2 space-y-1">
+              <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden flex">
+                {edgeCounts.ok > 0 && (
+                  <div
+                    className="h-full bg-emerald-500 dark:bg-emerald-400"
+                    style={{ width: `${(100 * edgeCounts.ok) / edgeCounts.total}%` }}
+                    title={`${edgeCounts.ok} converged`}
+                  />
+                )}
+                {edgeCounts.failed > 0 && (
+                  <div
+                    className="h-full bg-rose-500 dark:bg-rose-400"
+                    style={{ width: `${(100 * edgeCounts.failed) / edgeCounts.total}%` }}
+                    title={`${edgeCounts.failed} failed`}
+                  />
+                )}
+                {edgeCounts.running > 0 && (
+                  <div
+                    className="h-full bg-violet-500 dark:bg-violet-400 animate-pulse"
+                    style={{ width: `${(100 * edgeCounts.running) / edgeCounts.total}%` }}
+                    title={`${edgeCounts.running} running`}
+                  />
+                )}
+              </div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-3">
+                <span>{pctComplete}% complete</span>
+                {edgeCounts.ok > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                    {edgeCounts.ok} ok
+                  </span>
+                )}
+                {edgeCounts.running > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-violet-500" />
+                    {edgeCounts.running} running
+                  </span>
+                )}
+                {edgeCounts.pending > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-slate-400" />
+                    {edgeCounts.pending} queued
+                  </span>
+                )}
+                {edgeCounts.failed > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-rose-500" />
+                    {edgeCounts.failed} failed
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           {graph.cycle_closure_rmsd != null && (
             <p className="text-xs mt-1">
               <span className="text-slate-500 dark:text-slate-400">Cycle-closure RMSD:</span>{" "}

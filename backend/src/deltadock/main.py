@@ -131,16 +131,23 @@ def _reap_orphan_fep_studies() -> None:
         from sqlalchemy import text
         from .db import engine
         with Session(engine) as session:
+            # Postgres ENUM type fepjobstatus uses ENUM MEMBER NAMES
+            # (uppercase) as valid values — Python's FepJobStatus.PENDING
+            # serialises to 'PENDING' in the DB, not the lowercase .value.
+            # SQLAlchemy translates between the two for ORM operations,
+            # but raw SQL bypasses that translation, so we must match
+            # the DB representation exactly. Same convention as the
+            # docking reaper (_reap_orphan_jobs uses 'RUNNING'/'PENDING').
             result = session.execute(
                 text(
                     "UPDATE fep_job"
-                    " SET status = 'failed',"
+                    " SET status = 'FAILED',"
                     "     error_message = COALESCE(error_message,"
                     "         'Interrupted by a backend restart — the FEP runner"
                     " was killed before this study could finish. Please re-submit"
                     " from /fep/new.'),"
                     "     updated_at = now()"
-                    " WHERE status IN ('pending', 'preparing', 'running')"
+                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
                     "   AND updated_at < now() - make_interval(mins => 90)"
                     " RETURNING id, share_id, status"
                 ),

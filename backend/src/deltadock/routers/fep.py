@@ -259,12 +259,17 @@ def estimate_fep_study(
             fep_access_granted=granted,
         )
     # Topology-aware edge count.
+    # (I5) For radial_plus_mst: N radial spokes + up to N/2 extra MST
+    # edges so we get cycles for cycle-closure analysis. The old
+    # `max(N, 1.5*N)` formula returned 2 for N=1, but N=1 has only
+    # ONE possible edge (hit → analog) — you can't form an MST with
+    # 2 nodes. New formula handles that correctly.
     if payload.network_topology == "radial":
         n_edges = n_analogs
     elif payload.network_topology == "radial_plus_mst":
-        n_edges = max(n_analogs, int(round(1.5 * n_analogs)))
+        n_edges = n_analogs + max(0, n_analogs // 2)
     else:
-        n_edges = int(round(1.5 * n_analogs))
+        n_edges = n_analogs + max(0, n_analogs // 2)
     # Per-edge GPU-hours scales with windows × (equil + prod) × legs.
     # 12 windows × (2 ns equil + 5 ns prod) × 2 legs = 168 ns @
     # ~350 ns/day on Blackwell ≈ 11.5 GPU-hours. Round to 10 for the
