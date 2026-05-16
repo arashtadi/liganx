@@ -364,7 +364,12 @@ def _run_openfe_edge(
 
     Production length per window = ns_total − ns_equil.
     """
-    from openfe import ChemicalSystem, ProteinComponent, SolventComponent
+    from openfe import (
+        ChemicalSystem,
+        ProteinComponent,
+        SmallMoleculeComponent,
+        SolventComponent,
+    )
     from openfe.protocols.openmm_rfe import RelativeHybridTopologyProtocol
     from openff.units import unit as offunit
     from gufe import LigandAtomMapping
@@ -393,14 +398,27 @@ def _run_openfe_edge(
         max3d=0.95,             # ignored when threed=False
         element_change=False,   # forbid element changes (most edges)
     )
-    mapping = next(mapper.suggest_mappings(ligand_a, ligand_b), None)
+    # Wrap raw openff Molecules in openfe's SmallMoleculeComponent.
+    # openfe 1.11 expects ChemicalSystem components to BE gufe
+    # Components (subclasses with .validate()) — passing a raw
+    # openff.toolkit.Molecule trips "'Molecule' object has no attribute
+    # 'validate'" deep in protocol.create(). SmallMoleculeComponent
+    # is the canonical wrapper and the atom mappers accept it directly.
+    lig_a_comp = SmallMoleculeComponent.from_openff(ligand_a) if hasattr(
+        SmallMoleculeComponent, "from_openff"
+    ) else SmallMoleculeComponent(ligand_a)
+    lig_b_comp = SmallMoleculeComponent.from_openff(ligand_b) if hasattr(
+        SmallMoleculeComponent, "from_openff"
+    ) else SmallMoleculeComponent(ligand_b)
+
+    mapping = next(mapper.suggest_mappings(lig_a_comp, lig_b_comp), None)
     if mapping is None:
         # Try Kartograf as a last resort, but expect a JSON-serialisation
         # crash on openfe 1.11 + gufe — surface that as a structured
         # error rather than a bare stacktrace.
         try:
             mapper = KartografAtomMapper(atom_max_distance=0.95)
-            mapping = next(mapper.suggest_mappings(ligand_a, ligand_b), None)
+            mapping = next(mapper.suggest_mappings(lig_a_comp, lig_b_comp), None)
         except TypeError as e:
             if "JSON serializable" in str(e):
                 raise RuntimeError(
@@ -424,10 +442,10 @@ def _run_openfe_edge(
         negative_ion="Cl-",
         ion_concentration=salt_conc * offunit.molar,
     )
-    complex_a = ChemicalSystem({"ligand": ligand_a, "protein": protein, "solvent": solvent})
-    complex_b = ChemicalSystem({"ligand": ligand_b, "protein": protein, "solvent": solvent})
-    solvent_a = ChemicalSystem({"ligand": ligand_a, "solvent": solvent})
-    solvent_b = ChemicalSystem({"ligand": ligand_b, "solvent": solvent})
+    complex_a = ChemicalSystem({"ligand": lig_a_comp, "protein": protein, "solvent": solvent})
+    complex_b = ChemicalSystem({"ligand": lig_b_comp, "protein": protein, "solvent": solvent})
+    solvent_a = ChemicalSystem({"ligand": lig_a_comp, "solvent": solvent})
+    solvent_b = ChemicalSystem({"ligand": lig_b_comp, "solvent": solvent})
 
     # ─── 3. Configure the alchemical protocol. ──────────────────────
     # openfe 1.11 renamed `alchemical_sampler_settings.n_replicas` to
