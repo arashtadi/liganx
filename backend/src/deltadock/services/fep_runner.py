@@ -737,12 +737,14 @@ def run_study(fep_job_id: int, session: Session) -> None:
     settings_pod_fep_url, resolved_engine = _pod_url_for_engine(
         getattr(job, "force_field_engine", None)
     )
-    if not settings_pod_fep_url:
+    # (M21) Skip the URL guard when FEP_MOCK_MODE=1 — dispatch_edge
+    # short-circuits to a synthetic result without ever needing the
+    # pod URL, so requiring it here was a false blocker that prevented
+    # CI from exercising the full submission → completion flow.
+    if not settings_pod_fep_url and not is_fep_mock_mode():
         # Sage URL not configured — the entire FEP stack is unavailable.
         # WARNING not ERROR for the same reason as pre-K4: this is an
         # expected operational state until the pod is deployed.
-        # If FEP_MOCK_MODE=1, dispatch_edge short-circuits before
-        # needing the URL at all.
         log.warning(
             "run_study: pod URL for engine=%r not set; marking study FAILED",
             resolved_engine,
