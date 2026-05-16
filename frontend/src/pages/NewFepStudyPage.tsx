@@ -403,7 +403,12 @@ export default function NewFepStudyPage() {
             getValue={(item) => item.name}
             renderItem={(item) => (
               <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-delta-700 shrink-0">{item.name}</span>
+                {/* (UX) Match the target <select> dropdown's font
+                    color — plain ink-on-light / slate-100-on-dark.
+                    The previous brand-blue (text-delta-700) read as
+                    a 'link' affordance, inconsistent with the rest of
+                    the form's vanilla select-style controls. */}
+                <span className="font-semibold text-ink dark:text-slate-100 shrink-0">{item.name}</span>
                 <span className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
                   {item.source}
                 </span>
@@ -455,8 +460,15 @@ export default function NewFepStudyPage() {
                   getValue={(item) => item.name}
                   renderItem={(item) => (
                     <div className="flex items-baseline gap-2">
-                      <span className="font-semibold text-delta-700 truncate">{item.name}</span>
-                      <span className="text-[9px] uppercase text-slate-400">{item.source}</span>
+                      {/* (UX) Same neutral colour + same SMILES
+                          preview as the hit row, so the analog
+                          dropdown has parity with the hit dropdown
+                          and matches the Target <select> font style. */}
+                      <span className="font-semibold text-ink dark:text-slate-100 shrink-0">{item.name}</span>
+                      <span className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                        {item.source}
+                      </span>
+                      <span className="text-[11px] text-slate-500 truncate font-mono">{item.smiles}</span>
                     </div>
                   )}
                   placeholder={`Analog ${i + 1}`}
