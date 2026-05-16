@@ -182,10 +182,12 @@ export default function HistoryPage() {
           accent + white background so it reads as the focused surface
           even on the dark theme. */}
       <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-1 text-sm font-semibold">
-        {/* (L4 2026-05-16) FEP tab hidden while FEP+ is broken on the pod
-            (CUDA PTX crash). Restore by including "fep" in the array below
-            once J18 lands and a real-physics edge converges. */}
-        {(["jobs", "screenings"] as HistoryTab[]).map((tab) => (
+        {/* (M12 2026-05-16) FEP tab RESTORED — engine now produces
+            converged ΔΔGs end-to-end (smoke #3 proved it). The desktop
+            menu link in App.tsx stays hidden until full validation, but
+            History needs to show test studies (FEP #16, #17, etc.) so
+            admin/dev users can check progress and results. */}
+        {(["jobs", "screenings", "fep"] as HistoryTab[]).map((tab) => (
           <button
             key={tab}
             type="button"

@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type FepStudyGraph } from "../api";
 import { Spinner } from "../components/Icons";
+import MoleculePreview from "../components/MoleculePreview";
 import { usePageMeta } from "../lib/usePageMeta";
 
 // (J12) Map raw stage names emitted by fep_pod into friendly,
@@ -559,14 +560,23 @@ export default function FepStudyPage() {
         )}
       </div>
 
-      {/* Hit row. */}
+      {/* (M13) Hit row with 2D structure preview. The chemist reads
+          the molecule visually, not by parsing SMILES — RDKit-rendered
+          SVG via /lookup/inspect-smiles. */}
       {hit && (
         <div className="card bg-slate-50/60 dark:bg-slate-800/40 ring-1 ring-slate-200 dark:ring-slate-700">
           <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
             Hit (graph centre)
           </div>
-          <div className="font-bold text-base mt-1">{hit.name || "(unnamed)"}</div>
-          <div className="text-xs font-mono text-slate-600 dark:text-slate-300 truncate">{hit.smiles}</div>
+          <div className="flex items-start gap-4 mt-2">
+            <div className="shrink-0">
+              <MoleculePreview smiles={hit.smiles} width={200} height={140} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-base">{hit.name || "(unnamed)"}</div>
+              <div className="text-xs font-mono text-slate-600 dark:text-slate-300 truncate mt-1">{hit.smiles}</div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -581,6 +591,9 @@ export default function FepStudyPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
+              {/* (M13) Structure thumbnail column first — chemists scan
+                  by visual molecule shape, not by name or SMILES string. */}
+              <th className="py-2 pr-3" style={{ width: 150 }}>Structure</th>
               <th className="py-2 pr-4">Compound</th>
               <th className="py-2 pr-4 text-right">ΔΔG to hit</th>
               <th className="py-2 pr-4 text-right">95% CI</th>
@@ -590,6 +603,9 @@ export default function FepStudyPage() {
           <tbody>
             {sortedAnalogs.map((n, i) => (
               <tr key={i} className="border-b border-slate-100 dark:border-slate-800 align-top">
+                <td className="py-2 pr-3">
+                  <MoleculePreview smiles={n.smiles} width={140} height={90} />
+                </td>
                 <td className="py-2 pr-4">
                   <div className="font-semibold">{n.name || `Analog ${i + 1}`}</div>
                   <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate max-w-xs">{n.smiles}</div>
@@ -645,8 +661,7 @@ export default function FepStudyPage() {
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
-                <th className="py-2 pr-3">From</th>
-                <th className="py-2 pr-3">To</th>
+                <th className="py-2 pr-3">From → To</th>
                 <th className="py-2 pr-3 text-right">LOMAP</th>
                 <th className="py-2 pr-3 text-right">ΔΔG_bind</th>
                 <th className="py-2 pr-3 text-right">CI</th>
@@ -655,30 +670,65 @@ export default function FepStudyPage() {
               </tr>
             </thead>
             <tbody>
-              {graph.edges.map((e, i) => (
-                <tr key={i} className="border-b border-slate-100 dark:border-slate-800">
-                  <td className="py-2 pr-3 font-mono">#{e.from_compound_id ?? "?"}</td>
-                  <td className="py-2 pr-3 font-mono">#{e.to_compound_id ?? "?"}</td>
-                  <td className="py-2 pr-3 text-right tabular-nums">{(e.lomap_score ?? 0).toFixed(2)}</td>
-                  <td className="py-2 pr-3 text-right tabular-nums font-mono">
-                    {e.ddg_binding_kcal_mol != null ? `${e.ddg_binding_kcal_mol > 0 ? "+" : ""}${e.ddg_binding_kcal_mol.toFixed(2)}` : "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-right tabular-nums">
-                    {e.ddg_uncertainty != null ? `± ${e.ddg_uncertainty.toFixed(2)}` : "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-right tabular-nums">
-                    {e.hysteresis_kcal_mol != null ? e.hysteresis_kcal_mol.toFixed(2) : "—"}
-                  </td>
-                  <td className="py-2 pr-3">
-                    <span className={`badge text-[9px] uppercase ${
-                      e.status === "ok" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
-                      : e.status === "failed" ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
-                      : e.status === "running" ? "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300"
-                      : "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
-                    }`}>{e.status}</span>
-                  </td>
-                </tr>
-              ))}
+              {graph.edges.map((e, i) => {
+                // (M13) Resolve compound IDs to chemist-readable names
+                // via the nodes list (which has name + smiles for each).
+                const fromNode = graph.nodes.find(
+                  (n) => n.compound_id === e.from_compound_id,
+                );
+                const toNode = graph.nodes.find(
+                  (n) => n.compound_id === e.to_compound_id,
+                );
+                return (
+                  <tr key={i} className="border-b border-slate-100 dark:border-slate-800 align-top">
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-2">
+                        <div className="shrink-0">
+                          {fromNode?.smiles ? (
+                            <MoleculePreview smiles={fromNode.smiles} width={70} height={50} />
+                          ) : (
+                            <span className="font-mono text-slate-400">#{e.from_compound_id ?? "?"}</span>
+                          )}
+                        </div>
+                        <span className="text-slate-400">→</span>
+                        <div className="shrink-0">
+                          {toNode?.smiles ? (
+                            <MoleculePreview smiles={toNode.smiles} width={70} height={50} />
+                          ) : (
+                            <span className="font-mono text-slate-400">#{e.to_compound_id ?? "?"}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                        {(fromNode?.name || "?")} → {(toNode?.name || "?")}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{(e.lomap_score ?? 0).toFixed(2)}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums font-mono">
+                      {e.ddg_binding_kcal_mol != null ? `${e.ddg_binding_kcal_mol > 0 ? "+" : ""}${e.ddg_binding_kcal_mol.toFixed(2)}` : "—"}
+                    </td>
+                    <td className="py-2 pr-3 text-right tabular-nums">
+                      {e.ddg_uncertainty != null ? `± ${e.ddg_uncertainty.toFixed(2)}` : "—"}
+                    </td>
+                    <td className="py-2 pr-3 text-right tabular-nums">
+                      {e.hysteresis_kcal_mol != null ? e.hysteresis_kcal_mol.toFixed(2) : "—"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <span className={`badge text-[9px] uppercase ${
+                        e.status === "ok" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                        : e.status === "failed" ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+                        : e.status === "running" ? "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300"
+                        : "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                      }`}>{e.status}</span>
+                      {e.stage && e.status === "running" && (
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                          {e.stage}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
