@@ -850,10 +850,23 @@ def mmgbsa_rescore_endpoint(req: MmgbsaRescoreRequest):
 # Running on the same pod that serves Vina cells will starve them
 # because the alchemy holds GPU memory for the duration.
 #
-# Deploy: same pattern as /mmgbsa/rescore — see DEPLOY_FEP_POD.md for
-# the openfe + openmmtools + pymbar pip install.
+# Why this is a thin REVERSE-PROXY and not a direct call to fep_pod:
+# the FEP scientific stack (openfe + openmmtools + pymbar + openff-
+# toolkit) is conda-only. It lives in an isolated /workspace/miniconda3
+# env served by fep_server.py on port 7862 — NOT the system Python that
+# dock_server.py runs in. We forward the request to localhost:7862 so
+# the HTTP boundary stays single-URL (POD_DOCK_URL/fep_edge) while
+# python-environment separation is preserved. See fep_server.py for the
+# conda-side endpoint.
 # ═══════════════════════════════════════════════════════════════════════
-import fep_pod as _fep_pod  # noqa: E402
+import urllib.error as _fep_urlerr  # noqa: E402
+import urllib.request as _fep_urlreq  # noqa: E402
+import json as _fep_json  # noqa: E402
+
+# Reachable via the pod's loopback only; fep_server doesn't expose 7862
+# externally (RunPod's HTTPS proxy doesn't route it). System python →
+# conda python over plain HTTP on the loopback is intentional.
+_FEP_SERVER_URL = os.environ.get("FEP_SERVER_URL", "http://localhost:7862").rstrip("/")
 
 
 class FepEdgeRequest(_EnsBaseModel):
@@ -877,31 +890,46 @@ class FepEdgeRequest(_EnsBaseModel):
 
 @app.post("/fep_edge")
 def fep_edge_endpoint(req: FepEdgeRequest):
-    """Run one alchemical edge A→B and return ΔΔG_binding + MBAR
-    diagnostics. ~8-12 GPU-hours wall on a kinase complex.
+    """Reverse-proxy to fep_server (conda env, localhost:7862). The FEP
+    deps are heavy and conda-only, so the actual alchemy runs in a
+    separate python env on a separate port; dock_server is just a thin
+    HTTP forwarder so the backend keeps a single URL (POD_DOCK_URL).
 
     Returns ``{ok: True, ddg_binding_kcal_mol, ddg_uncertainty,
     hysteresis_kcal_mol, convergence_flag, mbar_diagnostics_json,
     method, wall_seconds}`` on success, or ``{ok: False, error, kind}``
-    on missing-deps / parameterisation / charge-change / runtime
-    failure.
+    on transport / parameterisation / runtime failure.
 
-    HTTP timeout caveat: backend should set timeout >= 13 hours for
-    this route. Long-running connections may need keep-alive tweaks
-    on the proxy."""
+    HTTP timeout caveat: backend should set client timeout ≥ 13 hours.
+    Cloudflare/RunPod proxies have 100s/10h idle ceilings — for long
+    edges, switch to async pod-side worker + result-polling (Phase B.1).
+    """
+    body = _fep_json.dumps(req.model_dump()).encode("utf-8")
+    request = _fep_urlreq.Request(
+        f"{_FEP_SERVER_URL}/fep_edge",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        return _fep_pod.run_edge(
-            req.receptor_pdb,
-            req.ligand_a_sdf,
-            req.ligand_b_sdf,
-            n_lambda_windows=req.n_lambda_windows,
-            ns_per_window=req.ns_per_window,
-            ns_equilibration=req.ns_equilibration,
-            salt_conc_mol_per_l=req.salt_conc_mol_per_l,
-            temperature_k=req.temperature_k,
-            hmr_mass_amu=req.hmr_mass_amu,
-            timestep_fs=req.timestep_fs,
-        )
+        # 13 h ceiling matches the worst-case edge wall time. Loopback
+        # so there's no proxy-layer timeout in between.
+        with _fep_urlreq.urlopen(request, timeout=13 * 3600) as resp:
+            return _fep_json.loads(resp.read().decode("utf-8"))
+    except _fep_urlerr.HTTPError as e:
+        return {
+            "ok": False,
+            "error": f"fep_server HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}",
+            "kind": "transport",
+            "wall_seconds": 0.0,
+        }
+    except _fep_urlerr.URLError as e:
+        return {
+            "ok": False,
+            "error": f"fep_server unreachable at {_FEP_SERVER_URL}: {e.reason}",
+            "kind": "transport",
+            "wall_seconds": 0.0,
+        }
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False,
