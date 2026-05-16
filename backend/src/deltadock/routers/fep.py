@@ -114,6 +114,14 @@ class FepEdgeResult(BaseModel):
     # counter for the live edge.
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # (J12) Live sub-stage progress while the edge is mid-flight.
+    # Updated by the fep_runner's polling loop from the pod's
+    # /fep_edge_status response. `stage` is a human-readable label
+    # (e.g. "running_complex_leg", "parameterising_ligands");
+    # `progress_pct` is 0-100, currently a coarse milestone mapping
+    # until the openmm reporter hook lands in J14.
+    stage: Optional[str] = None
+    progress_pct: Optional[int] = None
 
 
 class FepStudyGraphResponse(BaseModel):
@@ -844,6 +852,8 @@ def _serialise_graph(
             status=e.status,
             started_at=(e.started_at.isoformat() if e.started_at else None),
             completed_at=(e.completed_at.isoformat() if e.completed_at else None),
+            stage=getattr(e, "stage", None),
+            progress_pct=getattr(e, "progress_pct", None),
         ))
 
     return FepStudyGraphResponse(

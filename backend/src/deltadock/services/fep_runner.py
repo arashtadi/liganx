@@ -36,7 +36,7 @@ import logging
 import math
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlmodel import Session, select
 
@@ -278,6 +278,28 @@ def _score_for(edges, a, b) -> float:
 # ──────────────────── Edge dispatch (pod-side call) ────────────────────
 
 
+# (J12) Stage progress mapping. Each named stage emitted by fep_pod is
+# assigned a coarse 0-100 percentage so the frontend can render a
+# meaningful progress bar without window-level granularity (J14 will
+# layer that in via openmm reporters). The numbers are rough — they
+# reflect roughly how much wall time the user has burned getting to
+# that stage on the prod 4090, not science meaningful checkpoints.
+_STAGE_PCT: dict[str, int] = {
+    "queued": 0,
+    "parsing_ligand_sdfs": 2,
+    "lomap_mapping": 5,
+    "preparing_receptor": 8,
+    "building_complex_dag": 15,             # antechamber runs here on lig_a + lig_b
+    "running_complex_leg": 40,
+    "building_solvent_dag": 60,
+    "running_solvent_leg": 80,
+    "analysing_legs": 95,
+    "done": 100,
+    "failed": 100,
+    "crashed": 100,
+}
+
+
 def dispatch_edge(
     *,
     receptor_pdb_text: str,
@@ -286,15 +308,20 @@ def dispatch_edge(
     n_lambda_windows: int,
     ns_per_window: float,
     pod_fep_url: str,
-    timeout_s: float = 14 * 60 * 60,           # 14 hours; edge is ≤12
+    timeout_s: float = 14 * 60 * 60,           # 14 h hard ceiling on poll loop
+    on_stage_update: Optional[Callable[[str, int, str], None]] = None,
 ) -> dict:
-    """POST one edge to the FEP pod's /fep_edge endpoint. Returns
-    the structured pod response (success or {ok:False, kind, error}).
+    """(J12) Async-polling dispatch. POSTs /fep_edge_start to get a
+    job_id, then polls /fep_edge_status/{job_id} every 30s, calling
+    `on_stage_update(stage, progress_pct, pod_job_id)` after each poll
+    so the caller can persist progress to the DB. Blocks until the
+    edge is done (success or failure) or `timeout_s` elapses.
 
-    Long timeout because the pod runs the alchemy synchronously — a
-    Blackwell edge is 8-12 GPU-hours of wall time. The Fly/proxy
-    config must allow long-lived connections; if not, switch to an
-    async pod-side worker + result-polling pattern (planned Phase B.1).
+    Returns the same shape as the old synchronous dispatch: the pod
+    response dict with `ok`, `ddg_*`, or `error`/`kind` keys.
+
+    Backward compat: callers that don't care about stage updates can
+    omit `on_stage_update` — it defaults to no-op.
 
     (H4) When FEP_MOCK_MODE=1 we short-circuit before any pod call
     and return a deterministic synthetic result. Used for $0 testing
@@ -303,11 +330,16 @@ def dispatch_edge(
     if is_fep_mock_mode():
         log.info("FEP_MOCK_MODE active — returning synthetic edge result")
         import time
+        if on_stage_update:
+            on_stage_update("mock_running", 50, "mock")
         time.sleep(1.0)                              # simulate pod latency
+        if on_stage_update:
+            on_stage_update("done", 100, "mock")
         return _mock_edge_result(ligand_a_sdf, ligand_b_sdf)
 
     from ..config import pod_auth_headers
     import httpx
+    import time as _time
 
     pod_url = (pod_fep_url or "").rstrip("/")
     if not pod_url:
@@ -317,10 +349,11 @@ def dispatch_edge(
             "kind": "missing_deps",
         }
 
+    # ── 1. POST /fep_edge_start to spawn the worker. ─────────────────
     try:
-        with httpx.Client(timeout=timeout_s) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
-                f"{pod_url}/fep_edge",
+                f"{pod_url}/fep_edge_start",
                 json={
                     "receptor_pdb": receptor_pdb_text,
                     "ligand_a_sdf": ligand_a_sdf,
@@ -330,33 +363,84 @@ def dispatch_edge(
                 },
                 headers=pod_auth_headers(),
             )
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, httpx.RequestError) as e:
         return {
             "ok": False,
-            "error": f"FEP pod /fep_edge timed out after {timeout_s} s",
+            "error": f"FEP pod /fep_edge_start unreachable: {e}",
             "kind": "transport",
         }
-    except httpx.RequestError as e:
-        return {
-            "ok": False,
-            "error": f"FEP pod /fep_edge network error: {e}",
-            "kind": "transport",
-        }
-
     if not resp.is_success:
         return {
             "ok": False,
-            "error": f"FEP pod /fep_edge HTTP {resp.status_code}: {resp.text[:300]}",
+            "error": f"FEP pod /fep_edge_start HTTP {resp.status_code}: {resp.text[:300]}",
             "kind": "transport",
         }
     try:
-        return resp.json()
+        start_payload = resp.json()
     except Exception as e:                                           # noqa: BLE001
         return {
             "ok": False,
-            "error": f"FEP pod /fep_edge non-JSON: {resp.text[:200]}",
+            "error": f"FEP pod /fep_edge_start non-JSON: {resp.text[:200]}",
             "kind": "transport",
         }
+    job_id = start_payload.get("job_id")
+    if not job_id:
+        # Pod returned an error response from /fep_edge_start (e.g.
+        # missing_deps); pass it through.
+        return start_payload
+
+    # ── 2. Poll /fep_edge_status/{job_id} every 30s. ─────────────────
+    poll_interval_s = 30
+    deadline = _time.time() + timeout_s
+    last_stage: Optional[str] = None
+    while _time.time() < deadline:
+        try:
+            with httpx.Client(timeout=30) as client:
+                poll = client.get(
+                    f"{pod_url}/fep_edge_status/{job_id}",
+                    headers=pod_auth_headers(),
+                )
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            # One transient poll failure isn't fatal — sleep and retry.
+            log.warning("FEP poll transient error: %s", e)
+            _time.sleep(poll_interval_s)
+            continue
+        if not poll.is_success:
+            log.warning("FEP poll HTTP %s: %s", poll.status_code, poll.text[:200])
+            _time.sleep(poll_interval_s)
+            continue
+        try:
+            payload = poll.json()
+        except Exception:                                            # noqa: BLE001
+            _time.sleep(poll_interval_s)
+            continue
+
+        stage = payload.get("stage") or "running"
+        status = payload.get("status") or "running"
+        # Only fire the callback when the stage actually changes so
+        # we don't thrash the DB on identical 30s polls.
+        if stage != last_stage and on_stage_update:
+            try:
+                on_stage_update(stage, _STAGE_PCT.get(stage, 50), job_id)
+            except Exception as e:                                   # noqa: BLE001
+                log.warning("on_stage_update callback failed: %s", e)
+            last_stage = stage
+
+        if status == "done":
+            result = payload.get("result") or {
+                "ok": False,
+                "error": "FEP pod returned status=done with no result",
+                "kind": "runtime",
+            }
+            return result
+        _time.sleep(poll_interval_s)
+
+    # ── 3. Hard timeout. ─────────────────────────────────────────────
+    return {
+        "ok": False,
+        "error": f"FEP edge timed out after {timeout_s} s of polling",
+        "kind": "transport",
+    }
 
 
 # ────────────── Per-node ΔΔG aggregation via shortest path ──────────────
@@ -717,6 +801,32 @@ def run_study(fep_job_id: int, session: Session) -> None:
             "FepJob %s edge %d/%d dispatching: node_a=%s node_b=%s",
             job.id, i + 1, len(edges), node_a.id, node_b.id,
         )
+
+        # (J12) Persist sub-stage updates from the pod's polling
+        # endpoint. Closure captures `edge`, `session`, and the edge
+        # index so the user-facing stage label includes which edge
+        # we're on. Failures inside the callback are swallowed by
+        # dispatch_edge so a transient DB hiccup mid-poll can't kill
+        # the running edge.
+        edge_index_for_cb = i  # local copy for closure stability
+
+        def _on_stage(stage: str, pct: int, pod_job_id: str,
+                      _edge=edge, _session=session, _idx=edge_index_for_cb,
+                      _total=len(edges)) -> None:
+            try:
+                _edge.stage = stage
+                _edge.progress_pct = pct
+                _edge.pod_job_id = pod_job_id
+                _session.add(_edge)
+                # Also update the job.stage so the study-level label
+                # reflects the live edge state ("edge 2/4: running_complex_leg").
+                job.stage = f"edge_{_idx+1}_of_{_total}_{stage}"
+                job.updated_at = datetime.utcnow()
+                _session.add(job)
+                _session.commit()
+            except Exception as cb_e:                                # noqa: BLE001
+                log.warning("FEP stage-update callback failed: %s", cb_e)
+
         result = dispatch_edge(
             receptor_pdb_text=receptor_pdb_text,
             ligand_a_sdf=sdf_a,
@@ -724,6 +834,7 @@ def run_study(fep_job_id: int, session: Session) -> None:
             n_lambda_windows=job.n_lambda_windows,
             ns_per_window=job.ns_per_window,
             pod_fep_url=settings_pod_fep_url,
+            on_stage_update=_on_stage,
         )
 
         edge.completed_at = datetime.utcnow()

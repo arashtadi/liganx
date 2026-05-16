@@ -588,3 +588,14 @@ class FepPerturbation(SQLModel, table=True):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     pod_log_tail: Optional[str] = None
+
+    # (J12) Live sub-stage progress while the edge is running on the
+    # pod. Set by fep_runner's polling loop from the pod's
+    # /fep_edge_status response. `stage` is the human-readable label
+    # (e.g. "running_complex_leg"); `progress_pct` is 0-100 derived
+    # from stage milestones (full openmm-reporter integration is J14);
+    # `pod_job_id` is the worker handle so a backend restart can
+    # resume polling instead of double-dispatching.
+    stage: Optional[str] = Field(default=None, max_length=64)
+    progress_pct: Optional[int] = None
+    pod_job_id: Optional[str] = Field(default=None, max_length=64)

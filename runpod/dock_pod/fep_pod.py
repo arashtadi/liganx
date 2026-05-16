@@ -114,8 +114,25 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod")
+
+# (J12) Stage callback type. The async wrapper in fep_server's
+# /fep_edge_start endpoint passes a function that writes the stage
+# label to a JSON status file the backend then polls. Stages we emit:
+#   lomap_mapping → parameterising_ligands → building_systems →
+#   solvating_complex → running_complex_leg → analysing_complex →
+#   solvating_solvent → running_solvent_leg → analysing_solvent →
+#   mbar_analysis → done
+# Sub-window progress inside sampling is J14 (openmm reporter hook).
+StageCallback = Callable[[str], None]
+
+
+def _noop_stage(_: str) -> None:
+    """Default no-op so run_edge's existing synchronous callers don't
+    need to pass a stage_callback."""
+    pass
 
 
 def run_edge(
@@ -130,6 +147,7 @@ def run_edge(
     temperature_k: float = 298.15,
     hmr_mass_amu: float = 3.0,
     timestep_fs: float = 4.0,
+    stage_callback: Optional[StageCallback] = None,
 ) -> dict:
     """Run one alchemical edge A→B in both complex and solvent legs.
 
@@ -143,6 +161,7 @@ def run_edge(
     cost; a 10-edge study takes ~3-5 days end-to-end.
     """
     t0 = time.time()
+    stage = stage_callback or _noop_stage
 
     if not receptor_pdb_text or not ligand_a_sdf_text or not ligand_b_sdf_text:
         return _err("missing_input", "Empty receptor/ligand SDF input", t0)
@@ -225,6 +244,7 @@ def run_edge(
         log.warning("gufe Molecule codec registration skipped: %s", _codec_e)
 
     # ─── Parameterise ligands + reject charge-changing pairs. ──────
+    stage("parsing_ligand_sdfs")
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         a_path = td_path / "ligand_a.sdf"
@@ -269,6 +289,7 @@ def run_edge(
                 receptor_pdb_path=receptor_path,
                 ligand_a=mol_a,
                 ligand_b=mol_b,
+                stage_callback=stage,
                 n_windows=n_lambda_windows,
                 ns_total=ns_per_window,
                 ns_equil=ns_equilibration,
@@ -350,6 +371,7 @@ def _run_openfe_edge(
     n_windows: int, ns_total: float, ns_equil: float,
     salt_conc: float, temperature_k: float, hmr_mass: float,
     timestep_fs: float, work_dir: Path,
+    stage_callback: StageCallback = _noop_stage,
 ) -> tuple[dict, dict, dict]:
     """Run the actual openfe RelativeHybridTopologyProtocol for one
     edge. Returns three dicts:
@@ -391,6 +413,7 @@ def _run_openfe_edge(
     # Using 2D LOMAP avoids both pathologies and is the correct choice
     # for SMILES-input edges anyway — 3D alignment is the docking
     # pipeline's job, not the FEP pod's.
+    stage_callback("lomap_mapping")
     from openfe.setup import LomapAtomMapper, KartografAtomMapper
     mapper = LomapAtomMapper(
         time=20,                # LOMAP timeout sec — generous
@@ -445,6 +468,7 @@ def _run_openfe_edge(
     # atom names that match amber14sb's residue templates. We write the
     # fixed receptor next to the original so the path passed to openfe
     # is the H-bearing one.
+    stage_callback("preparing_receptor")
     from pdbfixer import PDBFixer
     from openmm.app import PDBFile
     fixer = PDBFixer(filename=str(receptor_pdb_path))
@@ -487,19 +511,28 @@ def _run_openfe_edge(
     protocol = RelativeHybridTopologyProtocol(settings=settings)
 
     # ─── 4. Run complex leg. ────────────────────────────────────────
+    # `protocol.create` builds the DAG (which triggers antechamber
+    # parameterisation of both ligands — the slowest CPU step for
+    # drug-sized molecules). `_execute_dag` then runs the actual
+    # alchemical sampling on the GPU.
+    stage_callback("building_complex_dag")
     complex_dag = protocol.create(
         stateA=complex_a, stateB=complex_b, mapping=mapping,
         name="complex_edge",
     )
+    stage_callback("running_complex_leg")
     complex_results = _execute_dag(complex_dag, work_dir / "complex")
 
     # ─── 5. Run solvent leg. ────────────────────────────────────────
+    stage_callback("building_solvent_dag")
     solvent_dag = protocol.create(
         stateA=solvent_a, stateB=solvent_b, mapping=mapping,
         name="solvent_edge",
     )
+    stage_callback("running_solvent_leg")
     solvent_results = _execute_dag(solvent_dag, work_dir / "solvent")
 
+    stage_callback("analysing_legs")
     return (
         _summarise_leg(complex_results),
         _summarise_leg(solvent_results),

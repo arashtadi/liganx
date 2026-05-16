@@ -937,3 +937,84 @@ def fep_edge_endpoint(req: FepEdgeRequest):
             "kind": "runtime",
             "wall_seconds": 0.0,
         }
+
+
+# ─── J12: async-polling proxies to fep_server. ────────────────────────
+# /fep_edge_start  → spawn a background worker on fep_server, return job_id
+# /fep_edge_status/{job_id}  → poll the worker's status file
+# Both are thin urllib forwards. Short timeouts (30s) because the
+# underlying calls are quick — only the actual run_edge inside the
+# worker is long. Keeps the backend's HTTP path snappy.
+
+@app.post("/fep_edge_start")
+def fep_edge_start_endpoint(req: FepEdgeRequest):
+    """Reverse-proxy to fep_server /fep_edge_start. Returns
+    ``{"job_id": "<hex>", "ok": True}`` immediately; the caller then
+    polls /fep_edge_status/{job_id} for stage updates + final result."""
+    body = _fep_json.dumps(req.model_dump()).encode("utf-8")
+    request = _fep_urlreq.Request(
+        f"{_FEP_SERVER_URL}/fep_edge_start",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _fep_urlreq.urlopen(request, timeout=30) as resp:
+            return _fep_json.loads(resp.read().decode("utf-8"))
+    except _fep_urlerr.HTTPError as e:
+        return {
+            "ok": False,
+            "error": f"fep_server HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}",
+            "kind": "transport",
+        }
+    except _fep_urlerr.URLError as e:
+        return {
+            "ok": False,
+            "error": f"fep_server unreachable at {_FEP_SERVER_URL}: {e.reason}",
+            "kind": "transport",
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "kind": "runtime",
+        }
+
+
+@app.get("/fep_edge_status/{job_id}")
+def fep_edge_status_endpoint(job_id: str):
+    """Reverse-proxy to fep_server /fep_edge_status/{job_id}. Returns
+    the latest stage + (when done) the result payload. 404 if the
+    job_id isn't recognised by the pod."""
+    # Trim slashes/dots defensively before forwarding; the pod-side
+    # endpoint also validates but belt-and-suspenders.
+    if not job_id or "/" in job_id or ".." in job_id:
+        return {"ok": False, "error": "bad job_id", "kind": "transport"}
+    request = _fep_urlreq.Request(
+        f"{_FEP_SERVER_URL}/fep_edge_status/{job_id}",
+        method="GET",
+    )
+    try:
+        with _fep_urlreq.urlopen(request, timeout=15) as resp:
+            return _fep_json.loads(resp.read().decode("utf-8"))
+    except _fep_urlerr.HTTPError as e:
+        if e.code == 404:
+            return {"ok": False, "error": "unknown job_id", "kind": "transport", "status_code": 404}
+        return {
+            "ok": False,
+            "error": f"fep_server HTTP {e.code}",
+            "kind": "transport",
+            "status_code": e.code,
+        }
+    except _fep_urlerr.URLError as e:
+        return {
+            "ok": False,
+            "error": f"fep_server unreachable: {e.reason}",
+            "kind": "transport",
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "kind": "runtime",
+        }

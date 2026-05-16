@@ -23,6 +23,31 @@ import { api, type FepStudyGraph } from "../api";
 import { Spinner } from "../components/Icons";
 import { usePageMeta } from "../lib/usePageMeta";
 
+// (J12) Map raw stage names emitted by fep_pod into friendly,
+// non-jargon labels for the running-edge status line. Keep the
+// stage taxonomy in sync with fep_pod.run_edge + fep_runner's
+// _STAGE_PCT mapping. Unknown stages fall back to the raw label
+// (no "Unknown" string — better to show real openfe names than
+// hide novel stages behind a generic word).
+function humaniseFepStage(stage: string): string {
+  switch (stage) {
+    case "queued":                  return "queued on pod";
+    case "parsing_ligand_sdfs":     return "parsing ligand SDFs";
+    case "lomap_mapping":           return "atom-mapping ligands (LOMAP)";
+    case "preparing_receptor":      return "preparing receptor (adding hydrogens)";
+    case "building_complex_dag":    return "parameterising ligands (antechamber)";
+    case "running_complex_leg":     return "sampling complex leg on GPU";
+    case "building_solvent_dag":    return "building solvent system";
+    case "running_solvent_leg":     return "sampling solvent leg on GPU";
+    case "analysing_legs":          return "analysing MBAR + hysteresis";
+    case "done":                    return "done";
+    case "failed":                  return "failed";
+    case "crashed":                 return "crashed";
+    case "mock_running":            return "mock simulation (no real physics)";
+    default:                        return stage.replace(/_/g, " ");
+  }
+}
+
 export default function FepStudyPage() {
   const { shareId } = useParams<{ shareId: string }>();
   const navigate = useNavigate();
@@ -156,7 +181,17 @@ export default function FepStudyPage() {
     }
     if (graph.status === "running") {
       if (edgeCounts.running > 0) {
-        return `Edge ${edgeCounts.ok + 1} of ${edgeCounts.total} running · ${edgeCounts.ok} done · ${edgeCounts.pending} queued`;
+        // (J12) Pull the running edge's sub-stage label so the user
+        // sees "running_complex_leg" rather than just "running".
+        // Falls back to the old format if the pod hasn't reported
+        // a stage yet (mock mode, transient first-poll gap).
+        const liveEdge = graph.edges.find((e) => e.status === "running");
+        const stageLabel = liveEdge?.stage
+          ? humaniseFepStage(liveEdge.stage)
+          : "running";
+        const pct = liveEdge?.progress_pct;
+        const pctSuffix = typeof pct === "number" ? ` (${pct}%)` : "";
+        return `Edge ${edgeCounts.ok + 1}/${edgeCounts.total} — ${stageLabel}${pctSuffix} · ${edgeCounts.ok} done · ${edgeCounts.pending} queued`;
       }
       return `${edgeCounts.ok}/${edgeCounts.total} edges done · ${edgeCounts.pending} queued`;
     }

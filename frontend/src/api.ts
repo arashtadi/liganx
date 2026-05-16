@@ -645,6 +645,11 @@ export interface FepStudyGraph {
     // (J13) ISO 8601 timestamps for per-edge elapsed display.
     started_at: string | null;
     completed_at: string | null;
+    // (J12) Live sub-stage progress. `stage` is a label like
+    // "running_complex_leg" or "parameterising_ligands";
+    // `progress_pct` is 0-100, currently a coarse milestone mapping.
+    stage: string | null;
+    progress_pct: number | null;
   }[];
   // (J13) Submission timestamp + protocol knobs so the UI can render
   // elapsed wall-time + an estimated remaining time from the same
