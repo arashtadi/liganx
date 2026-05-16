@@ -513,35 +513,31 @@ def create_fep_study(
     session.commit()
     session.refresh(fep_job)
 
-    # ─── Dispatch the runner via Celery (if configured) or in a
-    #    background thread. The runner's run_study is blocking
-    #    (~days), so we MUST run it out-of-process or the HTTP
-    #    handler will hang. ──────────────────────────────────────────
-    try:
-        # Prefer Celery if it's wired up.
-        from ..celery_app import celery_app
-        celery_app.send_task(
-            "deltadock.tasks.run_fep_study",
-            args=[fep_job.id],
-            queue="fep",                # design doc §6 — dedicated queue
-        )
-        log.info("FepJob %s dispatched to Celery 'fep' queue", fep_job.id)
-    except Exception as e:                                           # noqa: BLE001
-        # Fallback: kick off in a daemon thread. NOT durable across
-        # worker restarts but unblocks the HTTP call in dev.
-        log.warning("Celery dispatch failed (%s); falling back to thread", e)
-        import threading
-        from ..db import engine as db_engine
-        from sqlmodel import Session as _S
+    # ─── Dispatch the runner via a daemon thread. ──────────────────
+    # v1 deliberately skips Celery for FEP. The previous attempt sent
+    # to a 'fep' queue + task name that no worker was registered for,
+    # so studies just sat in Redis forever and the thread fallback
+    # (gated on send_task raising) never fired. A daemon thread
+    # in-process is durable enough for v1 traffic — the startup
+    # reaper catches anything stuck in PENDING/RUNNING > 90 minutes
+    # after a Fly restart, which is the only failure mode that
+    # matters. When we have real volume + a dedicated FEP Celery
+    # worker subscribed to a 'fep' queue, swap this back to
+    # celery_app.send_task('deltadock.tasks.run_fep_study', ...)
+    # AND register the task in celery_app.py.
+    import threading
+    from ..db import engine as db_engine
+    from sqlmodel import Session as _S
 
-        def _run_in_thread(job_id: int):
-            with _S(db_engine) as s:
-                try:
-                    run_study(job_id, s)
-                except Exception as e:                               # noqa: BLE001
-                    log.exception("Threaded FEP runner crashed for job %s", job_id)
+    def _run_in_thread(job_id: int):
+        with _S(db_engine) as s:
+            try:
+                run_study(job_id, s)
+            except Exception:                                        # noqa: BLE001
+                log.exception("Threaded FEP runner crashed for job %s", job_id)
 
-        threading.Thread(target=_run_in_thread, args=(fep_job.id,), daemon=True).start()
+    threading.Thread(target=_run_in_thread, args=(fep_job.id,), daemon=True).start()
+    log.info("FepJob %s dispatched via daemon thread (Celery deferred for v1)", fep_job.id)
 
     # Return the freshly-created study shape — frontend will poll
     # /fep/studies/{share_id}/graph for live updates.
