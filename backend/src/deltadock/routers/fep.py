@@ -412,16 +412,29 @@ def create_fep_study(
 
     # ─── (I3) Monthly per-user $ cap. ───────────────────────────────
     # Backstop against a user submitting 10 studies in a click-rampage.
-    # Default $500/month rolling 30-day window. Counts ALL studies
-    # (including cancelled/failed — once dispatched the pod time is
-    # mostly spent; this captures the real cost exposure).
+    # Default $500/month rolling 30-day window.
+    #
+    # Counts studies that have CONSUMED pod time: completed, running,
+    # preparing, cancelled (cancelled-mid-edge still spent pod minutes).
+    # EXCLUDES failed studies that never dispatched an edge — e.g. the
+    # "POD_FEP_URL not configured" failure that consumes $0. Also
+    # excludes PENDING studies that haven't started yet (they may still
+    # be cancelled before spending anything).
     from datetime import datetime, timedelta
     max_usd_per_month = float(os.environ.get("FEP_MAX_USD_PER_USER_PER_MONTH", "500.0"))
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    # States that DID consume pod time (or are actively consuming):
+    spending_states = (
+        FepJobStatus.PREPARING,
+        FepJobStatus.RUNNING,
+        FepJobStatus.COMPLETED,
+        FepJobStatus.CANCELLED,
+    )
     recent_studies = session.exec(
         select(FepJob)
         .where(FepJob.user_id == user.id)
         .where(FepJob.created_at >= thirty_days_ago)  # type: ignore[attr-defined]
+        .where(FepJob.status.in_(spending_states))     # type: ignore[attr-defined]
     ).all()
     spend_30d = sum((s.estimated_usd_cost or 0.0) for s in recent_studies)
     if spend_30d + est.usd_cost_estimated > max_usd_per_month:
