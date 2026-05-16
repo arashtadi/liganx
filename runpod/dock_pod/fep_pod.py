@@ -430,9 +430,16 @@ def _run_openfe_edge(
     solvent_b = ChemicalSystem({"ligand": ligand_b, "solvent": solvent})
 
     # ─── 3. Configure the alchemical protocol. ──────────────────────
+    # openfe 1.11 renamed `alchemical_sampler_settings.n_replicas` to
+    # `lambda_settings.lambda_windows`. Use the new path. The other
+    # subsection names (thermo/simulation/integrator/forcefield) stay
+    # the same. We also set simulation_settings.n_replicas as a belt-
+    # and-suspenders measure since both still exist on the model.
     settings = RelativeHybridTopologyProtocol.default_settings()
     settings.thermo_settings.temperature = temperature_k * offunit.kelvin
-    settings.alchemical_sampler_settings.n_replicas = n_windows
+    settings.lambda_settings.lambda_windows = n_windows
+    if hasattr(settings.simulation_settings, "n_replicas"):
+        settings.simulation_settings.n_replicas = n_windows
     settings.simulation_settings.equilibration_length = ns_equil * offunit.nanosecond
     settings.simulation_settings.production_length = ns_production * offunit.nanosecond
     settings.integrator_settings.timestep = timestep_fs * offunit.femtosecond
