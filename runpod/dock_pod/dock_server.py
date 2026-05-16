@@ -836,3 +836,76 @@ def mmgbsa_rescore_endpoint(req: MmgbsaRescoreRequest):
             "error": f"{type(e).__name__}: {e}",
             "wall_seconds": 0.0,
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Feature: FEP+ alchemical edge (Phase B of the FEP+ programme)
+#
+# One call = one relative-FEP edge A→B. Two-leg HREX alchemy in
+# complex + solvent, MBAR analysis, forward/reverse hysteresis. The
+# backend's fep_runner dispatches edges sequentially via this route.
+#
+# Cost: ~8-12 GPU-hours per edge on Blackwell sm_120 (60K-atom kinase
+# complex). DEDICATED FEP POD recommended — see DEPLOY_FEP_POD.md.
+# Running on the same pod that serves Vina cells will starve them
+# because the alchemy holds GPU memory for the duration.
+#
+# Deploy: same pattern as /mmgbsa/rescore — see DEPLOY_FEP_POD.md for
+# the openfe + openmmtools + pymbar pip install.
+# ═══════════════════════════════════════════════════════════════════════
+import fep_pod as _fep_pod  # noqa: E402
+
+
+class FepEdgeRequest(_EnsBaseModel):
+    """Request body for /fep_edge.
+
+    Inputs are TEXT (PDB + SDF) so the HTTP boundary is human-readable.
+    All protocol knobs are optional; defaults match the post-audit
+    consensus (12 windows × 7 ns/window with 2 ns equilibration).
+    """
+    receptor_pdb: str
+    ligand_a_sdf: str
+    ligand_b_sdf: str
+    n_lambda_windows: int = 12
+    ns_per_window: float = 7.0
+    ns_equilibration: float = 2.0
+    salt_conc_mol_per_l: float = 0.15
+    temperature_k: float = 298.15
+    hmr_mass_amu: float = 3.0
+    timestep_fs: float = 4.0
+
+
+@app.post("/fep_edge")
+def fep_edge_endpoint(req: FepEdgeRequest):
+    """Run one alchemical edge A→B and return ΔΔG_binding + MBAR
+    diagnostics. ~8-12 GPU-hours wall on a kinase complex.
+
+    Returns ``{ok: True, ddg_binding_kcal_mol, ddg_uncertainty,
+    hysteresis_kcal_mol, convergence_flag, mbar_diagnostics_json,
+    method, wall_seconds}`` on success, or ``{ok: False, error, kind}``
+    on missing-deps / parameterisation / charge-change / runtime
+    failure.
+
+    HTTP timeout caveat: backend should set timeout >= 13 hours for
+    this route. Long-running connections may need keep-alive tweaks
+    on the proxy."""
+    try:
+        return _fep_pod.run_edge(
+            req.receptor_pdb,
+            req.ligand_a_sdf,
+            req.ligand_b_sdf,
+            n_lambda_windows=req.n_lambda_windows,
+            ns_per_window=req.ns_per_window,
+            ns_equilibration=req.ns_equilibration,
+            salt_conc_mol_per_l=req.salt_conc_mol_per_l,
+            temperature_k=req.temperature_k,
+            hmr_mass_amu=req.hmr_mass_amu,
+            timestep_fs=req.timestep_fs,
+        )
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "kind": "runtime",
+            "wall_seconds": 0.0,
+        }

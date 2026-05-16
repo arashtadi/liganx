@@ -596,6 +596,38 @@ export interface AdminUserRow {
    *  kill-switch, not a billing tier. Toggle from the admin panel via
    *  PATCH /admin/users/:id/ensemble. */
   ensemble_enabled: boolean;
+  /** (G2) FEP+ access — GATED by default (false). Unlike ensemble,
+   *  this is an explicit admin grant rather than a kill-switch:
+   *  FEP studies cost ~$100 of pod GPU each, so a fresh user must
+   *  not be able to click Run without an admin having reviewed
+   *  their need. Toggle via PATCH /admin/users/:id/fep. */
+  fep_enabled: boolean;
+}
+
+/** (G7) FEP study graph + ΔΔG result shape returned by /fep/studies. */
+export interface FepStudyGraph {
+  share_id: string;
+  status: string;          // "pending" | "preparing" | "running" | "completed" | "failed" | "cancelled"
+  stage: string | null;
+  cycle_closure_rmsd: number | null;
+  nodes: {
+    compound_id: number | null;
+    name: string | null;
+    smiles: string;
+    is_hit: boolean;
+    ddg_to_hit_kcal_mol: number | null;
+    ddg_to_hit_uncertainty: number | null;
+    convergence_flag: string | null;   // "ok" | "high_uncertainty" | "not_converged"
+  }[];
+  edges: {
+    from_compound_id: number | null;
+    to_compound_id: number | null;
+    lomap_score: number | null;
+    ddg_binding_kcal_mol: number | null;
+    ddg_uncertainty: number | null;
+    hysteresis_kcal_mol: number | null;
+    status: string;                    // "pending" | "running" | "ok" | "failed" | "skipped"
+  }[];
 }
 
 export const api = {
@@ -793,6 +825,65 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ ensemble_enabled: ensembleEnabled }),
     }),
+  /** (G2) Admin-only: flip a user's FEP+ access. GATED by default —
+   *  setting this true is the explicit GRANT (vs. ensemble where
+   *  true = no-op default). FEP studies cost ~$100 of pod GPU each. */
+  adminSetFep: (userId: string, fepEnabled: boolean) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/fep`, {
+      method: "PATCH",
+      body: JSON.stringify({ fep_enabled: fepEnabled }),
+    }),
+  /** (G7) FEP+ study endpoints — relative free-energy perturbation
+   *  against a hit + ≤10 analogs. Gated per-user; the /estimate
+   *  endpoint surfaces the cost and access state so the UI can
+   *  render the right CTA. */
+  fepEstimate: (payload: {
+    pdb_id: string;
+    chain?: string;
+    variant?: string;
+    hit_smiles: string;
+    hit_name?: string;
+    analog_smiles: { name?: string; smiles: string }[];
+    n_lambda_windows?: number;
+    ns_per_window?: number;
+    network_topology?: string;
+  }) =>
+    request<{
+      n_analogs: number;
+      n_edges_estimated: number;
+      gpu_hours_estimated: number;
+      usd_cost_estimated: number;
+      eta_hours_wall_clock: number;
+      pod_hourly_usd: number;
+      notes: string[];
+      fep_access_granted: boolean;
+    }>("/fep/studies/estimate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  fepCreate: (payload: {
+    pdb_id: string;
+    chain?: string;
+    variant?: string;
+    parent_job_share_id?: string | null;
+    hit_smiles: string;
+    hit_name?: string;
+    analog_smiles: { name?: string; smiles: string }[];
+    n_lambda_windows?: number;
+    ns_per_window?: number;
+    network_topology?: string;
+  }) =>
+    request<FepStudyGraph>("/fep/studies", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  fepGet: (shareId: string) =>
+    request<FepStudyGraph>(`/fep/studies/${encodeURIComponent(shareId)}`),
+  fepCancel: (shareId: string) =>
+    request<{ share_id: string; cancelled: boolean; status: string; note: string }>(
+      `/fep/studies/${encodeURIComponent(shareId)}/cancel`,
+      { method: "POST" },
+    ),
   /** Admin-only: live status of the controlled RunPod GPU pod plus the
    *  watchdog's last-activity timer. Drives the Pod Control card. */
   adminPodStatus: () =>

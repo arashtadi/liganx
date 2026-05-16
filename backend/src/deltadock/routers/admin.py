@@ -84,6 +84,10 @@ class AdminUserRow(BaseModel):
     # kill-switch, not a billing tier. Admin flips it False to revoke a
     # user's access to ensemble docking via PATCH /admin/users/{id}/ensemble.
     ensemble_enabled: bool = True
+    # FEP+ access. GATED BY DEFAULT (False) — unlike ensemble, FEP studies
+    # cost ~$100 of pod GPU each, so a fresh signup must not be able to
+    # burn that. Admin flips True via PATCH /admin/users/{id}/fep.
+    fep_enabled: bool = False
 
 
 class QuotaUpdate(BaseModel):
@@ -100,6 +104,13 @@ class ProUpdate(BaseModel):
 class EnsembleUpdate(BaseModel):
     """PATCH payload for flipping a user's ensemble-docking access."""
     ensemble_enabled: bool
+
+
+class FepUpdate(BaseModel):
+    """PATCH payload for flipping a user's FEP+ access. Gated by
+    default, so this is the explicit grant rather than a kill-switch
+    like ensemble."""
+    fep_enabled: bool
 
 
 @router.get("/stats", response_model=AdminStats)
@@ -156,6 +167,10 @@ def list_users(
                 -- (column predates migration 016, or admin never touched
                 -- it) to TRUE so a fresh user reads as having access.
                 COALESCE(p.ensemble_enabled, TRUE) AS ensemble_enabled,
+                -- FEP+ is GATED by default (migration 017). COALESCE the
+                -- NULL/missing case to FALSE — opposite of ensemble — so a
+                -- fresh user reads as locked out until admin grants.
+                COALESCE(p.fep_enabled, FALSE) AS fep_enabled,
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
@@ -208,6 +223,8 @@ def list_users(
                     True if r.get("ensemble_enabled") is None
                     else bool(r.get("ensemble_enabled"))
                 ),
+                # GATED by default: a NULL/missing value reads as False.
+                fep_enabled=bool(r.get("fep_enabled") or False),
             ))
         except Exception as e:
             uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
@@ -351,6 +368,44 @@ def update_user_ensemble(
     log.info(
         "Admin %s set user %s ensemble_enabled=%s",
         admin.email, user_id, payload.ensemble_enabled,
+    )
+
+    rows = list_users(admin, session)
+    for r in rows:
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+
+
+@router.patch("/users/{user_id}/fep", response_model=AdminUserRow)
+def update_user_fep(
+    payload: FepUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Flip a user's FEP+ access. UPSERTs the user_profile row.
+
+    UNLIKE ensemble (which is ungated by default and uses an admin
+    kill-switch), FEP+ is GATED BY DEFAULT — the column DEFAULTs FALSE
+    and a missing row reads as blocked. So this endpoint is the
+    explicit GRANT, not a kill-switch. A per-study FEP run costs
+    ~$100 of pod GPU; we don't want a fresh signup to be able to
+    click that without an admin having reviewed their need.
+
+    The admin is unconditionally allowed by `fep_access_allowed`, so
+    they never need to flip the flag for themselves to test."""
+    session.execute(text(
+        """
+        INSERT INTO public.user_profile (user_id, fep_enabled, marketing_opt_in)
+        VALUES (:uid, :enabled, FALSE)
+        ON CONFLICT (user_id) DO UPDATE SET fep_enabled = EXCLUDED.fep_enabled
+        """
+    ), {"uid": user_id, "enabled": payload.fep_enabled})
+    session.commit()
+    log.info(
+        "Admin %s set user %s fep_enabled=%s",
+        admin.email, user_id, payload.fep_enabled,
     )
 
     rows = list_users(admin, session)

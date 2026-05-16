@@ -366,6 +366,54 @@ def ensemble_access_allowed(user_id: Optional[str], session) -> bool:
         return True
 
 
+def fep_access_allowed(user_id: Optional[str], session) -> bool:
+    """Return True if the user may submit FEP+ studies.
+
+    UNLIKE ensemble_access_allowed (which is ungated-by-default), this
+    is GATED BY DEFAULT — FEP studies cost ~$100 of pod GPU each, so
+    a fresh signup must NOT be able to burn that with one click. The
+    column user_profile.fep_enabled defaults FALSE (migration 017);
+    only an admin-set TRUE or the admin email itself grants access.
+
+    Resolution:
+      • No user_id (anonymous) → False.
+      • Admin email → True (matches is_pro_user / ensemble pattern).
+      • user_profile row missing OR fep_enabled NULL OR FALSE → False.
+      • fep_enabled = TRUE → True.
+
+    Call from inside the handler after you have a Session — same shape
+    as ensemble_access_allowed."""
+    if not user_id:
+        return False
+    # Admin email is always allowed (mirrors is_pro_user / ensemble).
+    try:
+        row = session.execute(
+            text("SELECT email FROM auth.users WHERE id = :uid"),
+            {"uid": user_id},
+        ).first()
+        if row and (row[0] or "").strip().lower() == ADMIN_EMAIL:
+            return True
+    except Exception:
+        # Any auth.users read failure → fall through to the profile
+        # check (we never grant on an auth-table error).
+        pass
+    try:
+        row = session.execute(
+            text(
+                "SELECT COALESCE(fep_enabled, FALSE) "
+                "FROM public.user_profile WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        ).first()
+        # No profile row → gated (False, opposite of ensemble).
+        if row is None:
+            return False
+        return bool(row[0])
+    except Exception:
+        # Column doesn't exist yet (migration 017 pending) → gated.
+        return False
+
+
 def admin_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
     """Auth + admin email gate. Apply to /admin/* endpoints. Returns 403
     (not 401) for authenticated-but-not-admin users so we can distinguish

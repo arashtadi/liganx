@@ -420,6 +420,8 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("014_is_pro.sql", "Migration 014 (is_pro flag)"),
     ("015_job_ensemble.sql", "Migration 015 (job.ensemble flag)"),
     ("016_ensemble_access.sql", "Migration 016 (ensemble access flag)"),
+    ("017_fep_access.sql", "Migration 017 (FEP+ per-user access flag, gated by default)"),
+    ("018_fep_tables.sql", "Migration 018 (FEP study + node + perturbation tables)"),
 ]
 
 

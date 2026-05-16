@@ -37,6 +37,11 @@ dependencies = [
   # Sentry — opt-in via SENTRY_DSN env var. Wrapped in try/except in
   # main.py, but installing here so prod actually reports errors.
   "sentry-sdk[fastapi,sqlalchemy]>=2.20",
+  # FEP+ cycle-closure analysis uses networkx.cycle_basis for
+  # graph theory primitives. Tiny dep (~500 KB) and a transitive of
+  # openfe on the pod, but the backend's aggregation runs in-process
+  # in run_study, so we need it on the Fly machine too.
+  "networkx>=3.2",
 ]
 
 [project.optional-dependencies]

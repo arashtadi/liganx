@@ -28,6 +28,8 @@ import BlogIndexPage from "./pages/BlogIndexPage";
 import BlogPostPage from "./pages/BlogPostPage";
 import AtlasPage from "./pages/AtlasPage";
 import CalibratePage from "./pages/CalibratePage";
+import NewFepStudyPage from "./pages/NewFepStudyPage";
+import FepStudyPage from "./pages/FepStudyPage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -119,6 +121,11 @@ export default function App() {
                 (Stripe-stubbed) = unlimited rows + real GPU docking. */}
             <Route path="/atlas/calibrate" element={withBoundary(<CalibratePage />, "Calibrate your data")} />
             <Route path="/atlas/:slug" element={withBoundary(<AtlasPage />, "Atlas drug page")} />
+            {/* (G8) FEP+ — Pro-gated relative free-energy perturbation
+                against a hit + analog set. /fep/new for the submission
+                form; /fep/:shareId for the live results graph. */}
+            <Route path="/fep/new" element={withBoundary(<NewFepStudyPage />, "New FEP+ study")} />
+            <Route path="/fep/:shareId" element={withBoundary(<FepStudyPage />, "FEP+ study")} />
             <Route path="/admin" element={withBoundary(<AdminPage />, "Admin")} />
             {/* Capital-A alias so /Admin (which is what user typed) works
                 too. Without this React Router would 404 because routes

@@ -462,3 +462,123 @@ class Boltz2Prediction(SQLModel, table=True):
     status: Boltz2Status = Field(default=Boltz2Status.PENDING, index=True)
     error_message: Optional[str] = None
     elapsed_ms: Optional[int] = None
+
+
+# ─────────────────────────── FEP+ tables (G4) ───────────────────────────
+#
+# Schema mirror of migration 018_fep_tables.sql. Three tables:
+#   • fep_job: parent study (target + variant + hit + protocol knobs)
+#   • fep_node: one ligand in the perturbation graph
+#   • fep_perturbation: one A→B alchemical transformation edge
+#
+# See docs/fep_plus_design.md §7 for the design rationale.
+
+
+class FepJobStatus(str, Enum):
+    PENDING = "pending"
+    PREPARING = "preparing"          # building graph, parameterising
+    RUNNING = "running"              # at least one edge in flight
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class FepJob(SQLModel, table=True):
+    """A FEP+ study — one (target, variant, hit, analog set) tuple."""
+
+    __tablename__ = "fep_job"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    share_id: str = Field(default_factory=_new_share_id, index=True, unique=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    user_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(UUID(as_uuid=False), nullable=True, index=True),
+    )
+
+    # Target identity (same shape as docking Job).
+    pdb_id: str = Field(index=True, max_length=8)
+    chain: str = Field(default="A", max_length=4)
+    variant: str = Field(default="WT", index=True, max_length=120)
+
+    # Optional FK to the parent docking job that produced the hit pose.
+    parent_job_id: Optional[int] = Field(default=None, foreign_key="job.id", index=True)
+    # Hit compound — graph centre. Reuses the existing Compound table.
+    hit_compound_id: int = Field(foreign_key="compound.id", index=True)
+
+    # Protocol knobs (defaults match the post-audit design doc).
+    n_lambda_windows: int = 12
+    # 7 ns/window = 2 ns equilibration discarded + 5 ns production.
+    ns_per_window: float = 7.0
+    forcefield_protein: str = Field(default="amber14sb", max_length=64)
+    forcefield_ligand: str = Field(default="openff-2.2.0", max_length=64)
+    water_model: str = Field(default="tip3p", max_length=64)
+    hrex: bool = True
+    network_topology: str = Field(default="radial_plus_mst", max_length=64)
+
+    # State machine.
+    status: FepJobStatus = Field(default=FepJobStatus.PENDING, index=True)
+    stage: Optional[str] = Field(default=None, max_length=120)
+    error_message: Optional[str] = None
+
+    # Cycle-closure RMSD across the perturbation graph — populated
+    # when status=completed.
+    cycle_closure_rmsd: Optional[float] = None
+
+    title: Optional[str] = Field(default=None, max_length=240)
+    # tags is TEXT[] in Postgres; SQLAlchemy ARRAY(String) for the model
+    # type. FastAPI returns it as list[str].
+    tags: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(ARRAY(String), nullable=False, server_default="{}"),
+    )
+
+
+class FepNode(SQLModel, table=True):
+    """One ligand in the perturbation graph (hit or analog)."""
+
+    __tablename__ = "fep_node"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fep_job_id: int = Field(foreign_key="fep_job.id", index=True)
+    compound_id: int = Field(foreign_key="compound.id", index=True)
+    is_hit: bool = False
+
+    # Aggregate result, populated when all edges into this node converge.
+    ddg_to_hit_kcal_mol: Optional[float] = None
+    ddg_to_hit_uncertainty: Optional[float] = None
+    # "ok" | "high_uncertainty" | "not_converged" — drives the
+    # convergence chip on the ranked analog table.
+    convergence_flag: Optional[str] = Field(default=None, max_length=32)
+    starting_pose_uri: Optional[str] = Field(default=None, max_length=512)
+
+
+class FepPerturbation(SQLModel, table=True):
+    """One alchemical edge: ligand A → ligand B."""
+
+    __tablename__ = "fep_perturbation"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fep_job_id: int = Field(foreign_key="fep_job.id", index=True)
+    node_a_id: int = Field(foreign_key="fep_node.id")
+    node_b_id: int = Field(foreign_key="fep_node.id")
+    lomap_score: float
+
+    # Per-edge ΔΔG results (populated as the edge runs on the pod).
+    ddg_complex_kcal_mol: Optional[float] = None
+    ddg_solvent_kcal_mol: Optional[float] = None
+    ddg_binding_kcal_mol: Optional[float] = None  # difference = ΔΔG_binding
+    ddg_uncertainty: Optional[float] = None
+    hysteresis_kcal_mol: Optional[float] = None   # |fwd − rev|
+
+    # "pending" | "running" | "ok" | "failed" | "skipped".
+    status: str = Field(default="pending", index=True, max_length=32)
+
+    # MBAR diagnostics blob — overlap matrix, decorrelation times,
+    # per-replica free energies. Rendered as a collapsible "diagnostics"
+    # panel for power users.
+    mbar_diagnostics_json: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    pod_log_tail: Optional[str] = None

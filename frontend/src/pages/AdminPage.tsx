@@ -129,6 +129,16 @@ function AdminDashboard() {
     },
   });
 
+  // (G2) Flip a user's FEP+ access. GATED by default — unlike
+  // ensemble this is the explicit GRANT, not a kill-switch.
+  const setFepMut = useMutation({
+    mutationFn: ({ userId, fepEnabled }: { userId: string; fepEnabled: boolean }) =>
+      api.adminSetFep(userId, fepEnabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
   const deleteMut = useMutation({
     mutationFn: (userId: string) => api.adminDeleteUser(userId),
     onSuccess: () => {
@@ -320,6 +330,33 @@ function AdminDashboard() {
                           }
                         >
                           {u.ensemble_enabled ? "⧉ ensemble" : "⧉ blocked"}
+                        </button>
+                        {/* (G2) FEP+ access toggle — GATED by default,
+                            opposite of ensemble. The badge reads "unlocked"
+                            when granted and "FEP locked" when not — language
+                            distinct from ensemble so the operator can tell
+                            at a glance which is which. */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFepMut.mutate({
+                              userId: u.user_id,
+                              fepEnabled: !u.fep_enabled,
+                            })
+                          }
+                          disabled={setFepMut.isPending}
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider transition-colors ${
+                            u.fep_enabled
+                              ? "bg-violet-100 text-violet-800 hover:bg-violet-200 dark:bg-violet-900/40 dark:text-violet-200 dark:hover:bg-violet-900/60"
+                              : "bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700/60 dark:text-slate-300 dark:hover:bg-slate-700"
+                          } disabled:opacity-50`}
+                          title={
+                            u.fep_enabled
+                              ? "FEP+ unlocked for this user. Each FEP study costs ~$100 of pod GPU. Click to revoke."
+                              : "FEP+ locked (the default). FEP studies cost ~$100 each in pod GPU time. Click to grant access — make sure the user understands the cost."
+                          }
+                        >
+                          {u.fep_enabled ? "✨ FEP unlocked" : "🔒 FEP locked"}
                         </button>
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{u.email}</div>
