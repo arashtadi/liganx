@@ -86,6 +86,16 @@ class FepStudyRequest(BaseModel):
     # list[tuple[str, str]]). `a`/`b` are 0-based indices into
     # [hit] + analog_smiles.
     manual_edges: Optional[list[FepManualEdge]] = None
+    # (K3) Force-field tier. None = backend default = "sage" (OpenFF
+    # Sage 2.2.0, free Basic tier). Accepted values:
+    #   "sage"      — OpenFF Sage 2.2.0 (Basic, ~$0.95/GPU-hr)
+    #   "espaloma"  — Espaloma 0.3.2 GNN (Standard, K2)
+    #   "mace"      — MACE-OFF 23 ML-MM (Pro tier, future)
+    # The router whitelists the value and persists it onto fep_job;
+    # the runner (K4) reads it to dispatch to the right pod URL.
+    # Backwards-compatible: if the client doesn't send it, behaviour
+    # is unchanged (Sage path runs).
+    force_field_engine: Optional[str] = Field(default=None, max_length=32)
 
 
 class FepNodeResult(BaseModel):
@@ -144,6 +154,11 @@ class FepStudyGraphResponse(BaseModel):
     # study page. 0 means "no number" (legacy rows from before
     # migration 021).
     seq_number: Optional[int] = None
+    # (K3) Which force-field engine ran this study. None = legacy
+    # (pre-K3) row → UI displays "Sage". One of: "sage" | "espaloma"
+    # | "mace" (future). Surfaced so FepStudyPage can show an engine
+    # badge and the History tab can filter by tier.
+    force_field_engine: Optional[str] = None
 
 
 class FepStudySummary(BaseModel):
@@ -168,6 +183,9 @@ class FepStudySummary(BaseModel):
     # (J14) Per-user sequential number; renders as 'FEP #42' in the
     # History tab. None for legacy rows that predate migration 021.
     seq_number: Optional[int] = None
+    # (K3) Force-field engine tier — used by the History row's
+    # engine badge ("Sage"/"Espaloma"/"MACE"). None = pre-K3 legacy row.
+    force_field_engine: Optional[str] = None
 
 
 class FepEstimateResponse(BaseModel):
@@ -613,6 +631,27 @@ def create_fep_study(
         select(_sql_func.coalesce(_sql_func.max(FepJob.seq_number), 0))
         .where(FepJob.user_id == user.id)
     ).one() or 0) + 1
+
+    # (K3) Validate the force-field tier choice and normalize. Whitelist
+    # is intentionally narrow — keeps "mace" reserved for the Pro tier
+    # build without letting clients submit arbitrary strings. If the
+    # client doesn't send anything (legacy frontend), we record NULL
+    # and the runner (K4) treats NULL as "sage" — provably identical
+    # to pre-K3 behaviour.
+    _ALLOWED_ENGINES = {"sage", "espaloma", "mace"}
+    chosen_engine: Optional[str] = None
+    if payload.force_field_engine is not None:
+        engine_norm = payload.force_field_engine.strip().lower()
+        if engine_norm not in _ALLOWED_ENGINES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown force_field_engine '{payload.force_field_engine}'. "
+                    f"Allowed: {sorted(_ALLOWED_ENGINES)}."
+                ),
+            )
+        chosen_engine = engine_norm
+
     fep_job = FepJob(
         user_id=user.id,
         pdb_id=payload.pdb_id,
@@ -626,6 +665,7 @@ def create_fep_study(
         status=FepJobStatus.PENDING,
         estimated_usd_cost=est.usd_cost_estimated,
         seq_number=next_seq,
+        force_field_engine=chosen_engine,
     )
     session.add(fep_job)
     session.commit()
@@ -763,6 +803,7 @@ def list_fep_studies(
             cycle_closure_rmsd=r.cycle_closure_rmsd,
             title=r.title,
             seq_number=(r.seq_number if r.seq_number else None),
+            force_field_engine=r.force_field_engine,
         ))
     return out
 
@@ -890,4 +931,5 @@ def _serialise_graph(
         n_lambda_windows=job.n_lambda_windows,
         ns_per_window=job.ns_per_window,
         seq_number=(job.seq_number if job.seq_number else None),
+        force_field_engine=job.force_field_engine,
     )

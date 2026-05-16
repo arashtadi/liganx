@@ -478,6 +478,7 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("019_fep_estimated_cost.sql", "Migration 019 (FEP estimated_usd_cost column)"),
     ("020_fep_perturbation_stage.sql", "Migration 020 (FEP per-edge stage + progress + pod_job_id)"),
     ("021_fep_seq_number.sql", "Migration 021 (FEP per-user seq_number for human-friendly #)"),
+    ("022_fep_force_field_engine.sql", "Migration 022 (FEP force_field_engine column)"),
 ]
 
 

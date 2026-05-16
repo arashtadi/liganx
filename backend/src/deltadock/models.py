@@ -517,6 +517,18 @@ class FepJob(SQLModel, table=True):
     hrex: bool = True
     network_topology: str = Field(default="radial_plus_mst", max_length=64)
 
+    # (K3) Tier identifier for the multi-tier force-field architecture.
+    # Higher-level than `forcefield_ligand` (which stores the exact
+    # openfe-compatible string) — picks which pod-side engine processes
+    # the study end-to-end:
+    #   "sage"      → fep_pod.py            (OpenFF Sage 2.2.0, default Basic tier)
+    #   "espaloma"  → fep_pod_espaloma.py   (Espaloma 0.3.2,    Standard tier, K2)
+    #   "mace"      → fep_pod_mace.py       (MACE-OFF 23,       Pro tier,    future)
+    # NULL is read by the UI as "sage" for backwards compatibility with
+    # rows created before K3. New submissions always set this field.
+    # The dispatcher in fep_runner.py (K4) reads this to pick the pod URL.
+    force_field_engine: Optional[str] = Field(default=None, max_length=32, index=True)
+
     # State machine.
     status: FepJobStatus = Field(default=FepJobStatus.PENDING, index=True)
     stage: Optional[str] = Field(default=None, max_length=120)
