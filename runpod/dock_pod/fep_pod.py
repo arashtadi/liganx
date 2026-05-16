@@ -118,19 +118,80 @@ from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod")
 
-# (J17) Force openmm to use the OpenCL platform instead of CUDA.
-# The conda env's openmm 8.4.0.dev build was compiled against a
-# CUDA PTX version newer than the pod's 570.195.03 driver / CUDA
-# 12.8 toolkit supports — Context() creation on the CUDA platform
-# throws CUDA_ERROR_UNSUPPORTED_PTX_VERSION (222). OpenCL on the
-# same RTX 4090 works (verified ~50% the speed of native CUDA but
-# functional). Set the env var BEFORE openmm is imported so it
-# picks up as the default. Operator override: set
-# OPENMM_DEFAULT_PLATFORM to anything else in the pod env to opt
-# out (e.g. once a proper CUDA-matched openmm build is installed,
-# clear this default).
-if "OPENMM_DEFAULT_PLATFORM" not in os.environ:
-    os.environ["OPENMM_DEFAULT_PLATFORM"] = "OpenCL"
+# (L5 2026-05-16) Force the openmm Platform via the openfe protocol
+# settings, NOT via an env var. The J17 trick of setting
+# OPENMM_DEFAULT_PLATFORM doesn't work — openmm doesn't read any such
+# env var, and we discovered this after two consecutive real edges
+# crashed with CUDA_ERROR_UNSUPPORTED_PTX_VERSION (222) despite the
+# env var being set correctly. The real knob is openfe's
+# `engine_settings.compute_platform` (or in some 1.x releases
+# `simulation_settings.platform`), applied in _run_openfe_edge before
+# `RelativeHybridTopologyProtocol(settings=settings)` is constructed.
+# See _apply_compute_platform() below for the defensive write that
+# tries every known attribute path.
+#
+# Why we still need OpenCL: the conda env's openmm 8.4.0.dev was
+# built against CUDA 13.x PTX; the pod's NVIDIA driver 570.x +
+# CUDA 12.8 toolkit can only load CUDA 12.x PTX. CUDA path bombs in
+# Context() creation. OpenCL on the same RTX 4090 works (~50% the
+# speed of native CUDA but it actually finishes). J18 is the proper
+# resolution — rebuild openmm from source against CUDA 12.8.
+#
+# The previous os.environ write is kept commented out as a forensic
+# marker so a future operator searching for OPENMM_DEFAULT_PLATFORM
+# finds context for why it doesn't work.
+# if "OPENMM_DEFAULT_PLATFORM" not in os.environ:                  # ← does nothing
+#     os.environ["OPENMM_DEFAULT_PLATFORM"] = "OpenCL"             # ← does nothing
+LIGANX_OPENMM_PLATFORM = os.environ.get("LIGANX_OPENMM_PLATFORM", "OpenCL").strip()
+
+
+def _get_openfe_version() -> str:
+    """Best-effort openfe version string for diagnostic messages."""
+    try:
+        import openfe
+        return getattr(openfe, "__version__", "unknown")
+    except Exception:                                                # noqa: BLE001
+        return "import-failed"
+
+
+def _apply_compute_platform(settings, target_platform: str = LIGANX_OPENMM_PLATFORM) -> str:
+    """(L5) Set the openmm Platform on an openfe RelativeHybridTopologyProtocol
+    settings object. Tries every known attribute path so the same code
+    works across openfe 1.0 → 1.11+ without locking us to a specific
+    minor version.
+
+    Returns the path string that worked (e.g. 'engine_settings.compute_platform')
+    or 'NONE_FOUND' if the settings object doesn't expose any platform
+    knob — in which case the caller MUST fail loudly rather than
+    proceed and crash inside the C extension."""
+    candidates = [
+        # openfe 1.5+ — current canonical path
+        ("engine_settings", "compute_platform"),
+        # openfe 1.0–1.4
+        ("simulation_settings", "platform"),
+        # very old openfe (1.0 alpha)
+        ("integrator_settings", "platform"),
+    ]
+    for parent_attr, field in candidates:
+        parent = getattr(settings, parent_attr, None)
+        if parent is None:
+            continue
+        if hasattr(parent, field):
+            try:
+                setattr(parent, field, target_platform)
+                resolved = f"{parent_attr}.{field}"
+                log.info(
+                    "Set openmm platform via %s = %r (L5)",
+                    resolved, target_platform,
+                )
+                return resolved
+            except Exception as e:                                   # noqa: BLE001
+                log.warning(
+                    "Failed to set %s.%s = %r: %s — trying next path",
+                    parent_attr, field, target_platform, e,
+                )
+                continue
+    return "NONE_FOUND"
 
 # (J12) Stage callback type. The async wrapper in fep_server's
 # /fep_edge_start endpoint passes a function that writes the stage
@@ -521,6 +582,23 @@ def _run_openfe_edge(
     # HMR — distribute heavy-atom mass to attached H so we can take
     # 4 fs timesteps. Standard practice for production RBFE.
     settings.forcefield_settings.hydrogen_mass = hmr_mass
+
+    # (L5) Force the openmm Platform via the openfe settings. This is
+    # the REAL fix for the CUDA_ERROR_UNSUPPORTED_PTX_VERSION crash
+    # the J17 env-var trick failed to actually prevent.
+    _resolved_platform_path = _apply_compute_platform(settings)
+    if _resolved_platform_path == "NONE_FOUND":
+        # Fail loudly — if we can't pin the platform, openmm will try
+        # CUDA by default and crash 5+ minutes into MD with a stack
+        # trace deep inside a C extension. Better to abort here with
+        # an operator-actionable message.
+        raise RuntimeError(
+            "L5: could not find a path on openfe RelativeHybridTopologyProtocol "
+            "settings to set compute_platform. Inspect the settings object "
+            f"on this openfe version ({_get_openfe_version()}) and add the "
+            "new attribute path to _apply_compute_platform()'s candidates list. "
+            "Refusing to proceed because CUDA would otherwise crash mid-MD."
+        )
 
     protocol = RelativeHybridTopologyProtocol(settings=settings)
 

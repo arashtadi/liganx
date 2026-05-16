@@ -58,12 +58,53 @@ from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod_espaloma")
 
-# (J17 / same as fep_pod.py) Force OpenCL to dodge the openmm CUDA-PTX
-# mismatch on the pod's 570.x driver. Espaloma's own pytorch inference
-# uses its own CUDA context (independent of openmm's), so we still get
-# GPU speedup on the graph-neural-net parameterization step.
-if "OPENMM_DEFAULT_PLATFORM" not in os.environ:
-    os.environ["OPENMM_DEFAULT_PLATFORM"] = "OpenCL"
+# (L5 / mirrors fep_pod.py L5 patch) The OPENMM_DEFAULT_PLATFORM env
+# var doesn't actually steer openmm — discovery from two consecutive
+# CUDA_ERROR_UNSUPPORTED_PTX_VERSION crashes on 2026-05-16. The real
+# fix lives in _apply_compute_platform() below, called from
+# _run_openfe_edge before protocol construction. Espaloma's own
+# pytorch inference uses its own CUDA context (independent of
+# openmm's), so we still get GPU speedup on the graph-neural-net
+# parameterization step. OpenCL handles the MD portion safely.
+LIGANX_OPENMM_PLATFORM = os.environ.get("LIGANX_OPENMM_PLATFORM", "OpenCL").strip()
+
+
+def _get_openfe_version() -> str:
+    try:
+        import openfe
+        return getattr(openfe, "__version__", "unknown")
+    except Exception:                                                # noqa: BLE001
+        return "import-failed"
+
+
+def _apply_compute_platform(settings, target_platform: str = LIGANX_OPENMM_PLATFORM) -> str:
+    """Mirror of fep_pod._apply_compute_platform — same defensive
+    multi-attribute scan to set the openmm Platform via openfe."""
+    candidates = [
+        ("engine_settings", "compute_platform"),
+        ("simulation_settings", "platform"),
+        ("integrator_settings", "platform"),
+    ]
+    for parent_attr, field in candidates:
+        parent = getattr(settings, parent_attr, None)
+        if parent is None:
+            continue
+        if hasattr(parent, field):
+            try:
+                setattr(parent, field, target_platform)
+                resolved = f"{parent_attr}.{field}"
+                log.info(
+                    "Set openmm platform via %s = %r (L5, Espaloma tier)",
+                    resolved, target_platform,
+                )
+                return resolved
+            except Exception as e:                                   # noqa: BLE001
+                log.warning(
+                    "Failed to set %s.%s = %r: %s — trying next path",
+                    parent_attr, field, target_platform, e,
+                )
+                continue
+    return "NONE_FOUND"
 
 # Default Espaloma version. Pinned for reproducibility — bump only after
 # re-validating on the published kinase reference set. openmmforcefields
@@ -376,6 +417,15 @@ def _run_openfe_edge(
     settings.forcefield_settings.hydrogen_mass = hmr_mass
     # ★ Espaloma-tier override ★
     settings.forcefield_settings.small_molecule_forcefield = ESPALOMA_VERSION
+
+    # (L5) Force OpenCL platform — same fix as Sage tier.
+    _resolved_platform_path = _apply_compute_platform(settings)
+    if _resolved_platform_path == "NONE_FOUND":
+        raise RuntimeError(
+            "L5 (Espaloma): no openfe settings path found for compute_platform "
+            f"on openfe {_get_openfe_version()} — refusing to run before "
+            "openmm crashes mid-MD."
+        )
 
     protocol = RelativeHybridTopologyProtocol(settings=settings)
 

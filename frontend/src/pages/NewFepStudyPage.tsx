@@ -107,10 +107,13 @@ export default function NewFepStudyPage() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Target selection — default to EGFR T790M, the published reference
-  // we validate against in the smoke test.
-  const [targetId, setTargetId] = useState<string>("egfr");
-  const [variant, setVariant] = useState<string>("T790M");
+  // (L6) No preselected target — user chooses. Earlier this defaulted
+  // to EGFR + T790M (the published reference set), but the user wants
+  // a fully blank form so submissions are deliberate. The submit
+  // handler already no-ops when `target` is undefined; the catalog
+  // dropdown renders an empty placeholder until the user picks one.
+  const [targetId, setTargetId] = useState<string>("");
+  const [variant, setVariant] = useState<string>("WT");
 
   // (UX) When the user picks a target whose catalog mutations don't
   // include the current variant, fall back to WT so the variant
@@ -130,39 +133,19 @@ export default function NewFepStudyPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetId, currentTarget]);
 
-  // Hit + analogs. Pre-populated with a published osimertinib-against-
-  // EGFR-T790M reference set so the page is immediately submittable —
-  // same pattern as Studio's first-load defaults. These are
-  // illustrative congeneric variants (single-atom modifications to
-  // the indole, aniline, and amine substituents); the user is
-  // expected to swap them for their own analog series before clicking
-  // Run. The cost preview becomes meaningful as soon as the form
-  // loads instead of waiting for the user to type SMILES.
-  const [hitName, setHitName] = useState<string>("Osimertinib");
-  const [hitSmiles, setHitSmiles] = useState<string>(
-    "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
-  );
+  // (L6 2026-05-16) Form starts EMPTY — no prefilled hit, no demo
+  // analogs. User fills in whatever they want. Earlier the page
+  // shipped with an Osimertinib + 3 demo analog set so the cost
+  // preview was meaningful on first load; that was confusing users
+  // into running studies with our defaults rather than their own
+  // compounds. Empty form forces an intentional submission.
+  const [hitName, setHitName] = useState<string>("");
+  const [hitSmiles, setHitSmiles] = useState<string>("");
+  // Start with one blank analog row so the user has a visible "add
+  // analog" surface; the row itself contributes nothing to the
+  // submission until the user types a SMILES.
   const [analogs, setAnalogs] = useState<AnalogRow[]>([
-    // Demo analog 1: indole N-methyl removed (smoke-test variant).
-    // NB: the original SMILES had `c2cnc3ccccc23` — a bare aromatic
-    // N with no valence partner — which RDKit's kekulize step
-    // rejects, so every real-physics FEP submit failed at
-    // SMILES→SDF embed. Corrected to `c2c[nH]c3ccccc23` (indole NH
-    // after stripping the N-methyl from c2cn(C)c3ccccc23).
-    {
-      name: "Osi-des-methyl",
-      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2c[nH]c3ccccc23)n1",
-    },
-    // Demo analog 2: 7-fluoro indole — illustrative congeneric variant.
-    {
-      name: "Osi-7F-indole",
-      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3cccc(F)c23)n1",
-    },
-    // Demo analog 3: hydroxyethyl amine — illustrative.
-    {
-      name: "Osi-hydroxyethyl",
-      smiles: "COc1cc(N(CCO)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cn(C)c3ccccc23)n1",
-    },
+    { name: "", smiles: "" },
   ]);
 
   // (UX) Bidirectional auto-fill between name and SMILES.
