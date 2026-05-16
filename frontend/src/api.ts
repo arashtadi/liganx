@@ -1389,6 +1389,30 @@ export const api = {
     request<Job[]>(`/jobs?offset=${offset}&limit=${limit}`),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
+  /** Reverse lookup — given a SMILES, return PubChem's preferred
+   *  name for it. Used by the FEP+ NewFepStudyPage: paste a SMILES
+   *  → name auto-populates. Returns null on 404 (PubChem doesn't
+   *  recognise it — common for hand-drawn analogs) so the caller
+   *  can leave the field blank without surfacing a scary error. */
+  lookupCompoundBySmiles: async (smiles: string): Promise<{
+    name: string;
+    cid: number | null;
+    iupac_name?: string;
+    molecular_formula?: string;
+  } | null> => {
+    try {
+      return await request<{
+        name: string;
+        cid: number | null;
+        iupac_name?: string;
+        molecular_formula?: string;
+      }>(`/compound/by-smiles?smiles=${encodeURIComponent(smiles)}`);
+    } catch (e) {
+      const status = (e as Error & { status?: number }).status;
+      if (status === 404) return null;
+      throw e;
+    }
+  },
   lookupCompound: (q: string) =>
     request<{ name: string; cid: number; smiles: string; iupac_name?: string; molecular_formula?: string }>(
       `/lookup/compound?q=${encodeURIComponent(q)}`,

@@ -78,6 +78,101 @@ async def lookup_compound(q: str) -> dict:
     }
 
 
+@router.get("/compound/by-smiles")
+async def lookup_compound_by_smiles(smiles: str) -> dict:
+    """Reverse lookup — given a SMILES, return PubChem's name(s) for it.
+
+    Used by the FEP+ NewFepStudyPage: paste a SMILES into an analog
+    row → the name field auto-populates. Complements GET /compound
+    (name → SMILES) for the bidirectional UX.
+
+    PubChem matches structurally (it canonicalises both sides), so a
+    paste of an alternate canonical form of the same molecule still
+    resolves to the right CID — no RDKit canonicalisation needed on
+    our end.
+
+    Returns 404 if PubChem doesn't recognise the SMILES (a random
+    user-drawn analog is the common case). Caller treats 404 as
+    'not in PubChem, leave the name field blank' — non-fatal."""
+    smi = smiles.strip()
+    if not smi:
+        raise HTTPException(400, "SMILES must be non-empty")
+    if len(smi) > 2000:
+        raise HTTPException(400, "SMILES too long")
+
+    # Use the /compound/smiles/<SMILES>/property/... endpoint —
+    # PubChem hashes the SMILES into its CID index. Synonyms gives us
+    # the preferred name (e.g. "Osimertinib") plus all aliases.
+    # quote() handles special characters in SMILES (+, /, \, etc.).
+    url = (
+        f"{PUBCHEM_BASE}/smiles/{quote(smi)}/property/"
+        f"IUPACName,MolecularFormula/JSON"
+    )
+    log.info("PubChem reverse-lookup: %s…", smi[:60])
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            # Optionally also fetch synonyms (preferred name) — second
+            # call, but cheap and cached by PubChem.
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    cid = data["PropertyTable"]["Properties"][0].get("CID")
+                except Exception:
+                    cid = None
+                if cid:
+                    syn_url = f"{PUBCHEM_BASE}/cid/{cid}/synonyms/JSON"
+                    syn_resp = await client.get(syn_url)
+                else:
+                    syn_resp = None
+            else:
+                syn_resp = None
+    except httpx.TimeoutException:
+        raise HTTPException(504, "PubChem timed out")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"PubChem unreachable: {e}")
+
+    if resp.status_code == 404:
+        # PubChem doesn't recognise this SMILES — common for
+        # hand-drawn analogs. Return 404 so the frontend can keep
+        # the name field as-is rather than overwriting.
+        raise HTTPException(404, "PubChem doesn't recognise this SMILES")
+    if resp.status_code != 200:
+        raise HTTPException(502, f"PubChem returned HTTP {resp.status_code}")
+
+    try:
+        data = resp.json()
+        props = data["PropertyTable"]["Properties"]
+    except Exception:
+        raise HTTPException(502, "PubChem returned an unexpected response")
+    if not props:
+        raise HTTPException(404, "No PubChem match for this SMILES")
+
+    p = props[0]
+    cid = p.get("CID")
+    iupac = p.get("IUPACName")
+
+    # Preferred name: first entry from /synonyms is typically the
+    # well-known name (e.g. "Osimertinib" vs the IUPAC form).
+    preferred_name: str | None = None
+    if syn_resp is not None and syn_resp.status_code == 200:
+        try:
+            syn_data = syn_resp.json()
+            syns = syn_data["InformationList"]["Information"][0].get("Synonym", [])
+            if syns:
+                preferred_name = syns[0]
+        except Exception:
+            preferred_name = None
+
+    return {
+        "name": preferred_name or iupac or f"CID {cid}",
+        "cid": cid,
+        "iupac_name": iupac,
+        "molecular_formula": p.get("MolecularFormula"),
+    }
+
+
 @router.get("/pdb/{pdb_id}/info")
 def get_pdb_info(pdb_id: str) -> dict:
     """Return basic PDB metadata (title, protein name, organism, UniProt).

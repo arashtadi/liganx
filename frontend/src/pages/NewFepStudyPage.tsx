@@ -164,18 +164,13 @@ export default function NewFepStudyPage() {
   //   * name → SMILES: typing/picking "Osimertinib" fills in its SMILES
   //   * SMILES → name: pasting Osimertinib's SMILES fills in the name
   // Both directions only fire when the OTHER field is empty — never
-  // clobbers a hand-edited value. Watches the catalog reference
-  // compounds for the current target + the user's saved library;
-  // matches are exact (case-insensitive for names, whitespace-trimmed
-  // for SMILES). Same family of compounds gets fast canonical-match
-  // because we keep both directions in sync.
-  //
-  // (Limitation) SMILES → name match is STRING-equal, not RDKit-
-  // canonical. So pasting an alternate-canonical SMILES of the same
-  // molecule won't match. For v1 we accept this — same-platform
-  // copy-paste round-trips cleanly because the SMILES we hand out
-  // is already canonical. A future enhancement could call
-  // /assist/dockability to canonicalize via RDKit before lookup.
+  // clobbers a hand-edited value. Local-first lookup (catalog +
+  // library) covers same-platform copy-paste; falls back to PubChem
+  // via /compound/by-smiles for any other SMILES so a paste from
+  // PubChem, DrugBank, or a chemist's notebook resolves to the
+  // right name. PubChem matches structurally (canonicalises both
+  // sides), so alternate canonical forms of the same molecule
+  // still hit.
   useEffect(() => {
     const all = suggestCompounds("", currentTarget, savedCompounds);
     const byName = new Map<string, string>();   // name (lc) → smiles
@@ -216,6 +211,56 @@ export default function NewFepStudyPage() {
     analogs.map((a) => `${a.name}|${a.smiles}`).join("¬"),
     currentTarget,
     savedCompounds,
+  ]);
+
+  // (UX) PubChem fallback for SMILES → name. The local lookup above
+  // covers same-platform copy-paste (catalog + saved library);
+  // anything else (a SMILES copied from PubChem, DrugBank, a paper,
+  // or hand-drawn in Ketcher elsewhere) falls through to PubChem's
+  // structure-search endpoint via /compound/by-smiles. Debounced
+  // 800 ms so typing in the SMILES field doesn't fire a dozen
+  // PubChem calls. Only fires when the name field is empty — never
+  // overwrites a hand-typed name. PubChem 404 = unknown SMILES =
+  // leave the name empty silently.
+  useEffect(() => {
+    const candidates: { kind: "hit" | "analog"; idx: number; smiles: string }[] = [];
+    if (hitSmiles.trim() && !hitName.trim()) {
+      candidates.push({ kind: "hit", idx: -1, smiles: hitSmiles.trim() });
+    }
+    analogs.forEach((a, i) => {
+      if (a.smiles.trim() && !a.name.trim()) {
+        candidates.push({ kind: "analog", idx: i, smiles: a.smiles.trim() });
+      }
+    });
+    if (candidates.length === 0) return;
+
+    const t = setTimeout(() => {
+      candidates.forEach(async (c) => {
+        try {
+          const res = await api.lookupCompoundBySmiles(c.smiles);
+          if (!res || !res.name) return;
+          // Re-check at apply time — the user may have typed a name
+          // during the debounce window, in which case we leave it.
+          if (c.kind === "hit") {
+            if (!hitName.trim()) setHitName(res.name);
+          } else {
+            setAnalogs((prev) =>
+              prev.map((a, i) =>
+                i === c.idx && !a.name.trim() ? { ...a, name: res.name } : a,
+              ),
+            );
+          }
+        } catch {
+          /* swallow — best-effort, PubChem flaky network is non-fatal */
+        }
+      });
+    }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hitSmiles,
+    hitName,
+    analogs.map((a) => `${a.smiles}|${a.name}`).join("¬"),
   ]);
 
   // Protocol knobs — sane defaults, hidden behind an expander.
