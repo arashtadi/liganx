@@ -226,6 +226,22 @@ export default function SelectivityMatrix({
               hover any badge for the per-cell breakdown
             </span>
           </div>
+          {/* (T3) Δ noise-floor legend. Spelling out the |Δ| < 1.0 kcal/mol
+              rule up-front means users seeing the amber chip below don't
+              have to guess what it's flagging — and it makes the LIMITATION
+              of Vina-on-this-grid explicit (a research-honest stance the
+              user has consistently asked for). */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500 dark:text-slate-400">
+            <span className="font-semibold text-slate-600 dark:text-slate-300">
+              Δ noise floor:
+            </span>
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-amber-700 bg-amber-100 ring-1 ring-inset ring-amber-300 dark:text-amber-300 dark:bg-amber-900/30 dark:ring-amber-700/50">
+              <strong className="font-semibold">|Δ| &lt; 1.0 kcal/mol</strong>
+            </span>
+            <span>
+              is within Vina's run-to-run noise — re-running can flip the sign. These cells render in amber with a <em>(noise)</em> tag and no green/red tint.
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {selectable && (
@@ -375,12 +391,25 @@ export default function SelectivityMatrix({
                         <span className="font-normal opacity-70">(outside pocket)</span>
                       </div>
                     ) : Math.abs(bestDelta) < 1.0 ? (
+                      // (T3) Loud noise-floor ribbon. |Δ| < 1.0 kcal/mol
+                      // is within Vina's documented run-to-run noise — at
+                      // exhaustiveness 8 with a single random seed, re-
+                      // running the SAME inputs can flip the sign of Δ.
+                      // Treating sub-1 kcal Δ as biological signal is the
+                      // single most common 'why is my matrix lying to me'
+                      // failure mode for chemists, so this gets a real
+                      // amber chip with the symbol Δ, not the prior
+                      // muted-italic almost-invisible treatment.
                       <div
-                        className="mt-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400"
-                        title="|Δ| < 1.0 kcal/mol is within typical Vina run-to-run noise (exhaustiveness 8, single seed). Re-running with the same inputs can flip the sign. Treat this as a soft signal — bump exhaustiveness or use the GNINA CNN re-score for a firmer read."
+                        className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700/50"
+                        title="|Δ| < 1.0 kcal/mol is within typical Vina run-to-run noise (exhaustiveness 8, single seed). Re-running with the same inputs can flip the sign of Δ. Do NOT read this as a real binding signal — bump exhaustiveness or use the GNINA CNN re-score for a firmer read."
                       >
-                        best Δ = {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)}{" "}
-                        <span className="italic opacity-80">within noise</span>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                          <line x1="12" y1="9" x2="12" y2="13" />
+                          <line x1="12" y1="17" x2="12.01" y2="17" />
+                        </svg>
+                        Δ in noise: {bestDelta > 0 ? "+" : ""}{bestDelta.toFixed(2)} kcal/mol
                       </div>
                     ) : (
                       <div className={`mt-0.5 text-[10px] font-semibold ${
@@ -622,9 +651,16 @@ function ScoreCell({
   // local relaxation + QuickVina-GPU stochastic search) — not a real
   // selectivity or resistance signal. Painting these cells green/red would
   // tell the user the opposite of what's actually happening.
+  //
+  // (T3) ALSO: cells with |Δ| < 1.0 kcal/mol are in Vina's documented run-
+  // to-run noise floor — re-running with the same inputs can flip the sign
+  // of Δ. We strip the colour tint here so the noise-floor cells don't
+  // visually compete with real signals on the same row. The per-cell text
+  // label has the matching amber "(noise)" treatment.
   const outsidePocket = !isWT && ext.outsidePocketA != null;
+  const inNoiseFloor = !isWT && delta != null && Math.abs(delta) < 1.0;
   let bg = "";
-  if (!isWT && delta != null && !outsidePocket) {
+  if (!isWT && delta != null && !outsidePocket && !inNoiseFloor) {
     const t = Math.min(1, Math.abs(delta) / maxAbsDelta);
     if (delta < -0.3)      bg = `rgba(16, 185, 129, ${0.08 + 0.40 * t})`;
     else if (delta > 0.3)  bg = `rgba(239, 68, 68, ${0.08 + 0.40 * t})`;
@@ -687,6 +723,18 @@ function ScoreCell({
             title="Mutation residue is outside the docking box — this Δ is method noise (PDBFixer local relaxation + QuickVina-GPU stochastic search), not a real selectivity or resistance signal."
           >
             ({delta > 0 ? "+" : ""}{delta.toFixed(2)} noise)
+          </div>
+        ) : Math.abs(delta) < 1.0 ? (
+          // (T3) Per-cell |Δ| < 1.0 kcal/mol — Vina noise floor. Strip
+          // the green/red selectivity colour so a sub-noise Δ doesn't
+          // visually compete with real signals on the same row. The
+          // tooltip explains why; a parenthesised "(noise)" tag in the
+          // muted-amber treatment is the inline tell.
+          <div
+            className="text-[10px] font-medium text-amber-700 dark:text-amber-400"
+            title="|Δ| < 1.0 kcal/mol is within typical Vina run-to-run noise (exhaustiveness 8, single seed). Re-running can flip the sign — do not read as a real selectivity signal."
+          >
+            {delta > 0 ? "+" : ""}{delta.toFixed(2)} <span className="opacity-70">(noise)</span>
           </div>
         ) : (
           <div className={`text-[10px] font-medium ${
