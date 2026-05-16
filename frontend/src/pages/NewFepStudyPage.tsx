@@ -144,9 +144,14 @@ export default function NewFepStudyPage() {
   );
   const [analogs, setAnalogs] = useState<AnalogRow[]>([
     // Demo analog 1: indole N-methyl removed (smoke-test variant).
+    // NB: the original SMILES had `c2cnc3ccccc23` — a bare aromatic
+    // N with no valence partner — which RDKit's kekulize step
+    // rejects, so every real-physics FEP submit failed at
+    // SMILES→SDF embed. Corrected to `c2c[nH]c3ccccc23` (indole NH
+    // after stripping the N-methyl from c2cn(C)c3ccccc23).
     {
       name: "Osi-des-methyl",
-      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2cnc3ccccc23)n1",
+      smiles: "COc1cc(N(C)CCN(C)C)c(NC(=O)C=C)cc1Nc1nccc(-c2c[nH]c3ccccc23)n1",
     },
     // Demo analog 2: 7-fluoro indole — illustrative congeneric variant.
     {
