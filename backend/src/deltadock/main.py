@@ -110,6 +110,51 @@ def _reap_orphan_jobs() -> None:
         log.exception("Orphan-job reaper failed (non-fatal): %s", e)
 
 
+def _reap_orphan_fep_studies() -> None:
+    """(I1) FEP+ counterpart of _reap_orphan_jobs.
+
+    Marks FepJobs stuck in PENDING/PREPARING/RUNNING with stale
+    updated_at as FAILED. Catches the failure mode where the runner's
+    daemon-thread fallback died mid-study (Fly machine restart,
+    SIGTERM, OOM) and the DB row stays RUNNING forever with no progress.
+
+    FEP-specific staleness threshold: a real edge takes 8-12 GPU-hours
+    so updated_at moves only every few hours. We use 90 minutes as the
+    stale bar — generous enough that a mid-edge worker isn't reaped,
+    tight enough that a dead worker doesn't strand a study for days.
+
+    The error_message tells the user exactly what happened and what
+    to do: 'restart, please resubmit'. Idempotent — re-running it is
+    a no-op on already-FAILED rows."""
+    try:
+        from sqlmodel import Session
+        from sqlalchemy import text
+        from .db import engine
+        with Session(engine) as session:
+            result = session.execute(
+                text(
+                    "UPDATE fep_job"
+                    " SET status = 'failed',"
+                    "     error_message = COALESCE(error_message,"
+                    "         'Interrupted by a backend restart — the FEP runner"
+                    " was killed before this study could finish. Please re-submit"
+                    " from /fep/new.'),"
+                    "     updated_at = now()"
+                    " WHERE status IN ('pending', 'preparing', 'running')"
+                    "   AND updated_at < now() - make_interval(mins => 90)"
+                    " RETURNING id, share_id, status"
+                ),
+            )
+            rows = [(r[0], r[1], r[2]) for r in result]
+            session.commit()
+            if rows:
+                log.warning("Reaped %d orphan FEP study/studies: %s", len(rows), rows)
+            else:
+                log.info("Orphan FEP-study reaper: nothing stale")
+    except Exception as e:                                            # noqa: BLE001
+        log.exception("Orphan FEP-study reaper failed (non-fatal): %s", e)
+
+
 async def _periodic_orphan_reaper():
     """Run _reap_orphan_jobs on a fixed interval forever. Registered as an
     asyncio task by lifespan, alongside _runpod_watchdog. This is what
@@ -120,6 +165,7 @@ async def _periodic_orphan_reaper():
         await asyncio.sleep(_ORPHAN_REAP_INTERVAL_SECONDS)
         try:
             _reap_orphan_jobs()
+            _reap_orphan_fep_studies()
         except Exception as e:  # noqa: BLE001 — defence in depth; the
             # inner function already swallows, but never let the loop die.
             log.exception("Periodic orphan reaper iteration failed: %s", e)
@@ -422,6 +468,7 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("016_ensemble_access.sql", "Migration 016 (ensemble access flag)"),
     ("017_fep_access.sql", "Migration 017 (FEP+ per-user access flag, gated by default)"),
     ("018_fep_tables.sql", "Migration 018 (FEP study + node + perturbation tables)"),
+    ("019_fep_estimated_cost.sql", "Migration 019 (FEP estimated_usd_cost column)"),
 ]
 
 
@@ -458,6 +505,9 @@ async def lifespan(_app: FastAPI):
     # serve a single request. Also fails loud.
     _verify_schema_matches_models()
     _reap_orphan_jobs()
+    # (I1) Same recovery sweep for FEP+ studies. Catches the
+    # daemon-thread-died-mid-study failure mode after a Fly restart.
+    _reap_orphan_fep_studies()
     watchdog_task = asyncio.create_task(_runpod_watchdog())
     reaper_task = asyncio.create_task(_periodic_orphan_reaper())
     # S3 — failover watchdog. Companion to the cost watchdog: where the

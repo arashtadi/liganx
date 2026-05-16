@@ -379,6 +379,59 @@ def create_fep_study(
             ),
         )
 
+    # ─── (I2) Per-user concurrent-study limit. ──────────────────────
+    # A single user shouldn't be able to fill the FEP pod queue
+    # indefinitely. Default 3 simultaneous studies in PENDING/PREPARING/
+    # RUNNING. Each completed/failed/cancelled study DOES NOT count.
+    # Raise via FEP_MAX_CONCURRENT_PER_USER env for a power user.
+    max_concurrent = int(os.environ.get("FEP_MAX_CONCURRENT_PER_USER", "3"))
+    active_states = (
+        FepJobStatus.PENDING,
+        FepJobStatus.PREPARING,
+        FepJobStatus.RUNNING,
+    )
+    active_count = session.exec(
+        select(FepJob)
+        .where(FepJob.user_id == user.id)
+        .where(FepJob.status.in_(active_states))      # type: ignore[attr-defined]
+    ).all()
+    if len(active_count) >= max_concurrent:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"You already have {len(active_count)} FEP {'study' if len(active_count) == 1 else 'studies'} "
+                f"running or queued (cap: {max_concurrent}). Wait for one to finish, "
+                f"or cancel one via /fep/<share_id>, before submitting another."
+            ),
+        )
+
+    # ─── (I3) Monthly per-user $ cap. ───────────────────────────────
+    # Backstop against a user submitting 10 studies in a click-rampage.
+    # Default $500/month rolling 30-day window. Counts ALL studies
+    # (including cancelled/failed — once dispatched the pod time is
+    # mostly spent; this captures the real cost exposure).
+    from datetime import datetime, timedelta
+    max_usd_per_month = float(os.environ.get("FEP_MAX_USD_PER_USER_PER_MONTH", "500.0"))
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    recent_studies = session.exec(
+        select(FepJob)
+        .where(FepJob.user_id == user.id)
+        .where(FepJob.created_at >= thirty_days_ago)  # type: ignore[attr-defined]
+    ).all()
+    spend_30d = sum((s.estimated_usd_cost or 0.0) for s in recent_studies)
+    if spend_30d + est.usd_cost_estimated > max_usd_per_month:
+        remaining = max(0.0, max_usd_per_month - spend_30d)
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"This study would cost ${est.usd_cost_estimated:.2f} on top of "
+                f"your last-30-days spend of ${spend_30d:.2f}, exceeding the "
+                f"${max_usd_per_month:.2f}/month per-user cap. "
+                f"You have ~${remaining:.2f} left this month. Wait for the "
+                f"window to roll over, or ask an admin to raise the cap."
+            ),
+        )
+
     # ─── Resolve / create compounds. ────────────────────────────────
     hit = _create_compound(session, payload.hit_smiles, payload.hit_name)
     analog_compounds: list[Compound] = []
@@ -397,6 +450,8 @@ def create_fep_study(
             parent_job_id = parent.id
 
     # ─── Create FepJob row. ─────────────────────────────────────────
+    # estimated_usd_cost is frozen at submit time — used for the
+    # monthly per-user cap.
     fep_job = FepJob(
         user_id=user.id,
         pdb_id=payload.pdb_id,
@@ -408,6 +463,7 @@ def create_fep_study(
         ns_per_window=payload.ns_per_window,
         network_topology=payload.network_topology,
         status=FepJobStatus.PENDING,
+        estimated_usd_cost=est.usd_cost_estimated,
     )
     session.add(fep_job)
     session.commit()

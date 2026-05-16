@@ -526,6 +526,12 @@ class FepJob(SQLModel, table=True):
     # when status=completed.
     cycle_closure_rmsd: Optional[float] = None
 
+    # (I3) Estimated dollar cost at submit time. Frozen — even if the
+    # per-GPU-hour rate or the per-edge time changes later, this row
+    # remembers what was projected when the user accepted the cost.
+    # Aggregated for the per-user monthly cap (FEP_MAX_USD_PER_USER_PER_MONTH).
+    estimated_usd_cost: float = 0.0
+
     title: Optional[str] = Field(default=None, max_length=240)
     # tags is TEXT[] in Postgres; SQLAlchemy ARRAY(String) for the model
     # type. FastAPI returns it as list[str].
