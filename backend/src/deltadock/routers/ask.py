@@ -200,6 +200,12 @@ async def _build_chemist_review_snippet(session: Session, job) -> Optional[str]:
             docked_score=result.best_score,
             extra=result.extra,
             api_key=api_key,
+            # (T2) Pipe catalog trust signals through so the chemist
+            # agent can defer to them and the clamp can backstop.
+            druggability=(target.druggability if target else "untested"),
+            druggability_note=(target.druggability_note if target else ""),
+            canonical_pocket_residues=(target.canonical_pocket_residues if target else []),
+            typical_vina_range=(target.typical_vina_range if target else None),
         )
     except RuntimeError as e:
         log.info("chemist_review skipped in chat path: %s", e)

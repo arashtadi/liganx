@@ -142,6 +142,24 @@ verdict that a working medicinal chemist would actually find useful.
   6. IF THE 2D STRUCTURE IS ATTACHED, look at it. Comment on the
      visible scaffold, ring system, chirality, and where a suggested
      modification would land — not just SMILES strings.
+  7. TRUST SIGNALS — defer to them and DEFAULT TO SKEPTICAL when they
+     fire. The user message includes a "Target trust signals" block and
+     a derived "Agent checks" block. Apply these hard caps:
+       (a) If `druggability=experimental` the target has no approved
+           direct binder — score-based confidence is unwarranted. Max
+           verdict: "borderline". Surface this in the headline.
+       (b) If `contact_overlap_count == 0` AND `pose_in_pocket=false`
+           (or pose_offset_a > 6 Å), the pose is surface contact, not
+           binding. Max verdict: "suspect". Say so in the concerns.
+       (c) If the docked score is "above" the typical band (i.e. less
+           negative than the worst-typical bound) AND `Δ` from WT is in
+           the Vina noise floor (|Δ| < 1.0 kcal/mol), the result is
+           uninformative. Max verdict: "borderline".
+     These caps OVERRIDE your other reasoning — a beautiful-looking
+     pose in a target with no published chemical matter is still
+     borderline, not "confident-hit". The platform is used by PhD
+     chemists; over-confident verdicts on experimental targets are
+     the worst failure mode.
 
 # WHEN DATA IS THIN
 Don't fabricate. If PoseBusters/strain/ProLIF/etc. are missing, say so
@@ -178,6 +196,79 @@ Schema:
 """
 
 
+def _trust_checks(
+    *,
+    extras: dict[str, Any],
+    docked_score: float,
+    canonical_residues: list[str],
+    typical_vina_range: Optional[tuple[float, float]],
+) -> dict[str, Any]:
+    """Compute the structured trust-signal derived metrics that the system-
+    prompt Rule 7 caps depend on.
+
+    These are computed in Python (not delegated to the LLM) so the clamp
+    is deterministic — a chatty model can't talk itself out of a verdict
+    cap by re-interpreting the underlying numbers.
+
+    Returns a dict with three load-bearing keys:
+      • contact_overlap_count   — how many of `canonical_residues` appear
+                                  in the observed ProLIF contacts list.
+      • contact_overlap_names   — the residue codes from `canonical_residues`
+                                  that were observed (for the prompt).
+      • score_band              — "below" (better than worst-typical bound),
+                                  "within" (inside the typical band),
+                                  "above" (less negative than worst-typical
+                                  — i.e. score is in the noise floor), or
+                                  "unknown" (no typical range or no score).
+    """
+    out: dict[str, Any] = {
+        "contact_overlap_count": 0,
+        "contact_overlap_names": [],
+        "score_band": "unknown",
+    }
+    # Contact overlap. Match is by case-insensitive PREFIX match on the
+    # residue 1-letter+number (so canonical "T790" matches ProLIF
+    # "T790M" or "T790"; canonical "M793" matches "MET793"). The prefix
+    # rule is lenient because PDB chains and ProLIF use different naming
+    # conventions inconsistently (one-letter+number vs three-letter+number),
+    # but the residue number is the unambiguous handle either way.
+    contacts = extras.get("contacts") or []
+    if canonical_residues and contacts:
+        observed_residues = [str(c.get("residue", "")).upper() for c in contacts]
+        # Pull the digit-suffix from each canonical residue to drive a
+        # number-based match — covers both "T790" vs "T790M" (mutated)
+        # AND "M793" vs "MET793" (3-letter naming).
+        def _digits(s: str) -> str:
+            m = re.search(r"\d+", s)
+            return m.group(0) if m else ""
+        for canon in canonical_residues:
+            num = _digits(canon)
+            if not num:
+                continue
+            for obs in observed_residues:
+                if num in obs:
+                    out["contact_overlap_names"].append(canon)
+                    out["contact_overlap_count"] += 1
+                    break
+
+    # Score band. Both ends of typical_vina_range are negative; "worst
+    # typical" is the LESS-negative value (i.e. the [0] element by
+    # convention). If docked_score is less negative than that, it's in
+    # the noise floor.
+    if typical_vina_range and docked_score is not None:
+        worst, best = typical_vina_range
+        # Order-tolerant: accept either (worst, best) or (best, worst).
+        worst, best = max(worst, best), min(worst, best)
+        if docked_score <= best:
+            out["score_band"] = "below"        # stronger than typical
+        elif docked_score <= worst:
+            out["score_band"] = "within"       # inside the typical band
+        else:
+            out["score_band"] = "above"        # NOISE FLOOR
+
+    return out
+
+
 def _build_user_message(
     *,
     compound_smiles: str,
@@ -191,8 +282,16 @@ def _build_user_message(
     indications: list[str],
     docked_score: float,
     extras: dict[str, Any],
+    # (T2) Target trust-signal fields — surfaced in the prompt so the agent
+    # can defer to them and the deterministic clamp can backstop. Default
+    # values keep the existing test call sites working.
+    druggability: str = "untested",
+    druggability_note: str = "",
+    canonical_pocket_residues: Optional[list[str]] = None,
+    typical_vina_range: Optional[tuple[float, float]] = None,
 ) -> str:
     """Assemble the user-side message: ALL the structured data the LLM needs."""
+    canonical_pocket_residues = canonical_pocket_residues or []
     lines: list[str] = []
     lines.append("DOCKING RESULT TO REVIEW")
     lines.append("")
@@ -203,6 +302,23 @@ def _build_user_message(
     lines.append(f"  • Variant:    {variant}")
     if indications:
         lines.append(f"  • Indications: {', '.join(indications)}")
+    # (T2) Trust signals — load-bearing for Rule 7 verdict caps.
+    if druggability and druggability != "untested":
+        lines.append(f"  • Druggability tier: {druggability}")
+        if druggability_note:
+            lines.append(f"      ↳ {druggability_note}")
+    if canonical_pocket_residues:
+        lines.append(
+            "  • Canonical pocket residues (a real binder is expected to "
+            f"contact several of these): {', '.join(canonical_pocket_residues)}"
+        )
+    if typical_vina_range:
+        worst, best = max(typical_vina_range), min(typical_vina_range)
+        lines.append(
+            f"  • Typical Vina score range for known binders at this target: "
+            f"{best:.1f} to {worst:.1f} kcal/mol "
+            f"(known actives are usually stronger than {worst:.1f})"
+        )
     lines.append("")
     lines.append("Compound:")
     lines.append(f"  • Name:   {compound_name or '(unnamed)'}")
@@ -259,11 +375,54 @@ def _build_user_message(
         lines.append(
             f"  • FAILURE: {failure.get('kind')} — {failure.get('reason')}"
         )
+
+    # (T2) Derived agent checks — these are the inputs to Rule 7's
+    # verdict caps. Surface them explicitly so the LLM has the same view
+    # the deterministic clamp does.
+    if canonical_pocket_residues or typical_vina_range:
+        checks = _trust_checks(
+            extras=extras,
+            docked_score=docked_score,
+            canonical_residues=canonical_pocket_residues,
+            typical_vina_range=typical_vina_range,
+        )
+        lines.append("")
+        lines.append("Agent checks (derived from above — Rule 7 of the system prompt depends on these):")
+        if canonical_pocket_residues:
+            n_canon = len(canonical_pocket_residues)
+            overlap_n = checks["contact_overlap_count"]
+            overlap_names = checks["contact_overlap_names"]
+            if overlap_names:
+                lines.append(
+                    f"  • Canonical-pocket contact overlap: {overlap_n} / {n_canon} "
+                    f"({', '.join(overlap_names)})"
+                )
+            else:
+                lines.append(
+                    f"  • Canonical-pocket contact overlap: 0 / {n_canon} — "
+                    "NONE of the expected pocket residues appear in the ProLIF "
+                    "contacts. This is a strong artefact signal (surface contact, "
+                    "not real binding)."
+                )
+        if typical_vina_range:
+            band = checks["score_band"]
+            worst, best = max(typical_vina_range), min(typical_vina_range)
+            if band == "above":
+                lines.append(
+                    f"  • Score band: ABOVE the typical range ({best:.1f} to "
+                    f"{worst:.1f} kcal/mol) — the docked score is in the "
+                    "noise floor for this target."
+                )
+            elif band == "within":
+                lines.append(f"  • Score band: WITHIN the typical range ({best:.1f} to {worst:.1f} kcal/mol).")
+            elif band == "below":
+                lines.append(f"  • Score band: BELOW the typical range (stronger than known actives' typical low of {best:.1f}).")
     lines.append("")
     lines.append(
         "Produce the JSON review described in the system prompt. Be specific, "
         "be skeptical when warranted, be honest when there's not enough signal "
-        "to commit to a verdict. STRICT JSON, no markdown."
+        "to commit to a verdict. Remember Rule 7 — defer to the trust signals "
+        "and default to skeptical when they fire. STRICT JSON, no markdown."
     )
     return "\n".join(lines)
 
@@ -302,6 +461,14 @@ async def review_pose(
     extra: Optional[str],
     api_key: str,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    # (T2) New optional fields — sourced from the catalog Target. Default
+    # values keep callers that don't have a Target on hand (and existing
+    # tests) working. When the catalog DOES know the target, pass these
+    # in so the trust-signal prompt + the deterministic clamp engage.
+    druggability: str = "untested",
+    druggability_note: str = "",
+    canonical_pocket_residues: Optional[list[str]] = None,
+    typical_vina_range: Optional[tuple[float, float]] = None,
 ) -> ChemistReview:
     """Produce a chemist review of one docking result.
 
@@ -336,6 +503,8 @@ async def review_pose(
             model=ANTHROPIC_MODEL,
         )
 
+    canonical_pocket_residues = canonical_pocket_residues or []
+
     user_text = _build_user_message(
         compound_smiles=compound_smiles,
         compound_name=compound_name,
@@ -348,6 +517,10 @@ async def review_pose(
         indications=indications,
         docked_score=docked_score,
         extras=extras,
+        druggability=druggability,
+        druggability_note=druggability_note,
+        canonical_pocket_residues=canonical_pocket_residues,
+        typical_vina_range=typical_vina_range,
     )
 
     # (S1.1) Attach the 2D structure as a vision input so the reviewer
@@ -413,7 +586,172 @@ async def review_pose(
         log.warning("chemist_review: JSON parse failure: %s | text=%s", e, raw_text[:300])
         raise RuntimeError(f"AI reviewer returned unparseable JSON: {e}") from e
 
-    return _coerce_review(parsed, extras)
+    review = _coerce_review(parsed, extras)
+
+    # (T2) Deterministic trust-signal clamp. Even with Rule 7 in the
+    # system prompt, models occasionally produce "plausible" for an
+    # experimental target with surface contacts and a noise-floor score
+    # — exactly the failure mode that put job #307 in the user's
+    # cross-hairs. The clamp is belt-and-braces: it inspects the SAME
+    # signals the prompt told the LLM to defer to, and downgrades the
+    # verdict to the appropriate cap regardless of what the model said.
+    # The note is mutated into the headline so the UI shows WHY.
+    review = _apply_trust_clamp(
+        review=review,
+        druggability=druggability,
+        canonical_pocket_residues=canonical_pocket_residues,
+        typical_vina_range=typical_vina_range,
+        extras=extras,
+        docked_score=docked_score,
+    )
+    return review
+
+
+# Verdict ordering — index = severity, higher index = MORE skeptical.
+_VERDICT_ORDER: list[str] = [
+    "confident-hit", "plausible", "borderline", "suspect", "failed",
+]
+
+
+def _cap_verdict(current: str, cap: str) -> str:
+    """Return the more-skeptical of `current` vs `cap`."""
+    try:
+        ci, cap_i = _VERDICT_ORDER.index(current), _VERDICT_ORDER.index(cap)
+    except ValueError:
+        return cap
+    return _VERDICT_ORDER[max(ci, cap_i)]
+
+
+def _apply_trust_clamp(
+    *,
+    review: ChemistReview,
+    druggability: str,
+    canonical_pocket_residues: list[str],
+    typical_vina_range: Optional[tuple[float, float]],
+    extras: dict[str, Any],
+    docked_score: float,
+) -> ChemistReview:
+    """Defensive backstop for Rule 7. Returns a possibly-downgraded review.
+
+    Three caps, applied independently — the strictest one wins:
+
+      (a) druggability=="experimental"
+              → cap at "borderline"
+              → reason: no approved chemical matter, score-based
+                confidence is unwarranted.
+      (b) zero canonical-pocket overlap AND pose not in pocket
+              → cap at "suspect"
+              → reason: surface contact, not real binding.
+      (c) score above the typical band
+              → cap at "borderline"
+              → reason: score is in the noise floor for this target.
+
+    Each fired cap is also appended to `concerns` so the UI surfaces the
+    reasoning (not just a silent downgrade).
+    """
+    if review.verdict == "failed":
+        return review                                            # nothing to clamp
+
+    checks = _trust_checks(
+        extras=extras,
+        docked_score=docked_score,
+        canonical_residues=canonical_pocket_residues,
+        typical_vina_range=typical_vina_range,
+    )
+
+    caps: list[tuple[str, str]] = []                             # (cap, reason)
+
+    # (a) Experimental druggability
+    if druggability == "experimental":
+        caps.append((
+            "borderline",
+            "Druggability=experimental — this target has no approved "
+            "direct binder, so a strong-looking docking score cannot be "
+            "interpreted as 'this will work in the lab'.",
+        ))
+
+    # (b) Zero canonical-pocket overlap AND pose not in pocket
+    pose_in_pocket = extras.get("pose_in_pocket")
+    pose_offset = extras.get("pose_offset_a")
+    try:
+        pose_offset_f = float(pose_offset) if pose_offset is not None else None
+    except (TypeError, ValueError):
+        pose_offset_f = None
+    out_of_pocket = (
+        pose_in_pocket is False
+        or (pose_offset_f is not None and pose_offset_f > 6.0)
+    )
+    if (
+        canonical_pocket_residues
+        and checks["contact_overlap_count"] == 0
+        and (extras.get("contacts") or out_of_pocket)
+    ):
+        caps.append((
+            "suspect",
+            f"Zero overlap with this target's canonical pocket residues "
+            f"({', '.join(canonical_pocket_residues[:5])}…) — the pose is "
+            "making surface contacts, not engaging the druggable pocket.",
+        ))
+
+    # (c) Score in the noise floor
+    if typical_vina_range and checks["score_band"] == "above":
+        worst = max(typical_vina_range)
+        caps.append((
+            "borderline",
+            f"Docked score {docked_score:.2f} kcal/mol is less negative than "
+            f"the typical-binder band for this target (worst-typical {worst:.1f}); "
+            "the result is in the noise floor and not meaningful as evidence.",
+        ))
+
+    if not caps:
+        return review
+
+    # Apply the strictest cap.
+    capped = review.verdict
+    for cap_v, _ in caps:
+        capped = _cap_verdict(capped, cap_v)
+
+    if capped == review.verdict:
+        # The LLM already produced a verdict at or beyond the cap. Still
+        # append the clamp reasons to concerns so the UI doesn't hide them.
+        new_concerns = list(review.concerns) + [
+            f"[Trust signal] {r}" for _, r in caps
+            if f"[Trust signal] {r}" not in review.concerns
+        ]
+        return ChemistReview(
+            verdict=review.verdict,
+            headline=review.headline,
+            summary=review.summary,
+            strengths=review.strengths,
+            concerns=new_concerns,
+            suggestions=review.suggestions,
+            criteria=review.criteria,
+            inputs=review.inputs,
+            model=review.model,
+        )
+
+    log.info(
+        "chemist_review: trust clamp downgraded %r → %r (reasons=%s)",
+        review.verdict, capped, [c for c, _ in caps],
+    )
+    new_concerns = list(review.concerns) + [f"[Trust signal] {r}" for _, r in caps]
+    # Headline gets a prefix so the matrix UI shows the clamp visibly.
+    cap_prefix = {
+        "suspect": "Likely off-pocket artefact",
+        "borderline": "Trust signals warn against confidence",
+    }.get(capped, "Verdict reduced by trust signals")
+    new_headline = f"{cap_prefix} — {review.headline}"[:240]
+    return ChemistReview(
+        verdict=capped,                                          # type: ignore[arg-type]
+        headline=new_headline,
+        summary=review.summary,
+        strengths=review.strengths,
+        concerns=new_concerns,
+        suggestions=review.suggestions,
+        criteria=review.criteria,
+        inputs=review.inputs,
+        model=review.model,
+    )
 
 
 def _coerce_review(parsed: dict[str, Any], extras: dict[str, Any]) -> ChemistReview:

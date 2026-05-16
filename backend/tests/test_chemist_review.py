@@ -13,10 +13,13 @@ import pytest
 
 from deltadock.services.chemist_review import (
     ChemistReview,
+    _apply_trust_clamp,
     _build_user_message,
+    _cap_verdict,
     _coerce_review,
     _extract_json,
     _failure_suggestions,
+    _trust_checks,
     review_pose,
 )
 
@@ -305,3 +308,339 @@ def test_chemist_review_serializes_round_trip():
     assert d["verdict"] == "confident-hit"
     assert d["criteria"]["pose_fit"] == "in pocket"
     assert d["model"].startswith("claude-")
+
+
+# ────────────────────── T2 — trust-signal prompt fields ─────────────────────
+
+
+def test_user_message_renders_druggability_tier_and_note():
+    """The agent should see the target's druggability tier and the
+    one-sentence justification — that's the trust signal Rule 7 leans on."""
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Test",
+        target_id="kras",
+        target_name="KRAS GTPase",
+        target_uniprot="P01116",
+        pdb_id="4OBE", chain="A", variant="G13D",
+        indications=["colorectal cancer"],
+        docked_score=-5.6,
+        extras={"pose_in_pocket": True, "pose_offset_a": 2.0},
+        druggability="experimental",
+        druggability_note="No approved direct binder for KRAS G13D.",
+    )
+    assert "Druggability tier: experimental" in msg
+    assert "No approved direct binder" in msg
+
+
+def test_user_message_renders_canonical_pocket_residues():
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Test",
+        target_id="egfr",
+        target_name="EGFR kinase domain",
+        target_uniprot="P00533",
+        pdb_id="2ITY", chain="A", variant="T790M",
+        indications=["NSCLC"],
+        docked_score=-8.0,
+        extras={},
+        canonical_pocket_residues=["T790", "M793", "K745"],
+    )
+    assert "Canonical pocket residues" in msg
+    for r in ("T790", "M793", "K745"):
+        assert r in msg
+
+
+def test_user_message_renders_typical_vina_range():
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Test",
+        target_id="egfr",
+        target_name="EGFR kinase domain",
+        target_uniprot="P00533",
+        pdb_id="2ITY", chain="A", variant="WT",
+        indications=["NSCLC"],
+        docked_score=-9.0,
+        extras={},
+        typical_vina_range=(-11.0, -8.0),
+    )
+    assert "Typical Vina score range" in msg
+    # Both ends must appear.
+    assert "-11.0" in msg or "-11" in msg
+    assert "-8.0" in msg or "-8" in msg
+
+
+def test_user_message_shows_agent_checks_block_when_metadata_present():
+    """The 'Agent checks' block is what Rule 7 of the system prompt
+    references. It must be present when we have canonical residues
+    and/or a typical-score range."""
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Test",
+        target_id="egfr",
+        target_name="EGFR",
+        target_uniprot="P00533",
+        pdb_id="2ITY", chain="A", variant="T790M",
+        indications=["NSCLC"],
+        docked_score=-9.0,
+        extras={
+            "contacts": [
+                {"residue": "MET793", "type": "HBAc", "distance": 2.7},
+                {"residue": "LYS745", "type": "Hydr"},
+            ],
+        },
+        canonical_pocket_residues=["T790", "M793", "K745"],
+        typical_vina_range=(-11.0, -8.0),
+    )
+    assert "Agent checks" in msg
+    # Overlap math: M793 should match MET793 by number, K745 should match LYS745.
+    assert "Canonical-pocket contact overlap" in msg
+    # And a score band assessment.
+    assert "Score band" in msg
+
+
+def test_user_message_warns_loudly_on_zero_canonical_overlap():
+    """If the docked pose contacts NO canonical residues, the prompt
+    must say so explicitly — this is the load-bearing artefact signal
+    for Rule 7's 'suspect' cap."""
+    msg = _build_user_message(
+        compound_smiles="CCO",
+        compound_name="Cenestil-like",
+        target_id="kras",
+        target_name="KRAS",
+        target_uniprot="P01116",
+        pdb_id="4OBE", chain="A", variant="G13D",
+        indications=[],
+        docked_score=-5.6,
+        extras={
+            "contacts": [
+                {"residue": "MET170", "type": "Hydr"},     # not in canonical
+                {"residue": "ARG161", "type": "Hydr"},     # not in canonical
+            ],
+            "pose_in_pocket": False,
+            "pose_offset_a": 8.2,
+        },
+        canonical_pocket_residues=["G12", "T58", "Y96", "Q99"],
+        typical_vina_range=(-9.0, -6.5),
+    )
+    assert "0 / 4" in msg or "NONE" in msg
+    assert "surface contact" in msg.lower() or "artefact" in msg.lower()
+
+
+# ────────────────────── T2 — _trust_checks pure function ─────────────────────
+
+
+def test_trust_checks_counts_canonical_overlap_by_residue_number():
+    """Overlap matches by residue NUMBER so 'M793' canonical matches
+    both 'M793' and 'MET793' in ProLIF, and 'T790' canonical matches
+    'T790M' (mutated)."""
+    checks = _trust_checks(
+        extras={
+            "contacts": [
+                {"residue": "MET793", "type": "HBAc"},
+                {"residue": "T790M",  "type": "Hydr"},
+                {"residue": "LYS745", "type": "Hydr"},
+                {"residue": "VAL999", "type": "Hydr"},     # not canonical
+            ],
+        },
+        docked_score=-9.0,
+        canonical_residues=["T790", "M793", "K745", "L788"],
+        typical_vina_range=(-11.0, -8.0),
+    )
+    assert checks["contact_overlap_count"] == 3
+    assert set(checks["contact_overlap_names"]) == {"T790", "M793", "K745"}
+
+
+def test_trust_checks_score_band_above_within_below():
+    """The score-band assessment is what triggers the noise-floor cap."""
+    # Above the typical band — noise floor.
+    assert _trust_checks(
+        extras={}, docked_score=-5.6,
+        canonical_residues=[], typical_vina_range=(-11.0, -8.0),
+    )["score_band"] == "above"
+    # Inside the band.
+    assert _trust_checks(
+        extras={}, docked_score=-9.5,
+        canonical_residues=[], typical_vina_range=(-11.0, -8.0),
+    )["score_band"] == "within"
+    # Stronger than the band's strong end.
+    assert _trust_checks(
+        extras={}, docked_score=-12.5,
+        canonical_residues=[], typical_vina_range=(-11.0, -8.0),
+    )["score_band"] == "below"
+
+
+def test_trust_checks_returns_unknown_band_without_range():
+    """No catalog metadata → no band assessment."""
+    checks = _trust_checks(
+        extras={}, docked_score=-9.0,
+        canonical_residues=[], typical_vina_range=None,
+    )
+    assert checks["score_band"] == "unknown"
+
+
+def test_trust_checks_score_band_order_tolerant():
+    """typical_vina_range entered as (best, worst) instead of (worst, best)
+    still produces correct band — both are valid orderings of two negative
+    numbers."""
+    # (-8, -11) is the same band as (-11, -8) — both negative.
+    assert _trust_checks(
+        extras={}, docked_score=-5.6,
+        canonical_residues=[], typical_vina_range=(-8.0, -11.0),
+    )["score_band"] == "above"
+
+
+# ────────────────────── T2 — _cap_verdict ─────────────────────
+
+
+def test_cap_verdict_returns_more_skeptical():
+    # confident-hit is the LEAST skeptical, failed is most.
+    assert _cap_verdict("confident-hit", "borderline") == "borderline"
+    assert _cap_verdict("plausible",     "suspect")    == "suspect"
+    # No downgrade if the current verdict is already stricter.
+    assert _cap_verdict("suspect",       "borderline") == "suspect"
+    # Unknowns default to the cap (defensive).
+    assert _cap_verdict("nonsense",      "borderline") == "borderline"
+
+
+# ────────────────────── T2 — _apply_trust_clamp ─────────────────────
+
+
+def _make_review(verdict="plausible", headline="ok", concerns=None):
+    return ChemistReview(
+        verdict=verdict, headline=headline, summary="s",
+        strengths=[], concerns=concerns or [], suggestions=[],
+        criteria={}, inputs={}, model="claude-test",
+    )
+
+
+def test_clamp_caps_experimental_target_at_borderline():
+    """The headline KRAS G13D failure mode: experimental druggability,
+    great-looking LLM verdict — must be capped at borderline."""
+    review = _make_review(verdict="confident-hit", headline="Strong pose")
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="experimental",
+        canonical_pocket_residues=["G12", "T58"],
+        typical_vina_range=(-9.0, -6.5),
+        extras={"pose_in_pocket": True},
+        docked_score=-7.5,                                       # within band
+    )
+    assert out.verdict == "borderline"
+    # The reason must be surfaced.
+    assert any("experimental" in c.lower() for c in out.concerns)
+    # Headline gets a clamp prefix so the matrix UI shows WHY.
+    assert "trust signal" in out.headline.lower() or "Trust signals" in out.headline
+
+
+def test_clamp_caps_off_pocket_zero_overlap_at_suspect():
+    """The pose makes zero contacts with canonical pocket AND sits
+    outside the box — surface contact, must be suspect."""
+    review = _make_review(verdict="plausible", headline="Decent pose")
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="recent",                                   # not experimental
+        canonical_pocket_residues=["T790", "M793", "K745"],
+        typical_vina_range=(-11.0, -8.0),
+        extras={
+            "contacts": [{"residue": "VAL999", "type": "Hydr"}],
+            "pose_in_pocket": False,
+            "pose_offset_a": 8.2,
+        },
+        docked_score=-9.0,                                       # within band
+    )
+    assert out.verdict == "suspect"
+    assert any("canonical pocket" in c.lower() or "surface" in c.lower() for c in out.concerns)
+
+
+def test_clamp_caps_noise_floor_score_at_borderline():
+    """Score above (less negative than) the typical band → noise floor."""
+    review = _make_review(verdict="confident-hit", headline="Strong pose")
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="established",
+        canonical_pocket_residues=["T790"],
+        typical_vina_range=(-11.0, -8.0),
+        extras={
+            "contacts": [{"residue": "T790M", "type": "Hydr"}],  # non-zero overlap
+            "pose_in_pocket": True,
+        },
+        docked_score=-5.5,                                       # noise floor
+    )
+    assert out.verdict == "borderline"
+    assert any("noise floor" in c.lower() or "less negative" in c.lower()
+               for c in out.concerns)
+
+
+def test_clamp_does_not_downgrade_clean_result():
+    """Established target, in-pocket, in-band score — no clamp should fire."""
+    review = _make_review(verdict="confident-hit", headline="Strong pose")
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="established",
+        canonical_pocket_residues=["T790", "M793"],
+        typical_vina_range=(-11.0, -8.0),
+        extras={
+            "contacts": [
+                {"residue": "MET793", "type": "HBAc"},
+                {"residue": "T790M",  "type": "Hydr"},
+            ],
+            "pose_in_pocket": True,
+        },
+        docked_score=-9.2,
+    )
+    assert out.verdict == "confident-hit"     # unchanged
+    assert out.headline == "Strong pose"      # unchanged
+
+
+def test_clamp_appends_reasons_even_when_verdict_already_capped():
+    """If the LLM already produced 'suspect' for an experimental + off-pocket
+    pose, we shouldn't downgrade further — but we DO want the trust-signal
+    reasoning surfaced in the concerns array so the user sees WHY."""
+    review = _make_review(verdict="suspect", headline="off-pocket",
+                          concerns=["pre-existing concern"])
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="experimental",
+        canonical_pocket_residues=["G12"],
+        typical_vina_range=(-9.0, -6.5),
+        extras={
+            "contacts": [{"residue": "VAL999", "type": "Hydr"}],
+            "pose_in_pocket": False, "pose_offset_a": 9.0,
+        },
+        docked_score=-5.6,
+    )
+    assert out.verdict == "suspect"                              # not downgraded further
+    # Both pre-existing AND the trust-signal reasons must be present.
+    assert "pre-existing concern" in out.concerns
+    assert any("[Trust signal]" in c for c in out.concerns)
+
+
+def test_clamp_skips_failed_verdicts():
+    """A 'failed' review (docking didn't produce a pose) is not subject
+    to the clamp — there's no pose to evaluate trust signals against."""
+    review = _make_review(verdict="failed", headline="ligand_prep failed")
+    out = _apply_trust_clamp(
+        review=review,
+        druggability="experimental",
+        canonical_pocket_residues=["G12"],
+        typical_vina_range=(-9.0, -6.5),
+        extras={},
+        docked_score=0.0,
+    )
+    assert out.verdict == "failed"
+    assert out.headline == "ligand_prep failed"
+
+
+def test_system_prompt_contains_rule_7_trust_signals():
+    """Rule 7 is load-bearing for T2. Pin its presence so a prompt edit
+    can't silently delete it."""
+    from deltadock.services.chemist_review import _SYSTEM_PROMPT
+    p = _SYSTEM_PROMPT.lower()
+    assert "trust signals" in p
+    assert "druggability" in p
+    assert "noise floor" in p
+    # The three caps must each be named.
+    assert "experimental" in p
+    assert "surface" in p or "suspect" in p
+    assert "borderline" in p
