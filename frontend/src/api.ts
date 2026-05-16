@@ -604,6 +604,21 @@ export interface AdminUserRow {
   fep_enabled: boolean;
 }
 
+/** (H3) Lightweight FEP study summary for the History page tab. */
+export interface FepStudySummary {
+  share_id: string;
+  created_at: string;
+  pdb_id: string;
+  chain: string;
+  variant: string;
+  hit_name: string | null;
+  n_analogs: number;
+  status: string;
+  stage: string | null;
+  cycle_closure_rmsd: number | null;
+  title: string | null;
+}
+
 /** (G7) FEP study graph + ΔΔG result shape returned by /fep/studies. */
 export interface FepStudyGraph {
   share_id: string;
@@ -879,6 +894,11 @@ export const api = {
     }),
   fepGet: (shareId: string) =>
     request<FepStudyGraph>(`/fep/studies/${encodeURIComponent(shareId)}`),
+  /** (H3) Owner's list of FEP studies for the History page's FEP tab.
+   *  Same offset/limit pagination shape as listJobs / listScreenings.
+   *  Lightweight summary row — click-through fetches the full graph. */
+  listFepStudies: (offset = 0, limit = 25) =>
+    request<FepStudySummary[]>(`/fep/studies?offset=${offset}&limit=${limit}`),
   fepCancel: (shareId: string) =>
     request<{ share_id: string; cancelled: boolean; status: string; note: string }>(
       `/fep/studies/${encodeURIComponent(shareId)}/cancel`,

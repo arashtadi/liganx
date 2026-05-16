@@ -140,7 +140,7 @@ const PAGE_SIZE = 25;
  *  remember the share URL" approach was broken UX (no discovery surface
  *  for completed screening runs). Both tabs share the same outer page
  *  chrome; only the body switches. */
-type HistoryTab = "jobs" | "screenings";
+type HistoryTab = "jobs" | "screenings" | "fep";
 
 export default function HistoryPage() {
   usePageMeta({
@@ -154,7 +154,9 @@ export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState<HistoryTab>(() => {
     try {
       const stored = sessionStorage.getItem("liganx.history.tab");
-      return stored === "screenings" ? "screenings" : "jobs";
+      if (stored === "screenings") return "screenings";
+      if (stored === "fep") return "fep";
+      return "jobs";
     } catch {
       return "jobs";
     }
@@ -170,7 +172,9 @@ export default function HistoryPage() {
         <p className="muted mt-1">
           {activeTab === "jobs"
             ? "Your past docking runs — searchable, taggable, one-click re-runnable."
-            : "Your virtual-screening runs ranked by selectivity index."}
+            : activeTab === "screenings"
+            ? "Your virtual-screening runs ranked by selectivity index."
+            : "Your FEP+ relative free-energy perturbation studies."}
         </p>
       </div>
 
@@ -178,7 +182,7 @@ export default function HistoryPage() {
           accent + white background so it reads as the focused surface
           even on the dark theme. */}
       <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-1 text-sm font-semibold">
-        {(["jobs", "screenings"] as HistoryTab[]).map((tab) => (
+        {(["jobs", "screenings", "fep"] as HistoryTab[]).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -189,12 +193,12 @@ export default function HistoryPage() {
                 : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
             }`}
           >
-            {tab === "jobs" ? "Docking jobs" : "Virtual screening"}
+            {tab === "jobs" ? "Docking jobs" : tab === "screenings" ? "Virtual screening" : "FEP+ studies"}
           </button>
         ))}
       </div>
 
-      {activeTab === "jobs" ? <JobsTab /> : <ScreeningsTab />}
+      {activeTab === "jobs" ? <JobsTab /> : activeTab === "screenings" ? <ScreeningsTab /> : <FepStudiesTab />}
     </div>
   );
 }
@@ -1182,6 +1186,155 @@ function ScreeningRow({ s }: { s: Screening }) {
         {err && (
           <div className="mt-2 px-2 py-1 rounded bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800/60 text-[11px] text-rose-700 dark:text-rose-300">
             {err}
+          </div>
+        )}
+      </Link>
+    </li>
+  );
+}
+
+
+/** (H3) FEP+ studies tab — same shape as the JobsTab but backed by
+ *  GET /fep/studies. Each row links to /fep/<share_id> (the live
+ *  results page we already shipped). Lightweight summary: target +
+ *  variant, hit compound, analog count, status chip, cycle-closure
+ *  RMSD (the one interpretive trust signal). */
+function FepStudiesTab() {
+  const {
+    data,
+    isLoading,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["fep-studies"],
+    queryFn: ({ pageParam = 0 }) => api.listFepStudies(pageParam, PAGE_SIZE),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      if (lastPage.length < PAGE_SIZE) return undefined;
+      return allPages.length * PAGE_SIZE;
+    },
+    refetchOnWindowFocus: true,
+  });
+
+  const rows = data?.pages.flat() ?? [];
+
+  if (isLoading) {
+    return (
+      <div className="text-sm text-slate-500 dark:text-slate-400 italic">Loading…</div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-md bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800/60 text-sm text-rose-800 dark:text-rose-200 px-3 py-2">
+        Failed to load FEP studies: {(error as Error).message}
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center">
+        <h3 className="text-base font-semibold text-slate-700 dark:text-slate-200">
+          No FEP+ studies yet
+        </h3>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          Relative free-energy perturbation ranks analogs around a hit at sub-1 kcal/mol RMSE.
+          Pro-gated; ~$100 per study.
+        </p>
+        <Link
+          to="/fep/new"
+          className="inline-block mt-3 btn-primary text-sm"
+        >
+          Run your first FEP+ study →
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <ul className="space-y-2">
+        {rows.map((s) => (
+          <FepStudyRow key={s.share_id} study={s} />
+        ))}
+      </ul>
+      {hasNextPage && (
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={() => void fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="btn-secondary text-xs"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function FepStudyRow({ study }: { study: import("../api").FepStudySummary }) {
+  // Format the created_at timestamp the same way the JobsTab does
+  // (relative for the last 7 days, ISO date afterward) — consistency
+  // across tabs.
+  const created = new Date(study.created_at);
+  const ageHr = (Date.now() - created.getTime()) / 3_600_000;
+  const ageLabel =
+    ageHr < 1 ? `${Math.max(1, Math.round(ageHr * 60))}m ago`
+    : ageHr < 24 ? `${Math.round(ageHr)}h ago`
+    : ageHr < 24 * 7 ? `${Math.round(ageHr / 24)}d ago`
+    : created.toISOString().slice(0, 10);
+
+  return (
+    <li>
+      <Link
+        to={`/fep/${study.share_id}`}
+        className="block rounded-lg border border-slate-200 dark:border-slate-700 hover:border-violet-400 dark:hover:border-violet-600 px-3 py-2 transition-colors"
+      >
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="font-mono font-semibold text-violet-700 dark:text-violet-300">
+              {study.pdb_id} · {study.variant}
+            </span>
+            {study.hit_name && (
+              <span className="text-sm text-slate-700 dark:text-slate-200">
+                hit: <span className="font-semibold">{study.hit_name}</span>
+              </span>
+            )}
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              + {study.n_analogs} analog{study.n_analogs === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2 text-xs">
+            <span className={`badge text-[10px] uppercase tracking-wider font-bold ${
+              study.status === "completed" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+              : study.status === "failed" ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+              : study.status === "cancelled" ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+              : "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300"
+            }`}>
+              {study.status}
+            </span>
+            <span className="text-slate-500 dark:text-slate-400 font-mono">{ageLabel}</span>
+          </div>
+        </div>
+        {(study.stage || study.cycle_closure_rmsd != null) && (
+          <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-3 flex-wrap">
+            {study.stage && <span>{study.stage}</span>}
+            {study.cycle_closure_rmsd != null && (
+              <span>
+                cycle closure:
+                <span className={`ml-1 font-mono font-semibold ${
+                  study.cycle_closure_rmsd < 0.5 ? "text-emerald-700 dark:text-emerald-400"
+                  : study.cycle_closure_rmsd < 1.0 ? "text-amber-700 dark:text-amber-400"
+                  : "text-rose-700 dark:text-rose-400"
+                }`}>
+                  {study.cycle_closure_rmsd.toFixed(2)} kcal/mol
+                </span>
+              </span>
+            )}
           </div>
         )}
       </Link>

@@ -117,6 +117,27 @@ class FepStudyGraphResponse(BaseModel):
     edges: list[FepEdgeResult] = Field(default_factory=list)
 
 
+class FepStudySummary(BaseModel):
+    """(H3) Row shape for the History page's FEP Studies tab.
+    Lightweight summary — full study fetched via GET /fep/studies/{id}
+    when the user clicks through. Fields chosen to match the same
+    visual rhythm as the docking-jobs row: identity (target/variant +
+    hit name), state (status + stage), timestamps, and one
+    interpretive number (cycle_closure_rmsd, since that's the most
+    user-facing trust signal at the study level)."""
+    share_id: str
+    created_at: str                  # ISO 8601
+    pdb_id: str
+    chain: str
+    variant: str
+    hit_name: Optional[str] = None
+    n_analogs: int
+    status: str                      # pending | preparing | running | completed | failed | cancelled
+    stage: Optional[str] = None
+    cycle_closure_rmsd: Optional[float] = None
+    title: Optional[str] = None
+
+
 class FepEstimateResponse(BaseModel):
     """(Phase B audit risk #1 — cost shock prevention) Projected
     runtime + dollar cost of a FEP study BEFORE submission. Required
@@ -464,6 +485,71 @@ def create_fep_study(
     # Return the freshly-created study shape — frontend will poll
     # /fep/studies/{share_id}/graph for live updates.
     return _serialise_graph(fep_job, node_rows, [], session)
+
+
+@router.get("/studies", response_model=list[FepStudySummary])
+def list_fep_studies(
+    user: Annotated[CurrentUser, Depends(current_user)],
+    session: Annotated[Session, Depends(get_session)],
+    offset: int = 0,
+    limit: int = 25,
+) -> list[FepStudySummary]:
+    """(H3) Owner-only list of the current user's FEP studies. Used
+    by HistoryPage's FEP Studies tab. Same offset/limit pagination
+    shape as /jobs and /screenings so the frontend's useInfiniteQuery
+    pattern works identically.
+
+    NOT gated on fep_access_allowed — once a user has had access
+    granted and run a study, they can always see the history even
+    if the admin later revokes access. The submit path is the gated
+    one; reading your own historical results is not."""
+    # Cap limit defensively so a malicious client can't ask for
+    # 100K rows.
+    limit = max(1, min(100, limit))
+    rows = session.exec(
+        select(FepJob)
+        .where(FepJob.user_id == user.id)
+        .order_by(FepJob.created_at.desc())              # type: ignore[attr-defined]
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+    # Bulk-fetch the hit compound names + analog counts in one
+    # additional round-trip rather than N+1.
+    if not rows:
+        return []
+    job_ids = [r.id for r in rows if r.id is not None]
+    hit_compound_ids = {r.hit_compound_id for r in rows}
+    compound_name_by_id: dict[int, Optional[str]] = {}
+    for c in session.exec(
+        select(Compound).where(Compound.id.in_(hit_compound_ids))   # type: ignore[attr-defined]
+    ).all():
+        compound_name_by_id[c.id] = c.name
+
+    # Analog count per study = total nodes minus the one hit node.
+    analog_count_by_job: dict[int, int] = {jid: 0 for jid in job_ids}
+    for node in session.exec(
+        select(FepNode).where(FepNode.fep_job_id.in_(job_ids))      # type: ignore[attr-defined]
+    ).all():
+        if not node.is_hit and node.fep_job_id in analog_count_by_job:
+            analog_count_by_job[node.fep_job_id] += 1
+
+    out: list[FepStudySummary] = []
+    for r in rows:
+        out.append(FepStudySummary(
+            share_id=r.share_id,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+            pdb_id=r.pdb_id,
+            chain=r.chain,
+            variant=r.variant,
+            hit_name=compound_name_by_id.get(r.hit_compound_id),
+            n_analogs=analog_count_by_job.get(r.id or 0, 0),
+            status=str(r.status.value if hasattr(r.status, "value") else r.status),
+            stage=r.stage,
+            cycle_closure_rmsd=r.cycle_closure_rmsd,
+            title=r.title,
+        ))
+    return out
 
 
 @router.get("/studies/{share_id}", response_model=FepStudyGraphResponse)

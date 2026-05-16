@@ -277,7 +277,18 @@ const DEMO_RESEEDS: Record<string, {
   replaceSession: true;
 }> = {
   "braf-v600e": {
-    compounds: [{ name: "Vemurafenib (demo)", smiles: "CCCS(=O)(=O)Nc1ccc(F)c(C(=O)c2cnc(Nc3ccc(Cl)cc3)c2)c1F" }],
+    // (Bug H1) Vemurafenib SMILES was missing the azaindole core —
+    // c2cnc(Nc3...)c2 is a plain pyridine, not the 7-azaindole
+    // c2c[nH]c3ncc(-c4...)cc23 that vemurafenib actually has.
+    // RDKit parsed the malformed string and Ketcher rendered a
+    // structure missing two rings, which triggered "Invalid SMILES"
+    // on the canvas re-parse. Replaced with the canonical SMILES from
+    // backend/src/deltadock/catalog.py (cross-verified against PubChem
+    // CID 42611257 / DrugBank DB08881).
+    compounds: [{
+      name: "Vemurafenib (demo)",
+      smiles: "CCCS(=O)(=O)Nc1ccc(F)c(C(=O)c2c[nH]c3ncc(-c4ccc(Cl)cc4)cc23)c1F",
+    }],
     mutations: ["V600E"],
     pdb_id: "4mne",
     catalog_target_id: "braf",
