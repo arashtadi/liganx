@@ -159,6 +159,23 @@ class FepStudyGraphResponse(BaseModel):
     # | "mace" (future). Surfaced so FepStudyPage can show an engine
     # badge and the History tab can filter by tier.
     force_field_engine: Optional[str] = None
+    # (M15) Target identity — was previously absent from the response,
+    # so FepStudyPage had no way to render "KRAS Q61H" in the header.
+    # pdb_id is the canonical 4-letter identifier (e.g. "4OBE").
+    pdb_id: Optional[str] = None
+    chain: Optional[str] = None
+    variant: Optional[str] = None
+    # (M16) Protocol knobs — chemists check these to know what was
+    # actually simulated. Frozen at submit time on the FepJob row.
+    forcefield_protein: Optional[str] = None
+    forcefield_ligand: Optional[str] = None
+    water_model: Optional[str] = None
+    hrex: Optional[bool] = None
+    network_topology: Optional[str] = None
+    estimated_usd_cost: Optional[float] = None
+    # (M15) Hit compound — needed for "FEP planning map" diagram so we
+    # know which node is the central one.
+    hit_compound_id: Optional[int] = None
 
 
 class FepStudySummary(BaseModel):
@@ -932,4 +949,14 @@ def _serialise_graph(
         ns_per_window=job.ns_per_window,
         seq_number=(job.seq_number if job.seq_number else None),
         force_field_engine=job.force_field_engine,
+        pdb_id=job.pdb_id,
+        chain=job.chain,
+        variant=job.variant,
+        forcefield_protein=job.forcefield_protein,
+        forcefield_ligand=job.forcefield_ligand,
+        water_model=job.water_model,
+        hrex=job.hrex,
+        network_topology=job.network_topology,
+        estimated_usd_cost=job.estimated_usd_cost,
+        hit_compound_id=job.hit_compound_id,
     )

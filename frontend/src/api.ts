@@ -667,6 +667,22 @@ export interface FepStudyGraph {
   // (K5) Which force-field engine ran this study. Null = legacy row.
   // FepStudyPage renders this as a badge ("Sage" / "Espaloma" / "MACE-OFF").
   force_field_engine: string | null;
+  // (M15) Target identity — needed in the FepStudyPage header so
+  // the chemist can see "KRAS · Q61H" at a glance.
+  pdb_id: string | null;
+  chain: string | null;
+  variant: string | null;
+  // (M16) Protocol knobs — surfaced in the Protocol panel so the
+  // chemist can verify what was actually simulated.
+  forcefield_protein: string | null;
+  forcefield_ligand: string | null;
+  water_model: string | null;
+  hrex: boolean | null;
+  network_topology: string | null;
+  estimated_usd_cost: number | null;
+  // (M15/M17) Hit compound id — load-bearing for the 2D perturbation
+  // map so we know which node is the central one.
+  hit_compound_id: number | null;
 }
 
 export const api = {

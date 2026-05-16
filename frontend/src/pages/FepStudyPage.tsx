@@ -375,6 +375,41 @@ export default function FepStudyPage() {
             {graph.share_id}
             {graph.stage && <> · {graph.stage}</>}
           </p>
+          {/* (M15) Target + variant — chemists need to know what protein
+              this study is against, not just which compounds. Renders
+              the PDB ID prominently with the variant as a colored
+              badge to make non-WT mutations visually obvious. */}
+          {graph.pdb_id && (
+            <p className="text-sm mt-2 flex items-center gap-2 flex-wrap">
+              <span className="text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">
+                Target
+              </span>
+              <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                {graph.pdb_id}
+              </span>
+              {graph.chain && (
+                <span className="text-slate-500 dark:text-slate-400 text-xs">
+                  chain {graph.chain}
+                </span>
+              )}
+              {graph.variant && (
+                <span
+                  className={`badge text-[10px] uppercase tracking-wider font-bold ${
+                    graph.variant === "WT"
+                      ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                      : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                  }`}
+                  title={
+                    graph.variant === "WT"
+                      ? "Wild-type protein sequence"
+                      : `Mutation ${graph.variant} applied to the receptor`
+                  }
+                >
+                  {graph.variant}
+                </span>
+              )}
+            </p>
+          )}
           {/* Progress line — plain-English summary of where the
               study is. Replaces a bare 'PENDING' badge with a
               readable account of what the runner is doing right
@@ -580,6 +615,81 @@ export default function FepStudyPage() {
         </div>
       )}
 
+      {/* (M17) 2D perturbation map — the visual node-edge diagram that
+          chemists associate with "FEP planning". Renders the hit at
+          center with analogs distributed on a circle, edges colored
+          by status, ΔΔG labels at each edge midpoint. Built as
+          absolutely-positioned HTML nodes so MoleculePreview just
+          works inside each node, with an SVG overlay for the edges. */}
+      {hit && graph.nodes.length > 1 && (
+        <PerturbationMap graph={graph} />
+      )}
+
+      {/* (M16) Protocol summary — what was actually simulated. The
+          chemist looks here to verify protein force field, water model,
+          sampling protocol, GPU cost projection. */}
+      <div className="card">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-3">
+          Protocol
+        </h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Protein FF</div>
+            <div className="font-mono mt-0.5">{graph.forcefield_protein || "amber14sb"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Ligand FF</div>
+            <div className="font-mono mt-0.5">{graph.forcefield_ligand || "openff-2.2.0"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Water</div>
+            <div className="font-mono mt-0.5">{(graph.water_model || "tip3p").toUpperCase()}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Salt</div>
+            <div className="font-mono mt-0.5">0.15 M NaCl</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">λ windows</div>
+            <div className="font-mono mt-0.5 tabular-nums">{graph.n_lambda_windows ?? 12}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">ns / window</div>
+            <div className="font-mono mt-0.5 tabular-nums">{graph.ns_per_window ?? 7}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">HREX</div>
+            <div className="font-mono mt-0.5">{graph.hrex === false ? "off" : "on (every 1 ps)"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Topology</div>
+            <div className="font-mono mt-0.5">{graph.network_topology || "radial_plus_mst"}</div>
+          </div>
+          {graph.estimated_usd_cost != null && graph.estimated_usd_cost > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Est. GPU cost</div>
+              <div className="font-mono mt-0.5 tabular-nums">${graph.estimated_usd_cost.toFixed(2)}</div>
+            </div>
+          )}
+          {graph.cycle_closure_rmsd != null && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cycle-closure RMSD</div>
+              <div className={`font-mono mt-0.5 tabular-nums font-bold ${
+                graph.cycle_closure_rmsd < 0.5 ? "text-emerald-700 dark:text-emerald-400"
+                : graph.cycle_closure_rmsd < 1.0 ? "text-amber-700 dark:text-amber-400"
+                : "text-rose-700 dark:text-rose-400"
+              }`}>
+                {graph.cycle_closure_rmsd.toFixed(2)} kcal/mol
+              </div>
+            </div>
+          )}
+        </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3 leading-snug">
+          Free-energy perturbation with Hamiltonian Replica Exchange (HREX). HMR 3 amu, 4 fs timestep, 298.15 K Langevin (1/ps friction), 1.0 nm PME cutoff.
+          Convergence thresholds: hysteresis ≤ 0.5 kcal/mol, MBAR 95% CI ≤ 0.4 kcal/mol.
+        </p>
+      </div>
+
       {/* Ranked analog table. */}
       <div className="card overflow-hidden">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-3">
@@ -733,6 +843,191 @@ export default function FepStudyPage() {
           </table>
         </div>
       </details>
+    </div>
+  );
+}
+
+
+/**
+ * (M17) PerturbationMap — visual node-edge diagram of the FEP study.
+ *
+ * Layout: hit at center, analogs distributed on a circle around it.
+ * Edges are drawn as SVG lines colored by status (gray pending,
+ * violet running, green converged, red failed). Each edge midpoint
+ * gets a small ΔΔG / LOMAP label.
+ *
+ * Built as HTML+SVG hybrid: HTML nodes carry MoleculePreview
+ * components (which use React Query for SMILES → SVG); the SVG
+ * overlay handles the edge lines + labels. Inset:0 + pointer-events
+ * none keeps the edges from blocking clicks on the nodes.
+ *
+ * Chemists call this the "FEP planning map" — it's the iconic
+ * visualization that Schrödinger's tool shows.
+ */
+function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
+  const hit = graph.nodes.find((n) => n.is_hit);
+  const analogs = graph.nodes.filter((n) => !n.is_hit);
+  if (!hit || analogs.length === 0) return null;
+
+  // Layout constants. 600x420 viewport is wide enough for ~6 analogs
+  // before they start crowding. Node tile is 130x110. Hit sits at the
+  // center; analogs distributed on a circle of radius R.
+  const W = 600;
+  const H = 420;
+  const cx = W / 2;
+  const cy = H / 2;
+  const R = analogs.length === 1 ? 110 : 140;
+  const NW = 130;
+  const NH = 110;
+
+  // Compute node positions. Hit at center; analogs equally spaced
+  // starting from the top (angle = -π/2).
+  const positions: Record<string, { x: number; y: number }> = {};
+  positions[`${hit.compound_id ?? "hit"}`] = { x: cx, y: cy };
+  analogs.forEach((n, i) => {
+    const theta = (-Math.PI / 2) + (2 * Math.PI * i) / analogs.length;
+    positions[`${n.compound_id ?? `analog${i}`}`] = {
+      x: cx + R * Math.cos(theta),
+      y: cy + R * Math.sin(theta),
+    };
+  });
+
+  // Edge color by status — same vocabulary as the table.
+  function edgeColor(status: string): string {
+    if (status === "ok") return "#10b981";       // emerald-500
+    if (status === "failed") return "#ef4444";   // red-500
+    if (status === "running") return "#8b5cf6";  // violet-500
+    return "#94a3b8";                            // slate-400 (pending/skipped)
+  }
+
+  return (
+    <div className="card">
+      <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-3">
+        Perturbation map ({graph.edges.length} edge{graph.edges.length === 1 ? "" : "s"})
+      </h2>
+      <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-snug">
+        Hit at centre, analogs on the ring. Each edge is one alchemical perturbation; colour shows status, label shows ΔΔG_binding or LOMAP score. Closed cycles let us cross-check internal consistency via cycle-closure RMSD.
+      </p>
+      <div
+        className="relative mx-auto"
+        style={{ width: W, maxWidth: "100%", aspectRatio: `${W} / ${H}` }}
+      >
+        {/* SVG layer: edge lines + labels. inset-0 + pointer-events
+            none so the lines visually overlay the nodes without
+            intercepting clicks. */}
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="absolute inset-0 w-full h-full"
+          style={{ pointerEvents: "none" }}
+        >
+          {graph.edges.map((e, i) => {
+            const from = positions[`${e.from_compound_id ?? ""}`];
+            const to = positions[`${e.to_compound_id ?? ""}`];
+            if (!from || !to) return null;
+            const color = edgeColor(e.status);
+            const mx = (from.x + to.x) / 2;
+            const my = (from.y + to.y) / 2;
+            const label =
+              e.ddg_binding_kcal_mol != null
+                ? `${e.ddg_binding_kcal_mol > 0 ? "+" : ""}${e.ddg_binding_kcal_mol.toFixed(2)}`
+                : e.lomap_score != null
+                ? `LOMAP ${e.lomap_score.toFixed(2)}`
+                : "—";
+            return (
+              <g key={i}>
+                <line
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  stroke={color}
+                  strokeWidth={e.status === "ok" ? 3 : 2}
+                  strokeDasharray={e.status === "pending" ? "6 4" : undefined}
+                />
+                <rect
+                  x={mx - 28}
+                  y={my - 9}
+                  width={56}
+                  height={18}
+                  rx={9}
+                  fill="rgba(15, 23, 42, 0.85)"
+                  stroke={color}
+                  strokeWidth={1}
+                />
+                <text
+                  x={mx}
+                  y={my + 4}
+                  textAnchor="middle"
+                  fontSize="11"
+                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                  fill="#e2e8f0"
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* HTML node layer. Absolutely positioned tiles with the
+            MoleculePreview inside each. Sits on top of the SVG so
+            structure thumbnails are clearly readable. */}
+        {graph.nodes.map((n, i) => {
+          const key = `${n.compound_id ?? (n.is_hit ? "hit" : `analog${i}`)}`;
+          const pos = positions[key];
+          if (!pos) return null;
+          const isHit = n.is_hit;
+          const conv = n.convergence_flag;
+          const ringClass = isHit
+            ? "ring-2 ring-violet-500"
+            : conv === "ok"
+            ? "ring-2 ring-emerald-500"
+            : conv === "high_uncertainty"
+            ? "ring-2 ring-amber-500"
+            : conv === "not_converged"
+            ? "ring-2 ring-rose-500"
+            : "ring-1 ring-slate-400 dark:ring-slate-600";
+          return (
+            <div
+              key={key}
+              className={`absolute rounded-lg bg-white dark:bg-slate-900 ${ringClass} p-1 shadow-md`}
+              style={{
+                width: NW,
+                height: NH,
+                left: pos.x - NW / 2,
+                top: pos.y - NH / 2,
+              }}
+              title={`${n.name || "(unnamed)"} — ${n.smiles}`}
+            >
+              <div className="flex items-center justify-center">
+                <MoleculePreview smiles={n.smiles} width={NW - 8} height={NH - 26} />
+              </div>
+              <div className="text-[10px] font-bold text-center mt-0.5 truncate px-1">
+                {n.name || (isHit ? "Hit" : `Analog ${i}`)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-3 h-3 rounded-full bg-violet-500 ring-2 ring-violet-300/40" /> Hit
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-3 h-0.5 bg-emerald-500" /> converged
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-3 h-0.5 bg-violet-500" /> running
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-3 h-0.5 bg-slate-400 dashed-line" style={{borderTop: "1px dashed currentColor", background: "transparent"}} /> pending
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-3 h-0.5 bg-rose-500" /> failed
+        </span>
+      </div>
     </div>
   );
 }
