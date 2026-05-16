@@ -792,34 +792,45 @@ def run_study(fep_job_id: int, session: Session) -> None:
     ).all())
 
     # ─── 2. Receptor PDB lookup. Use the same receptor_prep service
-    #    the docking runner uses — guarantees bit-identical receptor. ─
-    try:
-        from .receptor_prep import prepare_receptor_for_target
-        from ..config import get_settings
-        from pathlib import Path
-        s = get_settings()
-        rprep = prepare_receptor_for_target(
-            pdb_id=job.pdb_id,
-            chain=job.chain or "A",
-            mutation=None if job.variant == "WT" else job.variant,
-            # Use the SAME cache layout as quick_dock / optimize: a dedicated
-            # `cache/` subdirectory under pose_cache_dir. Earlier this used
-            # `<pose_cache_dir>/pdb` which collided with the runner.py job-
-            # output convention — that path already exists as a DIRECTORY
-            # on the prod Fly volume (`/var/lib/liganx/poses/pdb/2ITY.pdb/`
-            # is a directory, not a file), so the file write failed with
-            # IsADirectoryError. The `cache/` prefix keeps FEP isolated.
-            pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
-            receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
-        )
-        receptor_pdb_text = rprep.receptor_pdb.read_text()
-    except Exception as e:                                           # noqa: BLE001
-        log.exception("receptor prep failed for FepJob %s", job.id)
-        job.status = FepJobStatus.FAILED
-        job.error_message = f"Receptor prep failed: {type(e).__name__}: {e}"
-        session.add(job)
-        session.commit()
-        return
+    #    the docking runner uses — guarantees bit-identical receptor.
+    #
+    # (N2) In FEP_MOCK_MODE the mock dispatch_edge synthesises ΔΔG
+    # from the SMILES pair without ever reading the receptor, so the
+    # expensive receptor_prep call is dead weight — and worse, on a
+    # CI runner where /var/lib/liganx is unwriteable it raises
+    # PermissionError and tanks the M21 smoke test. Short-circuit
+    # with a placeholder PDB string when mocking; the value is
+    # never inspected. ─────────────────────────────────────────────
+    if is_fep_mock_mode():
+        receptor_pdb_text = "REMARK MOCK_MODE — no receptor needed\n"
+    else:
+        try:
+            from .receptor_prep import prepare_receptor_for_target
+            from ..config import get_settings
+            from pathlib import Path
+            s = get_settings()
+            rprep = prepare_receptor_for_target(
+                pdb_id=job.pdb_id,
+                chain=job.chain or "A",
+                mutation=None if job.variant == "WT" else job.variant,
+                # Use the SAME cache layout as quick_dock / optimize: a dedicated
+                # `cache/` subdirectory under pose_cache_dir. Earlier this used
+                # `<pose_cache_dir>/pdb` which collided with the runner.py job-
+                # output convention — that path already exists as a DIRECTORY
+                # on the prod Fly volume (`/var/lib/liganx/poses/pdb/2ITY.pdb/`
+                # is a directory, not a file), so the file write failed with
+                # IsADirectoryError. The `cache/` prefix keeps FEP isolated.
+                pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
+                receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
+            )
+            receptor_pdb_text = rprep.receptor_pdb.read_text()
+        except Exception as e:                                       # noqa: BLE001
+            log.exception("receptor prep failed for FepJob %s", job.id)
+            job.status = FepJobStatus.FAILED
+            job.error_message = f"Receptor prep failed: {type(e).__name__}: {e}"
+            session.add(job)
+            session.commit()
+            return
 
     # SMILES → SDF helper — converts a SMILES + 3D embed via RDKit
     # so the pod gets bond-order-correct ligand input. Same approach
