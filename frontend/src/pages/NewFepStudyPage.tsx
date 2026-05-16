@@ -160,36 +160,63 @@ export default function NewFepStudyPage() {
     },
   ]);
 
-  // (UX) Auto-fill SMILES when the user picks (or types) an exact
-  // compound name match. Watches all known compound suggestions for
-  // the current target + saved library; when a name field's value
-  // matches case-insensitively, the SMILES is auto-populated.
-  // Mirrors how Studio behaves — picking "Osimertinib" from the
-  // dropdown drops in its SMILES without a second action.
+  // (UX) Bidirectional auto-fill between name and SMILES.
+  //   * name → SMILES: typing/picking "Osimertinib" fills in its SMILES
+  //   * SMILES → name: pasting Osimertinib's SMILES fills in the name
+  // Both directions only fire when the OTHER field is empty — never
+  // clobbers a hand-edited value. Watches the catalog reference
+  // compounds for the current target + the user's saved library;
+  // matches are exact (case-insensitive for names, whitespace-trimmed
+  // for SMILES). Same family of compounds gets fast canonical-match
+  // because we keep both directions in sync.
+  //
+  // (Limitation) SMILES → name match is STRING-equal, not RDKit-
+  // canonical. So pasting an alternate-canonical SMILES of the same
+  // molecule won't match. For v1 we accept this — same-platform
+  // copy-paste round-trips cleanly because the SMILES we hand out
+  // is already canonical. A future enhancement could call
+  // /assist/dockability to canonicalize via RDKit before lookup.
   useEffect(() => {
     const all = suggestCompounds("", currentTarget, savedCompounds);
-    const byName = new Map<string, string>();
-    for (const c of all) byName.set(c.name.toLowerCase(), c.smiles);
-    // Hit name — only auto-fill if SMILES is empty OR the name was
-    // just changed to a different known compound. (Avoid clobbering
-    // a hand-edited SMILES while the user is still typing the name.)
-    const hitMatch = byName.get(hitName.trim().toLowerCase());
-    if (hitMatch && !hitSmiles.trim()) {
-      setHitSmiles(hitMatch);
+    const byName = new Map<string, string>();   // name (lc) → smiles
+    const bySmiles = new Map<string, string>(); // smiles (trim) → name
+    for (const c of all) {
+      byName.set(c.name.toLowerCase(), c.smiles);
+      bySmiles.set(c.smiles.trim(), c.name);
     }
-    // Same for each analog.
+    // Hit row — name → SMILES, then SMILES → name.
+    const hitNameMatch = byName.get(hitName.trim().toLowerCase());
+    if (hitNameMatch && !hitSmiles.trim()) {
+      setHitSmiles(hitNameMatch);
+    }
+    const hitSmilesMatch = bySmiles.get(hitSmiles.trim());
+    if (hitSmilesMatch && !hitName.trim()) {
+      setHitName(hitSmilesMatch);
+    }
+    // Each analog row — same bidirectional fill.
     let changed = false;
     const next = analogs.map((a) => {
-      const m = byName.get(a.name.trim().toLowerCase());
-      if (m && !a.smiles.trim()) {
+      const nameMatch = byName.get(a.name.trim().toLowerCase());
+      if (nameMatch && !a.smiles.trim()) {
         changed = true;
-        return { ...a, smiles: m };
+        return { ...a, smiles: nameMatch };
+      }
+      const smilesMatch = bySmiles.get(a.smiles.trim());
+      if (smilesMatch && !a.name.trim()) {
+        changed = true;
+        return { ...a, name: smilesMatch };
       }
       return a;
     });
     if (changed) setAnalogs(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hitName, analogs.map((a) => a.name).join("|"), currentTarget, savedCompounds]);
+  }, [
+    hitName,
+    hitSmiles,
+    analogs.map((a) => `${a.name}|${a.smiles}`).join("¬"),
+    currentTarget,
+    savedCompounds,
+  ]);
 
   // Protocol knobs — sane defaults, hidden behind an expander.
   const [nLambdaWindows, setNLambdaWindows] = useState<number>(12);
