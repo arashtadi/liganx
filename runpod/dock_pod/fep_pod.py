@@ -118,6 +118,20 @@ from typing import Callable, Optional
 
 log = logging.getLogger("fep_pod")
 
+# (J17) Force openmm to use the OpenCL platform instead of CUDA.
+# The conda env's openmm 8.4.0.dev build was compiled against a
+# CUDA PTX version newer than the pod's 570.195.03 driver / CUDA
+# 12.8 toolkit supports — Context() creation on the CUDA platform
+# throws CUDA_ERROR_UNSUPPORTED_PTX_VERSION (222). OpenCL on the
+# same RTX 4090 works (verified ~50% the speed of native CUDA but
+# functional). Set the env var BEFORE openmm is imported so it
+# picks up as the default. Operator override: set
+# OPENMM_DEFAULT_PLATFORM to anything else in the pod env to opt
+# out (e.g. once a proper CUDA-matched openmm build is installed,
+# clear this default).
+if "OPENMM_DEFAULT_PLATFORM" not in os.environ:
+    os.environ["OPENMM_DEFAULT_PLATFORM"] = "OpenCL"
+
 # (J12) Stage callback type. The async wrapper in fep_server's
 # /fep_edge_start endpoint passes a function that writes the stage
 # label to a JSON status file the backend then polls. Stages we emit:
