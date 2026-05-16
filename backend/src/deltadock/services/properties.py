@@ -12,6 +12,7 @@ We deliberately surface PAINS hits without auto-blocking — they're
 """
 from __future__ import annotations
 
+import re
 from typing import Optional, TypedDict
 
 from rdkit import Chem
@@ -334,3 +335,285 @@ def check_dockability(smiles: str) -> DockabilityResult:
             warnings=warnings,
         )
     return DockabilityResult(dockable=True, canonical_smiles=canonical)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Class-fit / druggability pre-flight (T4)
+# ──────────────────────────────────────────────────────────────────────
+#
+# A higher-level chemistry check that asks: "Is this the right KIND of
+# molecule for this target?" — what a PhD chemist's eye catches in 30
+# seconds and the dockability check (atom allowlist + size bounds) does
+# NOT. The headline failure mode: a saturated steroid like Cenestil
+# docked against KRAS G13D, returning a noise-floor score that looked
+# like a real result on the matrix.
+#
+# Non-blocking by design — every warning is an "are you sure?" prompt,
+# not a hard reject. The user can override; the goal is to make sure
+# the warning is VISIBLE before they spend GPU time. Empty list =
+# nothing to flag.
+
+
+class FitWarning(TypedDict):
+    """One pre-flight class-fit warning. `level` drives UI severity:
+      • "info"   — informational, e.g. "target is recently cracked"
+      • "warn"   — moderate concern, user should check the science
+      • "high"   — strong red flag, user should reconsider
+    `kind` is a stable machine key the UI can render an icon for."""
+    kind: str
+    level: str          # "info" | "warn" | "high"
+    message: str
+
+
+# A reasonable lower bound for a drug-like compound. Fragment-based
+# drug discovery uses fragments down to MW~150, but docking against a
+# full-size protein pocket with a fragment produces a score that's not
+# comparable to drug-like compounds and not predictive of binding.
+_FRAGMENT_MW_THRESHOLD = 200.0
+_FRAGMENT_HEAVY_THRESHOLD = 12
+
+def _is_likely_steroid(mol) -> bool:
+    """Best-effort steroid-backbone detection.
+
+    Steroids share a gonane scaffold — three six-membered rings + one
+    five-membered ring, all carbon, all fused. Aromaticity in ring A
+    (oestrogens) and partial unsaturation are common.
+
+    Two-layer check:
+      1. SMARTS substructure match for the gonane core (catches cleanly
+         drawn steroids).
+      2. Ring-info heuristic for the fused 6-6-6-5 carbon system
+         (catches cases where the SMARTS misses due to drawn-form
+         variation — different bond perceptions, etc.).
+
+    Either match → True. Returns False on any RDKit error (defensive —
+    the check is non-blocking)."""
+    try:
+        # Layer 1 — explicit SMARTS for the canonical gonane core.
+        # Permissive: bond order and aromaticity are not constrained,
+        # so an aromatic A-ring still matches.
+        patt = Chem.MolFromSmarts(
+            "[#6]1~[#6]~[#6]~[#6]2~[#6]~[#6]~[#6]3~[#6]~[#6]~[#6]4~[#6]~[#6]~[#6]~[#6]4~[#6]~3~[#6]~2~1"
+        )
+        if patt is not None and mol.HasSubstructMatch(patt):
+            return True
+
+        # Layer 2 — ring-info heuristic. A steroid has 4+ rings; among
+        # them there must be exactly one 5-membered carbon ring and at
+        # least three 6-membered carbon rings, and at least 3 atoms
+        # must be shared between rings (i.e. fused, not spiro/separate).
+        ring_info = mol.GetRingInfo()
+        atom_rings = ring_info.AtomRings()
+        if len(atom_rings) < 4:
+            return False
+        # Carbon-only ring filter — keeps the heuristic specific to
+        # saturated steroid scaffolds and avoids matching heterocyclic
+        # 4-ring drugs.
+        carbon_rings = [
+            r for r in atom_rings
+            if all(mol.GetAtomWithIdx(i).GetSymbol() == "C" for i in r)
+        ]
+        if len(carbon_rings) < 4:
+            return False
+        n5 = sum(1 for r in carbon_rings if len(r) == 5)
+        n6 = sum(1 for r in carbon_rings if len(r) == 6)
+        if n5 < 1 or n6 < 3:
+            return False
+        # Fused: at least 3 atoms shared across the candidate ring set.
+        # A spiro arrangement shares only 1 atom; a strained 6-6 fusion
+        # shares 2. The 4-ring fused steroid backbone shares ≥6.
+        all_atoms_in_rings: dict[int, int] = {}
+        for r in carbon_rings:
+            for i in r:
+                all_atoms_in_rings[i] = all_atoms_in_rings.get(i, 0) + 1
+        shared = sum(1 for v in all_atoms_in_rings.values() if v >= 2)
+        return shared >= 6
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+# Explicit allowlist of catalog target IDs that are protein kinases.
+# Using an ID set (not substring matching on the description) avoids
+# the bug where 'abl' inside 'undruggable' falsely classified KRAS as
+# a kinase. KRAS is a GTPase; IDH1 is a dehydrogenase; the rest are
+# kinases.
+_KINASE_TARGET_IDS: frozenset[str] = frozenset({
+    "egfr", "braf", "abl", "her2", "alk", "ros1", "met",
+    "flt3", "btk", "pi3ka", "kit",
+})
+
+
+def _is_kinase_target(target_id: str, target_name: str) -> bool:
+    """Heuristic: is the catalog target a protein kinase?
+
+    Two layers — catalog ID allowlist (the authoritative source) plus
+    a word-boundary 'kinase' search in the target name for off-catalog
+    targets (e.g. user-resolved PDB IDs that don't match the catalog
+    by slug). Used to gate the 'kinase needs aromatic' warning."""
+    tid = (target_id or "").strip().lower()
+    if tid in _KINASE_TARGET_IDS:
+        return True
+    # Word-boundary match on "kinase" — avoids "kinase" inside random
+    # text but catches off-catalog targets whose name says it.
+    return bool(re.search(r"\bkinase\b", target_name or "", re.IGNORECASE))
+
+
+def check_target_fit(
+    smiles: str,
+    *,
+    target_id: Optional[str] = None,
+) -> dict:
+    """Pre-flight class-fit check: returns non-blocking warnings about
+    whether `smiles` is the right kind of molecule for `target_id`.
+
+    This is the layer ABOVE dockability — dockability asks "can Vina
+    parameterise this at all?", class-fit asks "does this look like a
+    drug for THIS target?". Non-blocking; the user can submit anyway.
+    Empty `warnings` list means nothing to flag.
+
+    Returns: {warnings: [FitWarning, ...]}.
+
+    Designed to catch the job #307 failure mode: a steroid (Cenestil)
+    docked against KRAS G13D, where a real chemist would catch the
+    drug-class mismatch in 30 seconds.
+    """
+    out_warnings: list[FitWarning] = []
+
+    smi = (smiles or "").strip()
+    if not smi:
+        return {"warnings": out_warnings}                        # nothing to evaluate
+
+    mol = Chem.MolFromSmiles(smi)
+    if mol is None:
+        return {"warnings": out_warnings}                        # dockability check handles this
+
+    # Resolve the target (deferred import — avoids a catalog->services
+    # circular import at module load).
+    target = None
+    if target_id:
+        try:
+            from ..catalog import get_target
+            target = get_target(target_id)
+        except Exception:                                        # noqa: BLE001
+            target = None
+
+    # ── Compound-only checks (don't need a target) ──────────────────
+
+    # (1) Fragment-sized compound. Most drugs are MW 250-500; below 200
+    # the docking score isn't comparable to a drug-like compound and
+    # isn't predictive of binding. This is the layer that catches
+    # "small enough to slip through dockability's heavy-atom floor".
+    try:
+        mw = Descriptors.MolWt(mol)
+    except Exception:                                            # noqa: BLE001
+        mw = 0.0
+    heavy = mol.GetNumHeavyAtoms()
+    if mw < _FRAGMENT_MW_THRESHOLD or heavy < _FRAGMENT_HEAVY_THRESHOLD:
+        out_warnings.append(FitWarning(
+            kind="fragment_sized",
+            level="warn",
+            message=(
+                f"Fragment-sized compound (MW {mw:.0f} g/mol, {heavy} heavy "
+                f"atoms). Most approved drugs are MW 250-500. Docking scores "
+                f"for fragments are not comparable to drug-like compounds and "
+                f"are not predictive of binding."
+            ),
+        ))
+
+    # (2) No H-bond donors or acceptors at all. A purely hydrocarbon
+    # ligand can't form any specific contacts; the pose is by definition
+    # hydrophobic-only and any Vina score reflects van-der-Waals bulk,
+    # not specific binding.
+    try:
+        hba = Lipinski.NumHAcceptors(mol)
+        hbd = Lipinski.NumHDonors(mol)
+    except Exception:                                            # noqa: BLE001
+        hba = hbd = 0
+    if hba == 0 and hbd == 0 and heavy >= 6:
+        out_warnings.append(FitWarning(
+            kind="no_hbond_groups",
+            level="warn",
+            message=(
+                "No H-bond donors or acceptors — purely hydrocarbon. Drug-target "
+                "binding usually depends on a specific H-bond network; without "
+                "any H-bond groups the docking score reflects bulk hydrophobic "
+                "fit, not specific binding."
+            ),
+        ))
+
+    # ── Compound × target class-fit checks ─────────────────────────
+
+    if target is not None:
+        # (3) Steroid being docked against a non-steroid target. The
+        # catalog has no steroid receptors yet, so any steroid hit is
+        # by definition a class mismatch.
+        if _is_likely_steroid(mol):
+            out_warnings.append(FitWarning(
+                kind="steroid_class_mismatch",
+                level="high",
+                message=(
+                    f"This compound has a steroid backbone (4-ring "
+                    f"6-6-6-5 fused saturated ring system). {target.name} is "
+                    f"not a steroid receptor — known binders for this target "
+                    f"are aromatic, drug-like, often heterocyclic. A docking "
+                    f"score here will reflect a generic hydrophobic-fit, not "
+                    f"a real binding event."
+                ),
+            ))
+
+        # (4) Kinase target + zero aromatic rings. ~99% of approved
+        # kinase inhibitors have at least one aromatic heterocycle that
+        # forms the canonical hinge H-bond. A non-aromatic ligand
+        # docked against a kinase is overwhelmingly likely to surface-
+        # bind, not engage the ATP pocket.
+        n_aromatic_rings = sum(
+            1 for ring in mol.GetRingInfo().AtomRings()
+            if all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring)
+        )
+        if (
+            _is_kinase_target(target.id, target.name)
+            and n_aromatic_rings == 0
+        ):
+            out_warnings.append(FitWarning(
+                kind="kinase_needs_aromatic",
+                level="high",
+                message=(
+                    f"{target.name} is a protein kinase, but this compound "
+                    f"has no aromatic rings. ~99% of approved kinase inhibitors "
+                    f"have at least one aromatic heterocycle that forms the "
+                    f"canonical hinge H-bond. Without one, the pose is "
+                    f"overwhelmingly likely to surface-bind, not engage the "
+                    f"ATP pocket."
+                ),
+            ))
+
+        # (5) Target druggability tier. Experimental = no approved
+        # binder; recent = one chemical class succeeded. Surface this so
+        # the user knows the score interpretation is constrained.
+        if target.druggability == "experimental":
+            note = (target.druggability_note
+                    or "No approved direct binder exists for this target.")
+            out_warnings.append(FitWarning(
+                kind="target_experimental",
+                level="warn",
+                message=(
+                    f"{target.name} is in the experimental druggability tier — "
+                    f"{note} A strong-looking docking score does NOT translate "
+                    f"to predicted activity. Use the result as exploratory "
+                    f"only; the chemist agent will flag this in the per-pose "
+                    f"review too."
+                ),
+            ))
+        elif target.druggability == "recent":
+            note = (target.druggability_note
+                    or "Recently cracked; only specific chemical classes succeed.")
+            out_warnings.append(FitWarning(
+                kind="target_recent",
+                level="info",
+                message=(
+                    f"{target.name} is in the 'recently cracked' druggability "
+                    f"tier — {note}"
+                ),
+            ))
+
+    return {"warnings": out_warnings}

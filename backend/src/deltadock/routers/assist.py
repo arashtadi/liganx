@@ -47,7 +47,7 @@ from ..db import engine as db_engine
 from ..models import OptimizeAttempt
 from ..services.ai_assistant import call_anthropic
 from ..services.optimize_loop import generate_score_filter_optimize
-from ..services.properties import check_dockability, compute_properties
+from ..services.properties import check_dockability, check_target_fit, compute_properties
 from ..services.quick_dock import quick_dock
 from ..services.rate_limit import RateLimit, rate_limit
 
@@ -70,6 +70,12 @@ _QUICK_DOCK_LIMIT = rate_limit("assist_quick_dock", RateLimit(max_requests=20, w
 class PropertiesRequest(BaseModel):
     """Single SMILES → property panel."""
     smiles: str = Field(..., min_length=1, max_length=2000)
+
+
+class TargetFitRequest(BaseModel):
+    """SMILES + target_id → class-fit pre-flight warnings."""
+    smiles: str = Field(..., min_length=1, max_length=2000)
+    target_id: Optional[str] = Field(default=None, max_length=120)
 
 
 class AssistRequest(BaseModel):
@@ -124,6 +130,24 @@ def dockability_endpoint(
     and confuse the user. Same rate-limit bucket as /properties since
     the cost profile is similar (RDKit-only, instant)."""
     return dict(check_dockability(payload.smiles))
+
+
+@router.post("/target-fit", dependencies=[Depends(_PROP_LIMIT)])
+def target_fit_endpoint(
+    payload: TargetFitRequest,
+    user: Annotated[CurrentUser, Depends(current_user)],
+) -> dict:
+    """(T4) Pre-flight class-fit / druggability warnings.
+
+    Higher-level than /dockability — asks 'is this the right KIND of
+    molecule for this target?', not just 'can Vina parameterise it?'.
+    Returns {warnings: [...]} where each warning has {kind, level,
+    message}. Non-blocking — the UI surfaces these as 'are you sure?'
+    prompts before submission, but the user can still proceed.
+
+    Cheap (RDKit-only, ~milliseconds) so it runs interactively as the
+    user picks a target / sketches a compound."""
+    return dict(check_target_fit(payload.smiles, target_id=payload.target_id))
 
 
 @router.post("/compound", dependencies=[Depends(_AI_LIMIT)])

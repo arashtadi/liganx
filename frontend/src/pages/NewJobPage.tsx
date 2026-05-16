@@ -756,6 +756,46 @@ export default function NewJobPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
+  // (T4) Pre-flight class-fit warnings — runs once compounds + targets
+  // settle, surfaces non-blocking 'are-you-sure?' prompts above the
+  // submit bar. Designed to catch the job #307 failure mode (a steroid
+  // docked against KRAS) BEFORE the user spends GPU time.
+  //
+  // To keep the API-call count predictable, we run only the first
+  // valid compound × the first target. Catalog-aware checks
+  // (steroid_class_mismatch, kinase_needs_aromatic, target_experimental,
+  // target_recent) all fire on this combo for the headline case.
+  // Compound-only checks (fragment_sized, no_hbond_groups) are
+  // independent of target.
+  const [preflightWarnings, setPreflightWarnings] = useState<
+    { kind: string; level: "info" | "warn" | "high"; message: string }[]
+  >([]);
+  useEffect(() => {
+    const firstCompound = compounds.find((c) => c.smiles.trim())?.smiles.trim();
+    const firstTargetId = customMode
+      ? (pdbId.trim() || null)
+      : (targets[0]?.id ?? null);
+    if (!firstCompound) {
+      setPreflightWarnings([]);
+      return;
+    }
+    // Debounce 400ms so a user dragging the SMILES field doesn't spam
+    // /assist/target-fit.
+    const t = setTimeout(() => {
+      api.assistTargetFit(firstCompound, firstTargetId).then(
+        (res) => setPreflightWarnings(res.warnings || []),
+        () => {/* swallow — pre-flight is best-effort */},
+      );
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    compounds.map((c) => c.smiles).join("|"),
+    customMode,
+    pdbId,
+    targets.map((t) => t.id).join("|"),
+  ]);
+
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const cleaned = compounds.filter((c) => c.smiles.trim());
@@ -2110,6 +2150,47 @@ export default function NewJobPage() {
           </div>
         </div>
       </Step>
+
+      {/* (T4) Pre-flight class-fit warnings. Non-blocking — the user can
+          still hit Submit, but they see the chemistry red flags first.
+          Highest-severity warnings render with an amber-700 background;
+          'warn' and 'info' get progressively softer. The panel collapses
+          when there are no warnings (clean compound × target combo). */}
+      {preflightWarnings.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50/70 dark:border-amber-700/50 dark:bg-amber-900/20 p-4">
+          <div className="flex items-start gap-3">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="flex-shrink-0 mt-0.5 text-amber-700 dark:text-amber-300">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-amber-900 dark:text-amber-200 mb-1">
+                Pre-flight chemistry checks
+              </div>
+              <div className="text-xs text-amber-800/80 dark:text-amber-300/80 mb-2">
+                These are non-blocking — you can still submit. They flag the kind of class mismatch a PhD chemist's eye would catch in 30 seconds.
+              </div>
+              <ul className="space-y-1.5">
+                {preflightWarnings.map((w, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide flex-shrink-0 mt-0.5 ${
+                      w.level === "high"
+                        ? "bg-rose-200 text-rose-900 dark:bg-rose-800/40 dark:text-rose-200"
+                        : w.level === "warn"
+                        ? "bg-amber-200 text-amber-900 dark:bg-amber-800/40 dark:text-amber-200"
+                        : "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                    }`}>
+                      {w.level}
+                    </span>
+                    <span className="text-amber-900 dark:text-amber-100">{w.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Submit bar ─────────────────────────────────────────────────── */}
       {submit.isError && (

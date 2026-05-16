@@ -1037,6 +1037,20 @@ export const api = {
       suggestion?: string;
       canonical_smiles?: string;
     }>("/assist/dockability", { method: "POST", body: JSON.stringify({ smiles }) }),
+  /** (T4) Pre-flight class-fit check. Higher level than dockability —
+   *  asks 'is this compound the right KIND of molecule for this
+   *  target?'. Non-blocking: returns a list of warnings (level=info/
+   *  warn/high) the UI surfaces as 'are you sure?' prompts. Designed
+   *  to catch a steroid being docked against KRAS, a fragment against
+   *  a kinase, etc. — the medicinal-chemistry red flags Vina itself
+   *  can't see. */
+  assistTargetFit: (smiles: string, targetId?: string | null) =>
+    request<{
+      warnings: { kind: string; level: "info" | "warn" | "high"; message: string }[];
+    }>("/assist/target-fit", {
+      method: "POST",
+      body: JSON.stringify({ smiles, target_id: targetId ?? null }),
+    }),
   /** Quick dock — runs a fast (exhaustiveness=4) Vina dock against the
    *  user's selected target+mutation, ~5-15s on the GPU pod. Returns
    *  best score + residue contacts (hits + nearby misses). Powers the
