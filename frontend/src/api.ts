@@ -852,6 +852,20 @@ export const api = {
    *  against a hit + ≤10 analogs. Gated per-user; the /estimate
    *  endpoint surfaces the cost and access state so the UI can
    *  render the right CTA. */
+  // Pre-flight SMILES validation — used by NewFepStudyPage to grey
+  // out the Run button when any hit/analog SMILES wouldn't survive
+  // the pod's RDKit parse + 3D-embed step. Backend uses the exact
+  // same RDKit checks fep_pod's _smiles_to_sdf will run, so a pass
+  // here = a dispatch that won't fail at the SMILES → SDF stage.
+  fepValidateSmiles: (payload: {
+    items: { key: string; smiles: string }[];
+  }) =>
+    request<{
+      results: { key: string; ok: boolean; error: string | null }[];
+    }>("/fep/studies/validate-smiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   fepEstimate: (payload: {
     pdb_id: string;
     chain?: string;

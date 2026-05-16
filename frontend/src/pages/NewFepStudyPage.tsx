@@ -298,6 +298,23 @@ export default function NewFepStudyPage() {
   } | null>(null);
   const [estimateInflight, setEstimateInflight] = useState<boolean>(false);
 
+  // Per-row SMILES validation. Keys: "hit" for the hit row, "analog_N"
+  // for each analog row (0-indexed). null = haven't validated yet,
+  // {ok:true} = green, {ok:false, error} = red. The Run button is
+  // disabled when any non-empty SMILES row is currently {ok:false} or
+  // when the validation request is in flight after a recent edit.
+  //
+  // Why server-side: RDKit-WASM is a heavy bundle and the backend
+  // already has RDKit installed. A 50ms round-trip is fine for a
+  // form-blur check, and the backend can use the exact same parse +
+  // 3D-embed checks that the pod's _smiles_to_sdf does — so a green
+  // tick here is a high-confidence proxy for "this dispatch will
+  // actually work".
+  const [smilesValid, setSmilesValid] = useState<
+    Record<string, { ok: boolean; error: string | null } | null>
+  >({});
+  const [smilesValidating, setSmilesValidating] = useState<boolean>(false);
+
   useEffect(() => {
     if (!target || !hitSmiles.trim() || validAnalogs.length === 0) {
       setEstimate(null);
@@ -333,6 +350,47 @@ export default function NewFepStudyPage() {
     nsPerWindow,
     networkTopology,
   ]);
+
+  // Debounced SMILES validation. Fires whenever hitSmiles or any
+  // analog SMILES changes, with a 400ms quiet period so we don't
+  // hammer the backend on every keystroke. Batches every non-empty
+  // SMILES into one round-trip.
+  useEffect(() => {
+    const items: { key: string; smiles: string }[] = [];
+    if (hitSmiles.trim()) {
+      items.push({ key: "hit", smiles: hitSmiles });
+    }
+    analogs.forEach((a, i) => {
+      if (a.smiles.trim()) {
+        items.push({ key: `analog_${i}`, smiles: a.smiles });
+      }
+    });
+    if (items.length === 0) {
+      setSmilesValid({});
+      setSmilesValidating(false);
+      return;
+    }
+    setSmilesValidating(true);
+    const t = setTimeout(() => {
+      api.fepValidateSmiles({ items })
+        .then((res) => {
+          const next: Record<string, { ok: boolean; error: string | null }> = {};
+          res.results.forEach((r) => {
+            next[r.key] = { ok: r.ok, error: r.error };
+          });
+          setSmilesValid(next);
+        })
+        .catch(() => {
+          // Fall open on transient error — don't grey out the form if
+          // /validate-smiles has a hiccup. Backend revalidates on
+          // POST /studies anyway.
+          setSmilesValid({});
+        })
+        .finally(() => setSmilesValidating(false));
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hitSmiles, analogs.map((a) => a.smiles).join("|")]);
 
   function addAnalog() {
     if (analogs.length >= 10) return;
@@ -382,11 +440,24 @@ export default function NewFepStudyPage() {
 
   const granted = estimate?.fep_access_granted ?? false;
   const costOver50 = estimate ? estimate.usd_cost_estimated > 50 : false;
+
+  // (J11) Block submit if any non-empty SMILES row has been validated
+  // as bad. Empty rows are fine — they're filtered out via
+  // validAnalogs. If validation hasn't run yet OR is in flight, also
+  // hold the button — better to wait 400ms than to ship a doomed
+  // study. The check covers the hit + every analog with non-empty
+  // SMILES; nothing else can have a "key" in smilesValid.
+  const allSmilesValid = !smilesValidating
+    && Object.values(smilesValid).every((v) => v?.ok !== false);
+  const hitSmilesOk = !hitSmiles.trim() || smilesValid.hit?.ok !== false;
+
   const canSubmit =
     granted &&
     hitSmiles.trim().length > 0 &&
     validAnalogs.length > 0 &&
     (!costOver50 || costConfirmed) &&
+    allSmilesValid &&
+    hitSmilesOk &&
     !submitting;
 
   return (
@@ -510,8 +581,17 @@ export default function NewFepStudyPage() {
             value={hitSmiles}
             onChange={(e) => setHitSmiles(e.target.value)}
             rows={2}
-            className="input mt-1 w-full font-mono text-xs"
+            className={`input mt-1 w-full font-mono text-xs ${
+              smilesValid.hit?.ok === false
+                ? "border-rose-500 ring-1 ring-rose-500/40 dark:border-rose-400"
+                : ""
+            }`}
           />
+          {smilesValid.hit?.ok === false && (
+            <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-300">
+              {smilesValid.hit.error || "Invalid SMILES — RDKit can't parse this molecule."}
+            </p>
+          )}
         </label>
       </section>
 
@@ -563,13 +643,24 @@ export default function NewFepStudyPage() {
                   minChars={0}
                 />
               </div>
-              <input
-                type="text"
-                value={a.smiles}
-                onChange={(e) => setAnalog(i, { smiles: e.target.value })}
-                placeholder="SMILES"
-                className="input flex-1 font-mono text-xs"
-              />
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={a.smiles}
+                  onChange={(e) => setAnalog(i, { smiles: e.target.value })}
+                  placeholder="SMILES"
+                  className={`input w-full font-mono text-xs ${
+                    smilesValid[`analog_${i}`]?.ok === false
+                      ? "border-rose-500 ring-1 ring-rose-500/40 dark:border-rose-400"
+                      : ""
+                  }`}
+                />
+                {smilesValid[`analog_${i}`]?.ok === false && (
+                  <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-300">
+                    {smilesValid[`analog_${i}`]?.error || "Invalid SMILES"}
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => removeAnalog(i)}
@@ -693,6 +784,19 @@ export default function NewFepStudyPage() {
           </div>
         )}
         <div className="flex items-center gap-3 ml-auto">
+          {/* J11: explain why the Run button is greyed out when the
+              cause is bad SMILES (vs other reasons handled elsewhere). */}
+          {granted && hitSmiles.trim() && validAnalogs.length > 0
+            && !smilesValidating && !allSmilesValid && (
+            <div className="text-xs text-rose-700 dark:text-rose-400">
+              Fix the highlighted SMILES before running.
+            </div>
+          )}
+          {smilesValidating && hitSmiles.trim() && (
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Checking SMILES…
+            </div>
+          )}
           {submitErr && (
             <div className="text-xs text-rose-700 dark:text-rose-400">{submitErr}</div>
           )}
