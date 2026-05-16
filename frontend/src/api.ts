@@ -1051,6 +1051,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ smiles, target_id: targetId ?? null }),
     }),
+  /** (F1/F2 — Phase A) Rescore a docked pose with MM-GBSA. Opt-in
+   *  second-pass via OpenMM + Amber14SB + OpenFF Sage 2.2 + OBC2
+   *  implicit solvent (~30-90 s per pose on the pod). Returns the
+   *  ΔG_bind plus the E_complex / E_protein / E_ligand decomposition
+   *  in kcal/mol. The backend persists the result into the cell's
+   *  DockingResult.extra so the matrix can re-fetch it later.
+   *
+   *  Error codes the UI should handle:
+   *    503 — pod missing openff-toolkit (operator needs to pip install)
+   *    422 — compound parameterisation failed (chemistry-specific)
+   *    502 — pod transport / timeout
+   *    400 — no docked pose to rescore (failed dock placeholder row) */
+  rescoreMmgbsa: (jobKey: string, compoundId: number, variant: string) =>
+    request<{
+      job_id: number;
+      share_id: string;
+      compound_id: number;
+      variant: string;
+      vina_score: number;
+      mmgbsa: {
+        dg_bind_kcal_mol: number;
+        e_complex_kcal_mol: number;
+        e_protein_kcal_mol: number;
+        e_ligand_kcal_mol: number;
+        method: string;
+        wall_seconds: number;
+        receptor_rmsd_a: number;
+      };
+    }>(`/jobs/${encodeURIComponent(jobKey)}/results/${compoundId}/${encodeURIComponent(variant)}/mmgbsa`, {
+      method: "POST",
+    }),
   /** Quick dock — runs a fast (exhaustiveness=4) Vina dock against the
    *  user's selected target+mutation, ~5-15s on the GPU pod. Returns
    *  best score + residue contacts (hits + nearby misses). Powers the

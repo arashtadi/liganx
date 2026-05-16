@@ -771,3 +771,68 @@ def relax_ensemble_endpoint(req: RelaxEnsembleRequest):
             "n": 1,
             "conformers": [req.receptor_pdb],
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Feature: MM-GBSA rescoring (Phase A of the FEP+ programme)
+#
+# Single-snapshot one-trajectory MM-GBSA on a docked complex — implicit-
+# solvent (OBC2) Amber14SB + OpenFF Sage 2.2 energy decomposition.
+# ΔG_bind = E_complex − E_protein − E_ligand on the minimised geometry.
+# Optional second-pass rescoring layer above Vina; not auto-triggered.
+#
+# See runpod/dock_pod/mmgbsa_pod.py for the protocol, force-field
+# choices, and the "what this is NOT" caveats.
+#
+# Deploy: same as the ensemble route — append to /workspace/dock_server.py
+# on the pod, restart uvicorn. Requires openff-toolkit +
+# openmmforcefields installed on the pod:
+#
+#     pip install --no-cache-dir 'openff-toolkit==0.16.*' \
+#         'openmmforcefields==0.14.*' 'openff-interchange==0.4.*'
+#
+# If those are missing the route returns ok=False with a clear error
+# message; the backend surfaces this as a 503 to the caller, so we can
+# ship the route BEFORE the pod has the deps and turn it on by pip-
+# installing in place.
+# ═══════════════════════════════════════════════════════════════════════
+import mmgbsa_pod as _mmgbsa_pod  # noqa: E402
+
+
+class MmgbsaRescoreRequest(_EnsBaseModel):
+    """Request body for /mmgbsa/rescore.
+
+    Inputs are TEXT (PDB and SDF) so the HTTP boundary is human-readable
+    and the pod doesn't have to know about base64 here (unlike the
+    docking endpoints, which take PDBQT-base64 because Vina-toolchain).
+    """
+    receptor_pdb: str                 # cleaned receptor PDB text
+    ligand_sdf: str                   # docked-pose ligand SDF (3D coords)
+    max_minimization_steps: int = 500
+    force_tolerance_kj_mol_nm: float = 10.0
+
+
+@app.post("/mmgbsa/rescore")
+def mmgbsa_rescore_endpoint(req: MmgbsaRescoreRequest):
+    """Rescore a docked pose with single-snapshot one-trajectory MM-GBSA.
+
+    Returns ``{ok: True, dg_bind_kcal_mol, e_complex, e_protein, e_ligand,
+    method, wall_seconds}`` on success, or ``{ok: False, error}`` on
+    parameterisation / simulation / missing-deps failure.
+
+    Never raises — failures are returned as structured JSON so the
+    backend can surface a clean error to the user.
+    """
+    try:
+        return _mmgbsa_pod.rescore_pose(
+            req.receptor_pdb,
+            req.ligand_sdf,
+            max_minimization_steps=req.max_minimization_steps,
+            force_tolerance_kj_mol_nm=req.force_tolerance_kj_mol_nm,
+        )
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "wall_seconds": 0.0,
+        }

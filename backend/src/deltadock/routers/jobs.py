@@ -1313,3 +1313,215 @@ async def chemist_review(
         "score": result.best_score,
         "review": review.to_dict(),
     }
+
+
+# ────────────────────────── MM-GBSA rescoring (F2) ─────────────────────────
+#
+# Opt-in second-pass rescoring of a docked pose with single-snapshot
+# one-trajectory MM-GBSA — Amber14SB + OpenFF Sage 2.2 + OBC2 implicit
+# solvent. ~30-90 s per pose on the pod. See services/mmgbsa.py for the
+# protocol caveats and docs/fep_plus_design.md for the broader plan.
+#
+# The endpoint is per-pose and on-demand — NOT triggered automatically on
+# every cell. Cost would balloon and the science value is in rank-ordering
+# a small set of candidate hits, not in rescoring every Δ-mutant cell.
+
+
+@router.post("/{job_key}/results/{compound_id}/{variant}/mmgbsa")
+def rescore_with_mmgbsa(
+    job_key: str,
+    compound_id: int,
+    variant: str,
+    session: Session = Depends(get_session),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """Rescore a docked pose with MM-GBSA. Persists ΔG back into
+    DockingResult.extra and returns the breakdown.
+
+    Errors:
+      400 — bad variant format
+      401 — unauthenticated
+      404 — job not found OR not owned by this user (shape matches
+            the cancel/PATCH/DELETE owner pattern so an enumeration
+            attempt on share_ids can't distinguish 'no such job' from
+            'belongs to someone else')
+      503 — pod not configured, or pod missing openff-toolkit
+            (returned with a clear actionable error so the operator
+            knows to pip-install on the pod)
+      502 — pod transport error (timeout, network, 5xx)
+      500 — pose-to-SDF conversion failed (obabel missing or borked
+            pose)
+
+    Auth: Final-verification audit C1 — this is a WRITE endpoint
+    (mutates DockingResult.extra + burns 30-90 s of pod GPU per
+    call) so it must be OWNER-only, not public-by-share-id like
+    /poses or /review. Mirrors the established /cancel and DELETE
+    pattern in this router. See docs/mmgbsa_phase_a_audit.md (and
+    the final verification report) for the rationale.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
+    from ..services.mmgbsa import MmgbsaError, merge_into_extra, rescore_pose
+    from ..services.pose_store import get_pose_store
+    from ..services.receptor_prep import prepare_receptor_for_target
+    from ..config import get_settings
+
+    if not _VARIANT_RE.match(variant):
+        raise HTTPException(status_code=400, detail="invalid variant format")
+
+    # Owner-only lookup. Same pattern as /report (line 915) and
+    # /cancel — _resolve_job + an explicit user_id check guarantees
+    # a stranger with a guessed share-link can't probe job existence.
+    job = _resolve_job(session, job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = session.exec(
+        select(DockingResult)
+        .where(DockingResult.job_id == job.id)
+        .where(DockingResult.compound_id == compound_id)
+        .where(DockingResult.variant == variant)
+    ).first()
+    if not result or not result.pose_uri:
+        raise HTTPException(status_code=404, detail="Pose not found")
+    if result.best_score is None or result.best_score >= 0:
+        # No real docked pose — same guard the chemist-review endpoint
+        # uses. MM-GBSA on a failure-placeholder row is meaningless.
+        raise HTTPException(
+            status_code=400,
+            detail="No docked pose to rescore (best_score >= 0 indicates a failed dock)",
+        )
+
+    # ─── Re-prepare the receptor (same paths the runner uses) ───────
+    # We re-use the receptor_prep service so the receptor PDB the MM-
+    # GBSA endpoint sees is BIT-FOR-BIT identical to what produced the
+    # pose. Cache-hits ride the same /var/lib/liganx/.../receptor cache
+    # as the runner, so this is fast (~milliseconds) for any cell whose
+    # job has finished.
+    settings = get_settings()
+    try:
+        rprep = prepare_receptor_for_target(
+            pdb_id=job.pdb_id,
+            chain=job.chain or "A",
+            mutation=None if variant == "WT" else variant,
+            pdb_cache=Path(settings.pose_cache) / "pdb",
+            receptor_cache=Path(settings.pose_cache) / "receptors",
+        )
+    except Exception as e:                                           # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"Receptor prep failed for {job.pdb_id}_{job.chain} {variant}: {e}",
+        )
+    receptor_pdb_text = rprep.receptor_pdb.read_text()
+
+    # ─── Fetch the docked pose, convert PDBQT → SDF ─────────────────
+    # The pod's MM-GBSA needs an SDF (3D coords + bond orders) — Vina
+    # output is PDBQT which doesn't carry the bond-order info openff-
+    # toolkit needs for parameterisation. Open Babel handles the
+    # conversion. Same dependency the /poses endpoint relies on; if
+    # obabel isn't available the rescore can't run.
+    if not _shutil.which("obabel"):
+        raise HTTPException(
+            status_code=500,
+            detail="Open Babel (obabel) not installed on this backend — "
+                   "required for PDBQT → SDF conversion before MM-GBSA",
+        )
+    try:
+        pose_raw = get_pose_store().read(result.pose_uri)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Pose file not in storage")
+    except Exception:
+        raise HTTPException(status_code=410, detail="Pose file no longer cached")
+    if not pose_raw:
+        raise HTTPException(status_code=410, detail="Pose file empty")
+    pose_pdbqt_text = pose_raw.decode("utf-8", errors="replace")
+    # Extract MODEL 1 only (best-scoring pose) — same logic as /poses.
+    if "MODEL" in pose_pdbqt_text:
+        out_lines: list[str] = []
+        in_first = False
+        for line in pose_pdbqt_text.splitlines(keepends=True):
+            if line.startswith("MODEL"):
+                if in_first:
+                    break
+                in_first = True
+                continue
+            if line.startswith("ENDMDL"):
+                if in_first:
+                    break
+                continue
+            if in_first:
+                out_lines.append(line)
+        best_pdbqt_text = "".join(out_lines)
+    else:
+        best_pdbqt_text = pose_pdbqt_text
+
+    with _tempfile.TemporaryDirectory() as td:
+        in_path = Path(td) / "pose.pdbqt"
+        out_path = Path(td) / "pose.sdf"
+        in_path.write_text(best_pdbqt_text)
+        # (Audit fix #5) `-p 7.4` re-protonates at physiological pH.
+        # Without this, Open Babel's default tautomer/charge rules
+        # mis-protonate basic amines on ~30-40% of kinase inhibitors,
+        # which then yields wrong AM1-BCC charges in MM-GBSA. This is
+        # a partial mitigation; the full fix is to round-trip through
+        # the input SMILES (see audit doc, Phase A.1). Logged as
+        # mmgbsa_phase_a_audit.md issue #5.
+        res = _subprocess.run(
+            ["obabel", str(in_path), "-O", str(out_path), "-p", "7.4"],
+            capture_output=True, text=True, check=False,
+        )
+        if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"PDBQT → SDF conversion failed: {res.stderr.strip()[:200]}",
+            )
+        ligand_sdf_text = out_path.read_text()
+
+    # ─── Call the pod ──────────────────────────────────────────────
+    try:
+        mmgbsa_result = rescore_pose(
+            receptor_pdb=receptor_pdb_text,
+            ligand_sdf=ligand_sdf_text,
+        )
+    except MmgbsaError as e:
+        # Map MmgbsaError.kind → HTTP code so the UI can render an
+        # appropriate message. missing_deps → 503 with a clear
+        # actionable signal to the operator. parameterisation → 422
+        # (compound-specific issue, retry won't help). Other transport
+        # / runtime → 502.
+        if e.kind == "missing_deps":
+            raise HTTPException(status_code=503, detail=str(e))
+        if e.kind == "parameterisation":
+            raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e))
+
+    # ─── Persist into DockingResult.extra (idempotent merge) ───────
+    result.extra = merge_into_extra(result.extra, mmgbsa_result)
+    session.add(result)
+    session.commit()
+
+    return {
+        "job_id": job.id,
+        "share_id": job.share_id,
+        "compound_id": result.compound_id,
+        "variant": result.variant,
+        "vina_score": result.best_score,
+        "mmgbsa": {
+            "dg_bind_kcal_mol": mmgbsa_result.dg_bind_kcal_mol,
+            "e_complex_kcal_mol": mmgbsa_result.e_complex_kcal_mol,
+            "e_protein_kcal_mol": mmgbsa_result.e_protein_kcal_mol,
+            "e_ligand_kcal_mol": mmgbsa_result.e_ligand_kcal_mol,
+            "method": mmgbsa_result.method,
+            "wall_seconds": mmgbsa_result.wall_seconds,
+            # (Final-verify M3) Surface the receptor RMSD in the
+            # response so the UI can warn when the minimisation
+            # walked too far from the docked geometry. ~0.1-0.5 Å is
+            # healthy; >1.0 Å means the restraint wasn't strong
+            # enough or there were significant clashes.
+            "receptor_rmsd_a": mmgbsa_result.receptor_rmsd_a,
+        },
+    }

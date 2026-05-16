@@ -417,6 +417,52 @@ def _summarize_extra(extra: Optional[str]) -> dict[str, Any]:
                 out["interfaceHbonds"] = int(val)
             except ValueError:
                 pass
+        elif key == "mmgbsa_dg":
+            # (F1) MM-GBSA rescored ΔG_bind, kcal/mol. Signed; more
+            # negative = stronger. Populated when the user runs the
+            # opt-in MM-GBSA rescoring pass on a docked pose; absent
+            # on cells that haven't been rescored. See
+            # services/mmgbsa.py for the protocol.
+            try:
+                out["mmgbsaDg"] = float(val)
+            except ValueError:
+                pass
+        elif key == "mmgbsa_e_complex":
+            try:
+                out["mmgbsaEComplex"] = float(val)
+            except ValueError:
+                pass
+        elif key == "mmgbsa_e_protein":
+            try:
+                out["mmgbsaEProtein"] = float(val)
+            except ValueError:
+                pass
+        elif key == "mmgbsa_e_ligand":
+            try:
+                out["mmgbsaELigand"] = float(val)
+            except ValueError:
+                pass
+        elif key == "mmgbsa_method":
+            # Short label, e.g. "openmm-obc2 / amber14sb+openff-2.2 /
+            # one-trajectory". Surfaced in the UI tooltip so the user
+            # knows what the score actually represents.
+            out["mmgbsaMethod"] = val
+        elif key == "mmgbsa_seconds":
+            # Wall-clock time the pod spent on this rescore — useful
+            # for budgeting / cost display in the UI.
+            try:
+                out["mmgbsaSeconds"] = float(val)
+            except ValueError:
+                pass
+        elif key == "mmgbsa_rmsd":
+            # (Audit fix #12) RMSD of the minimised receptor heavy
+            # atoms vs the input docked pose. ~0.1-0.5 Å is healthy;
+            # >1.0 Å means the restraint wasn't strong enough or the
+            # pose had significant clashes — flag in the UI.
+            try:
+                out["mmgbsaRmsd"] = float(val)
+            except ValueError:
+                pass
         elif key == "pocket_residues":
             # Boltz-2: number of pocket residues passed as the constraint.
             try:

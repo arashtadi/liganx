@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { type Compound } from "../api";
+import { useRef, useState } from "react";
+import { api, type Compound } from "../api";
 import { Close, Sparkles } from "./Icons";
 import ConfidenceRibbon from "./ConfidenceRibbon";
 import InteractionDiagram from "./InteractionDiagram";
@@ -39,10 +39,63 @@ function residueOf(code: string): number | null {
  *
  * Phase 3: real Mol* viewer + ProLIF interaction list.
  */
-export default function PoseDetail({ pick, onClose }: Props) {
+export default function PoseDetail({ pick, jobId, onClose }: Props) {
   const { compound, variant, score, deltaWt, extra } = pick;
   const mutationResidue = residueOf(variant);
   const ext = parseExtra(extra);
+
+  // (F3) Local state for the MM-GBSA rescore. We keep the result in
+  // local state on success so the chip updates immediately without
+  // needing the parent to re-fetch the job (the backend has also
+  // persisted into DockingResult.extra, so a refetch would show the
+  // same value).
+  const [mmgbsaInflight, setMmgbsaInflight] = useState(false);
+  const [mmgbsaErr, setMmgbsaErr] = useState<string | null>(null);
+  const [mmgbsaLocal, setMmgbsaLocal] = useState<{
+    dg_bind_kcal_mol: number;
+    e_complex_kcal_mol: number;
+    e_protein_kcal_mol: number;
+    e_ligand_kcal_mol: number;
+    method: string;
+    wall_seconds: number;
+    receptor_rmsd_a: number;
+  } | null>(null);
+  // Prefer the local-state result (just-rescored) over the parsed
+  // extra (a prior rescore that's already on disk). Same shape.
+  const mmgbsaDg = mmgbsaLocal?.dg_bind_kcal_mol ?? ext.mmgbsaDg;
+  const mmgbsaMethod = mmgbsaLocal?.method ?? ext.mmgbsaMethod;
+  const mmgbsaSeconds = mmgbsaLocal?.wall_seconds ?? ext.mmgbsaSeconds;
+  const mmgbsaEComplex = mmgbsaLocal?.e_complex_kcal_mol ?? ext.mmgbsaEComplex;
+  const mmgbsaEProtein = mmgbsaLocal?.e_protein_kcal_mol ?? ext.mmgbsaEProtein;
+  const mmgbsaELigand = mmgbsaLocal?.e_ligand_kcal_mol ?? ext.mmgbsaELigand;
+  const mmgbsaRmsd = mmgbsaLocal?.receptor_rmsd_a ?? ext.mmgbsaRmsd;
+
+  function startMmgbsa() {
+    if (!jobId || mmgbsaInflight) return;
+    setMmgbsaInflight(true);
+    setMmgbsaErr(null);
+    api.rescoreMmgbsa(String(jobId), compound.id, variant)
+      .then((res) => setMmgbsaLocal(res.mmgbsa))
+      .catch((err: Error & { status?: number }) => {
+        // The backend distinguishes the failure modes by HTTP code —
+        // surface a helpful message per kind. 503 = pod missing
+        // openff-toolkit (operator action), 422 = parameterisation
+        // (compound-specific), 502 = transport.
+        const status = err.status ?? 0;
+        if (status === 503) {
+          setMmgbsaErr("MM-GBSA isn't available on this server yet — the pod needs the openff-toolkit + openmmforcefields packages installed. Ask your admin to deploy the Phase A pod update.");
+        } else if (status === 422) {
+          setMmgbsaErr(`Couldn't parameterise this compound: ${err.message}`);
+        } else if (status === 502) {
+          setMmgbsaErr(`Pod transport error — try again in a minute: ${err.message}`);
+        } else if (status === 400) {
+          setMmgbsaErr("This pose can't be rescored — it appears to be a failed-dock placeholder row.");
+        } else {
+          setMmgbsaErr(err.message || "MM-GBSA rescoring failed");
+        }
+      })
+      .finally(() => setMmgbsaInflight(false));
+  }
 
   // Diagram ref is still used for the 2D contact map's own anchor; we no
   // longer scroll-target a 3D viewer because the 3D viewer is now in the
@@ -210,6 +263,171 @@ export default function PoseDetail({ pick, onClose }: Props) {
               </div>
             </div>
           </details>
+        )}
+
+        {/* (F3) MM-GBSA rescoring section. Opt-in second-pass:
+            single-snapshot one-trajectory ΔG_bind computed by OpenMM
+            with Amber14SB + OpenFF Sage 2.2 + OBC2 implicit solvent.
+            ~30-90 s per pose. See docs/fep_plus_design.md for context.
+
+            Two states:
+              1. Not yet rescored — show a "Rescore with MM-GBSA"
+                 button + a one-line caveat about what MM-GBSA is for.
+              2. Rescored — show the ΔG chip, the breakdown in a
+                 collapsed details expander, and a "Re-run" button. */}
+        {mmgbsaDg != null ? (
+          <details className="rounded-lg border border-violet-200 dark:border-violet-700/40 bg-violet-50/40 dark:bg-violet-900/10 group" open>
+            <summary className="cursor-pointer list-none p-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-violet-700 dark:text-violet-300">
+                  MM-GBSA · rank-order score
+                </span>
+                {/* (Audit fix #3) The chip used to render a bold
+                    "ΔG: −42.1 kcal/mol" in big font, which chemists
+                    read as a Kd-equivalent affinity. Single-snapshot
+                    one-trajectory MM-GBSA values are routinely in
+                    [−30, −80] kcal/mol — non-physical as an absolute
+                    binding free energy. Re-label as "RANK-ORDER ONLY",
+                    drop the units from the headline, and put the
+                    full kcal/mol number behind the expander. */}
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono ring-1 ring-inset ring-violet-300 bg-white dark:ring-violet-700/60 dark:bg-slate-900/40 text-violet-800 dark:text-violet-200"
+                  title="MM-GBSA rank-order score. Use for ranking analogs at the same target — DO NOT read as an absolute binding affinity (the absolute number is biased because entropy is dropped and single-snapshot Born radii are noisy)."
+                >
+                  <span className="text-violet-500 dark:text-violet-400 uppercase tracking-wider text-[9px]">SCORE</span>
+                  <span className="font-bold tabular-nums">
+                    {mmgbsaDg > 0 ? "+" : ""}{mmgbsaDg.toFixed(1)}
+                  </span>
+                </span>
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold ring-1 ring-inset ring-amber-300 bg-amber-100 text-amber-900 dark:ring-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300"
+                  title="MM-GBSA absolute ΔG is biased by ~5-15 kcal/mol on kinase-class binders (single-snapshot Born-radius noise + dropped -TΔS). Only the RANK among compounds at the same target is meaningful. See the breakdown for the full decomposition."
+                >
+                  rank-only
+                </span>
+                {mmgbsaSeconds != null && (
+                  <span className="text-[10px] text-violet-700/70 dark:text-violet-300/70 italic">
+                    {mmgbsaSeconds.toFixed(0)} s
+                  </span>
+                )}
+              </div>
+              <span className="text-violet-400 group-open:hidden">▾ details</span>
+              <span className="text-violet-400 hidden group-open:inline">▴ hide</span>
+            </summary>
+            <div className="px-3 pb-3 space-y-2">
+              <p className="text-[11px] text-amber-900 dark:text-amber-300 leading-snug font-semibold bg-amber-50/50 dark:bg-amber-900/15 ring-1 ring-amber-200 dark:ring-amber-700/40 rounded px-2 py-1.5">
+                ⚠ Use this number to RANK analogs at the same target. The absolute value is biased by ~5–15 kcal/mol (entropy is dropped, single-snapshot Born radii are noisy on the protein-only slice). Don't quote it as a Kd-equivalent affinity. For rigorous binding free energies use FEP (Phase B, design at <code>docs/fep_plus_design.md</code>).
+              </p>
+              <p className="text-[10px] text-violet-700/80 dark:text-violet-300/80 leading-snug">
+                Single-snapshot one-trajectory MM-GBSA: ΔG = E_complex − E_protein − E_ligand on the minimised complex (no MD sampling).
+                {mmgbsaMethod && (
+                  <> Method: <span className="font-mono">{mmgbsaMethod}</span>.</>
+                )}
+              </p>
+              {(mmgbsaEComplex != null || mmgbsaEProtein != null || mmgbsaELigand != null) && (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
+                  {mmgbsaEComplex != null && (
+                    <div className="flex items-center justify-between" title="E_complex on the minimised geometry.">
+                      <span className="text-violet-700/70 dark:text-violet-300/70">E_complex</span>
+                      <span className="tabular-nums text-slate-800 dark:text-slate-100">
+                        {mmgbsaEComplex.toFixed(1)}
+                      </span>
+                    </div>
+                  )}
+                  {mmgbsaEProtein != null && (
+                    <div className="flex items-center justify-between" title="E_protein on the same coordinates with the ligand deleted (one-trajectory approximation).">
+                      <span className="text-violet-700/70 dark:text-violet-300/70">E_protein</span>
+                      <span className="tabular-nums text-slate-800 dark:text-slate-100">
+                        {mmgbsaEProtein.toFixed(1)}
+                      </span>
+                    </div>
+                  )}
+                  {mmgbsaELigand != null && (
+                    <div className="flex items-center justify-between" title="E_ligand on the same coordinates with the protein deleted.">
+                      <span className="text-violet-700/70 dark:text-violet-300/70">E_ligand</span>
+                      <span className="tabular-nums text-slate-800 dark:text-slate-100">
+                        {mmgbsaELigand.toFixed(1)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="col-span-2 flex items-center justify-between pt-1 mt-1 border-t border-violet-200/60 dark:border-violet-700/40" title="ΔG_bind = E_complex − E_protein − E_ligand. All in kcal/mol.">
+                    <span className="text-violet-700 dark:text-violet-300 font-semibold">ΔG_bind</span>
+                    <span className="tabular-nums font-bold text-violet-800 dark:text-violet-200">
+                      {mmgbsaDg > 0 ? "+" : ""}{mmgbsaDg.toFixed(2)} kcal/mol
+                    </span>
+                  </div>
+                </div>
+              )}
+              {/* (Audit fix #12 / Final-verify M3) Receptor RMSD —
+                  trust signal that the minimisation kept the protein
+                  close to the docked pose. Healthy = green, slight
+                  drift = amber, worrying = rose. */}
+              {mmgbsaRmsd != null && mmgbsaRmsd >= 0 && (
+                <div className="flex items-center gap-2 text-[11px]" title="RMSD of the receptor heavy atoms vs the input docked pose. ~0.1-0.5 Å is healthy (the restraint kept the protein in place); >1.0 Å means significant drift — interpret ΔG with caution.">
+                  <span className="text-violet-700/70 dark:text-violet-300/70 uppercase tracking-wider text-[9px] font-semibold">Receptor RMSD</span>
+                  <span className={`tabular-nums font-mono ${
+                    mmgbsaRmsd <= 0.5 ? "text-emerald-700 dark:text-emerald-400"
+                    : mmgbsaRmsd <= 1.0 ? "text-amber-700 dark:text-amber-400"
+                    : "text-rose-700 dark:text-rose-400"
+                  }`}>
+                    {mmgbsaRmsd.toFixed(2)} Å
+                  </span>
+                  {mmgbsaRmsd > 1.0 && (
+                    <span className="text-[10px] text-rose-600 dark:text-rose-400 italic">
+                      protein drifted — interpret with caution
+                    </span>
+                  )}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={startMmgbsa}
+                disabled={mmgbsaInflight || !jobId}
+                className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-semibold ring-1 ring-violet-300 dark:ring-violet-700/50 bg-white dark:bg-slate-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 transition-colors"
+                title="Re-run MM-GBSA. Useful if the underlying force-field stack changed; otherwise the result will be the same up to numerical noise (mixed-precision OpenMM is reproducible to ~0.1 kcal/mol)."
+              >
+                {mmgbsaInflight ? "Re-running…" : "Re-run MM-GBSA"}
+              </button>
+              {mmgbsaErr && (
+                <div className="text-[11px] text-rose-700 dark:text-rose-400 mt-1">{mmgbsaErr}</div>
+              )}
+            </div>
+          </details>
+        ) : (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex-1 min-w-[200px]">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+                  Second-pass rescoring
+                </div>
+                <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 leading-snug">
+                  MM-GBSA (OpenMM + Amber14SB + OpenFF Sage 2.2 + OBC2 implicit solvent) reranks this pose with physics-based ΔG_bind. ~30–90 s on the pod. Use for <strong>rank-ordering analogs</strong>; not a substitute for FEP.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={startMmgbsa}
+                disabled={mmgbsaInflight || !jobId}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-violet-600 hover:bg-violet-700 disabled:bg-violet-400 text-white shadow-sm transition-colors"
+                title="Run single-snapshot one-trajectory MM-GBSA on this pose. Persists the ΔG into the cell's extras so the matrix can use it later."
+              >
+                {mmgbsaInflight ? (
+                  <>
+                    <svg width="11" height="11" viewBox="0 0 24 24" className="animate-spin" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+                      <path d="M12 2 A10 10 0 0 1 22 12" fill="none" stroke="currentColor" strokeWidth="3" />
+                    </svg>
+                    Running…
+                  </>
+                ) : (
+                  "Rescore with MM-GBSA"
+                )}
+              </button>
+            </div>
+            {mmgbsaErr && (
+              <div className="text-[11px] text-rose-700 dark:text-rose-400 mt-2">{mmgbsaErr}</div>
+            )}
+          </div>
         )}
 
         {/* Score breakdown is still being computed by the background pass.
