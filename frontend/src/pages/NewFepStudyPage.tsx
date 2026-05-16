@@ -273,6 +273,15 @@ export default function NewFepStudyPage() {
   const [nsPerWindow, setNsPerWindow] = useState<number>(7.0);
   const [networkTopology, setNetworkTopology] = useState<string>("radial_plus_mst");
 
+  // (K5) Force-field engine tier. The backend treats null/undefined as
+  // "sage" — the historical default that produces byte-identical results
+  // to pre-K5 submissions. Espaloma is a graph-neural-network parameterizer
+  // (Wang et al. 2024) that gives ~0.1–0.2 kcal/mol better RBFE on
+  // kinase / non-standard chemotypes for ~30s extra parameterization
+  // time per ligand. MACE-OFF is the future Pro tier (ML-MM hybrid);
+  // option present for visibility but disabled until K6 ships.
+  const [engine, setEngine] = useState<"sage" | "espaloma" | "mace">("sage");
+
   // Cost confirmation.
   const [costConfirmed, setCostConfirmed] = useState<boolean>(false);
 
@@ -421,6 +430,10 @@ export default function NewFepStudyPage() {
       n_lambda_windows: nLambdaWindows,
       ns_per_window: nsPerWindow,
       network_topology: networkTopology,
+      // (K5) Engine tier — omit when Sage so the request body is
+      // byte-identical to pre-K5 for default submissions; only send
+      // the field when the user explicitly picked Espaloma or MACE.
+      ...(engine !== "sage" ? { force_field_engine: engine } : {}),
     })
       .then((res) => navigate(`/fep/${res.share_id}`))
       .catch((err: Error & { status?: number }) => {
@@ -674,10 +687,86 @@ export default function NewFepStudyPage() {
         </div>
       </section>
 
+      {/* (K5) Engine tier — visible by default, NOT hidden under
+          advanced. The choice has cost + accuracy implications the
+          user should see before clicking Run. */}
+      <section className="card">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
+          4. Force-field engine
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {([
+            {
+              id: "sage" as const,
+              title: "Sage 2.2",
+              tag: "Basic",
+              priceNote: "included",
+              blurb: "OpenFF Sage rule-based force field. Free and fast — the default tier validated against published kinase ΔΔG.",
+              disabled: false,
+            },
+            {
+              id: "espaloma" as const,
+              title: "Espaloma 0.3",
+              tag: "Standard",
+              priceNote: "+30s/ligand",
+              blurb: "Graph-neural-network parameterizer (Wang et al. 2024). ~0.1–0.2 kcal/mol better RBFE on non-standard chemotypes.",
+              disabled: false,
+            },
+            {
+              id: "mace" as const,
+              title: "MACE-OFF 23",
+              tag: "Pro",
+              priceNote: "coming soon",
+              blurb: "ML-MM hybrid (MACE-OFF for ligand, Amber for protein). Highest accuracy; deployment pending.",
+              disabled: true,
+            },
+          ]).map((opt) => {
+            const selected = engine === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                disabled={opt.disabled}
+                onClick={() => !opt.disabled && setEngine(opt.id)}
+                className={
+                  "text-left rounded-md border px-3 py-2.5 transition-colors " +
+                  (selected
+                    ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900 bg-indigo-50 dark:bg-indigo-950 "
+                    : "border-slate-200 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-500 ") +
+                  (opt.disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer")
+                }
+                aria-pressed={selected}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {opt.title}
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {opt.tag}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  {opt.priceNote}
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1.5 leading-snug">
+                  {opt.blurb}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2 leading-snug">
+          Tier choice affects ligand parameterization only — the
+          protein force field (Amber14SB), water model (TIP3P), and
+          sampling protocol stay the same. Cost preview below already
+          accounts for tier.
+        </p>
+      </section>
+
       {/* Protocol — collapsed by default. */}
       <details className="card group">
         <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center justify-between">
-          <span>4. Protocol (advanced)</span>
+          <span>5. Protocol (advanced)</span>
           <span className="text-slate-400 group-open:hidden">▾ expand</span>
           <span className="text-slate-400 hidden group-open:inline">▴ collapse</span>
         </summary>
@@ -723,7 +812,7 @@ export default function NewFepStudyPage() {
       {/* Cost estimate. */}
       <section className="card space-y-3 bg-violet-50/40 dark:bg-violet-900/10 ring-1 ring-violet-200 dark:ring-violet-700/30">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-300 flex items-center gap-2">
-          5. Projected cost
+          6. Projected cost
           {estimateInflight && <Spinner size={12} className="text-violet-500" />}
         </h2>
         {estimate ? (

@@ -619,6 +619,9 @@ export interface FepStudySummary {
   title: string | null;
   // (J14) Per-user sequential number — null for legacy rows.
   seq_number: number | null;
+  // (K5) Force-field engine tier. Null = legacy row (display as "Sage").
+  // Values: "sage" | "espaloma" | "mace".
+  force_field_engine: string | null;
 }
 
 /** (G7) FEP study graph + ΔΔG result shape returned by /fep/studies. */
@@ -661,6 +664,9 @@ export interface FepStudyGraph {
   ns_per_window: number | null;
   // (J14) Per-user sequential number. Null for legacy rows.
   seq_number: number | null;
+  // (K5) Which force-field engine ran this study. Null = legacy row.
+  // FepStudyPage renders this as a badge ("Sage" / "Espaloma" / "MACE-OFF").
+  force_field_engine: string | null;
 }
 
 export const api = {
@@ -919,6 +925,9 @@ export const api = {
     n_lambda_windows?: number;
     ns_per_window?: number;
     network_topology?: string;
+    // (K5) Force-field tier. Omit (or send null) to use Sage default.
+    // Backend whitelists: "sage" | "espaloma" | "mace".
+    force_field_engine?: string | null;
   }) =>
     request<FepStudyGraph>("/fep/studies", {
       method: "POST",

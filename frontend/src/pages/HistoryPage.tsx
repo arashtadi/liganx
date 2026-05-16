@@ -1317,6 +1317,25 @@ function FepStudyRow({ study }: { study: import("../api").FepStudySummary }) {
             </span>
           </div>
           <div className="flex items-baseline gap-2 text-xs">
+            {/* (K5) Engine tier badge so the History tab makes the
+                tier visible at a glance — same Sage/Espaloma/MACE-OFF
+                vocabulary as FepStudyPage. NULL renders as "Sage". */}
+            <span
+              className="badge text-[10px] uppercase tracking-wider font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+              title={
+                study.force_field_engine === "espaloma"
+                  ? "Espaloma 0.3 — Standard tier"
+                  : study.force_field_engine === "mace"
+                  ? "MACE-OFF 23 — Pro tier"
+                  : "OpenFF Sage 2.2 — Basic tier"
+              }
+            >
+              {study.force_field_engine === "espaloma"
+                ? "Espaloma"
+                : study.force_field_engine === "mace"
+                ? "MACE-OFF"
+                : "Sage"}
+            </span>
             <span className={`badge text-[10px] uppercase tracking-wider font-bold ${
               study.status === "completed" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
               : study.status === "failed" ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"

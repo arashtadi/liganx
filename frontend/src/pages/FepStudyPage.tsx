@@ -322,6 +322,26 @@ export default function FepStudyPage() {
             }`}>
               {graph.status}
             </span>
+            {/* (K5) Force-field engine badge. NULL is rendered as
+                "Sage" — that's what every pre-K5 study used. Tooltip
+                spells out the tier so users know what they're
+                looking at. */}
+            <span
+              className="badge text-[10px] uppercase tracking-wider font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+              title={
+                graph.force_field_engine === "espaloma"
+                  ? "Espaloma 0.3 — graph-neural-network ligand parameterization (Standard tier)"
+                  : graph.force_field_engine === "mace"
+                  ? "MACE-OFF 23 — ML-MM hybrid (Pro tier)"
+                  : "OpenFF Sage 2.2 — rule-based ligand parameterization (Basic tier)"
+              }
+            >
+              {graph.force_field_engine === "espaloma"
+                ? "Espaloma"
+                : graph.force_field_engine === "mace"
+                ? "MACE-OFF"
+                : "Sage"}
+            </span>
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
             {graph.share_id}
