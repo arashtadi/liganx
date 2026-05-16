@@ -419,7 +419,12 @@ def run_edge(
             )
         except Exception as e:                                       # noqa: BLE001
             log.exception("openfe RFE edge failed")
-            return _err("runtime", f"FEP edge crashed: {type(e).__name__}: {e}", t0)
+            # (M5) Classify common failure modes into specific `kind`
+            # codes so the UI can render targeted user messages instead
+            # of a bare stack trace. Pattern-match on type + message;
+            # falls back to generic "runtime" if nothing matches.
+            err_kind, err_msg = _classify_runtime_error(e)
+            return _err(err_kind, err_msg, t0)
 
     # ─── Combine into ΔΔG_binding + apply convergence flags. ───────
     _KJ_PER_KCAL = 4.184
@@ -771,6 +776,84 @@ def _leg_diagnostics(dag_result) -> dict:
         }
     except Exception:                                                # noqa: BLE001
         return {"diagnostics_unavailable": True}
+
+
+def _classify_runtime_error(e: BaseException) -> tuple[str, str]:
+    """(M5) Map a deep-stack openfe/openmm exception to a structured
+    (kind, user-friendly message) tuple. Each return tuple represents
+    a known failure mode the UI/agent can render as a targeted hint
+    rather than a generic stack trace.
+
+    Order matters: more specific patterns first, then fall through to
+    the generic 'runtime' bucket. Returns the raw exception class name
+    + message at the end so we never lose forensic info."""
+    msg = str(e).lower()
+    cls_name = type(e).__name__
+    raw = f"{cls_name}: {e}"
+
+    # — LOMAP / Kartograf can't find a mapping —
+    if "neither lomap nor kartograf" in msg or "no atom map" in msg:
+        return (
+            "no_mapping",
+            "Atom mapping failed for this ligand pair. LOMAP and Kartograf "
+            "both refused — usually means the analog differs too much from "
+            "the hit (multiple ring changes, element swaps, or substructure "
+            "rearrangement). Try a more conservative analog (single-atom "
+            "modifications only).",
+        )
+
+    # — Antechamber / AM1-BCC parameterization failure —
+    if "antechamber" in msg or "am1-bcc" in msg or "am1bcc" in msg:
+        return (
+            "parameterization_failed",
+            "Antechamber/AM1-BCC could not parameterize one of the ligands. "
+            "Common causes: very large macrocyclic ligand (>50 heavy atoms), "
+            "unusual element (Br/I/Se with non-standard valence), or a "
+            f"chemically invalid SDF. Original error: {raw}",
+        )
+
+    # — Receptor preparation / PDBFixer issue —
+    if "no template found" in msg or "residue" in msg and "missing" in msg:
+        return (
+            "receptor_invalid",
+            "Receptor PDB has residues PDBFixer couldn't repair (likely a "
+            f"non-standard residue mid-chain). Original error: {raw}",
+        )
+
+    # — GPU out-of-memory: openmm raises OpenMMException with specific text —
+    if (
+        "out of memory" in msg
+        or "cuda_error_out_of_memory" in msg
+        or "cl_out_of_resources" in msg
+    ):
+        return (
+            "system_too_large",
+            "GPU ran out of memory during MD. The receptor + water box is "
+            "larger than this GPU can handle (24 GB on RTX 4090). Try a "
+            "smaller receptor (trimmed pocket only) or fewer lambda "
+            f"windows. Original error: {raw}",
+        )
+
+    # — openmm Context creation crashed (most likely platform mismatch) —
+    if "openmmexception" in msg or "cuda_error" in msg or "platform" in msg:
+        return (
+            "platform_error",
+            "openmm platform initialization failed. The pod's openmm build "
+            "may be incompatible with the GPU driver. See L7 in the task "
+            f"list. Original error: {raw}",
+        )
+
+    # — gufe JSON serialization (used to crash here pre-J10) —
+    if "json serializable" in msg:
+        return (
+            "tokenization_failed",
+            "openfe/gufe couldn't serialize a Molecule (likely Kartograf "
+            "fallback bug — see fep_pod.py for context). Try a more "
+            f"conservative analog pair. Original error: {raw}",
+        )
+
+    # — Fall-through bucket —
+    return ("runtime", f"FEP edge crashed: {raw}")
 
 
 def _err(kind: str, message: str, t0: float) -> dict:

@@ -282,7 +282,14 @@ def run_edge(
             )
         except Exception as e:                                       # noqa: BLE001
             log.exception("openfe RFE edge failed (Espaloma tier)")
-            return _err("runtime", f"FEP edge crashed: {type(e).__name__}: {e}", t0)
+            # (M5) Same error classification as the Sage tier — import
+            # the helper from fep_pod so we share one source of truth.
+            try:
+                from fep_pod import _classify_runtime_error
+                err_kind, err_msg = _classify_runtime_error(e)
+            except Exception:                                        # noqa: BLE001
+                err_kind, err_msg = "runtime", f"FEP edge crashed: {type(e).__name__}: {e}"
+            return _err(err_kind, err_msg, t0)
 
     # Combine + convergence flags (identical math to Sage tier).
     _KJ_PER_KCAL = 4.184
