@@ -322,17 +322,42 @@ def _run_openfe_edge(
     # openfe ships LomapAtomMapper that wraps LOMAP2. Use it first;
     # fall back to KartografAtomMapper if LOMAP refuses (rare —
     # weird ring transformations).
+    #
+    # `threed=False` is REQUIRED here: fep_runner gives RDKit-embedded
+    # ligand conformers via SDF that aren't aligned in a common frame
+    # of reference. LOMAP with threed=True checks heavy-atom distances
+    # in absolute coordinates and bails (returns empty generator) on
+    # virtually every analog pair. The fallback to Kartograf then trips
+    # a gufe.tokenization JSON-serialisation bug ("Object of type
+    # Molecule is not JSON serializable") in openfe 1.11 + gufe combos.
+    # Using 2D LOMAP avoids both pathologies and is the correct choice
+    # for SMILES-input edges anyway — 3D alignment is the docking
+    # pipeline's job, not the FEP pod's.
     from openfe.setup import LomapAtomMapper, KartografAtomMapper
     mapper = LomapAtomMapper(
         time=20,                # LOMAP timeout sec — generous
-        threed=True,            # 3D-aware: use docked coords if present
-        max3d=0.95,             # max heavy-atom distance for "same atom"
+        threed=False,           # 2D topology mapping — see comment above
+        max3d=0.95,             # ignored when threed=False
         element_change=False,   # forbid element changes (most edges)
     )
     mapping = next(mapper.suggest_mappings(ligand_a, ligand_b), None)
     if mapping is None:
-        mapper = KartografAtomMapper(atom_max_distance=0.95)
-        mapping = next(mapper.suggest_mappings(ligand_a, ligand_b), None)
+        # Try Kartograf as a last resort, but expect a JSON-serialisation
+        # crash on openfe 1.11 + gufe — surface that as a structured
+        # error rather than a bare stacktrace.
+        try:
+            mapper = KartografAtomMapper(atom_max_distance=0.95)
+            mapping = next(mapper.suggest_mappings(ligand_a, ligand_b), None)
+        except TypeError as e:
+            if "JSON serializable" in str(e):
+                raise RuntimeError(
+                    "Kartograf fallback hit the known openfe-1.11/gufe "
+                    "Molecule-tokenisation bug. The likely cause is that "
+                    "LOMAP couldn't map this analog pair (element change, "
+                    "fused-ring change, or charge-changing). Try a more "
+                    "conservative analog (single-atom changes only)."
+                ) from e
+            raise
         if mapping is None:
             raise RuntimeError(
                 "Neither LOMAP nor Kartograf could produce an atom map "
