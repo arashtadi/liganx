@@ -999,7 +999,14 @@ def run_study(fep_job_id: int, session: Session) -> None:
     if job.status == FepJobStatus.FAILED:
         try:
             from .notifications import notify_fep_failed
-            from ..models import User, Compound
+            # (N1 fix) DO NOT re-import Compound here — it's already
+            # imported at module top (line 44). Re-importing inside the
+            # function turns Compound into a LOCAL variable for the
+            # WHOLE function body (Python scoping rule), which broke
+            # the earlier `session.get(Compound, n.compound_id)` call
+            # at line 856 with `UnboundLocalError: cannot access local
+            # variable 'Compound'`. THIS was the FEP #18 crash root cause.
+            from ..models import User
             user_row = None
             if job.user_id:
                 user_row = session.get(User, job.user_id)
@@ -1090,7 +1097,11 @@ def run_study_safe(fep_job_id: int, session: Session) -> None:
                 # Fire-and-forget alert.
                 try:
                     from .notifications import notify_fep_failed
-                    from ..models import User, Compound
+                    # (N1 fix) Same scoping pitfall as the run_study M10
+                    # branch — Compound is imported at module top, do
+                    # NOT shadow it here. User isn't module-imported so
+                    # we still need that one.
+                    from ..models import User
                     user_row = (
                         session.get(User, job.user_id) if job.user_id else None
                     )
