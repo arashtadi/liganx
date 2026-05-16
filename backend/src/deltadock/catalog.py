@@ -50,6 +50,41 @@ class Target:
     indications: list[str]  # cancers / diseases this is relevant in
     mutations: list[Mutation] = field(default_factory=list)
     compounds: list[ReferenceCompound] = field(default_factory=list)
+    # (T1) Druggability tier — the trust signal the chemist agent and
+    # pre-flight need so they can warn the user when an experiment has
+    # no published precedent. Values are deliberately a four-way enum,
+    # not a number: chemists think in classes ("kinase ATP-site, well-
+    # validated" vs "experimental, no chemical matter") not a 0-1 score.
+    #   • "established" — well-known target with multiple approved drugs
+    #     (EGFR, ABL, BRAF V600E, KIT D816V)
+    #   • "recent"      — recently cracked, has at least one approved
+    #     drug (KRAS G12C / Sotorasib + Adagrasib)
+    #   • "experimental"— not yet cracked, no approved direct binder
+    #     (KRAS G12D, KRAS G13D, KRAS Q61H)
+    #   • "untested"    — anything we haven't audited yet
+    druggability: str = "untested"
+    # Short justification for the druggability tier — shown in the agent's
+    # prompt and (eventually) the UI. Plain English, one sentence.
+    druggability_note: str = ""
+    # (T1) Canonical drug-binding residues for this target — the residues
+    # a chemist EXPECTS a real binder to contact. The agent compares the
+    # observed ProLIF contacts against this set; zero overlap is a strong
+    # signal of off-pocket surface-binding (the Cenestil + KRAS case).
+    # Use the standard one-letter+number form ("T790", "M793"). Order is
+    # not significant.
+    canonical_pocket_residues: list[str] = field(default_factory=list)
+    # (T1) Typical Vina-score range (in kcal/mol; more negative = stronger)
+    # for KNOWN ACTIVE COMPOUNDS at this target. Used as a calibration
+    # band: a result well above the upper bound is "below typical for a
+    # real binder" — a noise-floor surface contact. Values informed by
+    # literature/published docking benchmarks for each target class;
+    # refine via the S2 retrospective validation harness when you have
+    # ChEMBL data for the target.
+    #
+    # The convention here is (worst_typical, best_typical) — both
+    # negative numbers, more negative = stronger. So (-11.0, -8.0) means
+    # known actives usually score between -11 and -8 kcal/mol.
+    typical_vina_range: tuple[float, float] = (-11.0, -7.0)
     # Whether to run a short OpenMM amber99sb-ildn vacuum minimisation on
     # the mutant receptor after PDBFixer applies the residue substitution.
     # Default True — relieves substitution clash artefacts and is what
@@ -110,6 +145,26 @@ EGFR = Target(
         ReferenceCompound("Afatinib",    "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1OC1CCOC1",
                           "2nd-gen irreversible covalent"),
     ],
+    # (T1) EGFR is the textbook example of an established kinase target —
+    # four generations of approved drugs (gefitinib → erlotinib → afatinib
+    # → osimertinib) all bind the canonical ATP pocket. Trust signal: very
+    # high; the chemist agent should be willing to be assertive here.
+    druggability="established",
+    druggability_note=(
+        "Established target — multiple approved drugs (gefitinib, erlotinib, "
+        "osimertinib, afatinib) all bind the canonical ATP pocket. Strong "
+        "precedent for the ProLIF contact pattern and score range."
+    ),
+    # The canonical ATP-pocket "vocabulary" — a real binder makes the
+    # hinge H-bond to M793 backbone and contacts the gatekeeper T790
+    # and the K745 salt bridge. Zero overlap = surface contact, not real
+    # binding.
+    canonical_pocket_residues=["L718", "K745", "T790", "L788", "T854", "M793"],
+    # Approved EGFR TKIs typically score -8 to -11 kcal/mol in Vina against
+    # 2ITY/4ZAU-class structures (verified internally on the four approved
+    # compounds in this entry, May 2026). Anything weaker than -7 is a
+    # noise-floor result for this target.
+    typical_vina_range=(-11.0, -8.0),
 )
 
 KRAS = Target(
@@ -154,6 +209,31 @@ KRAS = Target(
                           "O=C(C(F)=C)N([C@@H](CC#N)C1)CCN1C2=NC(OC[C@H]3N(C)CCC3)=NC4=C2CCN(C5=CC=CC6=C5C(Cl)=CC=C6)C4",
                           "Approved G12C-selective (MRTX849)"),
     ],
+    # (T1) KRAS sits between "recent" and "experimental" — G12C was cracked
+    # in 2021 (Sotorasib/Adagrasib) by exploiting the cryptic Switch II
+    # pocket via a covalent warhead. G12D has Divarasib + MRTX1133 in
+    # trials but no FDA approval. G13D and Q61H have no direct chemical
+    # matter. At the target level we mark "recent" — at least one variant
+    # is cracked — and lean on the chemist agent to call out per-mutation
+    # tier in its prompt (see _build_user_message).
+    druggability="recent",
+    druggability_note=(
+        "Recently cracked: G12C has two approved drugs (Sotorasib, Adagrasib) "
+        "that engage Cys12 via a covalent warhead in the cryptic Switch II "
+        "pocket. G12D is in clinical trials (no approval); G12V/G13D/Q61H "
+        "have no approved direct binder — treat scores at those mutations as "
+        "exploratory."
+    ),
+    # The Switch II druggable pocket residues (defined by Sotorasib's
+    # crystallographic contacts in 6OIM) — these are what a real KRAS
+    # binder is expected to contact. Cys12 only matters for G12C-covalent
+    # compounds.
+    canonical_pocket_residues=["G12", "T58", "G60", "Y96", "Q99", "I100", "Y32"],
+    # KRAS is hard to drug — even the approved covalent inhibitors score
+    # in the -7 to -9 kcal range against rigid Vina (the covalent reaction
+    # isn't modeled). Anything weaker than -6 is firmly in the noise
+    # floor / surface-contact regime.
+    typical_vina_range=(-9.0, -6.5),
 )
 
 BRAF = Target(
@@ -208,6 +288,19 @@ BRAF = Target(
         ReferenceCompound("Encorafenib", "COc1cc(/C(=N\\OC)c2cn(C(C)C)nc2-c2cnc(N)nc2C)ccc1NS(=O)(=O)C",
                           "3rd-gen, longer residence time"),
     ],
+    # (T1) BRAF V600E is one of the most-validated oncogenic targets —
+    # three approved drugs and the active-state DFG-in conformation is
+    # well-characterized.
+    druggability="established",
+    druggability_note=(
+        "Established — three approved V600E inhibitors (Vemurafenib, "
+        "Dabrafenib, Encorafenib) all bind the ATP pocket in the active "
+        "DFG-in / αC-in conformation. Strong precedent."
+    ),
+    # ATP pocket residues for the active conformation (4WO5-class). C532
+    # makes the hinge H-bond; F595 is the DFG phenylalanine.
+    canonical_pocket_residues=["G466", "K483", "T529", "Q530", "C532", "G534", "F583", "F595", "V600"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 IDH1 = Target(
@@ -246,6 +339,25 @@ IDH1 = Target(
         ReferenceCompound("Vorasidenib", "CC(C)C(=O)N(C1CCC1)C(C)c1ccc(C(=O)Nc2cccnc2)cc1F",
                           "Brain-penetrant, dual IDH1/2"),
     ],
+    # (T1) IDH1 honest assessment: the APPROVED drugs (Ivosidenib,
+    # Vorasidenib) bind ALLOSTERICALLY at the dimer interface, NOT at the
+    # NADP+ cofactor pocket this catalog entry boxes. Docking against this
+    # pocket cannot reproduce the ivosidenib mechanism. Mark as
+    # "experimental" until we add an allosteric-pocket PDB (e.g. 6B0Z).
+    druggability="experimental",
+    druggability_note=(
+        "Approved IDH1-R132H drugs (Ivosidenib, Vorasidenib) bind "
+        "ALLOSTERICALLY at the dimer interface, NOT at this cofactor "
+        "pocket. Docking against 1T0L's NADP+ site cannot capture the "
+        "approved-drug binding mode — treat scores as exploratory only."
+    ),
+    # Substrate-pocket / cofactor-pocket residues (1T0L). NOT the
+    # allosteric pocket — see note above.
+    canonical_pocket_residues=["R132", "R109", "R100", "Y139", "K212", "T214", "S278"],
+    # Without a chemistry-validated docking pocket on this PDB, real-drug
+    # scores aren't a useful calibration. Conservative band; agent should
+    # de-emphasize numeric score for this target.
+    typical_vina_range=(-9.0, -6.0),
 )
 
 ABL = Target(
@@ -281,6 +393,20 @@ ABL = Target(
         ReferenceCompound("Ponatinib", "Cc1ccc(C(=O)Nc2ccc(CN3CCN(C)CC3)c(C(F)(F)F)c2)cc1C#Cc1cnc2cccnn12",
                           "3rd-gen, T315I-active"),
     ],
+    # (T1) BCR-ABL is the founding kinase target — Imatinib was the first
+    # rationally-designed targeted cancer drug. Four generations of
+    # approved inhibitors all bind the canonical ATP pocket; T315I is
+    # the textbook resistance mutation.
+    druggability="established",
+    druggability_note=(
+        "Established — Imatinib (the founding TKI) plus Dasatinib, "
+        "Nilotinib, Ponatinib all approved. The ATP-pocket geometry is "
+        "one of the best-characterized in oncology."
+    ),
+    # ATP pocket (2HYY-class). M318 makes the hinge H-bond; T315 is the
+    # gatekeeper (mutation site). F382 is the DFG phenylalanine.
+    canonical_pocket_residues=["L248", "G249", "K271", "E286", "T315", "F317", "M318", "F382"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 HER2 = Target(
@@ -320,6 +446,18 @@ HER2 = Target(
         ReferenceCompound("Neratinib", "CCN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(Oc4cccc(C)n4)c(Cl)c3)ncnc2cc1OC",
                           "Pan-HER irreversible"),
     ],
+    # (T1) HER2 is established — Lapatinib, Tucatinib, Neratinib are
+    # approved kinase inhibitors that bind the canonical ATP pocket.
+    druggability="established",
+    druggability_note=(
+        "Established — three approved TKIs (Lapatinib, Tucatinib, "
+        "Neratinib) bind the ATP pocket. The HER2/EGFR family is one of "
+        "the best-modeled kinase classes in docking."
+    ),
+    # ATP pocket (3PP0-class). M801 makes the hinge H-bond; T798 is the
+    # gatekeeper.
+    canonical_pocket_residues=["L726", "V734", "K753", "T798", "L796", "M801", "T862", "D863"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 ALK = Target(
@@ -355,6 +493,18 @@ ALK = Target(
         ReferenceCompound("Lorlatinib", "CC1(F)CN(c2cnc3c(N)nc(-c4cnn(CC)c4OC)cc3c2C(=O)N1)C",
                           "3rd-gen, G1202R-active"),
     ],
+    # (T1) ALK is established — three generations of approved inhibitors
+    # bind the canonical ATP pocket. Stepwise resistance pattern
+    # (Crizotinib → Alectinib → Lorlatinib) is well-characterized.
+    druggability="established",
+    druggability_note=(
+        "Established — Crizotinib, Alectinib, Lorlatinib all approved. "
+        "Stepwise resistance pattern via L1196M (gatekeeper) and G1202R "
+        "(solvent-front) is textbook."
+    ),
+    # ATP pocket (2XP2-class). M1199 hinge H-bond; L1196 gatekeeper.
+    canonical_pocket_residues=["L1122", "G1123", "K1150", "E1167", "L1196", "M1199", "G1202", "D1270"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 ROS1 = Target(
@@ -380,6 +530,18 @@ ROS1 = Target(
         ReferenceCompound("Repotrectinib","CC1CC2(CCN(c3nc4ccccn4n3)C2)CC(F)(F)C1NS(=O)(=O)Cc1cc(F)cc(F)c1",
                           "Next-gen, G2032R-active"),
     ],
+    # (T1) ROS1 is established — three approved drugs (Crizotinib,
+    # Entrectinib, Repotrectinib). Smaller indication than EGFR/ALK but
+    # the pocket is well-characterized.
+    druggability="established",
+    druggability_note=(
+        "Established — Crizotinib (originally an ALK inhibitor, also "
+        "approved for ROS1), Entrectinib, and Repotrectinib all bind the "
+        "canonical ATP pocket."
+    ),
+    # ATP pocket (3ZBF-class). E2027 hinge; L2026 gatekeeper.
+    canonical_pocket_residues=["L1951", "K1980", "E2027", "L2026", "G2032", "D2102"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 MET = Target(
@@ -407,6 +569,17 @@ MET = Target(
         ReferenceCompound("Tepotinib",  "COc1cnc2cc(C(=O)NC3CCN(c4cccnc4-c4cccnc4)CC3)ccc2n1",
                           "Approved type-Ib MET inhibitor"),
     ],
+    # (T1) MET is established — Capmatinib and Tepotinib approved for
+    # MET-altered NSCLC, Crizotinib also has MET activity.
+    druggability="established",
+    druggability_note=(
+        "Established — Capmatinib and Tepotinib are approved type-Ib "
+        "MET inhibitors; Crizotinib has cross-reactivity. D1228V is the "
+        "DFG resistance mutation."
+    ),
+    # ATP pocket (2WGJ-class). M1160 hinge; L1157 gatekeeper.
+    canonical_pocket_residues=["L1140", "G1163", "K1110", "L1157", "M1160", "Y1230", "D1228", "F1223"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 FLT3 = Target(
@@ -439,6 +612,17 @@ FLT3 = Target(
         ReferenceCompound("Midostaurin",  "Cc1cc2c3c(c1)c1c(c4ccccc41)C1=NC(=O)c4c1n23OC(=O)c1ccccc14",
                           "Multikinase inhibitor"),
     ],
+    # (T1) FLT3 is established for AML — Gilteritinib, Quizartinib,
+    # Midostaurin all approved. ITD plus D835/F691 TKD mutations.
+    druggability="established",
+    druggability_note=(
+        "Established — Gilteritinib (type-I, F691L-active), Quizartinib "
+        "(type-II), and Midostaurin all approved for AML. "
+        "Gatekeeper/activation-loop resistance pattern is well-mapped."
+    ),
+    # ATP pocket (4XUF-class). C694 hinge; F691 gatekeeper.
+    canonical_pocket_residues=["L616", "V624", "K644", "F691", "C694", "G697", "D829", "D835"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 BTK = Target(
@@ -466,6 +650,20 @@ BTK = Target(
         ReferenceCompound("Pirtobrutinib", "Cc1ccc(C(=O)Nc2ccnc(-c3cn(C)c4ccc(F)cc34)n2)cc1OC",
                           "Non-covalent, C481S-active"),
     ],
+    # (T1) BTK is established — Ibrutinib (covalent), Acalabrutinib
+    # (more selective covalent), and Pirtobrutinib (non-covalent,
+    # C481S-active) are all approved.
+    druggability="established",
+    druggability_note=(
+        "Established — Ibrutinib (1st-gen covalent), Acalabrutinib, and "
+        "Pirtobrutinib (non-covalent) all approved. C481S resistance "
+        "drove the development of non-covalent inhibitors — a textbook "
+        "case for mutation-aware selectivity."
+    ),
+    # ATP pocket (5P9J-class). M477 hinge; T474 gatekeeper; C481 is the
+    # covalent target.
+    canonical_pocket_residues=["L408", "V416", "K430", "T474", "M477", "C481", "G480", "D539"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 PI3KA = Target(
@@ -504,6 +702,25 @@ PI3KA = Target(
         ReferenceCompound("Inavolisib", "CC1(C)Cc2cc(C(=O)NCc3ccc(N4C[C@H]5OC[C@H](C5)O4)cc3)cc(C(=O)O)c2N1",
                           "Mutant-selective PI3K-α"),
     ],
+    # (T1) PI3K-α is established (Alpelisib, Inavolisib approved). BUT:
+    # H1047R is in the activation loop and E542K/E545K are on the helical
+    # domain — neither is reachable from the kinase ATP pocket this entry
+    # boxes. The agent should note this when discussing mutation Δ for
+    # this target.
+    druggability="established",
+    druggability_note=(
+        "ATP-pocket established (Alpelisib, Inavolisib approved). HOWEVER: "
+        "H1047R, E542K, and E545K are all FAR from the ATP pocket — "
+        "rigid-receptor docking against the kinase site cannot capture "
+        "their activating effect. Treat mutation Δ as not-measurable here."
+    ),
+    # ATP pocket residues (4JPS-class) — these are the residues an
+    # ATP-competitive inhibitor like Alpelisib touches. They are nowhere
+    # near H1047/E542/E545.
+    canonical_pocket_residues=["S774", "K802", "I800", "V851", "S854", "I932", "D933", "M772"],
+    # PI3K-class kinases score a touch weaker than tyrosine kinases in
+    # Vina due to a more open ATP pocket.
+    typical_vina_range=(-10.0, -7.5),
 )
 
 KIT = Target(
@@ -535,6 +752,17 @@ KIT = Target(
         ReferenceCompound("Avapritinib","CC[C@H]1OCCN(c2ncc(F)c(-c3cccc4c3CN(C(=O)Nc3ccccn3)CC4)n2)C1",
                           "Approved D816V/PDGFRA D842V-selective"),
     ],
+    # (T1) KIT is established — Imatinib (1st-line GIST), Sunitinib
+    # (post-imatinib), and Avapritinib (D816V-selective for mastocytosis).
+    druggability="established",
+    druggability_note=(
+        "Established — Imatinib, Sunitinib, and Avapritinib all approved. "
+        "T670I gatekeeper and D816V activation-loop resistance is "
+        "well-characterized."
+    ),
+    # ATP pocket (1T46-class). C673 hinge; T670 gatekeeper.
+    canonical_pocket_residues=["L595", "V603", "K623", "T670", "C673", "G676", "D810", "D816"],
+    typical_vina_range=(-11.0, -8.0),
 )
 
 
