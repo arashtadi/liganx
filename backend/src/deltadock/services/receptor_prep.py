@@ -99,7 +99,14 @@ def prepare_receptor_for_target(
         if not wt_pdb.exists():
             raw = pdb_cache / f"{pdb_id}.pdb"
             if not raw.exists():
-                fetch_pdb(pdb_id, raw)
+                # (N17) fetch_pdb expects the CACHE DIRECTORY, not the
+                # output file path. The wrong-arg version caused fetch
+                # to mkdir `{pdb_cache}/{pdb_id}.pdb/` as a directory
+                # and write the actual PDB inside as `{pdb_id}.pdb/{pdb_id}.pdb`
+                # — then fix_pdb tried to open `{pdb_id}.pdb` and got
+                # IsADirectoryError. See FEP #21 dispatch failure.
+                # fetch_pdb returns the path it wrote to; use that.
+                raw = fetch_pdb(pdb_id, pdb_cache)
             fix_pdb(raw, wt_pdb, chain=chain)
         if not wt_pdbqt.exists():
             prepare_receptor(wt_pdb, wt_pdbqt, chain=chain)
