@@ -251,6 +251,134 @@ def reconcile_once_sync(session: Session) -> dict:
     return counters
 
 
+def _check_and_finalize_study(session: Session, fep_job_id: int) -> None:
+    """(N8) After any edge transitions to a terminal state, check if
+    the parent study is fully done. If so, run the end-of-study
+    aggregation that the legacy daemon-thread runner used to do:
+
+      1. Per-node ΔΔG via shortest-path from hit (aggregate_node_ddg)
+      2. Study-level cycle_closure_rmsd
+      3. FepJob.status → COMPLETED or FAILED depending on edge outcomes
+      4. Telegram alert on failure (M10)
+
+    Idempotent — safe to call multiple times. The terminal-state check
+    in the WHERE clause prevents double-finalization.
+
+    Called from _reconcile_one_edge whenever an edge transitions to
+    done/failed. NOT called for cancelled edges (those flow through
+    the user-cancel path which has its own finalisation).
+    """
+    from ..models import FepJob, FepJobStatus, FepNode, FepPerturbation
+    from sqlmodel import select as _select
+
+    # Load all edges + their dispatch states. We need this to decide
+    # if the study is fully done.
+    edges = list(session.exec(
+        _select(FepPerturbation).where(FepPerturbation.fep_job_id == fep_job_id)
+    ).all())
+    if not edges:
+        return
+
+    terminal_states = {"done", "failed", "cancelled"}
+    non_terminal = [e for e in edges if (e.dispatch_state or "queued") not in terminal_states]
+    if non_terminal:
+        # Study still has work to do — let the next reconciler tick
+        # pick up the remaining edges.
+        return
+
+    # All edges terminal — fetch the job (with SELECT FOR UPDATE) to
+    # avoid two reconciler ticks racing on the same finalisation.
+    job = session.get(FepJob, fep_job_id)
+    if not job:
+        return
+    if job.status not in (
+        FepJobStatus.PENDING,
+        FepJobStatus.PREPARING,
+        FepJobStatus.RUNNING,
+    ):
+        # Already terminal — nothing to do. Idempotent.
+        return
+
+    # Aggregate per-node ΔΔG + cycle closure RMSD using the legacy
+    # helpers — no duplication, single source of truth for the chemistry.
+    try:
+        from .fep_runner import aggregate_node_ddg, compute_cycle_closure_rmsd
+        nodes = list(session.exec(
+            _select(FepNode).where(FepNode.fep_job_id == fep_job_id)
+        ).all())
+        aggregate_node_ddg(nodes, edges)
+        for n in nodes:
+            session.add(n)
+        try:
+            job.cycle_closure_rmsd = compute_cycle_closure_rmsd(nodes, edges)
+        except Exception:                                            # noqa: BLE001
+            job.cycle_closure_rmsd = None
+    except Exception as e:                                           # noqa: BLE001
+        log.exception("reconciler: end-of-study aggregation failed for FepJob %s: %s", fep_job_id, e)
+        job.cycle_closure_rmsd = None
+
+    # Decide final status. Mirror the legacy run_study logic at
+    # fep_runner.py:1030-1041 (one source of truth: same convergence
+    # rules apply whichever runner finalised the study).
+    n_ok = sum(1 for e in edges if e.dispatch_state == "done" and e.status == "ok")
+    n_total = len(edges)
+    if n_ok == n_total:
+        job.status = FepJobStatus.COMPLETED
+    elif n_ok > 0:
+        job.status = FepJobStatus.COMPLETED
+        job.error_message = f"Partial: {n_ok}/{n_total} edges converged."
+    else:
+        job.status = FepJobStatus.FAILED
+        job.error_message = "All edges failed; check per-edge pod_log_tail for details."
+    job.stage = None
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+    log.info(
+        "reconciler: finalised FepJob %s — status=%s n_ok=%d/%d cycle_closure_rmsd=%s",
+        fep_job_id, job.status, n_ok, n_total, job.cycle_closure_rmsd,
+    )
+
+    # (M10) Telegram alert on failure. Fire-and-forget — never let an
+    # alert failure block the finaliser path.
+    if job.status == FepJobStatus.FAILED:
+        try:
+            from .notifications import notify_fep_failed
+            from ..models import Compound, User
+            user_row = session.get(User, job.user_id) if job.user_id else None
+            hit_row = session.get(Compound, job.hit_compound_id) if job.hit_compound_id else None
+            # Pull the first failed edge's tail as the actionable error.
+            tail_err = "All edges failed."
+            tail_kind = "runtime"
+            for e in edges:
+                if e.dispatch_state == "failed" and e.pod_log_tail:
+                    plt = e.pod_log_tail
+                    if plt.startswith("[") and "] " in plt:
+                        bracket_end = plt.index("] ")
+                        tail_kind = plt[1:bracket_end]
+                        tail_err = plt[bracket_end + 2:]
+                    else:
+                        tail_err = plt
+                    break
+            notify_fep_failed(
+                fep_job_id=job.id or -1,
+                share_id=job.share_id,
+                pdb_id=job.pdb_id,
+                variant=job.variant,
+                user_email=(user_row.email if user_row else None),
+                user_id=job.user_id,
+                hit_name=(hit_row.name if hit_row else None),
+                n_analogs=max(0, n_total - 1),
+                edges_completed=n_ok,
+                edges_total=n_total,
+                error_message=tail_err[:600],
+                error_kind=tail_kind,
+                cost_usd_so_far=job.estimated_usd_cost,
+            )
+        except Exception as ne:                                      # noqa: BLE001
+            log.warning("reconciler: Telegram alert failed for FepJob %s: %s", fep_job_id, ne)
+
+
 def _sweep_stale_pod(session: Session) -> int:
     """(S2) Mark edges as failed when last_polled_at is too stale.
 
@@ -420,6 +548,9 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
                 "reconciler: edge %s done; ddg_binding=%s kcal/mol",
                 edge_row.id, result.get("ddg_binding_kcal_mol"),
             )
+            # (N8) Now that this edge is terminal, check if the parent
+            # study is fully done — if so, run end-of-study aggregation.
+            _check_and_finalize_study(session, edge_row.fep_job_id)
         else:
             # Pod returned ok=False even though status=done. Edge
             # failed at the pod's analysis step. Mark failed with the
@@ -442,6 +573,8 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
             )
             session.commit()
             log.warning("reconciler: edge %s pod returned done+failed: %s", edge_row.id, err[:120])
+            # (N8) Same check on failure path.
+            _check_and_finalize_study(session, edge_row.fep_job_id)
         return
 
     if pod_status in ("failed", "lost"):
@@ -462,6 +595,8 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
         )
         session.commit()
         log.warning("reconciler: edge %s pod-side failed: %s", edge_row.id, err[:120])
+        # (N8) Edge is terminal — check if study is fully done.
+        _check_and_finalize_study(session, edge_row.fep_job_id)
         return
 
     # Still running — just tick the timestamps + stage label so the
