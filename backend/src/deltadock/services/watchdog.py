@@ -365,6 +365,120 @@ def check_db_alive(session: Session) -> CheckResult:
         )
 
 
+async def check_ghost_fep_edges(session: Session) -> CheckResult:
+    """(U5b) Ghost edge: DB + pod status.json say the edge is running,
+    but the actual MD subprocess has died (e.g. from a fep_server
+    restart, OOM kill, or any non-graceful exit). Symptoms:
+      - fep_perturbation.dispatch_state IN (dispatching, running)
+      - pod_job_id set + recent last_polled_at (reconciler is happy)
+      - BUT the pod's /admin/gpu_status reports 0 active edges + 0 GPU
+        compute_apps, so nothing is actually running.
+
+    Caught by today's user report on FEP #22: backend polled the pod,
+    pod responded with the stale status.json, reconciler kept ticking
+    happily, but the pod had no MD process at all.
+
+    Auto-remediation: for each in-flight edge in DB, if the pod confirms
+    zero-active-edges + zero-GPU, mark the edge FAILED with a clear
+    error_message so the parent study can finalise instead of hanging
+    for the 1h stale-pod timeout.
+    """
+    url = (os.environ.get("POD_FEP_URL", "") or "").strip().rstrip("/") + "/admin/gpu_status"
+    if url == "/admin/gpu_status":
+        return CheckResult(
+            name="ghost_fep_edges", severity=SEV_OK,
+            message="POD_FEP_URL not configured; skipping.",
+        )
+    # Get the pod's view first.
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(url, headers=pod_auth_headers())
+        if r.status_code != 200:
+            return CheckResult(
+                name="ghost_fep_edges", severity=SEV_WARN,
+                message=f"HTTP {r.status_code} from /admin/gpu_status",
+            )
+        body = r.json()
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        return CheckResult(
+            name="ghost_fep_edges", severity=SEV_WARN,
+            message=f"transport error: {type(e).__name__}: {e}",
+        )
+
+    pod_active_edges = int(body.get("active_edges", 0))
+    pod_compute_apps = body.get("compute_apps", [])
+    pod_gpu_busy = any(a.get("used_mb", 0) > 100 for a in pod_compute_apps)
+
+    # Only treat as ghost-edge candidate if the pod confirms NO work.
+    # If active_edges > 0 or compute_apps has something running, then
+    # whatever's in flight is real and we should leave it alone.
+    if pod_active_edges > 0 or pod_gpu_busy:
+        return CheckResult(
+            name="ghost_fep_edges", severity=SEV_OK,
+            message=(
+                f"Pod has real work: active_edges={pod_active_edges}, "
+                f"gpu_busy={pod_gpu_busy}"
+            ),
+        )
+
+    # Pod is idle. Find any edges DB+reconciler still believe are
+    # running. Anything that matches IS a ghost.
+    rows = session.execute(text(
+        "SELECT id, fep_job_id, pod_job_id, dispatch_state,"
+        "       EXTRACT(EPOCH FROM (now() - dispatched_at))/60 AS minutes_in_flight"
+        "  FROM fep_perturbation"
+        " WHERE dispatch_state IN ('dispatching', 'running')"
+        "   AND pod_job_id IS NOT NULL"
+        # Guard window: only fail edges that have been in flight for at
+        # least 5 minutes. Avoids racing the dispatch path of a brand-
+        # new edge that hasn't actually started its MD yet but the pod
+        # hasn't ticked active_edges past 0 in this very short window.
+        "   AND dispatched_at < now() - interval '5 minutes'"
+        " LIMIT 25"
+    )).mappings().all()
+    if not rows:
+        return CheckResult(
+            name="ghost_fep_edges", severity=SEV_OK,
+            message="Pod idle and no DB-side in-flight edges. Clean.",
+        )
+
+    fixed = 0
+    for r in rows:
+        session.execute(text(
+            "UPDATE fep_perturbation"
+            "   SET dispatch_state = 'failed',"
+            "       status         = 'failed',"
+            "       pod_log_tail   = :msg,"
+            "       completed_at   = now()"
+            " WHERE id = :id"
+            "   AND dispatch_state IN ('dispatching', 'running')"
+        ), {
+            "id": r["id"],
+            "msg": (
+                f"Watchdog ghost-edge fail: pod reports 0 active MD jobs "
+                f"+ 0 GPU compute_apps but edge has been 'running' for "
+                f"{float(r['minutes_in_flight']):.1f} min. The MD subprocess "
+                f"likely died on a fep_server restart. Re-submit to retry."
+            ),
+        })
+        fixed += 1
+    session.commit()
+    return CheckResult(
+        name="ghost_fep_edges", severity=SEV_WARN,
+        message=(
+            f"Auto-failed {fixed} ghost edge(s): pod idle, but DB said "
+            "running. Likely fep_server restart killed the MD subprocess."
+        ),
+        details={"edges": [
+            {"id": r["id"], "fep_job_id": r["fep_job_id"],
+             "pod_job_id": r["pod_job_id"],
+             "minutes_in_flight": round(float(r["minutes_in_flight"]), 1)}
+            for r in rows
+        ]},
+        remediation=f"marked {fixed} ghost edge(s) FAILED with explanation",
+    )
+
+
 def check_recent_jobs(session: Session) -> CheckResult:
     """Throughput sanity check — counts of jobs in each status over the
     last 24 h. Always SEV_OK (purely informational); useful in the admin
@@ -418,6 +532,16 @@ async def run_all_checks() -> WatchdogRun:
     # DB checks need a sync Session; run them serially.
     try:
         with Session(engine) as session:
+            # ghost_fep_edges is async (hits the pod) BUT also needs the
+            # session for DB-side cleanup. Run it inside the session.
+            try:
+                results.append(await check_ghost_fep_edges(session))
+            except Exception as e:                                       # noqa: BLE001
+                log.exception("watchdog: ghost_fep_edges failed")
+                results.append(CheckResult(
+                    name="ghost_fep_edges", severity=SEV_WARN,
+                    message=f"check crashed: {type(e).__name__}: {e}",
+                ))
             for fn in (
                 check_db_alive,
                 check_stuck_docking_jobs,
