@@ -761,6 +761,25 @@ def run_study(fep_job_id: int, session: Session) -> None:
     each edge is days of compute and partial-edge results are
     scientifically meaningless).
     """
+    # (N8c) Defensive authority self-skip. When the reconciler is
+    # authoritative, run_study must NOT spawn its dispatch loop —
+    # the reconciler owns dispatch and would race us on every edge.
+    # The router (routers/fep.py) and resume sweep (main.py) already
+    # gate on this flag before spawning the thread; this guard is the
+    # belt-to-the-suspenders for any future path that misses the gate.
+    try:
+        from .fep_reconciler import _is_authoritative
+        if _is_authoritative():
+            log.info(
+                "run_study: FepJob %s skipped — reconciler is authoritative "
+                "(daemon-thread runner is observe-only in this mode)",
+                fep_job_id,
+            )
+            return
+    except Exception:                                                  # noqa: BLE001
+        # Import / env-read failure must not block the legacy path.
+        pass
+
     # (K4) Engine-aware URL routing. We need to read the FepJob first
     # so we know which tier (Sage/Espaloma) to dispatch to. The previous
     # code read POD_FEP_URL unconditionally before fetching the job; we
