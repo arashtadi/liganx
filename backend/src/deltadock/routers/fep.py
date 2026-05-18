@@ -721,6 +721,15 @@ def create_fep_study(
     session.flush()                                                  # populate node.id
 
     # Seed perturbation rows.
+    #
+    # (R3) Every freshly-created edge starts in dispatch_state='queued'.
+    # This is the signal the new reconciler watches (services/
+    # fep_reconciler.py). During the shadow-mode rollout window the
+    # legacy daemon-thread runner is still authoritative for dispatch
+    # + result aggregation; we just need the new column populated so
+    # the reconciler can OBSERVE in parallel. Once the cutover lands
+    # (§7 of docs/fep_reconciler_design.md), this column becomes the
+    # only signal that matters.
     for a_idx, b_idx, score in edges:
         if a_idx >= len(node_rows) or b_idx >= len(node_rows):
             continue
@@ -729,6 +738,7 @@ def create_fep_study(
             node_a_id=node_rows[a_idx].id,
             node_b_id=node_rows[b_idx].id,
             lomap_score=score,
+            dispatch_state="queued",        # (R3) reconciler-readable
         )
         session.add(pert)
     session.commit()

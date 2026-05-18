@@ -897,6 +897,7 @@ def run_study(fep_job_id: int, session: Session) -> None:
         sdf_b = compound_sdf_cache.get(node_b.compound_id)
         if not sdf_a or not sdf_b:
             edge.status = "failed"
+            edge.dispatch_state = "failed"                           # (R3) reconciler-readable
             edge.pod_log_tail = "SMILES → SDF embed failed; cannot dispatch"
             session.add(edge)
             session.commit()
@@ -904,6 +905,12 @@ def run_study(fep_job_id: int, session: Session) -> None:
 
         edge.status = "running"
         edge.started_at = datetime.utcnow()
+        # (R3) Also write the reconciler-readable column. Legacy
+        # runner still authoritative for dispatch + results during
+        # shadow mode; the new column just lets the reconciler
+        # observe what the legacy runner is doing in parallel.
+        edge.dispatch_state = "running"
+        edge.dispatched_at = datetime.utcnow()
         job.stage = f"edge_{i+1}_of_{len(edges)}_running"
         job.updated_at = datetime.utcnow()
         session.add(edge)
@@ -953,6 +960,7 @@ def run_study(fep_job_id: int, session: Session) -> None:
         edge.completed_at = datetime.utcnow()
         if result.get("ok"):
             edge.status = "ok"
+            edge.dispatch_state = "done"                             # (R3) reconciler-readable
             edge.ddg_complex_kcal_mol = result.get("ddg_complex_kcal_mol")
             edge.ddg_solvent_kcal_mol = result.get("ddg_solvent_kcal_mol")
             edge.ddg_binding_kcal_mol = result.get("ddg_binding_kcal_mol")
@@ -961,6 +969,7 @@ def run_study(fep_job_id: int, session: Session) -> None:
             edge.mbar_diagnostics_json = result.get("mbar_diagnostics_json")
         else:
             edge.status = "failed"
+            edge.dispatch_state = "failed"                           # (R3) reconciler-readable
             kind = result.get("kind", "runtime")
             edge.pod_log_tail = f"[{kind}] {result.get('error', 'no error')}"
         session.add(edge)
