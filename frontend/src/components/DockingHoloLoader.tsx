@@ -509,7 +509,28 @@ export function DockingHoloLoader({ job, stageLabel }: DockingHoloLoaderProps) {
         pointerEvents: "none",
       }} />
 
-      {/* Header bar. */}
+      {/* (U2-1) Big plain-English header so a non-expert immediately
+          knows the page hasn't crashed and what to expect. The terminal
+          row below stays for power users who want the operational view. */}
+      <div style={{
+        marginBottom: "0.85rem", position: "relative", zIndex: 3,
+        textAlign: "center",
+      }}>
+        <div style={{
+          fontSize: 15, color: "#E2F0E6", letterSpacing: "0.02em",
+          fontFamily: "inherit",
+        }}>
+          Docking in progress — please wait
+        </div>
+        <div style={{
+          fontSize: 11, color: "#5F5E5A", marginTop: 2,
+        }}>
+          {nComp > 0 && nMut > 0 && `${nComp} compound${nComp === 1 ? "" : "s"} × ${nMut + 1} variant${nMut === 0 ? "" : "s"} · `}
+          first-time targets warm up in ~30-60 s · results stream in as each pose finishes
+        </div>
+      </div>
+
+      {/* Terminal-style status row (compact ops view under the header). */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         marginBottom: "0.9rem", position: "relative", zIndex: 3,

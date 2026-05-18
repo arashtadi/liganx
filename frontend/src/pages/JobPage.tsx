@@ -451,23 +451,18 @@ export default function JobPage() {
       )}
       {job.error_message && <JobErrorCard job={job} />}
 
-      {/* Live progress UI — stays visible until the job finishes. Two
-          modes:
-            • Pre-flight (status=pending OR running-with-no-cells-yet) →
-              show DockingHoloLoader (the 3D viewport with rotating
-              protein, mutation, ligand approach, terminal log feed).
-              This is the period where the user is staring at 0% on the
-              first dock of a target and we want something visually
-              alive to look at.
-            • Docking active (cells have started filling in) → fall back
-              to the StreamingBanner, since the matrix below now carries
-              the real per-cell visual progress.
+      {/* Live progress UI — stays visible until the job finishes. The
+          DockingHoloLoader now persists throughout the whole pending +
+          running window (not just pre-flight) — users reported the
+          animation disappearing the moment the first WT cells filled
+          in, with no visual cue that the mutation row was still being
+          worked on. The cycling mutation/compound text + log feed
+          already covers both phases, and the matrix below shows the
+          real per-cell progress, so we don't lose information.
           Suppress in subset view: the streaming UI is misleading when
           most of the matrix has been intentionally hidden. */}
       {!inSubsetView && job.status !== "completed" && job.status !== "failed" && (
-        job.results.length === 0
-          ? <DockingHoloLoader job={job} />
-          : <StreamingBanner job={job} />
+        <DockingHoloLoader job={job} />
       )}
 
       {/* Side-by-side layout for desktop (lg+): matrix + drill-down + insights
@@ -1338,6 +1333,8 @@ function preflightStages(job: Job): Stage[] {
   return stages;
 }
 
+// @ts-ignore — kept around for now in case we want to bring back a
+// compact progress strip alongside the holo loader. Unused after U2.
 function StreamingBanner({ job }: { job: Job }) {
   const total = job.compounds.length * (job.mutations.length + 1);
   const done = job.results.length;

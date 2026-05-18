@@ -2248,7 +2248,12 @@ def _run_real(session: Session, job: Job) -> None:
         # On any whole-batch HTTP failure we fall back to the per-cell Pod
         # call for that variant, which is exactly what the legacy path does
         # anyway, so reliability is unchanged.
-        if pod_batch_on and len(compounds) * len(variants) > 1:
+        # (U3) Small jobs skip the batched path so the user sees cells
+        # stream in one-by-one instead of all-at-once-per-variant. The
+        # default cutoff (12 cells) keeps batch dispatch for large
+        # screening jobs where GPU throughput dominates; configurable
+        # via POD_BATCH_DOCK_MIN_CELLS env var.
+        if pod_batch_on and (len(compounds) * len(variants)) >= settings.pod_batch_dock_min_cells:
             # Mark pod activity so cost-control watchdog doesn't auto-stop
             # mid-job. See services/pod_activity.py.
             from .pod_activity import bump_pod_activity  # local: avoid circular

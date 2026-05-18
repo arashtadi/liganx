@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # stabilized the new per-cell post-processing path through batch
     # results — flip on via env (POD_BATCH_DOCK=1) when ready.
     pod_batch_dock: bool = False
+    # (U3) Minimum cell count below which we PREFER the per-cell dispatch
+    # path even when pod_batch_dock is on. Reason: batching is great for
+    # GPU throughput on large screens, but small jobs (3 compounds x 2
+    # variants = 6 cells) feel laggy because every cell in a variant
+    # appears at once — there's no visible progress until the whole
+    # variant-batch completes. Per-cell dispatch trades ~2-3s of
+    # receptor-reload-per-cell overhead for visible cell-by-cell
+    # streaming, which is the right tradeoff at small scale.
+    # Override with POD_BATCH_DOCK_MIN_CELLS env on Fly.
+    pod_batch_dock_min_cells: int = 12
 
     # When true, validation (PoseBusters + ProLIF + strain analysis) runs
     # AFTER docking + DB write completes — in a thread pool that updates
