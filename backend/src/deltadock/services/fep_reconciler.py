@@ -950,8 +950,13 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
         session.commit()
         return
 
-    # Success — pod has the job. Move to running state.
-    session.execute(
+    # Success — pod has the job. Move to running state IF the row is
+    # still in 'dispatching'. If it's been concurrently flipped to
+    # 'cancelled' (user cancel mid-dispatch), don't overwrite — but
+    # DO persist pod_job_id separately so N9 cancel propagation can
+    # send a kill signal to the pod next tick. Without this, the pod
+    # would run the orphaned edge until Q2's 30-min cleanup.
+    upd = session.execute(
         text(
             "UPDATE fep_perturbation"
             " SET dispatch_state = 'running',"
@@ -961,14 +966,38 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
             "     last_polled_at = now()"
             " WHERE id = :id"
             "   AND dispatch_state = 'dispatching'"
+            " RETURNING id"
         ),
         {"id": queued_row.id, "jid": pod_job_id},
-    )
+    ).fetchone()
+    if not upd:
+        # Row is no longer 'dispatching' — likely cancelled mid-flight.
+        # Persist pod_job_id anyway so cancel-propagation can find the
+        # pod-side job to kill. Reset last_polled_at to NULL so the 5-min
+        # throttle in _propagate_cancellations doesn't delay the first
+        # cancel-send.
+        session.execute(
+            text(
+                "UPDATE fep_perturbation"
+                " SET pod_job_id     = :jid,"
+                "     last_polled_at = NULL"
+                " WHERE id = :id"
+                "   AND pod_job_id IS NULL"
+            ),
+            {"id": queued_row.id, "jid": pod_job_id},
+        )
+        log.warning(
+            "reconciler: edge %s dispatch succeeded (pod_job_id=%s) but row "
+            "was concurrently transitioned away from 'dispatching' — "
+            "pod_job_id persisted so cancel-propagation can clean up",
+            queued_row.id, pod_job_id,
+        )
     session.commit()
-    log.info(
-        "reconciler: dispatched edge %s → pod job_id=%s (study %s)",
-        queued_row.id, pod_job_id, queued_row.share_id,
-    )
+    if upd:
+        log.info(
+            "reconciler: dispatched edge %s → pod job_id=%s (study %s)",
+            queued_row.id, pod_job_id, queued_row.share_id,
+        )
 
 
 def _is_authoritative() -> bool:
