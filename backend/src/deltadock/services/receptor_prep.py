@@ -98,6 +98,19 @@ def prepare_receptor_for_target(
         from deltadock_pipeline.prep import fix_pdb, prepare_receptor
         if not wt_pdb.exists():
             raw = pdb_cache / f"{pdb_id}.pdb"
+            # (N17b) Self-heal stale corrupt-cache state from the pre-fix
+            # bug: any production Fly volume where the bug ran left
+            # `{pdb_id}.pdb` as a DIRECTORY containing `{pdb_id}.pdb/{pdb_id}.pdb`.
+            # New code would still see is_dir() and fail at open time.
+            # Detect and clean. Single-shot, idempotent, only fires if
+            # state is actually corrupt.
+            if raw.is_dir():
+                import shutil
+                log.warning(
+                    "receptor_prep: cleaning stale corrupt-cache directory "
+                    "%s (pre-N17 fetch_pdb bug)", raw,
+                )
+                shutil.rmtree(raw)
             if not raw.exists():
                 # (N17) fetch_pdb expects the CACHE DIRECTORY, not the
                 # output file path. The wrong-arg version caused fetch
