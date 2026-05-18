@@ -92,14 +92,21 @@ class Settings(BaseSettings):
     pod_batch_dock: bool = False
     # (U3) Minimum cell count below which we PREFER the per-cell dispatch
     # path even when pod_batch_dock is on. Reason: batching is great for
-    # GPU throughput on large screens, but small jobs (3 compounds x 2
-    # variants = 6 cells) feel laggy because every cell in a variant
-    # appears at once — there's no visible progress until the whole
-    # variant-batch completes. Per-cell dispatch trades ~2-3s of
-    # receptor-reload-per-cell overhead for visible cell-by-cell
-    # streaming, which is the right tradeoff at small scale.
+    # GPU throughput on large screens, but very small jobs feel laggy
+    # because every cell in a variant appears at once — there's no
+    # visible progress until the whole variant-batch completes.
+    #
+    # (U12) Lowered 12 → 4 because the 12 threshold made the common
+    # "1-3 compounds × 2-3 variants" jobs fall to the per-cell path,
+    # where pocket-best can do up to 3 retries per cell and the receptor
+    # is reloaded on every pod call. On job #320 (3×3=9) that was
+    # ~4-5× slower than the batched path. New cutoffs:
+    #   * 1×1=1, 1×2=2, 1×3=3 → per-cell (small exploratory jobs)
+    #   * 2×2=4, 3×3=9, 3×4=12, screens → batched (one pod call/variant)
+    # Per-variant streaming still gives visible progress every ~30-60s
+    # which is fine for non-screening UX.
     # Override with POD_BATCH_DOCK_MIN_CELLS env on Fly.
-    pod_batch_dock_min_cells: int = 12
+    pod_batch_dock_min_cells: int = 4
 
     # When true, validation (PoseBusters + ProLIF + strain analysis) runs
     # AFTER docking + DB write completes — in a thread pool that updates
