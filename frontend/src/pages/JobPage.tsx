@@ -10,6 +10,7 @@ import ReproFooter from "../components/ReproFooter";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import LiganxAIPanel from "../components/LiganxAIPanel";
+import { DockingHoloLoader } from "../components/DockingHoloLoader";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
 import { jobPollingInterval } from "../lib/jobPolling";
@@ -450,12 +451,23 @@ export default function JobPage() {
       )}
       {job.error_message && <JobErrorCard job={job} />}
 
-      {/* Live progress banner — stays visible until the job finishes, while the
-          matrix below renders cells incrementally as each docking commits.
-          Suppress in subset view: the streaming UI is misleading when most of
-          the matrix has been intentionally hidden. */}
+      {/* Live progress UI — stays visible until the job finishes. Two
+          modes:
+            • Pre-flight (status=pending OR running-with-no-cells-yet) →
+              show DockingHoloLoader (the 3D viewport with rotating
+              protein, mutation, ligand approach, terminal log feed).
+              This is the period where the user is staring at 0% on the
+              first dock of a target and we want something visually
+              alive to look at.
+            • Docking active (cells have started filling in) → fall back
+              to the StreamingBanner, since the matrix below now carries
+              the real per-cell visual progress.
+          Suppress in subset view: the streaming UI is misleading when
+          most of the matrix has been intentionally hidden. */}
       {!inSubsetView && job.status !== "completed" && job.status !== "failed" && (
-        <StreamingBanner job={job} />
+        job.results.length === 0
+          ? <DockingHoloLoader job={job} />
+          : <StreamingBanner job={job} />
       )}
 
       {/* Side-by-side layout for desktop (lg+): matrix + drill-down + insights
