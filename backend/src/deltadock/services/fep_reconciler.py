@@ -301,24 +301,67 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
     progress_pct = payload.get("progress_pct")
 
     if pod_status == "done":
-        # Edge completed on the pod. Mark aggregating; the dispatcher
-        # in fep_runner picks this up and writes the ddg_* fields.
-        # We do NOT write them here — that requires the legacy
-        # post-processing path which lives in run_study.
-        session.execute(
-            text(
-                "UPDATE fep_perturbation"
-                " SET dispatch_state = 'aggregating',"
-                "     last_polled_at = now(),"
-                "     stage = 'done',"
-                "     progress_pct = 100"
-                " WHERE id = :id"
-                "   AND dispatch_state = 'running'"
-            ),
-            {"id": edge_row.id},
-        )
-        session.commit()
-        log.info("reconciler: edge %s pod-side done; marked aggregating", edge_row.id)
+        # (R4) Edge completed on the pod. Read the result payload,
+        # persist ddg_* fields, and transition to terminal done state.
+        # This is the part that previously lived in the daemon-thread
+        # runner; the reconciler now owns it.
+        result = payload.get("result") or {}
+        if result.get("ok"):
+            session.execute(
+                text(
+                    "UPDATE fep_perturbation"
+                    " SET dispatch_state = 'done',"
+                    "     status = 'ok',"
+                    "     last_polled_at = now(),"
+                    "     stage = 'done',"
+                    "     progress_pct = 100,"
+                    "     completed_at = now(),"
+                    "     ddg_complex_kcal_mol  = :ddg_complex,"
+                    "     ddg_solvent_kcal_mol  = :ddg_solvent,"
+                    "     ddg_binding_kcal_mol  = :ddg_bind,"
+                    "     ddg_uncertainty       = :ddg_unc,"
+                    "     hysteresis_kcal_mol   = :hysteresis,"
+                    "     mbar_diagnostics_json = :mbar"
+                    " WHERE id = :id"
+                    "   AND dispatch_state = 'running'"
+                ),
+                {
+                    "id": edge_row.id,
+                    "ddg_complex": result.get("ddg_complex_kcal_mol"),
+                    "ddg_solvent": result.get("ddg_solvent_kcal_mol"),
+                    "ddg_bind": result.get("ddg_binding_kcal_mol"),
+                    "ddg_unc": result.get("ddg_uncertainty"),
+                    "hysteresis": result.get("hysteresis_kcal_mol"),
+                    "mbar": result.get("mbar_diagnostics_json"),
+                },
+            )
+            session.commit()
+            log.info(
+                "reconciler: edge %s done; ddg_binding=%s kcal/mol",
+                edge_row.id, result.get("ddg_binding_kcal_mol"),
+            )
+        else:
+            # Pod returned ok=False even though status=done. Edge
+            # failed at the pod's analysis step. Mark failed with the
+            # error message the pod included.
+            kind = result.get("kind", "runtime")
+            err = (result.get("error") or "unknown pod-side error")[:600]
+            tail = f"[{kind}] {err}"
+            session.execute(
+                text(
+                    "UPDATE fep_perturbation"
+                    " SET dispatch_state = 'failed',"
+                    "     status = 'failed',"
+                    "     last_polled_at = now(),"
+                    "     completed_at = now(),"
+                    "     pod_log_tail = :tail"
+                    " WHERE id = :id"
+                    "   AND dispatch_state = 'running'"
+                ),
+                {"id": edge_row.id, "tail": tail},
+            )
+            session.commit()
+            log.warning("reconciler: edge %s pod returned done+failed: %s", edge_row.id, err[:120])
         return
 
     if pod_status in ("failed", "lost"):
@@ -366,33 +409,265 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
 
 
 def _try_dispatch_next(session: Session, queued_row) -> None:
-    """Dispatch the next queued edge to the pod. Idempotent via
-    client_token on the pod side. Does NOT do the actual MD work —
-    that's the pod's job; we just POST /fep_edge_start.
+    """(R4) Dispatch the next queued edge to the pod.
 
-    On success: transition edge to dispatch_state=dispatching, record
-                dispatched_at, write pod_job_id. Next tick will see
-                it's running on the pod.
-    On failure: leave the edge in queued state; next tick retries.
+    Idempotent via client_token on the pod side — same edge submitted
+    twice gets the same job_id back, no double-charge. The pod's Q2
+    idempotency token map persists this across pod restarts too.
 
-    Stub for now — full implementation in R4 (we'll wire to the
-    legacy dispatch_edge body once the new endpoint lands). Keeping
-    this minimal so R1+R2 ship and shadow-mode observation can run
-    against real edges before the dispatch path flips."""
+    Authority gating:
+      shadow mode             → log only, no mutation
+      FEP_AUTHORITATIVE_RECONCILER=1 → reconciler is sole dispatcher,
+                                       the legacy daemon thread in
+                                       run_study skips its own dispatch
+      default                 → log only (legacy runner is still
+                                authoritative; reconciler only observes)
+
+    On success: transition edge to dispatch_state=running, write
+                pod_job_id, dispatched_at. Next tick polls.
+    On 4xx (bad input): mark failed terminally.
+    On transport failure: leave queued; next tick retries.
+    """
     if is_shadow_mode():
         log.info(
-            "[shadow] would dispatch edge %s (study %s) — skipping (R4 wires this)",
+            "[shadow] would dispatch edge %s (study %s) — skipping",
             queued_row.id, queued_row.share_id,
         )
         return
-    # R4 will implement the actual POST /fep_edge_start path. For now
-    # the daemon-thread runner is still authoritative for dispatch;
-    # the reconciler only observes / cleans up in-flight rows. This
-    # makes R1+R2 safe to ship behind FEP_RECONCILER_SHADOW=1.
-    log.debug(
-        "reconciler: edge %s queued; dispatch handled by legacy runner until R4",
-        queued_row.id,
+    if not _is_authoritative():
+        # Legacy runner owns dispatch; we just observe. This is the
+        # safe-rollout default — flip FEP_AUTHORITATIVE_RECONCILER=1
+        # in Fly secrets to transfer authority.
+        return
+
+    pod_url = _pod_url_for_edge(session, queued_row.fep_job_id)
+    if not pod_url:
+        log.warning(
+            "reconciler: pod_url unset for FepJob %s; refusing to dispatch edge %s",
+            queued_row.fep_job_id, queued_row.id,
+        )
+        return
+
+    # Atomic state transition: queued → dispatching, with dispatched_at
+    # set. If two reconciler ticks race, only one wins because the
+    # WHERE filter requires the row to still be in 'queued' state.
+    upd = session.execute(
+        text(
+            "UPDATE fep_perturbation"
+            " SET dispatch_state = 'dispatching',"
+            "     dispatched_at  = now()"
+            " WHERE id = :id"
+            "   AND dispatch_state = 'queued'"
+            " RETURNING id"
+        ),
+        {"id": queued_row.id},
+    ).fetchone()
+    if not upd:
+        # Lost the race — another tick grabbed this edge first.
+        return
+    session.commit()
+
+    # Build the dispatch payload. Need to load the parent edge + its
+    # node compounds to assemble receptor PDB + ligand SDFs. This
+    # logic mirrors the legacy dispatch path in fep_runner.run_study
+    # but stays in this file so the reconciler is self-contained.
+    payload, err = _build_dispatch_payload(session, queued_row.id)
+    if err:
+        log.warning("reconciler: edge %s payload build failed: %s", queued_row.id, err)
+        session.execute(
+            text(
+                "UPDATE fep_perturbation"
+                " SET dispatch_state = 'failed',"
+                "     status = 'failed',"
+                "     pod_log_tail = :err,"
+                "     completed_at = now()"
+                " WHERE id = :id"
+            ),
+            {"id": queued_row.id, "err": f"dispatch payload build failed: {err}"[:600]},
+        )
+        session.commit()
+        return
+
+    # POST /fep_edge_start with idempotency token = perturbation.id.
+    # Pod's Q2 token map dedupes if we accidentally call twice.
+    payload["client_token"] = str(queued_row.id)
+    try:
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                pod_url.rstrip("/") + "/fep_edge_start",
+                json=payload,
+                headers=pod_auth_headers(),
+            )
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        # Transport failure — revert to queued so the next tick retries.
+        # Idempotency token guarantees we don't spawn duplicate workers
+        # if the pod actually received the call before the timeout.
+        log.warning("reconciler: dispatch transport error for edge %s: %s", queued_row.id, e)
+        session.execute(
+            text(
+                "UPDATE fep_perturbation"
+                " SET dispatch_state = 'queued', dispatched_at = NULL"
+                " WHERE id = :id AND dispatch_state = 'dispatching'"
+            ),
+            {"id": queued_row.id},
+        )
+        session.commit()
+        return
+
+    if resp.status_code >= 400:
+        # 4xx → bad request, terminal. 5xx → transient, retry.
+        if 400 <= resp.status_code < 500:
+            err = f"pod {resp.status_code}: {resp.text[:500]}"
+            session.execute(
+                text(
+                    "UPDATE fep_perturbation"
+                    " SET dispatch_state = 'failed',"
+                    "     status = 'failed',"
+                    "     pod_log_tail = :err,"
+                    "     completed_at = now()"
+                    " WHERE id = :id"
+                ),
+                {"id": queued_row.id, "err": err[:600]},
+            )
+            session.commit()
+            log.warning("reconciler: edge %s dispatch rejected: %s", queued_row.id, err[:120])
+        else:
+            # 5xx — retry next tick
+            session.execute(
+                text(
+                    "UPDATE fep_perturbation"
+                    " SET dispatch_state = 'queued', dispatched_at = NULL"
+                    " WHERE id = :id"
+                ),
+                {"id": queued_row.id},
+            )
+            session.commit()
+        return
+
+    try:
+        start_payload = resp.json()
+    except Exception:                                                # noqa: BLE001
+        log.warning("reconciler: pod /fep_edge_start non-JSON for edge %s", queued_row.id)
+        return
+
+    pod_job_id = start_payload.get("job_id")
+    if not pod_job_id:
+        # Pod returned 200 but no job_id — treat as failure.
+        session.execute(
+            text(
+                "UPDATE fep_perturbation"
+                " SET dispatch_state = 'failed',"
+                "     status = 'failed',"
+                "     pod_log_tail = :err,"
+                "     completed_at = now()"
+                " WHERE id = :id"
+            ),
+            {"id": queued_row.id, "err": f"pod returned no job_id: {str(start_payload)[:400]}"},
+        )
+        session.commit()
+        return
+
+    # Success — pod has the job. Move to running state.
+    session.execute(
+        text(
+            "UPDATE fep_perturbation"
+            " SET dispatch_state = 'running',"
+            "     status = 'running',"
+            "     pod_job_id = :jid,"
+            "     started_at = now(),"
+            "     last_polled_at = now()"
+            " WHERE id = :id"
+            "   AND dispatch_state = 'dispatching'"
+        ),
+        {"id": queued_row.id, "jid": pod_job_id},
     )
+    session.commit()
+    log.info(
+        "reconciler: dispatched edge %s → pod job_id=%s (study %s)",
+        queued_row.id, pod_job_id, queued_row.share_id,
+    )
+
+
+def _is_authoritative() -> bool:
+    """(R4) Master flag — when set, reconciler is sole dispatch
+    authority and the legacy daemon thread skips its own dispatch.
+    Default: False (legacy still owns)."""
+    return os.environ.get("FEP_AUTHORITATIVE_RECONCILER", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+
+
+def _build_dispatch_payload(session: Session, perturbation_id: int) -> tuple[dict, Optional[str]]:
+    """Assemble the /fep_edge_start payload from DB state.
+
+    Returns (payload_dict, None) on success or ({}, error_message)
+    on failure. All the data we need is already in Postgres:
+    receptor via the FepJob's pdb_id/chain/variant + receptor_prep,
+    ligand SDFs via the FepNode → Compound → smiles chain.
+    """
+    from sqlmodel import select as _select
+    from ..models import Compound, FepJob, FepNode, FepPerturbation
+
+    pert = session.get(FepPerturbation, perturbation_id)
+    if not pert:
+        return {}, "perturbation row not found"
+    job = session.get(FepJob, pert.fep_job_id)
+    if not job:
+        return {}, "parent FepJob not found"
+    node_a = session.get(FepNode, pert.node_a_id) if pert.node_a_id else None
+    node_b = session.get(FepNode, pert.node_b_id) if pert.node_b_id else None
+    if not node_a or not node_b:
+        return {}, "node_a or node_b missing"
+    cmp_a = session.get(Compound, node_a.compound_id)
+    cmp_b = session.get(Compound, node_b.compound_id)
+    if not cmp_a or not cmp_b:
+        return {}, "compound row missing"
+
+    # Receptor: use the same receptor_prep service the docking runner
+    # uses — guarantees bit-identical receptor across docking + FEP.
+    try:
+        from .receptor_prep import prepare_receptor_for_target
+        from ..config import get_settings
+        from pathlib import Path
+        s = get_settings()
+        rprep = prepare_receptor_for_target(
+            pdb_id=job.pdb_id,
+            chain=job.chain or "A",
+            mutation=None if job.variant == "WT" else job.variant,
+            pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
+            receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
+        )
+        receptor_pdb_text = rprep.receptor_pdb.read_text()
+    except Exception as e:                                           # noqa: BLE001
+        return {}, f"receptor prep failed: {type(e).__name__}: {e}"
+
+    # SMILES → SDF via RDKit (same path as legacy fep_runner).
+    def _smiles_to_sdf(smiles: str) -> Optional[str]:
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import AllChem
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return None
+            mol = Chem.AddHs(mol)
+            AllChem.EmbedMolecule(mol, randomSeed=42)
+            AllChem.MMFFOptimizeMolecule(mol)
+            return Chem.MolToMolBlock(mol)
+        except Exception:                                            # noqa: BLE001
+            return None
+
+    sdf_a = _smiles_to_sdf(cmp_a.smiles)
+    sdf_b = _smiles_to_sdf(cmp_b.smiles)
+    if not sdf_a or not sdf_b:
+        return {}, "SMILES → SDF embed failed"
+
+    return {
+        "receptor_pdb": receptor_pdb_text,
+        "ligand_a_sdf": sdf_a,
+        "ligand_b_sdf": sdf_b,
+        "n_lambda_windows": job.n_lambda_windows,
+        "ns_per_window": job.ns_per_window,
+    }, None
 
 
 def _pod_url_for_edge(session: Session, fep_job_id: int) -> str:

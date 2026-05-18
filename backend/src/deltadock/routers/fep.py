@@ -768,8 +768,24 @@ def create_fep_study(
             # alert instead of leaving the row stuck in PREPARING.
             run_study_safe(job_id, s)
 
-    threading.Thread(target=_run_in_thread, args=(fep_job.id,), daemon=True).start()
-    log.info("FepJob %s dispatched via daemon thread (Celery deferred for v1)", fep_job.id)
+    # (R4) Authority gating. When FEP_AUTHORITATIVE_RECONCILER=1 is
+    # set, the new reconciler (services/fep_reconciler.py) is sole
+    # owner of edge dispatch. We deliberately do NOT spawn the daemon
+    # thread in that case — the reconciler picks up edges via their
+    # dispatch_state='queued' marker on its next tick (≤60s).
+    #
+    # Default (flag unset): legacy daemon thread is still authoritative
+    # for back-compat during the rollout. The reconciler observes only.
+    # See docs/fep_reconciler_design.md §7.
+    from ..services.fep_reconciler import _is_authoritative as _reconciler_authoritative
+    if _reconciler_authoritative():
+        log.info(
+            "FepJob %s seeded for reconciler-owned dispatch (no daemon thread spawned)",
+            fep_job.id,
+        )
+    else:
+        threading.Thread(target=_run_in_thread, args=(fep_job.id,), daemon=True).start()
+        log.info("FepJob %s dispatched via daemon thread (Celery deferred for v1)", fep_job.id)
 
     # Return the freshly-created study shape — frontend will poll
     # /fep/studies/{share_id}/graph for live updates.
