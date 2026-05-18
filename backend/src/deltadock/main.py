@@ -659,6 +659,11 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("020_fep_perturbation_stage.sql", "Migration 020 (FEP per-edge stage + progress + pod_job_id)"),
     ("021_fep_seq_number.sql", "Migration 021 (FEP per-user seq_number for human-friendly #)"),
     ("022_fep_force_field_engine.sql", "Migration 022 (FEP force_field_engine column)"),
+    # (R1) Phase R of the reconciler architecture rewrite. Adds the
+    # dispatch_state state machine + lifecycle timestamps that the
+    # new fep_reconciler.py owns. Strictly fep_perturbation-only; the
+    # docking schema is untouched.
+    ("023_fep_dispatch_state.sql", "Migration 023 (FEP dispatch_state + lifecycle columns)"),
 ]
 
 

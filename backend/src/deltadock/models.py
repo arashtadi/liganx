@@ -619,3 +619,35 @@ class FepPerturbation(SQLModel, table=True):
     stage: Optional[str] = Field(default=None, max_length=64)
     progress_pct: Optional[int] = None
     pod_job_id: Optional[str] = Field(default=None, max_length=64)
+
+    # (R1) Reconciler-owned lifecycle state. See
+    # docs/fep_reconciler_design.md §2 for the state machine.
+    #
+    # dispatch_state is the *authoritative* state for the new
+    # reconciler architecture. The legacy `status` column above stays
+    # in place during the shadow-mode rollout (§7 of the design) so
+    # the old daemon-thread runner can keep working as a fallback.
+    # When the rewrite is fully validated, status will be removed.
+    #
+    # Allowed values (enforced by CHECK constraint, see migration 023):
+    #   queued      — planned but not yet dispatched
+    #   dispatching — POST /fep_edge_start in flight
+    #   running     — pod accepted, MD in progress
+    #   aggregating — pod done, results being persisted
+    #   done        — terminal, results in ddg_* columns
+    #   failed      — terminal, error_message populated
+    #   cancelled   — terminal, user or budget-cap initiated
+    #
+    # NULL means "pre-rewrite legacy row" — reconciler treats it the
+    # same as 'queued' for backward compat with already-running studies
+    # at migration time.
+    dispatch_state: Optional[str] = Field(default=None, max_length=16)
+    # First moment the edge transitioned to `dispatching`. Used for
+    # per-edge GPU-spend accounting (S1) and telemetry (S3). Survives
+    # retries — re-dispatch doesn't reset this.
+    dispatched_at: Optional[datetime] = None
+    # Updated on every successful reconciler poll. Drives S2 stale-pod
+    # detection: if last_polled_at is recent, the edge is alive; if
+    # stale, pod is unreachable and the reconciler bumps the study to
+    # FAILED with a real error.
+    last_polled_at: Optional[datetime] = None
