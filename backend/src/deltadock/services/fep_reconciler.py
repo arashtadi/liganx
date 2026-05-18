@@ -319,19 +319,14 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
         )
         return
 
-    pod_url = _pod_url_for_edge(session, edge_row.fep_job_id)
-    if not pod_url:
-        # No pod URL configured — caller is responsible for marking
-        # the study FAILED. We don't do it here because that's the
-        # daemon-thread runner's job during the rollout window.
-        return
-
+    # Stale-dispatching revert. This check happens BEFORE the pod_url
+    # check because reverting state to 'queued' doesn't need a pod —
+    # it's a pure DB cleanup. State=dispatching with no pod_job_id
+    # means either an in-flight dispatch RPC or a stalled one. If
+    # stalled (older than DISPATCH_STALE_AFTER_SECONDS), revert to
+    # queued so the next dispatch attempt retries. Idempotency on the
+    # pod side (client_token) ensures this never spawns two workers.
     if not edge_row.pod_job_id:
-        # State=dispatching with no pod_job_id — either an in-flight
-        # dispatch RPC, or a stalled one. If stalled (older than
-        # DISPATCH_STALE_AFTER_SECONDS), revert to queued so the next
-        # dispatch attempt retries. Idempotency on the pod side
-        # (client_token) ensures this never spawns two workers.
         if edge_row.dispatched_at is None:
             return                                                   # fresh, give it a few seconds
         age = datetime.utcnow() - edge_row.dispatched_at
@@ -349,6 +344,13 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
                 {"id": edge_row.id},
             )
             session.commit()
+        return
+
+    pod_url = _pod_url_for_edge(session, edge_row.fep_job_id)
+    if not pod_url:
+        # No pod URL configured — caller is responsible for marking
+        # the study FAILED. We don't do it here because that's the
+        # daemon-thread runner's job during the rollout window.
         return
 
     # Edge has a pod_job_id — poll the pod synchronously. (Async-poll
