@@ -436,21 +436,39 @@ export default function SelectivityMatrix({
                       onEditCompound (omitted on shared subset views
                       that don't own a sketcher). */}
                   {onEditCompound && (
+                    /* (U6) Edit & re-dock spawns a NEW job from the same
+                       compound. While the current job is still pending /
+                       running (isStreaming) we disable this — clicking it
+                       mid-run forks from incomplete data and gets the user
+                       into a confusing "wait, which job am I looking at"
+                       state. Re-enables automatically once the matrix is
+                       no longer streaming. */
                     <button
                       type="button"
+                      disabled={isStreaming}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (isStreaming) return;
                         onEditCompound(compound);
                       }}
-                      className="mt-2 group inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-delta-600 hover:bg-delta-700 text-white shadow-sm hover:shadow-md transition-all w-full justify-center"
-                      title="Open the structure editor with this SMILES. Your edit submits a fresh job against the same target + mutations — engine, exhaustiveness, and WT setting are preserved."
+                      className={
+                        "mt-2 group inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all w-full justify-center " +
+                        (isStreaming
+                          ? "bg-slate-300 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed"
+                          : "bg-delta-600 hover:bg-delta-700 text-white hover:shadow-md")
+                      }
+                      title={isStreaming
+                        ? "Disabled while docking is in progress. Wait for the current job to finish — then this opens the editor with this SMILES for a fresh re-dock."
+                        : "Open the structure editor with this SMILES. Your edit submits a fresh job against the same target + mutations — engine, exhaustiveness, and WT setting are preserved."}
                     >
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                         <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                       </svg>
-                      Edit &amp; re-dock
-                      <span className="opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" aria-hidden="true">→</span>
+                      {isStreaming ? "Edit & re-dock (waiting…)" : "Edit & re-dock"}
+                      {!isStreaming && (
+                        <span className="opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" aria-hidden="true">→</span>
+                      )}
                     </button>
                   )}
                 </td>

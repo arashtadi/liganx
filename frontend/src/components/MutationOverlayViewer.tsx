@@ -551,7 +551,11 @@ function ViewerCanvas({
         const sel: any = { model: 0, resi: resnum };
         if (chain) sel.chain = chain;
         if (mutationResidue != null && resnum === mutationResidue) continue;
-        safe(`contact-${resnum}`, () => viewer.addStyle(sel, { stick: { color, radius: 0.22 } }));
+        // (U7b) Contact sticks rendered THINNER than the ligand (0.30
+        // above) so the user can immediately tell which atoms are
+        // 'their compound' vs 'what it's touching'. Same colors,
+        // smaller radius — the ligand pops, the residues recede.
+        safe(`contact-${resnum}`, () => viewer.addStyle(sel, { stick: { color, radius: 0.15 } }));
       }
     }
 
@@ -606,7 +610,12 @@ function ViewerCanvas({
           break;
         case "stick":
         default:
-          poseSpec = { stick: { colorscheme: "Jmol", radius: 0.22 } };
+          // (U7b) Ligand sticks rendered THICKER than contact-residue
+          // sticks (which are 0.15 below) so the user can immediately
+          // tell which atoms are 'their compound' vs 'what it's
+          // touching'. Without this, a backbone-hidden + contacts-on
+          // view reads as one fragmented blob.
+          poseSpec = { stick: { colorscheme: "Jmol", radius: 0.30 } };
       }
       const poseSel: any = { model: poseModelIdx };
       if (isComplex) poseSel.chain = COMPLEX_LIGAND_CHAIN;
