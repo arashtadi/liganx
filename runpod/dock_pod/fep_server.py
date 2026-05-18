@@ -503,6 +503,71 @@ def fep_edge_status_endpoint(job_id: str, _auth: None = None) -> dict:
     return status
 
 
+@app.get("/admin/gpu_status")
+def admin_gpu_status(_auth: None = None) -> dict:
+    """(U5) Lightweight GPU + service status probe for the Liganx
+    watchdog. Returns:
+      - gpu_used_mb / gpu_util_pct (from nvidia-smi)
+      - compute_apps: list of {pid, name, used_mb} that hold GPU memory
+      - active_edges: count of edges in non-terminal state per fep_server
+      - has_orphan_leak: True iff GPU mem > 5 GB AND active_edges == 0
+        (the canonical "fep_server is hoarding CUDA context with no work
+        to do" pattern that produced today's vina-gpu rc=255 cascade)
+
+    Used by services/watchdog.py to detect + remediate the leak.
+    Auth: shared pod secret, same as the rest of the admin routes.
+    """
+    require_pod_secret()  # noqa: F811
+
+    used_mb = 0
+    util_pct = 0
+    apps: list[dict] = []
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            line = (out.stdout.strip().splitlines() or [""])[0]
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2:
+                util_pct = int(parts[0])
+                used_mb = int(parts[1])
+        out2 = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out2.returncode == 0:
+            for raw in out2.stdout.strip().splitlines():
+                cols = [c.strip() for c in raw.split(",")]
+                if len(cols) >= 3:
+                    apps.append({
+                        "pid": int(cols[0]),
+                        "name": cols[1],
+                        "used_mb": int(cols[2]),
+                    })
+    except Exception as e:                                               # noqa: BLE001
+        return {"ok": False, "error": str(e)[:200]}
+
+    with _poll_lock:
+        active_edges = len(_last_polled_at)
+
+    has_orphan_leak = used_mb > 5000 and active_edges == 0
+
+    return {
+        "ok": True,
+        "gpu_used_mb": used_mb,
+        "gpu_util_pct": util_pct,
+        "compute_apps": apps,
+        "active_edges": active_edges,
+        "has_orphan_leak": has_orphan_leak,
+        "fep_server_pid": os.getpid(),
+    }
+
+
 @app.post("/fep_edge_cancel/{job_id}")
 def fep_edge_cancel_endpoint(job_id: str, _auth: None = None) -> dict:
     """(Q3) Explicit cancellation. Backend reconciler calls this when

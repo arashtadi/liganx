@@ -32,6 +32,7 @@ cancellations.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -111,6 +112,54 @@ class FepUpdate(BaseModel):
     default, so this is the explicit grant rather than a kill-switch
     like ensemble."""
     fep_enabled: bool
+
+
+@router.get("/watchdog/status")
+def get_watchdog_status(
+    _admin: Annotated[CurrentUser, Depends(admin_user)],
+) -> dict:
+    """(U5) Liganx watchdog snapshot — latest run + last 24 runs.
+
+    Returns:
+      - latest: the most recent WatchdogRun (severity-summarised
+        results, per-check details, auto-remediation actions taken)
+      - history: oldest-to-newest list of recent runs (up to 24)
+      - interval_seconds: how often the watchdog wakes
+      - next_run_at_approx: best-effort estimate for the next tick
+        (latest.started_at + interval; null if no runs yet)
+    """
+    from ..services.watchdog import (
+        get_history, WATCHDOG_INTERVAL_SECONDS,
+    )
+    history = get_history()
+    latest = history[0] if history else None
+    next_run = None
+    if latest:
+        try:
+            started_at = datetime.fromisoformat(latest["started_at"].rstrip("Z"))
+            next_dt = started_at + timedelta(seconds=WATCHDOG_INTERVAL_SECONDS)
+            next_run = next_dt.isoformat() + "Z"
+        except Exception:                                                # noqa: BLE001
+            next_run = None
+    return {
+        "latest": latest,
+        "history": history,
+        "interval_seconds": WATCHDOG_INTERVAL_SECONDS,
+        "next_run_at_approx": next_run,
+    }
+
+
+@router.post("/watchdog/run")
+async def trigger_watchdog_run(
+    _admin: Annotated[CurrentUser, Depends(admin_user)],
+) -> dict:
+    """(U5) Trigger an out-of-cycle watchdog run RIGHT NOW. Returns the
+    fresh result. Useful for verifying a fix without waiting for the
+    next hourly tick."""
+    from ..services.watchdog import run_all_checks
+    from dataclasses import asdict
+    run = await run_all_checks()
+    return asdict(run)
 
 
 @router.get("/stats", response_model=AdminStats)

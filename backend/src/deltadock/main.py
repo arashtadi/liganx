@@ -751,12 +751,23 @@ async def lifespan(_app: FastAPI):
     # the sole owner of in-flight edge state.
     from .services.fep_reconciler import reconciler_task as fep_reconciler_task
     fep_reconciler_async_task = asyncio.create_task(fep_reconciler_task())
+
+    # (U5) Liganx watchdog — hourly proactive health checks + auto-fix
+    # for safe-to-remediate failure modes (idle GPU leak, stuck dock
+    # jobs > 14h). Results served via GET /admin/watchdog/status.
+    from .services.watchdog import watchdog_task as liganx_watchdog_task
+    liganx_watchdog_async_task = asyncio.create_task(liganx_watchdog_task())
+
     try:
         yield
     finally:
-        for task in (watchdog_task, reaper_task, failover_task, fep_reconciler_async_task):
+        all_tasks = (
+            watchdog_task, reaper_task, failover_task,
+            fep_reconciler_async_task, liganx_watchdog_async_task,
+        )
+        for task in all_tasks:
             task.cancel()
-        for task in (watchdog_task, reaper_task, failover_task, fep_reconciler_async_task):
+        for task in all_tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
