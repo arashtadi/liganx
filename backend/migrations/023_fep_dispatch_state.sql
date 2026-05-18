@@ -64,29 +64,27 @@ UPDATE public.fep_perturbation
    END
  WHERE dispatch_state IS NULL;
 
--- ── 3. Add CHECK constraint (only if not already present) ─────────
--- We use a DO block because Postgres doesn't have IF NOT EXISTS for
--- CHECK constraints directly. The pg_constraint lookup keeps the
--- migration idempotent.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'fep_perturbation_dispatch_state_check'
-    ) THEN
-        ALTER TABLE public.fep_perturbation
-            ADD CONSTRAINT fep_perturbation_dispatch_state_check
-            CHECK (dispatch_state IS NULL OR dispatch_state IN (
-                'queued',
-                'dispatching',
-                'running',
-                'aggregating',
-                'done',
-                'failed',
-                'cancelled'
-            ));
-    END IF;
-END $$;
+-- ── 3. Add CHECK constraint (idempotent via DROP IF EXISTS) ───────
+-- Postgres CHECK constraints don't have ADD ... IF NOT EXISTS syntax
+-- yet, and the old DO $$ ... END $$; pattern is fragile because our
+-- migration splitter strips bare 'BEGIN' lines as transaction wrappers
+-- (mistakes the PL/pgSQL keyword for the SQL-level BEGIN). Simpler
+-- and more portable: drop-then-add. The DROP is a no-op the first
+-- time and idempotent on re-runs.
+ALTER TABLE public.fep_perturbation
+    DROP CONSTRAINT IF EXISTS fep_perturbation_dispatch_state_check;
+
+ALTER TABLE public.fep_perturbation
+    ADD CONSTRAINT fep_perturbation_dispatch_state_check
+    CHECK (dispatch_state IS NULL OR dispatch_state IN (
+        'queued',
+        'dispatching',
+        'running',
+        'aggregating',
+        'done',
+        'failed',
+        'cancelled'
+    ));
 
 -- ── 4. Indexes the reconciler will hit hard ───────────────────────
 -- The reconciler's hot query is:
