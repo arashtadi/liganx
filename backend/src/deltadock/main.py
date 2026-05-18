@@ -317,8 +317,25 @@ def _resume_recent_fep_studies() -> None:
                 log.info("FEP resume sweep: no recent pre-dispatch studies to re-spawn")
                 return
 
+            # (N8) Authority gating. When FEP_AUTHORITATIVE_RECONCILER=1
+            # is set, the reconciler (services/fep_reconciler.py) is
+            # the sole dispatcher — spawning a daemon thread here would
+            # race with the reconciler on the same queued edges. The
+            # reconciler picks up dispatch_state='queued' rows on its
+            # next tick (≤60s) automatically.
+            from .services.fep_reconciler import _is_authoritative
+            if _is_authoritative():
+                log.info(
+                    "FEP resume sweep: %d study/studies will be picked up by the "
+                    "authoritative reconciler on its next tick (no daemon thread "
+                    "spawned): %s",
+                    len(resumable_ids), resumable_ids,
+                )
+                return
+
             log.warning(
-                "FEP resume sweep: re-spawning runner thread for %d study/studies %s",
+                "FEP resume sweep: re-spawning runner thread for %d study/studies %s "
+                "(reconciler is not authoritative — legacy daemon thread path)",
                 len(resumable_ids), resumable_ids,
             )
 
