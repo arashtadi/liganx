@@ -24,6 +24,51 @@ import { Spinner } from "../components/Icons";
 import MoleculePreview from "../components/MoleculePreview";
 import { usePageMeta } from "../lib/usePageMeta";
 
+// (O13) Translate a mutation code (e.g. "Q61H", "T790M") into a
+// plain-language description: which amino acid changes to which,
+// known structural context if catalog has one. Falls back to the
+// raw code for novel / unparsable inputs.
+//
+// Sources for the structural-context annotations:
+//   • KRAS Q61H / G12C / G12D / G12V / G13D — published switch-II /
+//     P-loop literature (Lito et al., 2015; Khan et al., 2020).
+//   • EGFR L858R / T790M / C797S — Yun 2007, Kobayashi 2005,
+//     Thress 2015 (osimertinib resistance).
+//   • BRAF V600E — Davies 2002.
+//   • ABL T315I — Shah 2002 (imatinib gatekeeper resistance).
+// Use the title attribute for the long version (tooltip on hover);
+// the inline display gets the compact text.
+const _AA_3LETTER: Record<string, string> = {
+  A: "Alanine", R: "Arginine", N: "Asparagine", D: "Aspartate", C: "Cysteine",
+  E: "Glutamate", Q: "Glutamine", G: "Glycine", H: "Histidine", I: "Isoleucine",
+  L: "Leucine", K: "Lysine", M: "Methionine", F: "Phenylalanine", P: "Proline",
+  S: "Serine", T: "Threonine", W: "Tryptophan", Y: "Tyrosine", V: "Valine",
+};
+const _MUTATION_CONTEXT: Record<string, string> = {
+  "G12C": "P-loop, covalent-handle for KRAS G12C inhibitors",
+  "G12D": "P-loop, most common KRAS oncogenic mutation",
+  "G12V": "P-loop, common in pancreatic + colorectal cancer",
+  "G13D": "P-loop, frequent in colorectal cancer",
+  "Q61H": "switch-II region, resistance-associated",
+  "L858R": "activation loop, sensitises EGFR to TKIs",
+  "T790M": "gatekeeper, primary EGFR-TKI resistance mutation",
+  "C797S": "covalent-binding cysteine, osimertinib resistance",
+  "V600E": "activation loop, drives constitutive BRAF kinase activity",
+  "T315I": "gatekeeper, pan-TKI ABL resistance",
+};
+function describeMutation(variant: string): string {
+  if (!variant || variant === "WT") return "Wild-type protein sequence";
+  // Match WT-letter + position + mut-letter, e.g. "Q61H", "T790M".
+  const m = variant.match(/^([A-Z])(\d+)([A-Z])$/);
+  if (!m) return `Mutation ${variant} applied to the receptor`;
+  const [_full, wtOne, posStr, mutOne] = m;
+  const wtFull = _AA_3LETTER[wtOne] || wtOne;
+  const mutFull = _AA_3LETTER[mutOne] || mutOne;
+  const ctx = _MUTATION_CONTEXT[variant.toUpperCase()];
+  const base = `${wtFull} ${posStr} → ${mutFull}`;
+  return ctx ? `${base} · ${ctx}` : base;
+}
+
 // (J12) Map raw stage names emitted by fep_pod into friendly,
 // non-jargon labels for the running-edge status line. Keep the
 // stage taxonomy in sync with fep_pod.run_edge + fep_runner's
@@ -47,6 +92,112 @@ function humaniseFepStage(stage: string): string {
     case "mock_running":            return "mock simulation (no real physics)";
     default:                        return stage.replace(/_/g, " ");
   }
+}
+
+// (O8) Strip the "edge_X_of_Y_" prefix off a study-level stage so the
+// trailing per-edge stage can be humanised. Multi-edge studies emit
+// stages like "edge_2_of_3_running_complex_leg" — chemists read it as
+// gibberish. The runner already separates the two concerns
+// (job.stage = full label, edge.stage = bare per-edge stage); we
+// reconcile by parsing the prefix off the study label.
+function extractEdgeStage(stage: string | null | undefined): string | null {
+  if (!stage) return null;
+  const m = stage.match(/^edge_(\d+)_of_(\d+)_(.+)$/);
+  return m ? m[3] : stage;
+}
+
+// (O8) Pretty stage stepper. Renders the canonical per-edge stages
+// as a horizontal pipeline with the current one highlighted. Tracks
+// scientific accuracy by mirroring the actual run order in
+// fep_pod.run_edge — chemist can see at a glance that the run is on
+// step 4 of 6 without parsing a snake_case string.
+//
+// Stage order:
+//   1. parameterise   — ligand atom-mapping + antechamber
+//   2. equilibrate    — receptor prep + solvation
+//   3. complex leg    — λ-window MD with the ligand in the pocket
+//   4. solvent leg    — λ-window MD with the ligand free in water
+//   5. analyse        — MBAR + hysteresis convergence checks
+const STAGE_STEPS: ReadonlyArray<{ key: string; label: string; matches: string[] }> = [
+  {
+    key: "parameterise",
+    label: "Parameterise",
+    matches: [
+      "parsing_ligand_sdfs",
+      "lomap_mapping",
+      "building_complex_dag",
+    ],
+  },
+  {
+    key: "equilibrate",
+    label: "Equilibrate",
+    matches: ["preparing_receptor", "building_solvent_dag"],
+  },
+  {
+    key: "complex",
+    label: "Complex leg",
+    matches: ["running_complex_leg"],
+  },
+  {
+    key: "solvent",
+    label: "Solvent leg",
+    matches: ["running_solvent_leg"],
+  },
+  {
+    key: "analyse",
+    label: "Analyse",
+    matches: ["analysing_legs"],
+  },
+];
+
+function stageStepIndex(rawStage: string | null | undefined): number {
+  const s = extractEdgeStage(rawStage);
+  if (!s) return -1;
+  for (let i = 0; i < STAGE_STEPS.length; i++) {
+    if (STAGE_STEPS[i].matches.includes(s)) return i;
+  }
+  return -1;
+}
+
+function StageStepper({ stage }: { stage: string | null | undefined }) {
+  const activeIdx = stageStepIndex(stage);
+  if (activeIdx < 0) return null;
+  return (
+    <div
+      className="mt-3 flex items-center gap-1 flex-wrap text-[10px] font-medium"
+      role="list"
+      aria-label="FEP edge progress stages"
+    >
+      {STAGE_STEPS.map((step, i) => {
+        const state =
+          i < activeIdx ? "done"
+          : i === activeIdx ? "active"
+          : "pending";
+        const dotClass =
+          state === "done"   ? "bg-emerald-500"
+          : state === "active" ? "bg-violet-500 ring-2 ring-violet-200 dark:ring-violet-800/60 animate-pulse"
+          : "bg-slate-300 dark:bg-slate-600";
+        const textClass =
+          state === "done"   ? "text-emerald-700 dark:text-emerald-300"
+          : state === "active" ? "text-violet-700 dark:text-violet-300 font-semibold"
+          : "text-slate-400 dark:text-slate-500";
+        return (
+          <div key={step.key} className="flex items-center gap-1" role="listitem">
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`}
+              aria-hidden="true"
+            />
+            <span className={textClass}>{step.label}</span>
+            {i < STAGE_STEPS.length - 1 && (
+              <span className="text-slate-300 dark:text-slate-600 px-0.5" aria-hidden="true">
+                →
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function FepStudyPage() {
@@ -192,7 +343,18 @@ export default function FepStudyPage() {
           : "running";
         const pct = liveEdge?.progress_pct;
         const pctSuffix = typeof pct === "number" ? ` (${pct}%)` : "";
-        return `Edge ${edgeCounts.ok + 1}/${edgeCounts.total} — ${stageLabel}${pctSuffix} · ${edgeCounts.ok} done · ${edgeCounts.pending} queued`;
+        // (O3) For a single-edge study, "0 done · 0 queued" reads like
+        // three zeros and confuses chemists. Drop the suffix when the
+        // study is just one edge — they can already see we're on the
+        // only one.
+        const baseLine = `Edge ${edgeCounts.ok + 1}/${edgeCounts.total} — ${stageLabel}${pctSuffix}`;
+        if (edgeCounts.total === 1) {
+          return baseLine;
+        }
+        return `${baseLine} · ${edgeCounts.ok} done · ${edgeCounts.pending} queued`;
+      }
+      if (edgeCounts.total === 1) {
+        return `${edgeCounts.ok}/${edgeCounts.total} edge done`;
       }
       return `${edgeCounts.ok}/${edgeCounts.total} edges done · ${edgeCounts.pending} queued`;
     }
@@ -237,8 +399,20 @@ export default function FepStudyPage() {
     const opts: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
     return eta.toLocaleTimeString(undefined, opts);
   }
+  // (O10) Prefer created_at for total study elapsed; if it isn't on
+  // the response (legacy rows pre-J13) fall back to the running
+  // edge's started_at so the counter doesn't sit at "0 s" forever.
+  // Without this, the UI showed "Running for 0 s" even when the pod
+  // had been working for an hour.
   const createdAtMs = graph.created_at ? Date.parse(graph.created_at) : null;
-  const elapsedSec = createdAtMs ? Math.max(0, (now - createdAtMs) / 1000) : null;
+  const runningEdgeForElapsed = graph.edges.find((e) => e.status === "running");
+  const runningStartFallbackMs = runningEdgeForElapsed?.started_at
+    ? Date.parse(runningEdgeForElapsed.started_at)
+    : null;
+  const elapsedAnchorMs = createdAtMs ?? runningStartFallbackMs;
+  const elapsedSec = elapsedAnchorMs
+    ? Math.max(0, (now - elapsedAnchorMs) / 1000)
+    : null;
   const nWin = graph.n_lambda_windows ?? 12;
   const nsWin = graph.ns_per_window ?? 7.0;
   // Static fallback baseline used only when there's no stage info yet
@@ -373,8 +547,21 @@ export default function FepStudyPage() {
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
             {graph.share_id}
-            {graph.stage && <> · {graph.stage}</>}
+            {graph.stage && (() => {
+              // (O8) Humanise the trailing per-edge stage instead of
+              // dumping snake_case. Falls back to the raw label for
+              // study-level stages like "aggregating" that don't have
+              // an edge prefix.
+              const edgeStage = extractEdgeStage(graph.stage);
+              const friendly = edgeStage ? humaniseFepStage(edgeStage) : graph.stage;
+              return <> · {friendly}</>;
+            })()}
           </p>
+          {/* (O8) Visual stage stepper — much more chemist-friendly
+              than a raw stage string. Only renders when we recognise
+              the current stage; for novel / unmapped stages the prose
+              label above already covers it. */}
+          {isRunning && <StageStepper stage={graph.stage} />}
           {/* (M15) Target + variant — chemists need to know what protein
               this study is against, not just which compounds. Renders
               the PDB ID prominently with the variant as a colored
@@ -393,20 +580,27 @@ export default function FepStudyPage() {
                 </span>
               )}
               {graph.variant && (
-                <span
-                  className={`badge text-[10px] uppercase tracking-wider font-bold ${
-                    graph.variant === "WT"
-                      ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
-                      : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-                  }`}
-                  title={
-                    graph.variant === "WT"
-                      ? "Wild-type protein sequence"
-                      : `Mutation ${graph.variant} applied to the receptor`
-                  }
-                >
-                  {graph.variant}
-                </span>
+                <>
+                  <span
+                    className={`badge text-[10px] uppercase tracking-wider font-bold ${
+                      graph.variant === "WT"
+                        ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                        : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                    }`}
+                    title={describeMutation(graph.variant)}
+                  >
+                    {graph.variant}
+                  </span>
+                  {/* (O13) Plain-language gloss of the mutation — chemist
+                      who sees "Q61H" once knows it; chemist who sees a
+                      novel mutation shouldn't have to context-switch to
+                      UniProt to learn what amino-acid swap is happening. */}
+                  {graph.variant !== "WT" && (
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+                      {describeMutation(graph.variant)}
+                    </span>
+                  )}
+                </>
               )}
             </p>
           )}
@@ -530,10 +724,6 @@ export default function FepStudyPage() {
                     </span>{" "}
                     on this GPU
                   </span>
-                  <span>·</span>
-                  <span className="italic">
-                    no sub-stage progress reporting yet (L2 will add it)
-                  </span>
                 </>
               )}
               {edgesRemaining > 0
@@ -622,7 +812,7 @@ export default function FepStudyPage() {
           </div>
           <div className="flex items-start gap-4 mt-2">
             <div className="shrink-0">
-              <MoleculePreview smiles={hit.smiles} width={200} height={140} />
+              <MoleculePreview smiles={hit.smiles} width={260} height={170} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-bold text-base">{hit.name || "(unnamed)"}</div>
@@ -685,7 +875,19 @@ export default function FepStudyPage() {
           {graph.estimated_usd_cost != null && graph.estimated_usd_cost > 0 && (
             <div>
               <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Est. GPU cost</div>
-              <div className="font-mono mt-0.5 tabular-nums">${graph.estimated_usd_cost.toFixed(2)}</div>
+              <div className="font-mono mt-0.5 tabular-nums">
+                ${graph.estimated_usd_cost.toFixed(2)}
+              </div>
+              {/* (O12) Calibration note — the planner's per-edge GPU-hour
+                  default (14h × $1.50/h) is the worst-case Schrödinger-spec
+                  budget. Reality on this pod is OpenCL × Sage at ~1.3 GPU-h
+                  / edge × $0.69/h ≈ $1/edge. The chemist needs both numbers
+                  to plan a budget — the published quote AND the realistic
+                  one based on smoke #3 data. Cost calibrator will replace
+                  this hard-coded ratio once we have ≥10 runs to fit. */}
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                typical ~${Math.max(0.5, graph.estimated_usd_cost * 0.06).toFixed(2)}–${Math.max(1, graph.estimated_usd_cost * 0.12).toFixed(2)} actual (Sage / OpenCL)
+              </div>
             </div>
           )}
           {graph.cycle_closure_rmsd != null && (
@@ -707,7 +909,13 @@ export default function FepStudyPage() {
         </p>
       </div>
 
-      {/* Ranked analog table. */}
+      {/* (O4) Ranked analog table — only shown once at least one
+          analog has a real ΔΔG value AND the study is past the
+          preparing stage. Otherwise we'd show a table full of "—"
+          placeholders next to "not converged" badges before a single
+          edge has even started. Friendlier: hide the table during
+          preparation, show a placeholder until results land. */}
+      {sortedAnalogs.some((n) => n.ddg_to_hit_kcal_mol != null) ? (
       <div className="card overflow-hidden">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-3">
           Analogs ranked by ΔΔG to hit
@@ -731,7 +939,7 @@ export default function FepStudyPage() {
             {sortedAnalogs.map((n, i) => (
               <tr key={i} className="border-b border-slate-100 dark:border-slate-800 align-top">
                 <td className="py-2 pr-3">
-                  <MoleculePreview smiles={n.smiles} width={140} height={90} />
+                  <MoleculePreview smiles={n.smiles} width={180} height={120} />
                 </td>
                 <td className="py-2 pr-4">
                   <div className="font-semibold">{n.name || `Analog ${i + 1}`}</div>
@@ -776,11 +984,27 @@ export default function FepStudyPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 italic">No analogs in this study.</p>
         )}
       </div>
+      ) : (
+        /* (O4) Pre-results placeholder — shown while the study is in
+            preparing/running but no edge has converged yet. Friendlier
+            than a table of placeholder dashes. */
+        sortedAnalogs.length > 0 && (
+          <div className="card text-center py-6">
+            <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+              ΔΔG rankings will appear once edges converge
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+              {sortedAnalogs.length} analog{sortedAnalogs.length === 1 ? "" : "s"} queued.
+              Each edge runs ~80–120 min on this pod; results table appears as soon as the first one passes the convergence threshold.
+            </p>
+          </div>
+        )
+      )}
 
       {/* Perturbation edges — expandable. */}
       <details className="card group">
         <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center justify-between">
-          <span>Perturbation graph ({graph.edges.length} edges)</span>
+          <span>Edge details ({graph.edges.length} edge{graph.edges.length === 1 ? "" : "s"})</span>
           <span className="text-slate-400 group-open:hidden">▾ expand</span>
           <span className="text-slate-400 hidden group-open:inline">▴ collapse</span>
         </summary>
@@ -812,7 +1036,7 @@ export default function FepStudyPage() {
                       <div className="flex items-center gap-2">
                         <div className="shrink-0">
                           {fromNode?.smiles ? (
-                            <MoleculePreview smiles={fromNode.smiles} width={70} height={50} />
+                            <MoleculePreview smiles={fromNode.smiles} width={110} height={70} />
                           ) : (
                             <span className="font-mono text-slate-400">#{e.from_compound_id ?? "?"}</span>
                           )}
@@ -820,7 +1044,7 @@ export default function FepStudyPage() {
                         <span className="text-slate-400">→</span>
                         <div className="shrink-0">
                           {toNode?.smiles ? (
-                            <MoleculePreview smiles={toNode.smiles} width={70} height={50} />
+                            <MoleculePreview smiles={toNode.smiles} width={110} height={70} />
                           ) : (
                             <span className="font-mono text-slate-400">#{e.to_compound_id ?? "?"}</span>
                           )}
@@ -899,10 +1123,17 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
 
   // Compute node positions. Hit at center; analogs equally spaced
   // starting from the top (angle = -π/2).
+  //
+  // (O7) Special case for 1 analog: a single node placed at -π/2 lands
+  // straight above the hit — vertical layout with masses of empty space
+  // left + right. For n=1 we want a horizontal layout (hit on the left,
+  // analog on the right). Start angle 0 instead of -π/2 does exactly
+  // that. For n≥2 the ring layout starting at -π/2 (top) still works.
   const positions: Record<string, { x: number; y: number }> = {};
   positions[`${hit.compound_id ?? "hit"}`] = { x: cx, y: cy };
+  const startAngle = analogs.length === 1 ? 0 : (-Math.PI / 2);
   analogs.forEach((n, i) => {
-    const theta = (-Math.PI / 2) + (2 * Math.PI * i) / analogs.length;
+    const theta = startAngle + (2 * Math.PI * i) / Math.max(1, analogs.length);
     positions[`${n.compound_id ?? `analog${i}`}`] = {
       x: cx + R * Math.cos(theta),
       y: cy + R * Math.sin(theta),
