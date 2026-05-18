@@ -707,6 +707,106 @@ _cleaner_thread = threading.Thread(
 _cleaner_thread.start()
 
 
+# ─── (U4) Idle GPU-memory recovery via self-restart ──────────────────────
+#
+# OpenMM allocates a CUDA context the first time it touches the GPU, and
+# that context (plus pytorch caching-allocator pools) stays resident for
+# the entire Python-process lifetime — typically ~6 GB. Even with no
+# active edges, fep_server hogs GPU memory and conflicts with the
+# co-located dock_server's vina-gpu calls (causes vina-gpu rc=255 +
+# CUDA-OOM cascades on docking jobs).
+#
+# Fix: when the server has been completely idle (no active edges, no
+# recent polls) for IDLE_RESTART_AFTER_SECONDS, exit cleanly so
+# supervisord restarts us. The fresh process starts with 0 GPU memory
+# until the next /fep_edge_start lands.
+#
+# Idle is defined as:
+#   1. No entries in _last_polled_at AND _cancel_flags maps.
+#   2. No JSON file under /workspace/fep_jobs/ with status in
+#      {pending, running, dispatching} written in the last
+#      IDLE_RESTART_AFTER_SECONDS.
+#
+# Tunable via FEP_IDLE_RESTART_S env var. Default 30 min — long enough
+# that a study queued behind a slow edge doesn't get punished.
+
+
+IDLE_RESTART_AFTER_SECONDS = int(os.environ.get("FEP_IDLE_RESTART_S", "1800"))
+
+
+def _idle_restarter() -> None:
+    """Background thread: if fep_server is idle (no active edges) for
+    IDLE_RESTART_AFTER_SECONDS, sys.exit() so supervisord respawns us.
+
+    The fresh process releases the entire CUDA context + memory pool
+    that OpenMM/PyTorch caching-allocator held — typically reclaims
+    ~6 GB. Dock-side vina-gpu calls then run conflict-free.
+
+    Safety: we ALSO check the on-disk status files, so a job that
+    arrived AFTER our last poll-map update but before we re-checked
+    won't get killed mid-flight.
+    """
+    log.info(
+        "idle_restarter started (restart after %ds idle, check every 120s)",
+        IDLE_RESTART_AFTER_SECONDS,
+    )
+    started_at = time.time()
+    # Grace period at boot — give us at least IDLE_RESTART_AFTER_SECONDS
+    # before we even consider restarting. Otherwise a slow startup followed
+    # by no work could ping-pong us.
+    while True:
+        try:
+            time.sleep(120)
+            now = time.time()
+            if now - started_at < IDLE_RESTART_AFTER_SECONDS:
+                continue
+            with _poll_lock:
+                live_polls = len(_last_polled_at)
+            with _cancel_lock:
+                live_flags = sum(1 for f in _cancel_flags.values() if not f.is_set())
+            if live_polls > 0 or live_flags > 0:
+                continue
+            recent_active_jobs = False
+            cutoff = now - IDLE_RESTART_AFTER_SECONDS
+            try:
+                for entry in _JOBS_DIR.iterdir():
+                    if entry.name.startswith("_"):
+                        continue
+                    status_path = entry / "status.json"
+                    if not status_path.exists():
+                        continue
+                    if status_path.stat().st_mtime < cutoff:
+                        continue
+                    try:
+                        payload = json.loads(status_path.read_text())
+                        if payload.get("status") in {"pending", "running", "dispatching"}:
+                            recent_active_jobs = True
+                            break
+                    except Exception:                                    # noqa: BLE001
+                        continue
+            except Exception:                                            # noqa: BLE001
+                recent_active_jobs = True   # fail-safe: don't restart on scan error
+            if recent_active_jobs:
+                continue
+            log.warning(
+                "idle_restarter: %ds idle, restarting fep_server to release "
+                "GPU memory (supervisord will respawn)",
+                IDLE_RESTART_AFTER_SECONDS,
+            )
+            # Clean exit code 0 — supervisord autorestart=true catches us.
+            os._exit(0)
+        except Exception as e:                                           # noqa: BLE001
+            log.exception("idle_restarter iteration failed: %s", e)
+
+
+_idle_thread = threading.Thread(
+    target=_idle_restarter,
+    name="fep_idle_restarter",
+    daemon=True,
+)
+_idle_thread.start()
+
+
 def _deps_loaded() -> bool:
     """Best-effort check that the FEP scientific stack is importable
     in the current python env. Returns False if anything's missing —
