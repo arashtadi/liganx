@@ -1,0 +1,99 @@
+name: FEP Nightly Mock Smoke
+
+# (T3) Nightly end-to-end FEP study test in MOCK mode.
+#
+# What this catches:
+#   The M21 e2e test (tests/test_fep_e2e.py) runs on every push and
+#   catches structural regressions. But it only exercises one
+#   submission shape (3-node radial_plus_mst). Real users submit a
+#   range of shapes — single-edge, multi-edge, large-analog-set.
+#
+#   This nightly job runs a wider variant suite + the reconciler
+#   resilience tests (T1/T2) against a fresh Postgres each night.
+#   Anything that breaks the multi-day FEP architecture surfaces
+#   here within 24 hours instead of when a user submits a real run.
+#
+# Cost: ~5 minutes of GitHub-hosted compute per night, $0 GPU.
+#
+# Strict scope: tests the FEP reconciler + mock pod path only.
+# Docking tests (test_health.py, test_isolation.py) run on every
+# push via fly-deploy.yml; this workflow doesn't duplicate them.
+
+on:
+  schedule:
+    # 03:00 UTC nightly — pick a time when GH Actions queue is empty
+    # so the run lands close to its scheduled slot (CI cron can drift
+    # by 10-15 min under load).
+    - cron: "0 3 * * *"
+  workflow_dispatch:                          # manual trigger from Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  fep-nightly-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: liganx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/liganx_test
+      FEP_MOCK_MODE: "1"
+      FEP_RECONCILER_ENABLED: "1"
+      # Shadow mode OFF — we want the reconciler to actually transition
+      # rows so the test assertions are meaningful.
+      FEP_RECONCILER_SHADOW: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run FEP e2e + reconciler resilience tests
+        working-directory: backend
+        run: |
+          pytest -v -m requires_db \
+            tests/test_fep_e2e.py \
+            tests/test_fep_reaper_resilience.py \
+            tests/test_fep_reconciler.py \
+            tests/test_fep_reconciler_resilience.py
+
+      - name: Telegram alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not set — skipping alert (GH email still sent)"
+            exit 0
+          fi
+          MSG="🚨 *FEP Nightly Mock Smoke FAILED* on $(date -u +%Y-%m-%d) — check https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=Markdown \
+            -d text="${MSG}" || echo "Telegram POST failed (non-fatal)"
