@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from sqlmodel import Session
 
-from ..auth import CurrentUser, current_user, fep_access_allowed
+from ..auth import CurrentUser, admin_user, current_user, fep_access_allowed
 from ..db import get_session
 from ..models import Compound, FepJob, FepJobStatus, FepNode, FepPerturbation, Job
 from sqlmodel import select
@@ -923,6 +923,110 @@ def cancel_fep_study(
             "No further edges will dispatch. Billing stops at the next "
             "edge boundary."
         ),
+    }
+
+
+# ─── (N15) Admin: in-flight edges view ─────────────────────────────
+#
+# Replaces "ssh in, grep Fly logs, count edges per dispatch_state".
+# Returns exactly what the reconciler's hot SQL sees, plus enough
+# context to know which study/user each edge belongs to.
+
+
+@router.get("/admin/inflight")
+def fep_admin_inflight(
+    _admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> dict:
+    """(N15) Operator endpoint — what is the reconciler currently
+    babysitting? Returns every edge in (dispatching, running, cancelled)
+    plus enough context (study share_id, user_id, age, pod_job_id) to
+    drill into anything that looks stuck.
+
+    Cheap to call — single SQL query against the index added in
+    migration 023. Safe to refresh on a 5s interval if needed.
+    """
+    from sqlalchemy import text as _text
+    rows = session.execute(_text(
+        "SELECT p.id            AS edge_id,"
+        "       p.fep_job_id    AS fep_job_id,"
+        "       j.share_id      AS share_id,"
+        "       j.user_id       AS user_id,"
+        "       j.pdb_id        AS pdb_id,"
+        "       j.variant       AS variant,"
+        "       j.status        AS job_status,"
+        "       p.dispatch_state,"
+        "       p.status        AS edge_status,"
+        "       p.stage,"
+        "       p.progress_pct,"
+        "       p.pod_job_id,"
+        "       p.dispatched_at,"
+        "       p.last_polled_at,"
+        "       p.started_at,"
+        "       EXTRACT(EPOCH FROM (now() - p.dispatched_at))::int   AS age_seconds,"
+        "       EXTRACT(EPOCH FROM (now() - p.last_polled_at))::int  AS since_poll_seconds"
+        "  FROM fep_perturbation p"
+        "  JOIN fep_job          j ON j.id = p.fep_job_id"
+        " WHERE p.dispatch_state IN ('dispatching', 'running', 'cancelled')"
+        " ORDER BY p.dispatched_at NULLS LAST, p.id"
+    )).mappings().all()
+
+    # Also report what the reconciler's authoritative + shadow flags
+    # look like right now — saves another ssh roundtrip.
+    from ..services.fep_reconciler import (
+        _is_authoritative, is_shadow_mode, is_reconciler_enabled,
+        RECONCILE_INTERVAL_SECONDS,
+        DISPATCH_STALE_AFTER_SECONDS,
+        POD_UNREACHABLE_FAIL_AFTER_SECONDS,
+    )
+
+    # Queued count — what the reconciler would dispatch next.
+    queued_count = session.execute(_text(
+        "SELECT COUNT(*)"
+        "  FROM fep_perturbation p"
+        "  JOIN fep_job          j ON j.id = p.fep_job_id"
+        " WHERE p.dispatch_state = 'queued'"
+        "   AND j.status IN ('PENDING', 'PREPARING', 'RUNNING')"
+    )).scalar() or 0
+
+    return {
+        "reconciler": {
+            "enabled": is_reconciler_enabled(),
+            "authoritative": _is_authoritative(),
+            "shadow_mode": is_shadow_mode(),
+            "tick_interval_seconds": RECONCILE_INTERVAL_SECONDS,
+            "dispatch_stale_after_seconds": DISPATCH_STALE_AFTER_SECONDS,
+            "pod_unreachable_fail_after_seconds": POD_UNREACHABLE_FAIL_AFTER_SECONDS,
+        },
+        "counts": {
+            "in_flight": len(rows),
+            "queued":    int(queued_count),
+            "dispatching": sum(1 for r in rows if r["dispatch_state"] == "dispatching"),
+            "running":     sum(1 for r in rows if r["dispatch_state"] == "running"),
+            "cancelled":   sum(1 for r in rows if r["dispatch_state"] == "cancelled"),
+        },
+        "edges": [
+            {
+                "edge_id":        r["edge_id"],
+                "fep_job_id":     r["fep_job_id"],
+                "share_id":       r["share_id"],
+                "user_id":        r["user_id"],
+                "pdb_id":         r["pdb_id"],
+                "variant":        r["variant"],
+                "job_status":     r["job_status"],
+                "dispatch_state": r["dispatch_state"],
+                "edge_status":    r["edge_status"],
+                "stage":          r["stage"],
+                "progress_pct":   r["progress_pct"],
+                "pod_job_id":     r["pod_job_id"],
+                "dispatched_at":  r["dispatched_at"].isoformat() if r["dispatched_at"] else None,
+                "last_polled_at": r["last_polled_at"].isoformat() if r["last_polled_at"] else None,
+                "started_at":     r["started_at"].isoformat() if r["started_at"] else None,
+                "age_seconds":    r["age_seconds"],
+                "since_poll_seconds": r["since_poll_seconds"],
+            }
+            for r in rows
+        ],
     }
 
 

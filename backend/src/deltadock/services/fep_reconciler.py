@@ -56,6 +56,23 @@ from ..models import FepJob, FepJobStatus, FepNode, FepPerturbation
 log = logging.getLogger(__name__)
 
 
+def _capture_to_sentry(exc: BaseException, where: str) -> None:
+    """(N16) Forward reconciler exceptions to Sentry on top of the log.
+
+    Logging alone is invisible until an operator greps Fly logs. Sentry
+    elevates these to "you have a problem" emails/Slack so silent
+    reconciler failures don't pile up unseen during a multi-day run.
+
+    Wrapped in try/except: if Sentry isn't initialized or has its own
+    failure (network, DSN unset), we never let it break the caller.
+    """
+    try:
+        import sentry_sdk                                                # type: ignore
+        sentry_sdk.capture_exception(exc, scope=lambda s: s.set_tag("reconciler_path", where))
+    except Exception:                                                    # noqa: BLE001
+        pass
+
+
 # How often the reconciler wakes. 60s gives 840 polls during a max-
 # duration 14h edge — plenty of liveness. Anything faster thrashes
 # the pod's /fep_edge_status endpoint without telling us more.
@@ -239,6 +256,7 @@ def reconcile_once_sync(session: Session) -> dict:
         except Exception as e:                                       # noqa: BLE001
             counters["errors"] += 1
             log.exception("reconciler: edge %s reconcile failed: %s", row.id, e)
+            _capture_to_sentry(e, where=f"reconcile_one_edge:edge={row.id}")
 
     # ── Step 2: dispatch new queued edges ─────────────────────────
     # Limit: at most 1 new dispatch per tick, so we don't flood the
@@ -252,6 +270,7 @@ def reconcile_once_sync(session: Session) -> dict:
         except Exception as e:                                       # noqa: BLE001
             counters["errors"] += 1
             log.exception("reconciler: dispatch_next failed: %s", e)
+            _capture_to_sentry(e, where="try_dispatch_next")
 
     # ── Step 3: (S2) stale-pod sweep ──────────────────────────────
     # Mark in-flight edges as FAILED if last_polled_at is older than
@@ -266,6 +285,7 @@ def reconcile_once_sync(session: Session) -> dict:
         except Exception as e:                                       # noqa: BLE001
             counters["errors"] += 1
             log.exception("reconciler: stale-pod sweep failed: %s", e)
+            _capture_to_sentry(e, where="sweep_stale_pod")
 
     # ── Step 4: (N9) propagate user cancellations to the pod ──────
     # cancel_fep_study (in fep_runner.py) marks edges with
@@ -280,6 +300,7 @@ def reconcile_once_sync(session: Session) -> dict:
         except Exception as e:                                       # noqa: BLE001
             counters["errors"] += 1
             log.exception("reconciler: cancel propagation failed: %s", e)
+            _capture_to_sentry(e, where="propagate_cancellations")
 
     return counters
 
@@ -1154,3 +1175,4 @@ async def reconciler_task() -> None:
             raise
         except Exception as e:                                       # noqa: BLE001
             log.exception("FEP reconciler tick failed: %s", e)
+            _capture_to_sentry(e, where="reconciler_task_loop")

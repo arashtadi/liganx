@@ -598,6 +598,115 @@ _orphan_thread = threading.Thread(
 _orphan_thread.start()
 
 
+# ─── (N14) Disk-cleanup thread ───────────────────────────────────────────
+#
+# Each completed FEP edge leaves behind a directory under
+# /workspace/fep_jobs/<job_id>/ with MD trajectories, checkpoints, and
+# logs — typically 1-5 GB per edge for production runs. Without cleanup
+# the volume fills up after ~50-100 edges on a busy week.
+#
+# Strategy: scan once an hour. For each job_id with a status.json marked
+# terminal (done | failed | cancelled) AND last_modified > N days,
+# rmtree the whole directory. Errors are logged but never raise — never
+# block a clean MD on a clean-up failure.
+#
+# DAYS_TO_KEEP is generous (7) on purpose — gives the human the chance
+# to ssh in and post-mortem a failed edge before its artifacts vanish.
+
+
+DAYS_TO_KEEP_TERMINAL_JOBS = int(os.environ.get("FEP_KEEP_DAYS", "7"))
+CLEANUP_INTERVAL_SECONDS = int(os.environ.get("FEP_CLEANUP_INTERVAL_S", "3600"))   # 1 h
+
+
+def _disk_cleaner() -> None:
+    """Background thread: delete terminal-status FEP job directories
+    older than DAYS_TO_KEEP_TERMINAL_JOBS.
+
+    Conservative — only deletes when:
+      1. status.json exists in the directory, AND
+      2. status.json says status in {done, failed, cancelled}, AND
+      3. status.json's mtime is older than the threshold, AND
+      4. the directory is NOT in any tracking dict (_last_polled_at,
+         _cancel_flags) — i.e. the in-process state has moved on.
+
+    Anything that fails the checks stays. Aggressive enough to reclaim
+    space, gentle enough that you can't accidentally delete an in-flight
+    job by tweaking a timestamp."""
+    import shutil
+    log.info(
+        "disk_cleaner started (keep terminal jobs %dd, scan every %ds)",
+        DAYS_TO_KEEP_TERMINAL_JOBS, CLEANUP_INTERVAL_SECONDS,
+    )
+    while True:
+        try:
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+            cutoff = time.time() - (DAYS_TO_KEEP_TERMINAL_JOBS * 86400)
+            if not _JOBS_DIR.exists():
+                continue
+
+            deleted = 0
+            freed_bytes = 0
+            for entry in _JOBS_DIR.iterdir():
+                # Skip the persistent token map and any non-directories.
+                if not entry.is_dir() or entry.name.startswith("_"):
+                    continue
+                status_path = entry / "status.json"
+                if not status_path.exists():
+                    continue
+                try:
+                    payload = json.loads(status_path.read_text())
+                except Exception:                                        # noqa: BLE001
+                    continue
+                if payload.get("status") not in {"done", "failed", "cancelled"}:
+                    continue
+                if status_path.stat().st_mtime > cutoff:
+                    continue
+                # In-process tracking guard — don't delete an entry the
+                # orphan_canceller or cancel-flag map still references.
+                with _poll_lock:
+                    if entry.name in _last_polled_at:
+                        continue
+                with _cancel_lock:
+                    if entry.name in _cancel_flags:
+                        continue
+
+                # Estimate size before delete for the log line.
+                try:
+                    size = sum(
+                        f.stat().st_size for f in entry.rglob("*") if f.is_file()
+                    )
+                except Exception:                                        # noqa: BLE001
+                    size = 0
+                try:
+                    shutil.rmtree(entry)
+                    deleted += 1
+                    freed_bytes += size
+                    log.info(
+                        "disk_cleaner: deleted %s (%d MB, status=%s, age=%dd)",
+                        entry.name, size // (1024 * 1024),
+                        payload.get("status"),
+                        int((time.time() - status_path.stat().st_mtime) / 86400),
+                    )
+                except Exception as e:                                   # noqa: BLE001
+                    log.warning("disk_cleaner: failed to delete %s: %s", entry, e)
+
+            if deleted > 0:
+                log.info(
+                    "disk_cleaner: pass complete — deleted %d jobs, freed %.1f GB",
+                    deleted, freed_bytes / (1024 ** 3),
+                )
+        except Exception as e:                                           # noqa: BLE001
+            log.exception("disk_cleaner iteration failed: %s", e)
+
+
+_cleaner_thread = threading.Thread(
+    target=_disk_cleaner,
+    name="fep_disk_cleaner",
+    daemon=True,
+)
+_cleaner_thread.start()
+
+
 def _deps_loaded() -> bool:
     """Best-effort check that the FEP scientific stack is importable
     in the current python env. Returns False if anything's missing —
