@@ -51,6 +51,36 @@ from ..models import (
 log = logging.getLogger(__name__)
 
 
+def _fep_cache_root() -> "Path":
+    """(N7) Dedicated FEP cache directory, isolated from docking.
+
+    Returns ``<base>/fep_cache`` where ``<base>`` comes from (in order):
+      1. ``FEP_CACHE_ROOT`` env var (operator override)
+      2. ``settings.cache_root``
+      3. ``settings.pose_cache_dir`` (legacy)
+      4. ``/var/lib/liganx/poses`` (hard fallback)
+
+    The ALWAYS-appended ``fep_cache/`` segment is the load-bearing
+    bit. Docking never writes there. Without this, FEP and docking
+    shared ``/var/lib/liganx/poses/pdb/`` and FEP's file writes hit
+    docking's directory-shaped clean-PDB cache, raising
+    IsADirectoryError + FileNotFoundError on Sentry (2026-05-18).
+
+    Strict scope: returns a Path; doesn't mkdir (caller does that
+    inside receptor_prep, idempotent)."""
+    from pathlib import Path
+    from ..config import get_settings
+    s = get_settings()
+    override = os.environ.get("FEP_CACHE_ROOT", "").strip()
+    base = (
+        override
+        or s.cache_root
+        or s.pose_cache_dir
+        or "/var/lib/liganx/poses"
+    )
+    return Path(base) / "fep_cache"
+
+
 def is_fep_enabled() -> bool:
     """Feature flag gating the FEP+ DISPATCH path. Even with this
     flag set, individual users must still have user_profile.fep_enabled
@@ -823,15 +853,21 @@ def run_study(fep_job_id: int, session: Session) -> None:
                 pdb_id=job.pdb_id,
                 chain=job.chain or "A",
                 mutation=None if job.variant == "WT" else job.variant,
-                # Use the SAME cache layout as quick_dock / optimize: a dedicated
-                # `cache/` subdirectory under pose_cache_dir. Earlier this used
-                # `<pose_cache_dir>/pdb` which collided with the runner.py job-
-                # output convention — that path already exists as a DIRECTORY
-                # on the prod Fly volume (`/var/lib/liganx/poses/pdb/2ITY.pdb/`
-                # is a directory, not a file), so the file write failed with
-                # IsADirectoryError. The `cache/` prefix keeps FEP isolated.
-                pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
-                receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
+                # (Sentry fix 2026-05-18) Use a DEDICATED FEP subdir so we
+                # never collide with the docking pipeline's cache layout.
+                # The earlier fix tried `cache_root or pose_cache_dir` with a
+                # /cache fallback — but if cache_root is unset on Fly and
+                # pose_cache_dir is `/var/lib/liganx/poses` (no /cache), the
+                # resulting path was `/var/lib/liganx/poses/pdb` which IS the
+                # docking pipeline's clean-PDB directory. 2ITY.pdb is a
+                # directory there (chain-split sub-PDBs), so the file write
+                # raised IsADirectoryError + FileNotFoundError in Sentry.
+                #
+                # Robust fix: ALWAYS append a `fep_cache/` prefix regardless
+                # of which root path config is set. Docking never writes to
+                # `*/fep_cache/`, so collision is impossible.
+                pdb_cache=_fep_cache_root() / "pdb",
+                receptor_cache=_fep_cache_root() / "receptors",
             )
             receptor_pdb_text = rprep.receptor_pdb.read_text()
         except Exception as e:                                       # noqa: BLE001

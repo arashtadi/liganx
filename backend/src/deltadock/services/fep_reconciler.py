@@ -753,17 +753,18 @@ def _build_dispatch_payload(session: Session, perturbation_id: int) -> tuple[dic
 
     # Receptor: use the same receptor_prep service the docking runner
     # uses — guarantees bit-identical receptor across docking + FEP.
+    # (N7) Path isolation via _fep_cache_root() — see comment in
+    # services/fep_runner.py. Without this, FEP path collides with
+    # docking's /var/lib/liganx/poses/pdb/ directory.
     try:
         from .receptor_prep import prepare_receptor_for_target
-        from ..config import get_settings
-        from pathlib import Path
-        s = get_settings()
+        from .fep_runner import _fep_cache_root
         rprep = prepare_receptor_for_target(
             pdb_id=job.pdb_id,
             chain=job.chain or "A",
             mutation=None if job.variant == "WT" else job.variant,
-            pdb_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "pdb",
-            receptor_cache=Path(s.cache_root or s.pose_cache_dir or "/var/lib/liganx/poses/cache") / "receptors",
+            pdb_cache=_fep_cache_root() / "pdb",
+            receptor_cache=_fep_cache_root() / "receptors",
         )
         receptor_pdb_text = rprep.receptor_pdb.read_text()
     except Exception as e:                                           # noqa: BLE001
