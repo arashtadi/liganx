@@ -165,19 +165,26 @@ def _reap_orphan_fep_studies() -> None:
     daemon-thread fallback died mid-study (Fly machine restart,
     SIGTERM, OOM) and the DB row stays RUNNING forever with no progress.
 
-    (N4.0b) Two-tier staleness threshold:
-      • Pre-dispatch (no edge has pod_job_id yet) → 90 minutes.
+    (N4.0b + N5.2b) Two-tier staleness threshold, with a dispatch
+    signal that doesn't depend on pod_job_id alone:
+      • Pre-dispatch (no edge has stage OR pod_job_id set) → 90 min.
         These are studies whose runner died before any edge made it
         to the pod; nothing real-physics is happening, reap quickly
         so the user gets clear feedback.
-      • Mid-dispatch (some edge has pod_job_id set) → 6 hours.
-        A real edge takes 80-90 minutes on OpenCL; if we redeploy mid-
-        edge and the pod is still chugging away, we want to give the
-        pod plenty of headroom to finish naturally + a follow-up
-        (N4.0c) polling thread time to pick up the result. Without
-        this two-tier scheme, FEP #19's mid-edge redeploy killed the
-        row 90 minutes after the daemon died even though the pod was
-        STILL running the edge.
+      • Mid-dispatch (any edge has non-null stage OR pod_job_id)
+        → 6 hours. A real edge takes 80-90 minutes on OpenCL; if we
+        redeploy mid-edge and the pod is still chugging away, we
+        want to give the pod plenty of headroom to finish naturally
+        + a follow-up (N4.0c) polling thread time to pick up the
+        result.
+
+    (N5.2b) Original N4.0b used `pod_job_id IS NOT NULL` as the
+    dispatch signal. FEP #19 surfaced a secondary bug where the
+    pod_job_id column stays NULL even though edges DO dispatch and
+    the runner's polling callback updates `stage` + `progress_pct`
+    fine. Adding `stage IS NOT NULL` to the OR keeps the reaper
+    resilient to that bug — the dispatch signal is "ANY edge has
+    any progress field set", not specifically pod_job_id.
 
     The error_message tells the user exactly what happened and what
     to do: 'restart, please resubmit'. Idempotent — re-running it is
@@ -195,9 +202,13 @@ def _reap_orphan_fep_studies() -> None:
             # the DB representation exactly. Same convention as the
             # docking reaper (_reap_orphan_jobs uses 'RUNNING'/'PENDING').
             #
-            # (N4.0b) The OR clause splits stale rows into two cohorts:
-            # rows WITH any in-flight pod_job_id get a 6-hour threshold;
-            # rows WITHOUT any keep the original 90-minute one.
+            # (N4.0b + N5.2b) The OR clause splits stale rows into two
+            # cohorts: rows WITH any in-flight signal (non-null stage
+            # OR non-null pod_job_id) get a 6-hour threshold; rows
+            # WITHOUT any keep the original 90-minute one. Using
+            # (stage OR pod_job_id) instead of just pod_job_id
+            # works around the FEP #19 bug where pod_job_id stays
+            # null even though stage is set.
             result = session.execute(
                 text(
                     "UPDATE fep_job j"
@@ -211,13 +222,15 @@ def _reap_orphan_fep_studies() -> None:
                     "   AND ("
                     "     ("                 # pre-dispatch: 90 min threshold
                     "       NOT EXISTS (SELECT 1 FROM fep_perturbation p"
-                    "         WHERE p.fep_job_id = j.id AND p.pod_job_id IS NOT NULL)"
+                    "         WHERE p.fep_job_id = j.id"
+                    "           AND (p.pod_job_id IS NOT NULL OR p.stage IS NOT NULL))"
                     "       AND updated_at < now() - make_interval(mins => 90)"
                     "     )"
                     "     OR"
                     "     ("                 # mid-dispatch: 6 h threshold
                     "       EXISTS (SELECT 1 FROM fep_perturbation p"
-                    "         WHERE p.fep_job_id = j.id AND p.pod_job_id IS NOT NULL)"
+                    "         WHERE p.fep_job_id = j.id"
+                    "           AND (p.pod_job_id IS NOT NULL OR p.stage IS NOT NULL))"
                     "       AND updated_at < now() - make_interval(hours => 6)"
                     "     )"
                     "   )"

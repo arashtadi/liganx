@@ -58,6 +58,7 @@ def _make_fep_job(
     updated_at: datetime,
     share_id: str,
     with_pod_job_id: bool = False,
+    with_stage: bool = False,
 ) -> FepJob:
     """Create a minimal FepJob (+ optional perturbation) directly via
     the ORM. Bypasses the API so tests can plant rows with arbitrary
@@ -86,10 +87,10 @@ def _make_fep_job(
     session.commit()
     session.refresh(job)
 
-    if with_pod_job_id:
-        # Need a node + perturbation. Use the same hit as both ends
-        # — geometrically meaningless but it's enough to satisfy the
-        # FK and pod_job_id assertions the reaper checks.
+    if with_pod_job_id or with_stage:
+        # Need a node + perturbation to attach the in-flight signal.
+        # Use the same hit as both ends — geometrically meaningless
+        # but enough to satisfy FK + reaper checks.
         node_a = FepNode(fep_job_id=job.id, compound_id=hit.id, is_hit=True)
         node_b = FepNode(fep_job_id=job.id, compound_id=hit.id, is_hit=False)
         session.add(node_a)
@@ -103,7 +104,10 @@ def _make_fep_job(
             node_a_id=node_a.id,
             node_b_id=node_b.id,
             status="running",
-            pod_job_id="test-pod-job-id",     # the load-bearing field
+            # Either pod_job_id (legacy signal) or stage (N5.2b
+            # fallback signal) marks this row as "dispatched".
+            pod_job_id="test-pod-job-id" if with_pod_job_id else None,
+            stage="running_complex_leg" if with_stage else None,
         )
         session.add(edge)
         session.commit()
@@ -181,6 +185,38 @@ def test_bump_skips_terminal_statuses():
 
 
 # ─── N4.0b tests — two-tier reaper threshold ──────────────────────────────
+
+
+def test_reaper_respects_6h_threshold_when_only_stage_is_set():
+    """(N5.2b) FEP #19's actual failure mode: edges had stage=
+    'running_solvent_leg' / progress_pct=80, but pod_job_id stayed
+    null due to a separate runtime bug. The reaper must still treat
+    these rows as 'dispatched' (6h threshold) so they don't get
+    killed at 90 min.
+
+    This is the load-bearing regression test for the N5.2b fix —
+    if pod_job_id alone gates the long threshold, FEP #19 reproduces
+    and the row dies on the very next redeploy."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        old = datetime.utcnow() - timedelta(minutes=100)
+        job = _make_fep_job(
+            session,
+            status=FepJobStatus.RUNNING,
+            updated_at=old,
+            share_id="test_reaper_stage_only",
+            with_pod_job_id=False,
+            with_stage=True,        # the FEP #19 condition
+        )
+        try:
+            _reap_orphan_fep_studies()
+            session.refresh(job)
+            assert job.status == FepJobStatus.RUNNING, (
+                f"reaper killed a mid-dispatch study identified by "
+                f"stage-only signal at 100 min — N5.2b regression"
+            )
+        finally:
+            _delete_fep_job(session, job.id)
 
 
 def test_reaper_does_not_kill_pod_dispatched_study_at_90_min():
