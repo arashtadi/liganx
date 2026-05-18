@@ -726,12 +726,20 @@ async def lifespan(_app: FastAPI):
     # RUNPOD_FAILOVER_ENABLED is false.
     from .services.pod_failover import runpod_failover_watchdog
     failover_task = asyncio.create_task(runpod_failover_watchdog())
+    # (R2) Phase R reconciler task — stateless edge-lifecycle owner.
+    # Ships in shadow mode by default (FEP_RECONCILER_SHADOW=1 env)
+    # so we can observe its view against the daemon-thread runner
+    # without taking authority away yet. After the cutover (§7 of
+    # the design doc), the daemon thread is removed and this task is
+    # the sole owner of in-flight edge state.
+    from .services.fep_reconciler import reconciler_task as fep_reconciler_task
+    fep_reconciler_async_task = asyncio.create_task(fep_reconciler_task())
     try:
         yield
     finally:
-        for task in (watchdog_task, reaper_task, failover_task):
+        for task in (watchdog_task, reaper_task, failover_task, fep_reconciler_async_task):
             task.cancel()
-        for task in (watchdog_task, reaper_task, failover_task):
+        for task in (watchdog_task, reaper_task, failover_task, fep_reconciler_async_task):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
