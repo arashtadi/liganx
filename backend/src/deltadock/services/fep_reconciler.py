@@ -67,12 +67,23 @@ RECONCILE_INTERVAL_SECONDS = 60
 # client_token = perturbation.id) ensures this never double-charges.
 DISPATCH_STALE_AFTER_SECONDS = 5 * 60
 
-# (S2 preview) If the pod hasn't been reachable for this long, mark
-# every in-flight edge in this reconciler's worldview as FAILED with
-# a real error message. 1 h matches the design doc §5 cancellation
+# (S2) If the pod hasn't been reachable for this long, mark every
+# in-flight edge in this reconciler's worldview as FAILED with a
+# real error message. 1 h matches the design doc §5 cancellation
 # contract. The pod-side auto-cancel (Q2) is 30 min — strictly tighter,
-# so the pod gives up before we do.
+# so the pod gives up before we do, freeing GPU.
 POD_UNREACHABLE_FAIL_AFTER_SECONDS = 60 * 60
+
+# (S1) Per-study GPU budget cap. When the SUM of actual elapsed_seconds
+# × pod_hourly_usd across a study's done+running edges exceeds this,
+# the reconciler refuses to dispatch new edges from that study (the
+# currently-running edge keeps going to its natural completion; one
+# edge is recoverable cost, two is borderline). Default $250; raise
+# via FEP_MAX_USD_PER_STUDY env on Fly. This is a SECOND layer beyond
+# the pre-flight estimate cap (I3) — covers the case where actual
+# runtime diverges from estimate.
+DEFAULT_MAX_USD_PER_STUDY = 250.0
+DEFAULT_POD_HOURLY_USD = 0.69                # RTX 4090 spot on RunPod
 
 
 # (Phase R rollout) Shadow mode: when enabled, the reconciler still
@@ -223,7 +234,74 @@ def reconcile_once_sync(session: Session) -> dict:
             counters["errors"] += 1
             log.exception("reconciler: dispatch_next failed: %s", e)
 
+    # ── Step 3: (S2) stale-pod sweep ──────────────────────────────
+    # Mark in-flight edges as FAILED if last_polled_at is older than
+    # POD_UNREACHABLE_FAIL_AFTER_SECONDS (1 h). This is the outer
+    # safety net — the pod-side Q2 orphan-cancel (30 min) should have
+    # cleaned up first, but if the pod itself is unreachable we won't
+    # know from polling alone. The cap unsticks the row so the user
+    # sees a definitive failure rather than an eternally-running edge.
+    if not is_shadow_mode():
+        try:
+            counters["stale_failed"] = _sweep_stale_pod(session)
+        except Exception as e:                                       # noqa: BLE001
+            counters["errors"] += 1
+            log.exception("reconciler: stale-pod sweep failed: %s", e)
+
     return counters
+
+
+def _sweep_stale_pod(session: Session) -> int:
+    """(S2) Mark edges as failed when last_polled_at is too stale.
+
+    Returns the number of edges transitioned. A non-zero return is
+    usually a red flag (pod genuinely down for an hour) — operator
+    should investigate."""
+    result = session.execute(
+        text(
+            "UPDATE fep_perturbation"
+            " SET dispatch_state = 'failed',"
+            "     status = 'failed',"
+            "     pod_log_tail = :msg,"
+            "     completed_at = now()"
+            " WHERE dispatch_state IN ('dispatching', 'running')"
+            "   AND last_polled_at IS NOT NULL"
+            "   AND last_polled_at < now() - make_interval(secs => :secs)"
+            " RETURNING id, fep_job_id"
+        ),
+        {
+            "msg": (
+                f"Pod unreachable for >{POD_UNREACHABLE_FAIL_AFTER_SECONDS//60} min — "
+                "reconciler marked edge failed. Check pod /health + supervisord status."
+            ),
+            "secs": POD_UNREACHABLE_FAIL_AFTER_SECONDS,
+        },
+    )
+    rows = list(result)
+    if rows:
+        # Also mark the parent FepJob FAILED so the UI banner fires.
+        job_ids = list({r[1] for r in rows})
+        for jid in job_ids:
+            session.execute(
+                text(
+                    "UPDATE fep_job"
+                    " SET status = 'FAILED',"
+                    "     error_message = COALESCE(error_message, :msg),"
+                    "     updated_at = now()"
+                    " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
+                ),
+                {
+                    "jid": jid,
+                    "msg": (
+                        f"GPU pod unreachable for >{POD_UNREACHABLE_FAIL_AFTER_SECONDS//60} min. "
+                        "Study failed. Operator should check pod status; re-submit "
+                        "once the pod is back online."
+                    ),
+                },
+            )
+        session.commit()
+        log.warning("reconciler: stale-pod sweep marked %d edges failed", len(rows))
+    return len(rows)
 
 
 def _reconcile_one_edge(session: Session, edge_row) -> None:
@@ -438,6 +516,54 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
         # Legacy runner owns dispatch; we just observe. This is the
         # safe-rollout default — flip FEP_AUTHORITATIVE_RECONCILER=1
         # in Fly secrets to transfer authority.
+        return
+
+    # (S1) Budget cap check. Refuse to dispatch a NEW edge if the
+    # study has already spent more than the cap. The currently-
+    # running edge (if any) keeps going to natural completion — we
+    # only gate NEW dispatches.
+    spent_usd = _study_spent_usd(session, queued_row.fep_job_id)
+    max_usd = float(os.environ.get("FEP_MAX_USD_PER_STUDY", DEFAULT_MAX_USD_PER_STUDY))
+    if spent_usd >= max_usd:
+        log.warning(
+            "reconciler: study %s has spent $%.2f (cap=$%.2f); cancelling queued edge %s",
+            queued_row.share_id, spent_usd, max_usd, queued_row.id,
+        )
+        session.execute(
+            text(
+                "UPDATE fep_perturbation"
+                " SET dispatch_state = 'cancelled',"
+                "     status = 'skipped',"
+                "     pod_log_tail = :msg,"
+                "     completed_at = now()"
+                " WHERE id = :id AND dispatch_state = 'queued'"
+            ),
+            {
+                "id": queued_row.id,
+                "msg": f"budget-cap: study spent ${spent_usd:.2f} ≥ cap ${max_usd:.2f}",
+            },
+        )
+        # Also mark the parent study as FAILED with a clear message
+        # so the user sees what happened.
+        session.execute(
+            text(
+                "UPDATE fep_job"
+                " SET status = 'FAILED',"
+                "     error_message = COALESCE(error_message, :msg),"
+                "     updated_at = now()"
+                " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
+            ),
+            {
+                "jid": queued_row.fep_job_id,
+                "msg": (
+                    f"Study auto-cancelled: GPU spend (${spent_usd:.2f}) "
+                    f"exceeded the per-study cap of ${max_usd:.2f}. "
+                    "Raise FEP_MAX_USD_PER_STUDY to allow more, or re-submit "
+                    "with a smaller analog set."
+                ),
+            },
+        )
+        session.commit()
         return
 
     pod_url = _pod_url_for_edge(session, queued_row.fep_job_id)
@@ -668,6 +794,31 @@ def _build_dispatch_payload(session: Session, perturbation_id: int) -> tuple[dic
         "n_lambda_windows": job.n_lambda_windows,
         "ns_per_window": job.ns_per_window,
     }, None
+
+
+def _study_spent_usd(session: Session, fep_job_id: int) -> float:
+    """(S1) Compute the actual GPU spend for a study as
+    SUM(elapsed_seconds × pod_hourly_usd) across all done+running edges.
+
+    Uses started_at + completed_at for done edges; for running edges,
+    uses started_at → now. Cheap to compute (single SQL aggregate).
+    """
+    hourly = float(os.environ.get("POD_HOURLY_USD", DEFAULT_POD_HOURLY_USD))
+    row = session.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(
+                EXTRACT(EPOCH FROM (COALESCE(completed_at, now()) - started_at))
+            ), 0) AS total_seconds
+              FROM fep_perturbation
+             WHERE fep_job_id = :jid
+               AND started_at IS NOT NULL
+            """
+        ),
+        {"jid": fep_job_id},
+    ).fetchone()
+    total_seconds = float(row[0] or 0.0)
+    return (total_seconds / 3600.0) * hourly
 
 
 def _pod_url_for_edge(session: Session, fep_job_id: int) -> str:
