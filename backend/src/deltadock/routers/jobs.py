@@ -875,10 +875,23 @@ def cancel_job(
         # mutating; this makes the endpoint safe to call from a Cancel
         # button that might race with normal completion.
         return _to_out(job)
-    job.status = JobStatus.CANCELLED
-    job.error_message = "Cancelled by user"
-    job.updated_at = datetime.utcnow()
-    session.add(job)
+    # (U11) Bypass SQLAlchemy enum-name serialisation. The default
+    # `Enum(JobStatus)` column type sends the enum MEMBER NAME
+    # ("CANCELLED") to Postgres rather than its VALUE ("cancelled"),
+    # and the live jobstatus enum stores lowercase. Result: prior code
+    # `job.status = JobStatus.CANCELLED` produced
+    #   psycopg2.errors.InvalidTextRepresentation:
+    #     invalid input value for enum jobstatus: "CANCELLED"
+    # Raw UPDATE with the lowercase literal sidesteps the mapping
+    # entirely. Migration 024 also ensures the enum contains 'cancelled'.
+    from sqlalchemy import text as _text
+    session.execute(_text(
+        "UPDATE job"
+        "   SET status = 'cancelled',"
+        "       error_message = :msg,"
+        "       updated_at    = now()"
+        " WHERE id = :id"
+    ), {"msg": "Cancelled by user", "id": job.id})
     session.commit()
     session.refresh(job)
     return _to_out(job)

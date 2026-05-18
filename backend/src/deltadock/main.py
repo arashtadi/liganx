@@ -704,6 +704,11 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # new fep_reconciler.py owns. Strictly fep_perturbation-only; the
     # docking schema is untouched.
     ("023_fep_dispatch_state.sql", "Migration 023 (FEP dispatch_state + lifecycle columns)"),
+    # (U11) Idempotent ALTER TYPE … ADD VALUE IF NOT EXISTS to make sure
+    # 'cancelled' lives in the jobstatus Postgres enum. Older Fly DBs
+    # were initialised before CANCELLED was added to the Python model;
+    # the cancel endpoint's raw-SQL UPDATE expects the value to exist.
+    ("024_jobstatus_cancelled.sql", "Migration 024 (jobstatus.cancelled enum value)"),
 ]
 
 

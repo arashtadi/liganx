@@ -1,0 +1,30 @@
+-- 024_jobstatus_cancelled.sql
+--
+-- (U11) Belt-to-suspenders companion to the routers/jobs.py raw-SQL
+-- cancel fix. The user-visible bug was:
+--
+--   psycopg2.errors.InvalidTextRepresentation:
+--   invalid input value for enum jobstatus: "CANCELLED"
+--
+-- Root cause was SQLAlchemy serialising JobStatus.CANCELLED as its
+-- NAME ("CANCELLED") rather than its VALUE ("cancelled"). The cancel
+-- handler now uses raw SQL with the lowercase literal, but this
+-- migration also makes sure 'cancelled' actually exists in the
+-- jobstatus enum on prod — older Fly DBs were initialised before the
+-- CANCELLED enum member was added to the Python model, and there's
+-- no clean way to ALTER TYPE inside a SQLModel.metadata.create_all
+-- sweep at boot time.
+--
+-- ALTER TYPE ... ADD VALUE IF NOT EXISTS is Postgres 9.6+, idempotent,
+-- and safe to re-run.
+--
+-- WHAT THIS DOES NOT DO:
+--   - DOES NOT touch the existing rows. There's no "uppercase
+--     CANCELLED" rows to clean up; the bug was at WRITE time so any
+--     row that exists already has a valid lowercase status.
+--   - DOES NOT change the enum's default. The Job model still
+--     defaults to JobStatus.PENDING.
+--
+-- IDEMPOTENT: re-running on a partially-applied DB is a no-op.
+
+ALTER TYPE jobstatus ADD VALUE IF NOT EXISTS 'cancelled';
