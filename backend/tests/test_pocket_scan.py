@@ -121,7 +121,9 @@ def test_scan_results_sorted_by_distance_ascending(tmp_path):
 
 
 def test_scan_distance_is_correct_to_two_decimals(tmp_path):
-    """Ligand atom at (0, 0, 3) → distance to ALA-1 CA at (0,0,0.5) = 2.5 Å."""
+    """Ligand atom at (0, 0, 3) — closest ALA-1 atom is O at (0, 0, 1.5),
+    distance 1.5 Å exactly. Confirms heavy-atom distance scan reports
+    sub-decimal precision and identifies the correct contact atom."""
     from deltadock.services.pocket_scan import scan_pocket_residues
 
     pdb = tmp_path / "test.pdb"
@@ -131,12 +133,11 @@ def test_scan_distance_is_correct_to_two_decimals(tmp_path):
 
     results = scan_pocket_residues(pdb, sdf, distance_cutoff_angstroms=6.0)
     ala = next(r for r in results if r.resnum == 1)
-    # CA of ALA-1 is at (0, 0, 0.5); ligand at (0, 0, 3) → distance 2.5.
-    # CB is at (1, 0, 0.5) → distance sqrt(1 + 0 + 6.25) ≈ 2.69, which
-    # is farther, so CA wins.
-    assert abs(ala.min_dist - 2.5) < 0.01, f"expected 2.5 Å, got {ala.min_dist}"
-    assert ala.closest_atom == "CA"
-    assert ala.is_backbone_only is True
+    # ALA atoms vs ligand at (0,0,3): N→3.0, CA→2.5, C→2.0, O→1.5,
+    # CB→sqrt(1²+0+2.5²)≈2.69. O wins as closest.
+    assert abs(ala.min_dist - 1.5) < 0.01, f"expected 1.5 Å, got {ala.min_dist}"
+    assert ala.closest_atom == "O"
+    assert ala.is_backbone_only is True       # O is a backbone atom
 
 
 def test_mutation_label_formats_correctly(tmp_path):
