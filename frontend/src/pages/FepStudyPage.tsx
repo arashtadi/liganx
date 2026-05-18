@@ -253,6 +253,12 @@ export default function FepStudyPage() {
     };
   }, [shareId]);
 
+  // (U10) Two-step cancel: clicking "Cancel study" first flips
+  // `confirmingCancel` true, which swaps the button for an explicit
+  // "Confirm cancel" + "Keep running" pair. Matches the docking
+  // JobPage pattern and prevents accidental cancels of FEP runs that
+  // already cost real GPU time.
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   function doCancel() {
     if (!shareId) return;
     setCancelling(true);
@@ -263,7 +269,10 @@ export default function FepStudyPage() {
         return api.fepGet(shareId);
       })
       .then((g) => setGraph(g))
-      .finally(() => setCancelling(false));
+      .finally(() => {
+        setCancelling(false);
+        setConfirmingCancel(false);
+      });
   }
 
   if (err) {
@@ -773,15 +782,39 @@ export default function FepStudyPage() {
             </p>
           )}
         </div>
-        {isRunning && (
+        {isRunning && !confirmingCancel && (
           <button
             type="button"
-            onClick={doCancel}
+            onClick={() => setConfirmingCancel(true)}
             disabled={cancelling}
             className="btn-secondary"
+            title="Cancel this FEP study. The in-flight edge is signalled to stop at the next stage boundary; queued edges are aborted immediately."
           >
-            {cancelling ? "Cancelling…" : "Cancel study"}
+            Cancel study
           </button>
+        )}
+        {isRunning && confirmingCancel && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Cancel this study?
+            </span>
+            <button
+              type="button"
+              onClick={doCancel}
+              disabled={cancelling}
+              className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rose-600 text-white hover:bg-rose-700 transition-colors disabled:opacity-60"
+            >
+              {cancelling ? "Cancelling…" : "Yes, cancel"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingCancel(false)}
+              disabled={cancelling}
+              className="text-xs px-3 py-1.5 rounded-md text-slate-500 hover:text-ink dark:hover:text-slate-100"
+            >
+              Keep running
+            </button>
+          </div>
         )}
       </div>
 

@@ -245,6 +245,37 @@ function JobsTab() {
   // Selected filter tags. OR semantics across selected tags. Starts empty
   // (= show everything). Cleared when the user clicks the active chip again.
   const [filterTags, setFilterTags] = useState<string[]>([]);
+  const queryClient = useQueryClient();
+
+  // (U10) Multi-select cancel. `selected` holds job_keys (share_id or
+  // numeric id stringified). Toggled per-row via the checkbox; bulk-
+  // cancel iterates the set + fires POST /jobs/{key}/cancel. Pod-side:
+  // the runner cooperatively breaks out of the cell loop on the next
+  // boundary, so an in-flight ~30s docking finishes naturally and no
+  // further cells dispatch. FEP cancels go through cancel_fep_study
+  // which sets dispatch_state='cancelled' on every non-terminal edge;
+  // the reconciler then POSTs /fep_edge_cancel to the pod on its next
+  // tick, killing the MD process (see U10 commit message for the full
+  // pod-side propagation chain).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmingBulkCancel, setConfirmingBulkCancel] =
+    useState<null | { kind: "selected" | "all"; count: number; targets: string[] }>(null);
+  const [bulkCancelling, setBulkCancelling] = useState(false);
+  const [bulkCancelDone, setBulkCancelDone] = useState<{
+    ok: number; failed: number; failedKeys: string[];
+  } | null>(null);
+
+  function toggleSelected(jobKey: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobKey)) next.delete(jobKey);
+      else next.add(jobKey);
+      return next;
+    });
+  }
+  function clearSelection() {
+    setSelected(new Set());
+  }
 
   // The set of every tag currently in use across the job list, in preset-
   // order then alphabetical. Used to populate the filter bar — we only show
@@ -347,6 +378,24 @@ function JobsTab() {
         />
       )}
 
+      {/* (U10) Bulk-cancel toolbar. Shows: count of currently-running jobs
+          you could cancel + the "Cancel all running" master button, plus
+          the in-line cancel-selected button when ≥1 are checked. */}
+      <BulkCancelBar
+        runningJobKeys={filtered
+          .filter((j) => j.status === "pending" || j.status === "running")
+          .map((j) => j.share_id || String(j.id))}
+        selected={selected}
+        onClearSelection={clearSelection}
+        onCancelSelected={() => {
+          const targets = Array.from(selected);
+          setConfirmingBulkCancel({ kind: "selected", count: targets.length, targets });
+        }}
+        onCancelAll={(allKeys) => {
+          setConfirmingBulkCancel({ kind: "all", count: allKeys.length, targets: allKeys });
+        }}
+      />
+
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden dark:border-slate-700 dark:bg-slate-900">
         {filtered.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
@@ -356,12 +405,56 @@ function JobsTab() {
           </div>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-            {filtered.map((j) => (
-              <HistoryRow key={j.id} job={j} />
-            ))}
+            {filtered.map((j) => {
+              const key = j.share_id || String(j.id);
+              return (
+                <HistoryRow
+                  key={j.id}
+                  job={j}
+                  selected={selected.has(key)}
+                  onToggleSelected={toggleSelected}
+                />
+              );
+            })}
           </ul>
         )}
       </div>
+
+      {/* (U10) Bulk cancel confirmation modal. Two-step gate so a stray
+          click can't terminate hours of GPU work. Shows the exact count
+          so the user can verify before committing. */}
+      {confirmingBulkCancel && (
+        <BulkCancelConfirmModal
+          kind={confirmingBulkCancel.kind}
+          count={confirmingBulkCancel.count}
+          busy={bulkCancelling}
+          onClose={() => {
+            if (bulkCancelling) return;
+            setConfirmingBulkCancel(null);
+            setBulkCancelDone(null);
+          }}
+          onConfirm={async () => {
+            setBulkCancelling(true);
+            const failedKeys: string[] = [];
+            let ok = 0;
+            for (const key of confirmingBulkCancel.targets) {
+              try {
+                await api.cancelJob(key);
+                ok++;
+              } catch (e) {                                              // eslint-disable-line @typescript-eslint/no-unused-vars
+                failedKeys.push(key);
+              }
+            }
+            setBulkCancelDone({ ok, failed: failedKeys.length, failedKeys });
+            setBulkCancelling(false);
+            // Clear local selection + refresh the jobs query so the
+            // status badges flip without waiting for window refocus.
+            clearSelection();
+            await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+          }}
+          done={bulkCancelDone}
+        />
+      )}
 
       {/* Load more — paginates older jobs in 25-row chunks. The button
           hides itself when the last page returned fewer than PAGE_SIZE
@@ -455,12 +548,26 @@ function FilterBar({
  *
  * The whole row is wrapped in a Link, but we stop propagation on the delete
  * and tag-picker controls so clicking them never navigates into the job. */
-function HistoryRow({ job }: { job: Job }) {
+function HistoryRow({
+  job,
+  selected,
+  onToggleSelected,
+}: {
+  job: Job;
+  // (U10) Multi-select cancel. When the row is cancellable, JobsTab
+  // passes selected + onToggleSelected; we render a checkbox on the
+  // left of the row title. Terminal jobs don't get a checkbox (nothing
+  // to cancel).
+  selected?: boolean;
+  onToggleSelected?: (jobKey: string) => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const isCancellable = job.status === "pending" || job.status === "running";
+  const jobKey = job.share_id || String(job.id);
 
   // Re-run: navigate to /studio with a reseed payload in router state.
   // (Studio v0.91) Studio replaces NewJobPage as the canonical entry
@@ -554,6 +661,25 @@ function HistoryRow({ job }: { job: Job }) {
         <div className="flex items-baseline justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2 flex-wrap">
+              {/* (U10) Multi-select checkbox for cancellable jobs. Only
+                  rendered when JobsTab passes the selection callbacks
+                  AND the job is in a cancellable state (pending /
+                  running). e.stopPropagation prevents the Link from
+                  swallowing the click. */}
+              {isCancellable && onToggleSelected && (
+                <input
+                  type="checkbox"
+                  checked={!!selected}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    onToggleSelected(jobKey);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="mr-1 h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-rose-600 focus:ring-rose-500"
+                  title="Select for bulk cancel"
+                  aria-label={`Select ${job.title || defaultTitle(job)} for cancel`}
+                />
+              )}
               <span className="font-semibold text-ink dark:text-slate-100 truncate">
                 {job.title || defaultTitle(job)}
               </span>
@@ -1371,5 +1497,187 @@ function FepStudyRow({ study }: { study: import("../api").FepStudySummary }) {
         )}
       </Link>
     </li>
+  );
+}
+
+
+/**
+ * (U10) Bulk-cancel toolbar shown above the jobs list.
+ *
+ *   - "N selected · Cancel selected" — visible only when ≥1 row is
+ *     checked. Triggers the confirmation modal with the selected keys.
+ *   - "Cancel all running" — visible whenever ANY filtered row is in
+ *     pending/running. Bypasses the per-row checkboxes and grabs every
+ *     cancellable key on the current page.
+ *
+ * Both paths route through the same modal so the user always confirms
+ * before any state changes.
+ */
+function BulkCancelBar({
+  runningJobKeys, selected, onClearSelection, onCancelSelected, onCancelAll,
+}: {
+  runningJobKeys: string[];
+  selected: Set<string>;
+  onClearSelection: () => void;
+  onCancelSelected: () => void;
+  onCancelAll: (allKeys: string[]) => void;
+}) {
+  const nSelected = selected.size;
+  const nRunning = runningJobKeys.length;
+  if (nSelected === 0 && nRunning === 0) return null;
+  return (
+    <div className="rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50/60 dark:bg-rose-950/30 px-3 py-2 flex items-center justify-between flex-wrap gap-2">
+      <div className="text-xs text-rose-900 dark:text-rose-200">
+        {nSelected > 0
+          ? <><strong>{nSelected}</strong> selected · cancel will stop pod-side compute too</>
+          : <><strong>{nRunning}</strong> running · check rows below to cancel some, or hit "Cancel all running"</>}
+      </div>
+      <div className="flex items-center gap-2">
+        {nSelected > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={onClearSelection}
+              className="text-xs px-2.5 py-1 rounded-md text-slate-600 hover:text-ink dark:text-slate-300"
+            >
+              Clear selection
+            </button>
+            <button
+              type="button"
+              onClick={onCancelSelected}
+              className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rose-600 text-white hover:bg-rose-700 transition-colors"
+            >
+              Cancel {nSelected} selected →
+            </button>
+          </>
+        )}
+        {nRunning > 0 && (
+          <button
+            type="button"
+            onClick={() => onCancelAll(runningJobKeys)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-500 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-colors"
+          >
+            Cancel all {nRunning} running →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * (U10) Confirmation modal for bulk-cancel. Two-step gate — the user
+ * must type/click their way through one extra confirm before any
+ * cancel API call goes out.
+ *
+ * Pod-side effects of clicking "Yes, cancel":
+ *
+ *   - Docking (POST /jobs/{k}/cancel) → job.status flips to CANCELLED.
+ *     The backend runner cooperatively breaks out of the cell loop at
+ *     the next boundary; the in-flight QuickVina2-GPU subprocess on
+ *     the pod finishes naturally (~30 s) but no further cells dispatch.
+ *
+ *   - FEP (POST /fep/studies/{k}/cancel) → FepJob.status=CANCELLED +
+ *     every non-terminal edge gets dispatch_state='cancelled'. The
+ *     backend reconciler then POSTs /fep_edge_cancel/{pod_job_id} to
+ *     the pod on its next tick (≤60 s), and the pod-side MD process
+ *     stops at the next stage boundary (≤30 min for long Sage edges).
+ */
+function BulkCancelConfirmModal({
+  kind, count, busy, done, onConfirm, onClose,
+}: {
+  kind: "selected" | "all";
+  count: number;
+  busy: boolean;
+  done: { ok: number; failed: number; failedKeys: string[] } | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
+      onClick={busy ? undefined : onClose}
+    >
+      <div
+        className="bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-md w-full p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {!done && (
+          <>
+            <h2 className="text-lg font-bold text-rose-700 dark:text-rose-300 mb-2">
+              Cancel {count} job{count === 1 ? "" : "s"}?
+            </h2>
+            <p className="text-sm text-slate-700 dark:text-slate-300 mb-1">
+              {kind === "all"
+                ? `Every job that's currently pending or running on this page (${count} total) will be cancelled.`
+                : `The ${count} job${count === 1 ? "" : "s"} you've checked will be cancelled.`}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+              Cancel propagates to the pod: docking stops at the next cell
+              boundary (≤30 s wasted), FEP edges stop their MD process at
+              the next stage boundary (≤30 min for Sage). Partial results
+              that already landed are kept.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={busy}
+                className="text-sm px-4 py-2 rounded-md text-slate-600 hover:text-ink dark:text-slate-300 disabled:opacity-50"
+              >
+                Keep running
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                disabled={busy}
+                className="text-sm font-semibold px-4 py-2 rounded-md bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-60"
+              >
+                {busy ? "Cancelling…" : `Yes, cancel ${count}`}
+              </button>
+            </div>
+          </>
+        )}
+        {done && (
+          <>
+            <h2 className="text-lg font-bold text-ink dark:text-slate-100 mb-2">
+              Cancel complete
+            </h2>
+            <p className="text-sm text-slate-700 dark:text-slate-300 mb-4">
+              <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                {done.ok} cancelled
+              </span>
+              {done.failed > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-rose-700 dark:text-rose-300 font-semibold">
+                    {done.failed} failed
+                  </span>
+                </>
+              )}
+              . The status badges below will refresh on next poll.
+            </p>
+            {done.failed > 0 && (
+              <details className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                <summary className="cursor-pointer">Show failed keys</summary>
+                <ul className="mt-1 pl-4 list-disc font-mono">
+                  {done.failedKeys.map((k) => <li key={k}>{k}</li>)}
+                </ul>
+              </details>
+            )}
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-sm font-semibold px-4 py-2 rounded-md bg-slate-600 text-white hover:bg-slate-700"
+              >
+                Close
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
