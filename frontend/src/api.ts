@@ -576,6 +576,36 @@ export interface UserCompound {
   updated_at: string;
 }
 
+// ─── Liganx watchdog (U5/U5b) ──────────────────────────────────────
+//
+// Mirror of services/watchdog.py:CheckResult / WatchdogRun. The admin
+// page polls /admin/watchdog/status and also offers a manual
+// /admin/watchdog/run button.
+
+export type WatchdogSeverity = "ok" | "warn" | "critical";
+
+export interface WatchdogCheckResult {
+  name: string;
+  severity: WatchdogSeverity;
+  message: string;
+  details?: Record<string, unknown>;
+  remediation?: string | null;
+}
+
+export interface WatchdogRun {
+  started_at: string;
+  duration_ms: number;
+  results: WatchdogCheckResult[];
+  summary: { ok?: number; warn?: number; critical?: number };
+}
+
+export interface WatchdogStatusResponse {
+  latest: WatchdogRun | null;
+  history: WatchdogRun[];   // latest-first
+  interval_seconds: number;
+  next_run_at_approx: string | null;
+}
+
 /** One row in the admin /users list. Mirrors backend AdminUserRow. */
 export interface AdminUserRow {
   user_id: string;
@@ -983,6 +1013,14 @@ export const api = {
   /** Admin-only: stop the GPU pod immediately. Idempotent. */
   adminPodStop: () =>
     request<{ ok: boolean; result: unknown }>("/admin/pod/stop", { method: "POST" }),
+  /** Admin-only: Liganx watchdog snapshot — last run + last 24 runs. */
+  adminWatchdogStatus: () =>
+    request<WatchdogStatusResponse>("/admin/watchdog/status"),
+  /** Admin-only: trigger an out-of-cycle watchdog run RIGHT NOW. Returns
+   *  the fresh result (severity-summarised + per-check details + auto-
+   *  remediation actions taken). */
+  adminWatchdogRun: () =>
+    request<WatchdogRun>("/admin/watchdog/run", { method: "POST" }),
   /** Admin-only: resume the GPU pod. ~3-5 min to ready. */
   adminPodStart: () =>
     request<{ ok: boolean; result: unknown }>("/admin/pod/start", { method: "POST" }),

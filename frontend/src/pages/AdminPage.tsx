@@ -235,6 +235,7 @@ function AdminDashboard() {
 
       <PodControl />
 
+      <WatchdogPanel />
 
       {/* Users table */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
@@ -692,6 +693,163 @@ function PodControl() {
           {s.error}
         </div>
       )}
+    </div>
+  );
+}
+
+
+/**
+ * (U8) Liganx watchdog panel — manual + automatic health checks.
+ *
+ * Backed by /admin/watchdog/{status,run}. Shows the latest run's
+ * summary (ok/warn/critical counts) with per-check breakdown + a
+ * "Run watchdog now" button that triggers an out-of-cycle run for
+ * immediate feedback. Hourly auto-runs happen server-side regardless
+ * of this UI — this panel is the human view into them.
+ */
+function WatchdogPanel() {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["admin", "watchdog"],
+    queryFn: api.adminWatchdogStatus,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const runMut = useMutation({
+    mutationFn: api.adminWatchdogRun,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "watchdog"] });
+    },
+  });
+
+  const latest = runMut.data ?? statusQuery.data?.latest ?? null;
+  const isRunning = runMut.isPending;
+  const intervalMin = statusQuery.data
+    ? Math.round(statusQuery.data.interval_seconds / 60)
+    : 60;
+  const nextAt = statusQuery.data?.next_run_at_approx
+    ? new Date(statusQuery.data.next_run_at_approx).toLocaleTimeString()
+    : null;
+
+  return (
+    <div className="mt-6 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+      <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+        <div>
+          <h2 className="text-sm font-semibold text-ink dark:text-slate-100 flex items-center gap-2">
+            <span aria-hidden>🐕</span> Liganx watchdog
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Runs every {intervalMin} min · auto-fails stuck jobs, detects GPU
+            leaks + ghost FEP edges
+            {nextAt ? ` · next ≈ ${nextAt}` : ""}
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={isRunning}
+          onClick={() => runMut.mutate()}
+          className={
+            "px-3 py-1.5 rounded-lg text-sm font-semibold transition " +
+            (isRunning
+              ? "bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed"
+              : "bg-delta-600 hover:bg-delta-700 text-white shadow-sm hover:shadow-md")
+          }
+        >
+          {isRunning ? "Running checks…" : "Run watchdog now →"}
+        </button>
+      </div>
+
+      {runMut.error && (
+        <div className="text-xs font-mono text-rose-600 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 rounded p-2 mb-3">
+          {(runMut.error as Error).message}
+        </div>
+      )}
+
+      {!latest && !isRunning && (
+        <div className="text-xs text-slate-500 dark:text-slate-400 italic">
+          No runs yet — click "Run watchdog now" or wait for the next hourly
+          tick.
+        </div>
+      )}
+
+      {latest && (
+        <>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <SevPill
+              tone="ok"
+              count={latest.summary.ok ?? 0}
+              label="ok"
+            />
+            <SevPill
+              tone="warn"
+              count={latest.summary.warn ?? 0}
+              label="warn"
+            />
+            <SevPill
+              tone="critical"
+              count={latest.summary.critical ?? 0}
+              label="critical"
+            />
+          </div>
+
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-2 font-mono">
+            run at {new Date(latest.started_at).toLocaleString()} · took{" "}
+            {latest.duration_ms} ms
+          </div>
+
+          <div className="divide-y divide-slate-200 dark:divide-slate-800">
+            {latest.results.map((r, i) => (
+              <CheckRow key={`${r.name}-${i}`} result={r} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SevPill({
+  tone, count, label,
+}: { tone: "ok" | "warn" | "critical"; count: number; label: string }) {
+  const cls =
+    tone === "ok"
+      ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-200"
+      : tone === "warn"
+      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900/60 text-amber-800 dark:text-amber-200"
+      : "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900/60 text-rose-800 dark:text-rose-200";
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${cls}`}>
+      <div className="text-2xl font-bold tabular-nums">{count}</div>
+      <div className="text-xs uppercase tracking-wider opacity-80">{label}</div>
+    </div>
+  );
+}
+
+function CheckRow({ result }: { result: import("../api").WatchdogCheckResult }) {
+  const dot =
+    result.severity === "ok"
+      ? "bg-emerald-500"
+      : result.severity === "warn"
+      ? "bg-amber-500"
+      : "bg-rose-500";
+  return (
+    <div className="py-2 flex items-start gap-3">
+      <div className={`mt-1.5 w-2 h-2 rounded-full ${dot} flex-shrink-0`} aria-hidden />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="font-mono text-xs font-semibold text-ink dark:text-slate-100">
+            {result.name}
+          </span>
+          <span className="text-xs text-slate-700 dark:text-slate-300">
+            {result.message}
+          </span>
+        </div>
+        {result.remediation && (
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5 font-mono">
+            ↻ auto-fix: {result.remediation}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
