@@ -85,9 +85,32 @@ export function DockingHoloLoader({ job, stageLabel }: DockingHoloLoaderProps) {
   const [logsShown, setLogsShown] = useState<number>(0);
   const [dots, setDots] = useState<string>("·");
 
-  const firstMutation = job.mutations?.[0] || null;
-  const mutInfo = firstMutation ? prettyMutation(firstMutation) : null;
-  const firstCompound = job.compounds?.[0]?.name || "ligand";
+  // (U1b) Multi-mutation / multi-compound support. A real job often has
+  // multiple of each (e.g. EGFR T790M + C797S × 4 compounds = 8 cells).
+  // We cycle the displayed mutation and compound every ~3s so every name
+  // gets screen time, plus we render an "(i of N)" tag whenever count > 1
+  // so the user knows there are more than what's currently visible.
+  const mutations = (job.mutations ?? []).filter((m) => !!m);
+  const compounds = (job.compounds ?? []).filter((c) => !!c?.name);
+  const nMut = mutations.length;
+  const nComp = compounds.length;
+  const [mutCycleIdx, setMutCycleIdx] = useState<number>(0);
+  const [compCycleIdx, setCompCycleIdx] = useState<number>(0);
+
+  useEffect(() => {
+    if (nMut <= 1) return;
+    const id = setInterval(() => setMutCycleIdx((i) => (i + 1) % nMut), 3000);
+    return () => clearInterval(id);
+  }, [nMut]);
+  useEffect(() => {
+    if (nComp <= 1) return;
+    const id = setInterval(() => setCompCycleIdx((i) => (i + 1) % nComp), 3000);
+    return () => clearInterval(id);
+  }, [nComp]);
+
+  const activeMut = nMut > 0 ? mutations[mutCycleIdx % nMut] : null;
+  const mutInfo = activeMut ? prettyMutation(activeMut) : null;
+  const activeCompound = nComp > 0 ? compounds[compCycleIdx % nComp].name : "ligand";
   const engineLabel = engineDisplay(job.engine);
   const atomCountHint = "≈5k"; // we don't have the real atom count client-side; rough hint
 
@@ -546,13 +569,23 @@ export function DockingHoloLoader({ job, stageLabel }: DockingHoloLoaderProps) {
           </div>
         </div>
 
-        {/* Mutation side-readout (overlaid over the 3D rendering). */}
+        {/* Mutation side-readout (overlaid over the 3D rendering).
+            Cycles with mutCycleIdx so each mutation in a multi-mutation
+            job gets its turn on screen. The "(i of N)" tag appears
+            only when there's more than one. */}
         {mutInfo && (
           <div style={{
             position: "absolute", top: "50%", left: "50%",
             transform: "translate(48px, -16px)", pointerEvents: "none", zIndex: 4,
           }}>
-            <div style={{ fontSize: 9, color: "#F09595", letterSpacing: "0.08em" }}>{mutInfo.resn}</div>
+            <div style={{ fontSize: 9, color: "#F09595", letterSpacing: "0.08em" }}>
+              {mutInfo.resn}
+              {nMut > 1 && (
+                <span style={{ color: "#5F5E5A", marginLeft: 6 }}>
+                  ({(mutCycleIdx % nMut) + 1} of {nMut})
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 10, color: "#F7C1C1", letterSpacing: "0.04em" }}>{mutInfo.mut}</div>
             <div style={{ fontSize: 8, color: "#5F5E5A", letterSpacing: "0.06em" }}>{job.pdb_id} · {job.chain}</div>
           </div>
@@ -574,15 +607,25 @@ export function DockingHoloLoader({ job, stageLabel }: DockingHoloLoaderProps) {
           {"› stripped het-atoms · kept chain "}<span style={{ color: "#9FE1CB" }}>{job.chain}</span>
         </LogLine>
         <LogLine show={logsShown >= 3}>
-          {mutInfo ? (
-            <>{"› patched "}<span style={{ color: "#F09595" }}>{mutInfo.pretty}</span>{" via PDBFixer"}</>
-          ) : (
+          {nMut === 0 && (
             <>{"› receptor ready · "}<span style={{ color: "#B5D4F4" }}>wild-type</span></>
+          )}
+          {nMut === 1 && mutInfo && (
+            <>{"› patched "}<span style={{ color: "#F09595" }}>{mutInfo.pretty}</span>{" via PDBFixer"}</>
+          )}
+          {nMut > 1 && mutInfo && (
+            <>
+              {"› patched "}<span style={{ color: "#F09595" }}>{mutInfo.pretty}</span>{" · "}
+              <span style={{ color: "#5F5E5A" }}>{(mutCycleIdx % nMut) + 1}/{nMut} mutants</span>
+            </>
           )}
         </LogLine>
         <LogLine show={logsShown >= 4}>
-          {"› embedded "}<span style={{ color: "#9FE1CB" }}>{firstCompound}</span>{" · "}
+          {"› embedded "}<span style={{ color: "#9FE1CB" }}>{activeCompound}</span>{" · "}
           <span style={{ color: "#B5D4F4" }}>RDKit MMFF94</span>{" conformer"}
+          {nComp > 1 && (
+            <span style={{ color: "#5F5E5A" }}>{" · "}{(compCycleIdx % nComp) + 1}/{nComp} compounds</span>
+          )}
         </LogLine>
         <LogLine show={logsShown >= 5}>
           {"› "}<span style={{ color: "#5DCAA5" }}>{"▌"}</span>{" sampling poses · "}
