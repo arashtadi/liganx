@@ -165,18 +165,19 @@ def _reap_orphan_fep_studies() -> None:
     daemon-thread fallback died mid-study (Fly machine restart,
     SIGTERM, OOM) and the DB row stays RUNNING forever with no progress.
 
-    (N4.0b + N5.2b) Two-tier staleness threshold, with a dispatch
-    signal that doesn't depend on pod_job_id alone:
+    (N4.0b + N5.2b + N6.2) Two-tier staleness threshold:
       • Pre-dispatch (no edge has stage OR pod_job_id set) → 90 min.
         These are studies whose runner died before any edge made it
         to the pod; nothing real-physics is happening, reap quickly
         so the user gets clear feedback.
       • Mid-dispatch (any edge has non-null stage OR pod_job_id)
-        → 6 hours. A real edge takes 80-90 minutes on OpenCL; if we
-        redeploy mid-edge and the pod is still chugging away, we
-        want to give the pod plenty of headroom to finish naturally
-        + a follow-up (N4.0c) polling thread time to pick up the
-        result.
+        → 14 hours. Matches the dispatch_edge timeout_s default of
+        14h, which is the wall-clock cap for a single OpenCL edge.
+        Below this we'd kill legitimately-running edges; above we'd
+        strand a genuinely-dead pod for too long. FEP #20 died at
+        the previous 6h cap even though N6.1 heartbeat-on-every-poll
+        keeps updated_at fresh — better to be generous here and let
+        the in-edge timeout govern the upper bound.
 
     (N5.2b) Original N4.0b used `pod_job_id IS NOT NULL` as the
     dispatch signal. FEP #19 surfaced a secondary bug where the
@@ -227,11 +228,11 @@ def _reap_orphan_fep_studies() -> None:
                     "       AND updated_at < now() - make_interval(mins => 90)"
                     "     )"
                     "     OR"
-                    "     ("                 # mid-dispatch: 6 h threshold
+                    "     ("                 # mid-dispatch: 14 h threshold (N6.2)
                     "       EXISTS (SELECT 1 FROM fep_perturbation p"
                     "         WHERE p.fep_job_id = j.id"
                     "           AND (p.pod_job_id IS NOT NULL OR p.stage IS NOT NULL))"
-                    "       AND updated_at < now() - make_interval(hours => 6)"
+                    "       AND updated_at < now() - make_interval(hours => 14)"
                     "     )"
                     "   )"
                     " RETURNING id, share_id, status"

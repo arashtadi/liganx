@@ -494,9 +494,19 @@ def dispatch_edge(
 
         stage = payload.get("stage") or "running"
         status = payload.get("status") or "running"
-        # Only fire the callback when the stage actually changes so
-        # we don't thrash the DB on identical 30s polls.
-        if stage != last_stage and on_stage_update:
+        # (N6.1) Fire the callback on EVERY poll, not just on stage
+        # changes. Rationale: even when `stage` stays at
+        # "running_complex_leg" for 8 hours of complex-leg MD, the
+        # callback needs to tick `updated_at` on the FepJob row so
+        # the periodic reaper doesn't see the row as stale and kill
+        # it mid-edge. The pre-N6.1 code only fired on stage
+        # transitions, which left a 6-12h window during MD where
+        # updated_at went cold and the reaper killed the row.
+        #
+        # Cheap — one UPDATE per 30s × duration-of-edge. For a 90-min
+        # edge that's 180 UPDATEs total, all on the same row. Compared
+        # to the cost of losing a $3 GPU run, trivial.
+        if on_stage_update:
             try:
                 on_stage_update(stage, _STAGE_PCT.get(stage, 50), job_id)
             except Exception as e:                                   # noqa: BLE001

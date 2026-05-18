@@ -247,13 +247,14 @@ def test_reaper_does_not_kill_pod_dispatched_study_at_90_min():
             _delete_fep_job(session, job.id)
 
 
-def test_reaper_kills_pod_dispatched_study_after_6_hours():
-    """Studies with in-flight pod_job_id DO get reaped past the 6-hour
-    bar — guards against a genuinely-dead pod stranding the row
-    indefinitely."""
+def test_reaper_kills_pod_dispatched_study_after_14_hours():
+    """(N6.2) Studies with in-flight pod_job_id DO get reaped past the
+    14-hour bar — guards against a genuinely-dead pod stranding the
+    row indefinitely. Threshold matches dispatch_edge timeout_s
+    default so a legitimately running edge can never trip it."""
     _bootstrap_app()
     with Session(engine) as session:
-        old = datetime.utcnow() - timedelta(hours=7)
+        old = datetime.utcnow() - timedelta(hours=15)
         job = _make_fep_job(
             session,
             status=FepJobStatus.RUNNING,
@@ -265,10 +266,36 @@ def test_reaper_kills_pod_dispatched_study_after_6_hours():
             _reap_orphan_fep_studies()
             session.refresh(job)
             assert job.status == FepJobStatus.FAILED, (
-                f"reaper missed a 7-hour-stale pod-dispatched study; "
+                f"reaper missed a 15-hour-stale pod-dispatched study; "
                 f"status={job.status}"
             )
             assert "Interrupted by a backend restart" in (job.error_message or "")
+        finally:
+            _delete_fep_job(session, job.id)
+
+
+def test_reaper_does_not_kill_pod_dispatched_study_at_8_hours():
+    """(N6.2) A study 8h old with an in-flight stage should still be
+    safe — that's well within the 14h cap. FEP #20 was killed at the
+    old 6h cap even though pod was making progress; this regression
+    test holds the line."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        old = datetime.utcnow() - timedelta(hours=8)
+        job = _make_fep_job(
+            session,
+            status=FepJobStatus.RUNNING,
+            updated_at=old,
+            share_id="test_reaper_b2",
+            with_stage=True,
+        )
+        try:
+            _reap_orphan_fep_studies()
+            session.refresh(job)
+            assert job.status == FepJobStatus.RUNNING, (
+                f"reaper killed a 8h-old study still in MD — N6.2 regression; "
+                f"status={job.status}"
+            )
         finally:
             _delete_fep_job(session, job.id)
 
