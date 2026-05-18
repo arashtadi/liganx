@@ -61,6 +61,58 @@ from pydantic import BaseModel, Field
 _JOBS_DIR = Path("/workspace/fep_jobs")
 _JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+# (Q2) Idempotency token map: client_token → job_id. Persisted to
+# /workspace/fep_jobs/_tokens.json so it survives pod restarts.
+# Backend (reconciler) passes client_token=fep_perturbation.id; if the
+# pod already has a job for that token, return the same job_id instead
+# of spawning a second worker. Prevents double-charge when a backend
+# tick crashes mid-/fep_edge_start and a retry arrives.
+_TOKEN_MAP_PATH = _JOBS_DIR / "_tokens.json"
+_token_lock = threading.Lock()
+
+
+def _load_token_map() -> dict[str, str]:
+    if not _TOKEN_MAP_PATH.exists():
+        return {}
+    try:
+        return json.loads(_TOKEN_MAP_PATH.read_text())
+    except Exception:                                                # noqa: BLE001
+        return {}
+
+
+def _persist_token_map(m: dict[str, str]) -> None:
+    """Atomic write — same tmp+rename pattern as _write_status."""
+    tmp = _TOKEN_MAP_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(m, separators=(",", ":")))
+    tmp.replace(_TOKEN_MAP_PATH)
+
+
+# (Q2) Per-job liveness map: job_id → last_polled_at_unix. Updated on
+# every /fep_edge_status read. The orphan-cancel thread checks this
+# every 5 minutes and cancels MD workers that haven't been polled for
+# > ORPHAN_CANCEL_AFTER_SECONDS. Stops the GPU bleed when the backend
+# loses track of an edge.
+_last_polled_at: dict[str, float] = {}
+_poll_lock = threading.Lock()
+
+ORPHAN_CANCEL_AFTER_SECONDS = 30 * 60     # 30 min — matches design doc §5
+
+# (Q3) Job cancellation flags. The orphan-cancel thread (Q2) and the
+# explicit /fep_edge_cancel endpoint both set this; the run_edge MD
+# loop checks it via stage_callback and aborts at the next stage
+# boundary. Cooperative cancellation — we don't kill -9 the worker
+# thread mid-MD because that can leave the GPU in a bad state.
+_cancel_flags: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+
+class _CancelledError(Exception):
+    """(Q3) Sentinel raised by the stage callback when the cancel
+    flag is set. Caught by _run_edge_worker, converted into a clean
+    status='done', stage='cancelled' final state — NOT treated as a
+    crash. Subclassing Exception (not BaseException) so the openfe
+    machinery's own try/excepts don't suppress it."""
+
 # fep_pod is heavy-import-only — its imports (openff, openmm, openfe)
 # happen deferred inside run_edge so this module loads even if a dep
 # is missing. We import fep_pod at top to fail-fast at server start
@@ -102,6 +154,12 @@ class FepEdgeRequest(BaseModel):
     temperature_k: float = Field(default=298.15, gt=0, le=500.0)
     hmr_mass_amu: float = Field(default=3.0, ge=1.0, le=5.0)
     timestep_fs: float = Field(default=4.0, gt=0, le=5.0)
+    # (Q2) Idempotency token. Backend reconciler sets this to the
+    # fep_perturbation row id; if the pod already has a job for the
+    # same token, /fep_edge_start returns the existing job_id rather
+    # than spawning a new MD worker. Prevents double-charge when a
+    # backend retry races an in-flight /fep_edge_start.
+    client_token: Optional[str] = None
 
 
 @app.get("/health")
@@ -215,6 +273,15 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
     stage_started_at = [time.time()]
 
     def _cb(stage: str) -> None:
+        # (Q3) Cooperative cancellation check at every stage boundary.
+        # If the cancel flag is set (by /fep_edge_cancel or Q2's
+        # orphan canceller), abort the MD by raising a sentinel
+        # exception that the worker's outer try/except catches and
+        # converts into a clean status='done', stage='cancelled'.
+        with _cancel_lock:
+            flag = _cancel_flags.get(job_id)
+        if flag and flag.is_set():
+            raise _CancelledError(f"job {job_id} cancelled at stage {stage}")
         current_stage[0] = stage
         stage_started_at[0] = time.time()
         _write_status(job_id, {
@@ -294,6 +361,25 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
             "elapsed_seconds": round(time.time() - started, 1),
             "result": result,
         })
+    except _CancelledError as e:
+        # (Q3) Cooperative cancellation — clean terminal state, NOT
+        # a crash. Backend reconciler sees status=done + the
+        # cancelled stage and transitions the edge to dispatch_state
+        # 'cancelled' (or 'failed' if it didn't initiate the cancel).
+        log.info("fep_edge_worker cancelled cleanly for job %s: %s", job_id, e)
+        _write_status(job_id, {
+            "status": "done",
+            "stage": "cancelled",
+            "stage_elapsed_seconds": 0.0,
+            "started_at": started,
+            "elapsed_seconds": round(time.time() - started, 1),
+            "result": {
+                "ok": False,
+                "error": str(e),
+                "kind": "cancelled",
+                "wall_seconds": round(time.time() - started, 1),
+            },
+        })
     except Exception as e:                                               # noqa: BLE001
         log.exception("fep_edge_worker crashed for job %s", job_id)
         _write_status(job_id, {
@@ -314,6 +400,11 @@ def _run_edge_worker(job_id: str, req: "FepEdgeRequest") -> None:
         # The daemon=True flag means it would die with the process
         # anyway, but explicit shutdown is cleaner.
         stop_heartbeat.set()
+        # (Q2) Clean up tracking for this job — it's terminal now.
+        with _cancel_lock:
+            _cancel_flags.pop(job_id, None)
+        with _poll_lock:
+            _last_polled_at.pop(job_id, None)
 
 
 @app.post("/fep_edge_start")
@@ -324,9 +415,56 @@ def fep_edge_start_endpoint(req: FepEdgeRequest, _auth: None = None) -> dict:
 
     Why async: a real edge is 10+ GPU-hours wall and that exceeds
     Cloudflare's 100s timeout and RunPod's 10h proxy idle ceiling.
-    The polling pattern decouples client liveness from edge length."""
+    The polling pattern decouples client liveness from edge length.
+
+    (Q2) Idempotency: if req.client_token is set AND we already have
+    a job for that token, return the existing job_id instead of
+    spawning a second worker. Backend's reconciler passes
+    client_token=fep_perturbation.id so retries are safe."""
     require_pod_secret()  # noqa: F811
+
+    # (Q2) Idempotency check.
+    client_token = getattr(req, "client_token", None)
+    if client_token:
+        with _token_lock:
+            token_map = _load_token_map()
+            existing_job_id = token_map.get(client_token)
+            if existing_job_id:
+                # Confirm the job still has a status file — could be
+                # purged. If purged, drop the token + dispatch fresh.
+                if _read_status(existing_job_id) is not None:
+                    log.info(
+                        "fep_edge_start: idempotent return for client_token=%s → job_id=%s",
+                        client_token, existing_job_id,
+                    )
+                    return {
+                        "job_id": existing_job_id,
+                        "ok": True,
+                        "idempotent": True,
+                    }
+                # Stale token — purge and re-dispatch below.
+                token_map.pop(client_token, None)
+                _persist_token_map(token_map)
+
     job_id = uuid.uuid4().hex
+
+    # (Q2) Record the token → job_id mapping before spawning so a
+    # racing retry sees the in-flight job.
+    if client_token:
+        with _token_lock:
+            token_map = _load_token_map()
+            token_map[client_token] = job_id
+            _persist_token_map(token_map)
+
+    # (Q2) Initialise the cancel flag for this job.
+    with _cancel_lock:
+        _cancel_flags[job_id] = threading.Event()
+
+    # (Q2) Seed last_polled_at so the orphan-cancel thread doesn't
+    # immediately reap a brand-new job before the first poll arrives.
+    with _poll_lock:
+        _last_polled_at[job_id] = time.time()
+
     # mark as queued before the thread starts so the first poll has
     # something to read.
     _write_status(job_id, {
@@ -347,16 +485,117 @@ def fep_edge_start_endpoint(req: FepEdgeRequest, _auth: None = None) -> dict:
 
 @app.get("/fep_edge_status/{job_id}")
 def fep_edge_status_endpoint(job_id: str, _auth: None = None) -> dict:
-    """Polled by the backend's fep_runner every 30s. Returns:
+    """Polled by the backend's reconciler every 60s (also legacy
+    runner every 30s during shadow-mode rollout). Returns:
       {"status": "queued"|"running"|"done", "stage": "<name>",
        "started_at": <unix_ts>, "elapsed_seconds": <float>,
        "result": <dict if done, else absent>}
-    404 if the job_id isn't known (cleared after a long retention)."""
+    404 if the job_id isn't known (cleared after a long retention).
+
+    (Q2) Every poll updates _last_polled_at so the orphan-cancel
+    thread can detect abandoned workers."""
     require_pod_secret()  # noqa: F811
     status = _read_status(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="unknown job_id")
+    with _poll_lock:
+        _last_polled_at[job_id] = time.time()
     return status
+
+
+@app.post("/fep_edge_cancel/{job_id}")
+def fep_edge_cancel_endpoint(job_id: str, _auth: None = None) -> dict:
+    """(Q3) Explicit cancellation. Backend reconciler calls this when
+    a study transitions to cancelled (user click, budget cap).
+
+    Sets the cancel flag for the job; the MD worker checks this at
+    the next stage boundary and aborts cleanly. The worker writes
+    status='done' with stage='cancelled' so the backend sees a
+    terminal state on next poll.
+
+    Idempotent — cancelling an already-cancelled or already-done
+    job is a no-op."""
+    require_pod_secret()  # noqa: F811
+    # Validate job_id format (same rules as _status_path).
+    if not job_id or "/" in job_id or ".." in job_id:
+        raise HTTPException(status_code=400, detail="bad job_id")
+
+    with _cancel_lock:
+        flag = _cancel_flags.get(job_id)
+    if flag is None:
+        # Unknown job_id — could be already-done, or never existed.
+        # Either way, no work to do; treat as success.
+        return {"ok": True, "noop": True, "reason": "job not in cancel map"}
+
+    flag.set()
+    log.info("fep_edge_cancel: requested cancel for job %s", job_id)
+    return {"ok": True, "cancel_requested": True}
+
+
+# ─── (Q2) Orphan-cancel thread ───────────────────────────────────────────
+
+
+def _orphan_canceller() -> None:
+    """Background thread that runs every 5 minutes. For each job_id in
+    _last_polled_at: if the last poll was > ORPHAN_CANCEL_AFTER_SECONDS
+    ago AND the job is still in a running state, signal cancel.
+
+    Why this exists: the backend's reconciler should call
+    /fep_edge_cancel explicitly when it gives up on a study (Q3 path).
+    But if the backend itself crashes hard (loss of state), no cancel
+    is ever sent. This thread is the pod-side belt to the backend's
+    suspenders — 30 minutes of silence = the backend forgot about us =
+    stop burning GPU.
+
+    Cancellation is cooperative — the MD worker only checks the flag
+    at stage boundaries. Worst-case latency from no-poll to actual
+    GPU-free is one MD-stage duration (typically ≤ 30 min on Sage).
+    """
+    log.info(
+        "orphan_canceller started (cancel after %ds of silence, check every 300s)",
+        ORPHAN_CANCEL_AFTER_SECONDS,
+    )
+    while True:
+        try:
+            time.sleep(300)                                          # 5 min
+            now = time.time()
+            with _poll_lock:
+                stale_jobs = [
+                    jid for jid, last in _last_polled_at.items()
+                    if (now - last) > ORPHAN_CANCEL_AFTER_SECONDS
+                ]
+            for jid in stale_jobs:
+                # Check the job hasn't already finished.
+                status = _read_status(jid)
+                if status is None or status.get("status") == "done":
+                    # Already terminal — clean up tracking.
+                    with _poll_lock:
+                        _last_polled_at.pop(jid, None)
+                    with _cancel_lock:
+                        _cancel_flags.pop(jid, None)
+                    continue
+                # Still running and abandoned — signal cancel.
+                with _cancel_lock:
+                    flag = _cancel_flags.get(jid)
+                if flag and not flag.is_set():
+                    log.warning(
+                        "orphan_canceller: job %s silent for >%ds, cancelling",
+                        jid, ORPHAN_CANCEL_AFTER_SECONDS,
+                    )
+                    flag.set()
+        except Exception as e:                                       # noqa: BLE001
+            log.exception("orphan_canceller iteration failed: %s", e)
+
+
+# Spawn the orphan canceller on module import so it's running for the
+# lifetime of the fep_server process. daemon=True so it dies with the
+# server (supervisord will restart both).
+_orphan_thread = threading.Thread(
+    target=_orphan_canceller,
+    name="fep_orphan_canceller",
+    daemon=True,
+)
+_orphan_thread.start()
 
 
 def _deps_loaded() -> bool:
