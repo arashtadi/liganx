@@ -483,6 +483,83 @@ def test_cancel_propagation_skips_edges_without_pod_job_id():
             _cleanup(session, edge)
 
 
+def test_dispatch_serialized_per_study():
+    """(N12) Reconciler must NOT dispatch a new queued edge for a
+    study that already has an edge in (dispatching, running). The
+    single-GPU pod can't realistically run two edges in parallel.
+    Legacy run_study() was sequential; the reconciler must match."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        # Edge 1: already running. Edge 2: queued, same study.
+        running = _make_study(
+            session,
+            share_id="test_dispatch_serial",
+            dispatch_state="running",
+            pod_job_id="serial-running-edge",
+            last_polled_at=datetime.utcnow(),
+        )
+        node_a = FepNode(fep_job_id=running.fep_job_id, compound_id=1, is_hit=False)
+        node_b = FepNode(fep_job_id=running.fep_job_id, compound_id=1, is_hit=False)
+        session.add(node_a); session.add(node_b)
+        session.commit()
+        session.refresh(node_a); session.refresh(node_b)
+
+        queued = FepPerturbation(
+            fep_job_id=running.fep_job_id,
+            node_a_id=node_a.id, node_b_id=node_b.id,
+            lomap_score=1.0,
+            dispatch_state="queued",
+            status="pending",
+        )
+        session.add(queued)
+        session.commit()
+        session.refresh(queued)
+
+        try:
+            calls = []
+
+            class _Boom:
+                def __init__(self, *a, **kw): pass
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def post(self, url, headers=None, **kw):
+                    calls.append(url)
+                    raise AssertionError("should not dispatch while another edge is running")
+                def get(self, url, headers=None, **kw):
+                    # Polling the running edge is fine — it's the dispatch
+                    # we're checking. Return a "still running" response.
+                    class _R:
+                        status_code = 200
+                        text = '{"status": "running"}'
+                        is_success = True
+                        def json(self_inner): return {"status": "running", "stage": "running_complex_leg"}
+                    return _R()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "FEP_AUTHORITATIVE_RECONCILER": "1",
+                    "POD_FEP_URL": "http://fake-pod:8000",
+                },
+                clear=False,
+            ), patch("deltadock.services.fep_reconciler.httpx.Client", _Boom):
+                os.environ.pop("FEP_RECONCILER_SHADOW", None)
+                reconcile_once_sync(session)
+
+            session.refresh(queued)
+            assert queued.dispatch_state == "queued", (
+                f"queued edge should NOT have been dispatched; got {queued.dispatch_state}"
+            )
+        finally:
+            session.execute(text("DELETE FROM fep_perturbation WHERE fep_job_id = :j"),
+                            {"j": running.fep_job_id})
+            session.execute(text("DELETE FROM fep_node WHERE fep_job_id = :j"),
+                            {"j": running.fep_job_id})
+            session.execute(text("DELETE FROM fep_job WHERE id = :j"),
+                            {"j": running.fep_job_id})
+            session.commit()
+
+
 def test_cancel_fep_study_marks_non_terminal_edges_cancelled():
     """The companion to the reconciler test: cancel_fep_study should
     set dispatch_state='cancelled' on every non-terminal edge so the

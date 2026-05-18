@@ -754,6 +754,27 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
         # in Fly secrets to transfer authority.
         return
 
+    # (N12) Per-study serialization. The legacy run_study() ran edges
+    # sequentially — wait for edge N to finish before dispatching N+1.
+    # The pod has one GPU and can't realistically run two edges in
+    # parallel without thrashing. Before dispatching a new queued edge,
+    # confirm this study has no edge already in (dispatching, running).
+    inflight = session.execute(
+        text(
+            "SELECT COUNT(*) FROM fep_perturbation"
+            " WHERE fep_job_id  = :jid"
+            "   AND dispatch_state IN ('dispatching', 'running')"
+        ),
+        {"jid": queued_row.fep_job_id},
+    ).scalar() or 0
+    if inflight > 0:
+        log.debug(
+            "reconciler: study %s already has %d edge(s) in flight; "
+            "deferring edge %s",
+            queued_row.share_id, inflight, queued_row.id,
+        )
+        return
+
     # (S1) Budget cap check. Refuse to dispatch a NEW edge if the
     # study has already spent more than the cap. The currently-
     # running edge (if any) keeps going to natural completion — we
