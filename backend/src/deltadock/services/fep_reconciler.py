@@ -127,6 +127,25 @@ _IN_FLIGHT_EDGES_SQL = text(
 )
 
 
+# (N9) Edges that were cancelled (by user click or budget cap) but
+# still have a live pod_job_id — the pod doesn't know to stop yet.
+# Throttled to one cancel-send per edge per 5 minutes (the pod's
+# /fep_edge_cancel is idempotent so retries are safe, but flooding is
+# rude). last_polled_at acts as the throttle clock — bumped after
+# each send.
+_PENDING_CANCEL_EDGES_SQL = text(
+    """
+    SELECT id, fep_job_id, pod_job_id
+      FROM fep_perturbation
+     WHERE dispatch_state = 'cancelled'
+       AND pod_job_id   IS NOT NULL
+       AND (last_polled_at IS NULL
+            OR last_polled_at < now() - interval '5 minutes')
+     LIMIT 50
+    """
+)
+
+
 # Edges ready for dispatch: in `queued` state, with no pod_job_id
 # (defensive: NULL means not yet dispatched). Ordered by job creation
 # so older studies' edges are dispatched first.
@@ -248,7 +267,87 @@ def reconcile_once_sync(session: Session) -> dict:
             counters["errors"] += 1
             log.exception("reconciler: stale-pod sweep failed: %s", e)
 
+    # ── Step 4: (N9) propagate user cancellations to the pod ──────
+    # cancel_fep_study (in fep_runner.py) marks edges with
+    # dispatch_state='cancelled' but does not call the pod — that's
+    # this step's job. We POST /fep_edge_cancel/{pod_job_id} for each
+    # cancelled edge that still has a live pod_job_id. The pod endpoint
+    # is idempotent so retries are safe; we throttle to once per 5
+    # minutes per edge via the _PENDING_CANCEL_EDGES_SQL WHERE clause.
+    if not is_shadow_mode():
+        try:
+            counters["cancels_sent"] = _propagate_cancellations(session)
+        except Exception as e:                                       # noqa: BLE001
+            counters["errors"] += 1
+            log.exception("reconciler: cancel propagation failed: %s", e)
+
     return counters
+
+
+def _propagate_cancellations(session: Session) -> int:
+    """(N9) For each cancelled edge with a live pod_job_id, POST
+    /fep_edge_cancel/{pod_job_id} to the pod so the MD process stops.
+
+    Throttled per-edge by _PENDING_CANCEL_EDGES_SQL (max once / 5 min).
+    Idempotent — calling /fep_edge_cancel on an already-cancelled or
+    already-done job is a no-op on the pod side. We bump last_polled_at
+    even on transport failures so we don't hammer an unreachable pod.
+
+    Returns the number of successful cancel-sends (HTTP 2xx).
+    """
+    rows = list(session.execute(_PENDING_CANCEL_EDGES_SQL).fetchall())
+    if not rows:
+        return 0
+    sent = 0
+    for row in rows:
+        pod_url = _pod_url_for_edge(session, row.fep_job_id)
+        if not pod_url:
+            log.warning(
+                "reconciler: edge %s cancelled with pod_job_id=%s but no pod URL "
+                "configured — cannot propagate cancel",
+                row.id, row.pod_job_id,
+            )
+            # Still bump throttle so we don't spam this log line every
+            # tick. The edge stays cancelled in DB — pod will eventually
+            # self-cancel via Q2 orphan after 30 min of no polls.
+            session.execute(
+                text("UPDATE fep_perturbation SET last_polled_at = now() WHERE id = :id"),
+                {"id": row.id},
+            )
+            continue
+
+        url = pod_url.rstrip("/") + f"/fep_edge_cancel/{row.pod_job_id}"
+        ok = False
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(url, headers=pod_auth_headers())
+            if resp.is_success:
+                ok = True
+                log.info(
+                    "reconciler: /fep_edge_cancel sent for edge %s (pod_job_id=%s) — %s",
+                    row.id, row.pod_job_id, (resp.json() if resp.text else {}),
+                )
+            else:
+                log.warning(
+                    "reconciler: /fep_edge_cancel HTTP %d for edge %s (pod_job_id=%s): %s",
+                    resp.status_code, row.id, row.pod_job_id, resp.text[:200],
+                )
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            log.warning(
+                "reconciler: /fep_edge_cancel transport error for edge %s: %s",
+                row.id, e,
+            )
+
+        # Bump last_polled_at regardless — the throttle is what stops
+        # this loop from re-spamming the same edge every 60s.
+        session.execute(
+            text("UPDATE fep_perturbation SET last_polled_at = now() WHERE id = :id"),
+            {"id": row.id},
+        )
+        if ok:
+            sent += 1
+    session.commit()
+    return sent
 
 
 def _check_and_finalize_study(session: Session, fep_job_id: int) -> None:

@@ -331,3 +331,227 @@ def test_stale_dispatching_edge_reverts_to_queued():
             assert edge.dispatched_at is None, "dispatched_at not cleared on revert"
         finally:
             _cleanup(session, edge)
+
+
+# ─── (N9) Cancel propagation to pod ──────────────────────────────
+
+
+def test_cancel_propagation_calls_pod_endpoint():
+    """An edge in dispatch_state='cancelled' with a live pod_job_id
+    must trigger a POST to /fep_edge_cancel/{pod_job_id} on the next
+    reconciler tick. The pod's endpoint is idempotent so we don't
+    need to track "already sent" — but we DO throttle to once per
+    5 minutes via last_polled_at."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        edge = _make_study(
+            session,
+            share_id="test_cancel_propagation",
+            dispatch_state="cancelled",
+            pod_job_id="pod-job-cancel-test",
+            last_polled_at=None,                   # never polled — eligible immediately
+        )
+        try:
+            calls = []
+
+            class _FakeResp:
+                status_code = 200
+                text = '{"ok": true}'
+                is_success = True
+
+                def json(self):
+                    return {"ok": True, "cancel_requested": True}
+
+            class _FakeClient:
+                def __init__(self, *a, **kw): pass
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def post(self, url, headers=None):
+                    calls.append((url, headers))
+                    return _FakeResp()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "FEP_AUTHORITATIVE_RECONCILER": "1",
+                    "POD_FEP_URL": "http://fake-pod:8000",
+                },
+                clear=False,
+            ), patch("deltadock.services.fep_reconciler.httpx.Client", _FakeClient):
+                os.environ.pop("FEP_RECONCILER_SHADOW", None)
+                counters = reconcile_once_sync(session)
+
+            # Cancel-send was attempted at least once.
+            assert any(
+                "fep_edge_cancel/pod-job-cancel-test" in url for url, _ in calls
+            ), f"reconciler did not POST /fep_edge_cancel; calls={calls}"
+            assert counters.get("cancels_sent", 0) >= 1
+
+            # Throttle clock bumped — next tick within 5 min should NOT
+            # re-send. Verifies the WHERE-clause throttle works.
+            session.refresh(edge)
+            assert edge.last_polled_at is not None, (
+                "last_polled_at not bumped — throttle would spam the pod"
+            )
+            assert edge.dispatch_state == "cancelled", (
+                "cancel propagation accidentally mutated dispatch_state"
+            )
+        finally:
+            _cleanup(session, edge)
+
+
+def test_cancel_propagation_throttled_to_5min():
+    """If last_polled_at < 5 minutes ago, no cancel-send fires.
+    Idempotent pod endpoint or not, we shouldn't hammer it."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        edge = _make_study(
+            session,
+            share_id="test_cancel_throttle",
+            dispatch_state="cancelled",
+            pod_job_id="pod-job-throttle-test",
+            last_polled_at=datetime.utcnow() - timedelta(minutes=2),   # too recent
+        )
+        try:
+            calls = []
+
+            class _Boom:
+                def __init__(self, *a, **kw): pass
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def post(self, url, headers=None):
+                    calls.append(url)
+                    raise AssertionError("should not be called within throttle window")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "FEP_AUTHORITATIVE_RECONCILER": "1",
+                    "POD_FEP_URL": "http://fake-pod:8000",
+                },
+                clear=False,
+            ), patch("deltadock.services.fep_reconciler.httpx.Client", _Boom):
+                os.environ.pop("FEP_RECONCILER_SHADOW", None)
+                counters = reconcile_once_sync(session)
+
+            assert calls == [], (
+                f"throttle window violated; should have skipped recent edge, calls={calls}"
+            )
+            assert counters.get("cancels_sent", 0) == 0
+        finally:
+            _cleanup(session, edge)
+
+
+def test_cancel_propagation_skips_edges_without_pod_job_id():
+    """A cancelled edge with NO pod_job_id (never reached the pod)
+    is a pure DB state — nothing to propagate. SQL must filter these
+    out so they don't show up in the cancel-send loop."""
+    _bootstrap_app()
+    with Session(engine) as session:
+        edge = _make_study(
+            session,
+            share_id="test_cancel_no_pod_job",
+            dispatch_state="cancelled",
+            pod_job_id=None,                       # was queued, never dispatched
+            last_polled_at=None,
+        )
+        try:
+            calls = []
+
+            class _Boom:
+                def __init__(self, *a, **kw): pass
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def post(self, url, headers=None):
+                    calls.append(url)
+                    raise AssertionError("should not POST for edge with no pod_job_id")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "FEP_AUTHORITATIVE_RECONCILER": "1",
+                    "POD_FEP_URL": "http://fake-pod:8000",
+                },
+                clear=False,
+            ), patch("deltadock.services.fep_reconciler.httpx.Client", _Boom):
+                os.environ.pop("FEP_RECONCILER_SHADOW", None)
+                counters = reconcile_once_sync(session)
+
+            assert calls == [], "reconciler tried to POST for an edge with no pod_job_id"
+            assert counters.get("cancels_sent", 0) == 0
+        finally:
+            _cleanup(session, edge)
+
+
+def test_cancel_fep_study_marks_non_terminal_edges_cancelled():
+    """The companion to the reconciler test: cancel_fep_study should
+    set dispatch_state='cancelled' on every non-terminal edge so the
+    reconciler picks them up. Terminal edges (done/failed/cancelled)
+    are left alone — they're already terminal."""
+    from deltadock.services.fep_runner import cancel_fep_study
+
+    _bootstrap_app()
+    with Session(engine) as session:
+        # Build a study with three edges: 1 running, 1 done, 1 queued.
+        running = _make_study(
+            session,
+            share_id="test_cancel_user_path",
+            dispatch_state="running",
+            pod_job_id="pod-cancel-user-path",
+        )
+        # Add a done edge + a queued edge under the same fep_job_id.
+        node_a = FepNode(fep_job_id=running.fep_job_id, compound_id=1, is_hit=False)
+        node_b = FepNode(fep_job_id=running.fep_job_id, compound_id=1, is_hit=False)
+        session.add(node_a); session.add(node_b)
+        session.commit()
+        session.refresh(node_a); session.refresh(node_b)
+
+        done_edge = FepPerturbation(
+            fep_job_id=running.fep_job_id,
+            node_a_id=node_a.id, node_b_id=node_b.id,
+            lomap_score=1.0,
+            dispatch_state="done",
+            status="ok",
+        )
+        queued_edge = FepPerturbation(
+            fep_job_id=running.fep_job_id,
+            node_a_id=node_a.id, node_b_id=node_b.id,
+            lomap_score=1.0,
+            dispatch_state="queued",
+            status="pending",
+        )
+        session.add(done_edge); session.add(queued_edge)
+        session.commit()
+        session.refresh(done_edge); session.refresh(queued_edge)
+
+        try:
+            ok = cancel_fep_study("test_cancel_user_path", session)
+            assert ok is True
+
+            session.refresh(running)
+            session.refresh(done_edge)
+            session.refresh(queued_edge)
+
+            assert running.dispatch_state == "cancelled", (
+                f"running edge not flipped: {running.dispatch_state}"
+            )
+            assert queued_edge.dispatch_state == "cancelled", (
+                f"queued edge not flipped: {queued_edge.dispatch_state}"
+            )
+            # Terminal edge must NOT be touched — that would corrupt
+            # historical state.
+            assert done_edge.dispatch_state == "done", (
+                f"done edge accidentally flipped to {done_edge.dispatch_state}"
+            )
+
+            # And the parent FepJob is CANCELLED.
+            job = session.get(FepJob, running.fep_job_id)
+            assert job.status == FepJobStatus.CANCELLED
+        finally:
+            session.execute(text("DELETE FROM fep_perturbation WHERE fep_job_id = :j"),
+                            {"j": running.fep_job_id})
+            session.execute(text("DELETE FROM fep_node WHERE fep_job_id = :j"),
+                            {"j": running.fep_job_id})
+            session.execute(text("DELETE FROM fep_job WHERE id = :j"),
+                            {"j": running.fep_job_id})
+            session.commit()

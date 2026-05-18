@@ -1200,8 +1200,29 @@ def get_fep_study_status(share_id: str, session: Session) -> Optional[FepJob]:
 
 
 def cancel_fep_study(share_id: str, session: Session) -> bool:
-    """Mark a FepJob as CANCELLED. The runner cooperatively picks
-    this up at the next edge boundary."""
+    """Mark a FepJob as CANCELLED and tag all non-terminal edges with
+    dispatch_state='cancelled'.
+
+    Three things happen here:
+
+    1. FepJob.status → CANCELLED. The legacy daemon-thread runner
+       (when authoritative) cooperatively picks this up at the next
+       edge boundary.
+
+    2. Every non-terminal edge gets dispatch_state='cancelled'. This
+       is what the reconciler watches — the next tick (≤60s) sees
+       these and (a) calls /fep_edge_cancel on the pod for any edge
+       with a pod_job_id so the MD process actually stops, and (b)
+       stops dispatching any further queued edges from this study.
+
+    3. last_polled_at is left untouched on each edge. The reconciler's
+       cancel-propagation step uses last_polled_at as a "did we send
+       the cancel" throttle — touching it here would briefly delay
+       the first cancel-send call by up to 5 minutes.
+
+    Returns True if the study was in a cancellable state, False otherwise.
+    """
+    from ..models import FepPerturbation                                # local — keep top of module clean
     job = get_fep_study_status(share_id, session)
     if not job:
         return False
@@ -1210,5 +1231,22 @@ def cancel_fep_study(share_id: str, session: Session) -> bool:
     job.status = FepJobStatus.CANCELLED
     job.updated_at = datetime.utcnow()
     session.add(job)
+
+    # (N9) Mark non-terminal edges as cancelled. Reconciler will
+    # propagate to pod via /fep_edge_cancel on its next tick. We DO
+    # NOT directly call the pod here — the request-handler path
+    # should not be doing fan-out HTTP; the reconciler owns that.
+    # Idempotent: CHECK constraint on dispatch_state allows our values.
+    from sqlalchemy import text as _text
+    session.execute(
+        _text(
+            "UPDATE fep_perturbation"
+            "   SET dispatch_state = 'cancelled',"
+            "       completed_at   = COALESCE(completed_at, now())"
+            " WHERE fep_job_id   = :jid"
+            "   AND (dispatch_state IS NULL OR dispatch_state NOT IN ('done', 'failed', 'cancelled'))"
+        ),
+        {"jid": job.id},
+    )
     session.commit()
     return True
