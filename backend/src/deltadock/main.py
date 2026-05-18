@@ -110,6 +110,53 @@ def _reap_orphan_jobs() -> None:
         log.exception("Orphan-job reaper failed (non-fatal): %s", e)
 
 
+def _bump_inflight_fep_timestamps() -> None:
+    """(N4.0a) Reset updated_at on every in-flight FEP study at boot.
+
+    WHY: FEP #19 (twrk8Zul9B4 follow-up) failed because the daemon-thread
+    runner was killed mid-edge by a Fly redeploy, the pod kept running
+    the edge with no backend listener, updated_at stopped ticking, and
+    ~90 minutes later the orphan reaper killed the row with "Interrupted
+    by a backend restart." The pod's edge had completed by then; the
+    result was simply orphaned.
+
+    FIX: At startup, before the reaper runs, bump updated_at on every
+    study still in PENDING/PREPARING/RUNNING. This buys the study a
+    fresh 90-minute window starting from "now we know about it" rather
+    than "the moment before the old daemon thread died". The follow-up
+    fix (N4.0c, deferred) is to also re-attach a polling-only daemon
+    to in-flight pod jobs so we don't just sit and watch the clock.
+
+    Idempotent + cheap: a single UPDATE statement, no per-row work.
+    Safe to call repeatedly. The reaper still fires on genuinely
+    stale rows (those whose pod job actually died), just not on the
+    just-redeployed ones."""
+    try:
+        from sqlmodel import Session
+        from sqlalchemy import text
+        from .db import engine
+        with Session(engine) as session:
+            result = session.execute(
+                text(
+                    "UPDATE fep_job"
+                    " SET updated_at = now()"
+                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
+                    " RETURNING id, share_id"
+                ),
+            )
+            rows = [(r[0], r[1]) for r in result]
+            session.commit()
+            if rows:
+                log.warning(
+                    "(N4.0a) Bumped updated_at on %d in-flight FEP study/studies "
+                    "post-restart: %s", len(rows), rows
+                )
+            else:
+                log.info("(N4.0a) No in-flight FEP studies need a timestamp bump")
+    except Exception as e:                                            # noqa: BLE001
+        log.exception("In-flight FEP timestamp bump failed (non-fatal): %s", e)
+
+
 def _reap_orphan_fep_studies() -> None:
     """(I1) FEP+ counterpart of _reap_orphan_jobs.
 
@@ -118,10 +165,19 @@ def _reap_orphan_fep_studies() -> None:
     daemon-thread fallback died mid-study (Fly machine restart,
     SIGTERM, OOM) and the DB row stays RUNNING forever with no progress.
 
-    FEP-specific staleness threshold: a real edge takes 8-12 GPU-hours
-    so updated_at moves only every few hours. We use 90 minutes as the
-    stale bar — generous enough that a mid-edge worker isn't reaped,
-    tight enough that a dead worker doesn't strand a study for days.
+    (N4.0b) Two-tier staleness threshold:
+      • Pre-dispatch (no edge has pod_job_id yet) → 90 minutes.
+        These are studies whose runner died before any edge made it
+        to the pod; nothing real-physics is happening, reap quickly
+        so the user gets clear feedback.
+      • Mid-dispatch (some edge has pod_job_id set) → 6 hours.
+        A real edge takes 80-90 minutes on OpenCL; if we redeploy mid-
+        edge and the pod is still chugging away, we want to give the
+        pod plenty of headroom to finish naturally + a follow-up
+        (N4.0c) polling thread time to pick up the result. Without
+        this two-tier scheme, FEP #19's mid-edge redeploy killed the
+        row 90 minutes after the daemon died even though the pod was
+        STILL running the edge.
 
     The error_message tells the user exactly what happened and what
     to do: 'restart, please resubmit'. Idempotent — re-running it is
@@ -138,9 +194,13 @@ def _reap_orphan_fep_studies() -> None:
             # but raw SQL bypasses that translation, so we must match
             # the DB representation exactly. Same convention as the
             # docking reaper (_reap_orphan_jobs uses 'RUNNING'/'PENDING').
+            #
+            # (N4.0b) The OR clause splits stale rows into two cohorts:
+            # rows WITH any in-flight pod_job_id get a 6-hour threshold;
+            # rows WITHOUT any keep the original 90-minute one.
             result = session.execute(
                 text(
-                    "UPDATE fep_job"
+                    "UPDATE fep_job j"
                     " SET status = 'FAILED',"
                     "     error_message = COALESCE(error_message,"
                     "         'Interrupted by a backend restart — the FEP runner"
@@ -148,7 +208,19 @@ def _reap_orphan_fep_studies() -> None:
                     " from /fep/new.'),"
                     "     updated_at = now()"
                     " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
-                    "   AND updated_at < now() - make_interval(mins => 90)"
+                    "   AND ("
+                    "     ("                 # pre-dispatch: 90 min threshold
+                    "       NOT EXISTS (SELECT 1 FROM fep_perturbation p"
+                    "         WHERE p.fep_job_id = j.id AND p.pod_job_id IS NOT NULL)"
+                    "       AND updated_at < now() - make_interval(mins => 90)"
+                    "     )"
+                    "     OR"
+                    "     ("                 # mid-dispatch: 6 h threshold
+                    "       EXISTS (SELECT 1 FROM fep_perturbation p"
+                    "         WHERE p.fep_job_id = j.id AND p.pod_job_id IS NOT NULL)"
+                    "       AND updated_at < now() - make_interval(hours => 6)"
+                    "     )"
+                    "   )"
                     " RETURNING id, share_id, status"
                 ),
             )
@@ -609,8 +681,15 @@ async def lifespan(_app: FastAPI):
     # serve a single request. Also fails loud.
     _verify_schema_matches_models()
     _reap_orphan_jobs()
-    # (I1) Reap stale FEP studies (>90 min in PENDING/PREPARING/RUNNING) —
-    # presumed dead beyond recovery, mark FAILED.
+    # (N4.0a) Bump updated_at on every in-flight FEP study FIRST, so
+    # the reaper below sees a fresh 90/360-minute window starting now
+    # rather than from the moment our previous daemon thread died.
+    # Without this, a redeploy mid-edge reaps the row before M18 even
+    # gets to look at it.
+    _bump_inflight_fep_timestamps()
+    # (I1) Reap stale FEP studies — two-tier threshold per N4.0b:
+    # 90 min for pre-dispatch (no pod_job_id yet) and 6 h for studies
+    # with any edge dispatched to the pod.
     _reap_orphan_fep_studies()
     # (M18) Re-spawn runner threads for RECENT (<90 min) FEP studies
     # whose daemon-thread runner died with THIS process's restart.
