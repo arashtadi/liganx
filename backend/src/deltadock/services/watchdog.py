@@ -529,40 +529,64 @@ async def run_all_checks() -> WatchdogRun:
                 message=f"{type(r).__name__}: {r}",
             ))
 
-    # DB checks need a sync Session; run them serially.
-    try:
-        with Session(engine) as session:
-            # ghost_fep_edges is async (hits the pod) BUT also needs the
-            # session for DB-side cleanup. Run it inside the session.
-            try:
-                results.append(await check_ghost_fep_edges(session))
-            except Exception as e:                                       # noqa: BLE001
-                log.exception("watchdog: ghost_fep_edges failed")
-                results.append(CheckResult(
-                    name="ghost_fep_edges", severity=SEV_WARN,
-                    message=f"check crashed: {type(e).__name__}: {e}",
-                ))
-            for fn in (
-                check_db_alive,
-                check_stuck_docking_jobs,
-                check_stuck_fep_edges,
-                check_stale_cancellations,
-                check_recent_jobs,
-            ):
+    # DB checks: PER-CHECK SESSION (U5c). Previously all checks shared
+    # one Session, so the first failing query (e.g. a status-enum
+    # mismatch) put the session into a Postgres "current transaction
+    # aborted" state, and every subsequent check failed too. With the
+    # Sentry SDK's SQLAlchemy integration, EACH of those failures fired
+    # a Sentry issue → Telegram webhook → spam (the user reported 7
+    # webhook hits in ~5 minutes). Per-check sessions isolate failures.
+    # Also: explicit rollback() in the except block guarantees we close
+    # the txn cleanly even if the Session() context manager doesn't.
+
+    async def _run_async_check_isolated(
+        check_fn,                                                        # type: ignore[no-untyped-def]
+        check_name: str,
+    ) -> None:
+        try:
+            with Session(engine) as session:
                 try:
-                    results.append(fn(session))
-                except Exception as e:                                   # noqa: BLE001
-                    log.exception("watchdog: %s failed", fn.__name__)
-                    results.append(CheckResult(
-                        name=fn.__name__, severity=SEV_WARN,
-                        message=f"check crashed: {type(e).__name__}: {e}",
-                    ))
-    except Exception as e:                                               # noqa: BLE001
-        log.exception("watchdog: DB session setup failed")
-        results.append(CheckResult(
-            name="db_session", severity=SEV_CRITICAL,
-            message=f"Session() failed: {type(e).__name__}: {e}",
-        ))
+                    results.append(await check_fn(session))
+                except Exception:
+                    try:
+                        session.rollback()
+                    except Exception:                                    # noqa: BLE001
+                        pass
+                    raise
+        except Exception as e:                                           # noqa: BLE001
+            log.exception("watchdog: %s failed", check_name)
+            results.append(CheckResult(
+                name=check_name, severity=SEV_WARN,
+                message=f"check crashed: {type(e).__name__}: {e}",
+            ))
+
+    def _run_sync_check_isolated(check_fn) -> None:                      # type: ignore[no-untyped-def]
+        try:
+            with Session(engine) as session:
+                try:
+                    results.append(check_fn(session))
+                except Exception:
+                    try:
+                        session.rollback()
+                    except Exception:                                    # noqa: BLE001
+                        pass
+                    raise
+        except Exception as e:                                           # noqa: BLE001
+            log.exception("watchdog: %s failed", check_fn.__name__)
+            results.append(CheckResult(
+                name=check_fn.__name__, severity=SEV_WARN,
+                message=f"check crashed: {type(e).__name__}: {e}",
+            ))
+
+    await _run_async_check_isolated(check_ghost_fep_edges, "ghost_fep_edges")
+    for fn in (
+        check_db_alive,
+        check_stuck_docking_jobs,
+        check_stuck_fep_edges,
+        check_stale_cancellations,
+        check_recent_jobs,
+    ):
+        _run_sync_check_isolated(fn)
 
     summary = {SEV_OK: 0, SEV_WARN: 0, SEV_CRITICAL: 0}
     for r in results:

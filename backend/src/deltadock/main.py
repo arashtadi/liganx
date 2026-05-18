@@ -30,6 +30,28 @@ if _sentry_dsn:
         import sentry_sdk  # type: ignore
         from sentry_sdk.integrations.fastapi import FastApiIntegration  # type: ignore
         from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration  # type: ignore
+        # (U5c) Filter watchdog-internal exceptions out of Sentry.
+        # Watchdog probes routinely surface state that we ALREADY
+        # report via /admin/watchdog/status (e.g. a check throwing
+        # because Postgres lost a column); we don't need each one
+        # to also fire a Sentry issue + Telegram webhook. Drop any
+        # event whose logger is the watchdog or that originates
+        # inside services/watchdog.py.
+        def _drop_watchdog(event, hint):
+            try:
+                if event.get("logger") == "deltadock.services.watchdog":
+                    return None
+                # Also catch exceptions raised from within the watchdog
+                # module — they may not carry the logger field.
+                frames = (event.get("exception", {}) or {}).get("values", [])
+                for v in frames:
+                    for f in (v.get("stacktrace", {}) or {}).get("frames", []):
+                        if "services/watchdog.py" in (f.get("abs_path") or ""):
+                            return None
+            except Exception:                                            # noqa: BLE001
+                pass
+            return event
+
         sentry_sdk.init(
             dsn=_sentry_dsn,
             environment=settings.app_env,
@@ -37,6 +59,7 @@ if _sentry_dsn:
             traces_sample_rate=0.1,  # conservative — 10% of requests traced
             send_default_pii=False,   # never auto-send PII; surface explicitly when needed
             integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+            before_send=_drop_watchdog,
         )
         log.info("Sentry initialised (env=%s, release=%s)", settings.app_env, GIT_SHA)
     except Exception as e:  # noqa: BLE001
