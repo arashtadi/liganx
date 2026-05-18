@@ -103,6 +103,7 @@ def _make_fep_job(
             fep_job_id=job.id,
             node_a_id=node_a.id,
             node_b_id=node_b.id,
+            lomap_score=1.0,                # NOT NULL per schema
             status="running",
             # Either pod_job_id (legacy signal) or stage (N5.2b
             # fallback signal) marks this row as "dispatched".
