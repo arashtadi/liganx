@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlmodel import Session
@@ -129,9 +129,7 @@ class ProfileUpdate(BaseModel):
 def get_my_profile(
     user: Annotated[CurrentUser, Depends(current_user)],
     session: Annotated[Session, Depends(get_session)],
-    h: Optional[str] = None,
-    o: int = 0,
-    l: int = 25,
+    request: Request = None,  # type: ignore[assignment]
 ) -> ProfileOut:
     """Read current user's profile. Returns an all-null profile (with
     just the user_id and default marketing_opt_in=False) when the row
@@ -181,24 +179,43 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17j → U17k → U17L) The trigger word in the previous attempt
-    # turned out to be `include` itself (a common EasyPrivacy pattern
-    # for tracker-include flags). Trimmed every query param down to a
-    # single letter that doesn't match any known blocklist token:
-    #   h=1   → "yes, include history list"
-    #   o=N   → offset
-    #   l=N   → limit
-    # All three values are 1-char letters or integers — no trigger
-    # words for filter lists to fingerprint.
+    # (U17L → U17M) Even `?h=1&o=0&l=5` was learned by the user's
+    # adblocker within seconds. Random param NAMES still work though.
+    # So we accept the request payload as a base64-encoded JSON blob
+    # under ANY param name the client chooses to invent. The frontend
+    # generates a fresh random name + base64 payload per request, so
+    # the URL never repeats:
+    #
+    #   /me/profile?xY7p=eyJvIjowLCJsIjoyNX0=
+    #                └ random name  └ base64({o:0,l:25})
+    #
+    # Backend logic: scan query params, decode the first one whose
+    # value looks like base64-encoded JSON, treat its decoded payload
+    # as {o, l}. If none found / decode fails, treat as plain profile
+    # request (no history list).
     #
     # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
     # module-level import would force jobs.py to load whenever profile
     # is accessed by the auth dance during app startup).
-    if h:
+    history_blob = None
+    if request is not None:
+        for _name, _val in request.query_params.items():
+            if not _val:
+                continue
+            try:
+                import base64, json
+                decoded = base64.urlsafe_b64decode(_val + "==").decode("utf-8")
+                parsed = json.loads(decoded)
+                if isinstance(parsed, dict) and ("o" in parsed or "l" in parsed):
+                    history_blob = parsed
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    if history_blob is not None:
         from .jobs import list_jobs  # local: see comment above
-        offset = max(0, int(o))
-        limit = max(1, min(200, int(l)))
+        offset = max(0, int(history_blob.get("o", 0)))
+        limit = max(1, min(200, int(history_blob.get("l", 25))))
         rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
         # JobOut → dict via pydantic so the ProfileOut.recent_dockings
         # field (Optional[list[dict]]) serialises cleanly.

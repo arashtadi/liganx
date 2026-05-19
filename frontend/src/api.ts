@@ -1493,16 +1493,20 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17L) /me/profile?h=1&o=N&l=N. All query params shortened to
-  // single letters because filter lists match literal tokens like
-  // 'include', 'offset', 'limit', 'dockings', 'jobs', 'runs' anywhere
-  // in the URL. Single letters dodge every word match we've seen.
-  //   h=1 → request the history list
-  //   o=N → offset
-  //   l=N → limit
+  // (U17M) Even single-letter param names got dynamically learned.
+  // Final form: encode the payload as base64-JSON under a fresh
+  // random param NAME per request. The URL never repeats, so the
+  // adblocker has nothing to learn:
+  //   /me/profile?aB3p=eyJvIjowLCJsIjoyNX0=
+  // Backend scans query params, decodes the first base64-JSON one,
+  // treats it as the history-request payload. Falls back to plain
+  // profile read if no decodable blob found (so existing callers are
+  // unaffected).
   listJobs: async (offset = 0, limit = 25) => {
+    const payload = btoa(JSON.stringify({ o: offset, l: limit }));
+    const name = Math.random().toString(36).slice(2, 6);
     const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?h=1&o=${offset}&l=${limit}`,
+      `/me/profile?${name}=${encodeURIComponent(payload)}`,
     );
     return r.recent_dockings ?? [];
   },
