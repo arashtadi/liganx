@@ -902,20 +902,27 @@ export default function ProductionViewer3D({
   // even when a stale editedConformerSdf is still on screen. Without
   // this the badge said "live preview" while a NEW conformer was being
   // fetched, making it look like the 3D wasn't tracking 2D edits.
+  //
+  // (v1.30 / U19) Pre-dock state now says "free conformer · run dock
+  // for binding shape" instead of just "live conformer". Chemists were
+  // comparing this preview to the docked-pose viewer on JobPage and
+  // assuming they should look the same — but they're different states
+  // (a free ligand vs the bound conformation that wraps into the
+  // pocket). Loud badge + tooltip below make the distinction obvious.
   const statusBadge = hasDock
     ? loading
       ? <span className="text-cyan-300 animate-pulse">▮ updating 3D…</span>
       : smilesEdited
         ? editedConformerSdf
-          ? <span className="text-amber-300">⚠ live preview · re-dock to score</span>
+          ? <span className="text-amber-300" title="The SMILES has changed since the last dock — this is the free-state shape of the new structure, not the binding pose. Re-dock to score.">⚠ free conformer · re-dock to score</span>
           : <span className="text-cyan-300 animate-pulse">▮ updating preview…</span>
         : receptorPdb && posePdbqt
-          ? <span className="text-emerald-400">● docked pose · {variant}</span>
+          ? <span className="text-emerald-400" title="Bound conformation from the docking run — the shape the ligand actually folded into to fit the pocket.">● docked pose · {variant}</span>
           : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
     : loading
       ? <span className="text-cyan-300 animate-pulse">▮ updating 3D…</span>
       : conformerSdf
-        ? <span className="text-emerald-400">● live conformer</span>
+        ? <span className="text-amber-300" title="Free-state conformer from RDKit (UFF). NOT a binding pose — the actual bound shape will be different after docking, because the ligand folds to fit the pocket. Run Dock to compute the binding pose.">⚠ free conformer · run Dock for binding shape</span>
         : smiles
           ? <span className="text-slate-600">○ waiting</span>
           : <span className="text-slate-700">▢ empty</span>;
@@ -944,6 +951,25 @@ export default function ProductionViewer3D({
         <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">3D View{fullscreen ? " · fullscreen (esc)" : ""}</span>
         <span className="font-mono text-slate-500">{statusBadge}</span>
       </div>
+
+      {/* (U19) Inline explainer when the viewer is showing a FREE
+          conformer (pre-dock). Chemists were comparing this preview to
+          the docked-pose viewer on JobPage and assuming the difference
+          in shape was a bug. It's not — a free ligand is extended in
+          solvent; a bound ligand folds to fit the pocket. Make the
+          distinction loud so nobody acts on the wrong picture. Hidden
+          once a dock completes (the docked-pose badge above takes
+          over). */}
+      {!hasDock && !!conformerSdf && (
+        <div className="px-3 py-1.5 border-b border-slate-800/70 bg-amber-950/30 text-[10px] text-amber-200/90 leading-relaxed">
+          <span className="font-semibold">Free-state conformer.</span>{" "}
+          This is RDKit&apos;s default 3D shape of the molecule in
+          vacuum — <em>not</em> a binding pose. The actual bound
+          conformation will fold differently to fit the pocket. Click{" "}
+          <span className="font-mono text-amber-100">Run Dock</span>{" "}
+          to compute it.
+        </div>
+      )}
 
       {showToolbar && (
         <div className="px-2 py-1.5 border-b border-slate-800/70 flex items-center gap-2 flex-wrap text-[9px] font-mono">
