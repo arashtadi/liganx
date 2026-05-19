@@ -1118,10 +1118,23 @@ def list_jobs(
     return [_to_summary_out(j) for j in session.exec(stmt)]
 
 
-# (U17) Alias under /runs — same behavior as GET /jobs, just a path
-# that ad-blockers don't match. See `runs_router` declaration at the
-# top of this module for the full rationale. Implementation simply
-# forwards to list_jobs() so the two routes can never drift.
+# (U17 → U17d) Alias for GET /jobs. The route exists in two flavors so
+# the frontend can fall back when uBlock / EasyPrivacy / Brave Shields
+# dynamically learn the GET pattern:
+#
+#   • GET  /me/dockings?offset=&limit=    — preferred, semantic
+#   • POST /me/dockings  body {offset, limit}
+#                        — fallback used by listJobs() in api.ts. POST
+#                          with a JSON body has no offset=/limit= URL
+#                          fingerprint for filter lists to match on,
+#                          which is the actual pattern uBlock learns
+#                          (not the path word itself).
+#
+# Both delegate to list_jobs() so semantics and auth are identical.
+class _ListPageBody(BaseModel):
+    offset: int = 0
+    limit: int = 25
+
 @runs_router.get("", response_model=list[JobOut])
 def list_runs(
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
@@ -1130,6 +1143,23 @@ def list_runs(
     session: Session = Depends(get_session),
 ) -> list[JobOut]:
     """Ad-blocker-friendly alias for GET /jobs. Identical semantics."""
+    return list_jobs(limit=limit, offset=offset, user=user, session=session)
+
+@runs_router.post("", response_model=list[JobOut])
+def list_runs_post(
+    body: _ListPageBody,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[JobOut]:
+    """POST variant — no query string for filter lists to fingerprint.
+
+    Same auth, same response, same pagination semantics; only the
+    transport differs. Defends against uBlock's dynamic-rules engine
+    learning the path/query pattern over time. See runs_router
+    declaration at the top of this module for the full history.
+    """
+    limit = max(1, min(200, body.limit))
+    offset = max(0, body.offset)
     return list_jobs(limit=limit, offset=offset, user=user, session=session)
 
 
