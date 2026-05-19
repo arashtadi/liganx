@@ -36,30 +36,21 @@ _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|in
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-# (U17) Secondary router whose ONLY purpose is to expose the list
-# endpoint under a path that doesn't trigger ad-blockers. uBlock
-# Origin / EasyPrivacy / Brave Shields all carry filter rules that
-# match BARE ROOT-LEVEL collection paths like `/jobs` and `/runs`
-# as tracking patterns, blocking the request before it ever leaves
-# the browser. Confirmed in the user's own browser:
-#   /jobs        → Failed to fetch
-#   /runs        → Failed to fetch    ← first attempt at fix, still blocked
-#   /me/runs     → request goes through
-#   /fep/studies → works
-#   /me/profile  → works
-# Pattern: root-level single-word paths are flagged; nested paths
-# (a `/me/` or `/fep/` prefix) bypass the filter.
+# (U17) Secondary router for the list endpoint, designed to dodge
+# aggressive ad-blockers. After /jobs, /runs, /me/runs, /me/dockings,
+# /me/dockings.json, /me/dockings/{tok}.json all got dynamically
+# learned and blocked in sequence (see U17a → U17f commit log), the
+# winning shape turned out to be a path with NO stable word and a
+# random per-request token in the final filename:
 #
-# Mitigation: register `GET /me/runs` as a 1-line alias that
-# delegates to list_jobs(). The frontend's History page calls
-# /me/runs instead of /jobs. Detail endpoints (/jobs/{share_id},
-# /jobs/{id}/cancel, etc.) stay on /jobs — per-id suffixes break
-# the filter pattern so they keep working.
+#   GET /data/{token}.json   ← serves the user's job list
 #
-# We keep /jobs (collection) working too for backward compat: old
-# share links, the validation harness in scripts/validation/run.py,
-# and any external integrations that crawl the API still resolve.
-runs_router = APIRouter(prefix="/me", tags=["jobs"])
+# `{token}` is 8 chars of base36 generated client-side per call. The
+# server ignores it entirely — it's just a cache-buster. The /data/
+# prefix and `.json` suffix together look like a static-asset CDN
+# path, which filter lists treat as exempt; the random body
+# eliminates any URL fingerprint to learn.
+runs_router = APIRouter(prefix="/data", tags=["jobs"])
 
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
@@ -1135,7 +1126,7 @@ class _ListPageBody(BaseModel):
     offset: int = 0
     limit: int = 25
 
-@runs_router.get("/dockings/{token}.json", response_model=list[JobOut])
+@runs_router.get("/{token}.json", response_model=list[JobOut])
 def list_runs(
     token: str,  # noqa: ARG001 — cache-buster only; ignored
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
@@ -1145,26 +1136,23 @@ def list_runs(
 ) -> list[JobOut]:
     """Ad-blocker-evading alias for GET /jobs.
 
-    `{token}` is a random per-request token (8-char base36) that the
-    frontend regenerates on every call. Combined with the `.json`
-    suffix, this defeats uBlock / EasyPrivacy / Brave Shields
-    dynamic-learning entirely: filter lists can't learn a pattern
-    that never repeats, and they treat `.json` paths as static
-    assets which exempts them from tracker matching.
+    Path shape: GET /data/{token}.json — no stable word, random token,
+    `.json` suffix. uBlock / EasyPrivacy / Brave Shields can't learn
+    a pattern when the URL never repeats and there's no semantic word
+    to flag.
 
-    Server-side the token is purely a cache-buster — it's not
-    validated, not logged for auth purposes, and not used for
-    anything. Same auth, same response shape, same pagination
-    semantics as GET /jobs.
+    Server-side the token is purely a cache-buster — not validated,
+    not logged for auth, not used. Same auth, response shape, and
+    pagination semantics as GET /jobs.
 
-    History of this dance:
+    History of the path-rotation dance:
       U17a  /runs              — blocked
       U17b  /me/runs           — blocked
       U17c  /me/dockings       — blocked after first use
       U17d  POST /me/dockings  — also blocked
-      U17e  /me/dockings.json  — also blocked after first use
-      U17f  /me/dockings/{token}.json — uBlock can't learn a moving
-                                        target. End of chase.
+      U17e  /me/dockings.json  — also blocked
+      U17f  /me/dockings/{tok}.json — `dockings` prefix learned + blocked
+      U17g  /data/{tok}.json   — no stable word, no fingerprint, works.
     """
     return list_jobs(limit=limit, offset=offset, user=user, session=session)
 

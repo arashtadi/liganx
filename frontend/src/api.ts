@@ -1493,18 +1493,16 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17f) Per-request random token in the path so each URL is unique.
-  // Combined with the `.json` suffix, this defeats uBlock /
-  // EasyPrivacy / Brave Shields dynamic-learning entirely — they
-  // can't learn a pattern that never repeats. Path rotation alone
-  // didn't work (every alias got blocked within minutes once the
-  // History page used it); randomising on every fetch eliminates
-  // the URL fingerprint completely. Token is purely a cache-buster,
-  // the backend ignores it.
+  // (U17g) Path: GET /data/{random-token}.json. After /me/dockings/*
+  // got dynamically learned by aggressive ad-blockers (the `dockings`
+  // word was the fingerprint), moved to a path with no stable word at
+  // all — just a generic /data/ prefix and an 8-char random token as
+  // the filename. uBlock / EasyPrivacy can't learn a moving target
+  // and treat `.json` paths as static assets.
   listJobs: (offset = 0, limit = 25) => {
     const tok = Math.random().toString(36).slice(2, 10);
     return request<Job[]>(
-      `/me/dockings/${tok}.json?offset=${offset}&limit=${limit}`,
+      `/data/${tok}.json?offset=${offset}&limit=${limit}`,
     );
   },
   catalog: () => request<CatalogTarget[]>("/catalog"),
