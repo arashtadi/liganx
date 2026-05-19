@@ -214,18 +214,64 @@ def get_my_profile(
                     limit = max(1, min(200, int(m.group(2))))
                     break
 
+    # (U17S) Use raw SQL instead of going through list_jobs() because
+    # the Job SQLAlchemy model declares status as Enum(JobStatus) which
+    # maps by NAME. Migration 024 + the U11 raw-SQL cancel write rows
+    # with value 'cancelled' (lowercase), and SQLAlchemy then throws
+    # `LookupError: 'cancelled' is not among the defined enum values`
+    # when loading those rows back — every list_jobs() call blows up
+    # the moment a user has a cancelled job in their history. The
+    # right long-term fix is to give the Job model a `values_callable`
+    # sa_column, but that touches every reader in the codebase. Raw
+    # SQL here keeps the blast radius to this endpoint.
     try:
-        rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
-        # model_dump(mode='json') coerces datetimes to ISO strings so
-        # the response field (Optional[list[dict]]) JSON-serialises.
-        profile.recent_dockings = [
-            r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
-            for r in rows
-        ]
+        rows = session.execute(
+            text(
+                "SELECT id, share_id, pdb_id, chain, uniprot_id, mutations,"
+                "       status::text AS status, error_message,"
+                "       created_at, updated_at, exhaustiveness, include_wt,"
+                "       COALESCE(ensemble, FALSE) AS ensemble,"
+                "       engine, user_id, title, COALESCE(tags, '{}') AS tags"
+                "  FROM job"
+                " WHERE user_id = :uid"
+                " ORDER BY created_at DESC"
+                " LIMIT :lim OFFSET :off"
+            ),
+            {"uid": user.id, "lim": limit, "off": offset},
+        ).mappings().all()
+
+        compound_rows = []
+        if rows:
+            job_ids = [r["id"] for r in rows]
+            compound_rows = session.execute(
+                text(
+                    "SELECT id, job_id, name, smiles FROM compound"
+                    " WHERE job_id = ANY(:ids)"
+                ),
+                {"ids": job_ids},
+            ).mappings().all()
+        compounds_by_job: dict[int, list[dict]] = {}
+        for c in compound_rows:
+            compounds_by_job.setdefault(c["job_id"], []).append({
+                "id": c["id"], "name": c["name"], "smiles": c["smiles"],
+            })
+
+        def _serialise(r) -> dict:
+            d = dict(r)
+            for k in ("created_at", "updated_at"):
+                if d.get(k) is not None:
+                    d[k] = d[k].isoformat() if hasattr(d[k], "isoformat") else d[k]
+            d["mutations"] = [m for m in (d.get("mutations") or "").split(",") if m]
+            d["tags"] = list(d.get("tags") or [])
+            d["compounds"] = compounds_by_job.get(d["id"], [])
+            d["results"] = []
+            d["pdb_quality"] = None
+            return d
+
+        profile.recent_dockings = [_serialise(r) for r in rows]
     except Exception as _ex:  # noqa: BLE001
-        # Defence-in-depth: a failure in the history piggy-back must
-        # not break the profile endpoint itself. Auth-bootstrap depends
-        # on /me/profile staying green. Log loudly so we can debug.
+        # Defence-in-depth: a failure here must not break /me/profile
+        # itself — auth-bootstrap depends on it staying green.
         import logging as _logging
         import traceback as _tb
         _logging.getLogger(__name__).error(
