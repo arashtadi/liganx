@@ -758,6 +758,16 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # were initialised before CANCELLED was added to the Python model;
     # the cancel endpoint's raw-SQL UPDATE expects the value to exist.
     ("024_jobstatus_cancelled.sql", "Migration 024 (jobstatus.cancelled enum value)"),
+    # (U18) Cure the SQLAlchemy "maps enums by NAME, not value" trap
+    # that bit us on the 17-attempt history-page chase. Two files:
+    # 025 adds lowercase enum values, 026 lowercases existing rows.
+    # Split because PG won't let us use a newly-added enum value in
+    # the same transaction it was added — each .sql file runs in its
+    # own transaction, so 025 commits before 026's UPDATEs reference
+    # the new values. Pairs with the JobStatus model's values_callable
+    # mapping landed in the same release.
+    ("025_jobstatus_lowercase_values.sql", "Migration 025 (jobstatus enum lowercase values)"),
+    ("026_jobstatus_lowercase_rows.sql", "Migration 026 (lowercase existing job.status rows)"),
 ]
 
 

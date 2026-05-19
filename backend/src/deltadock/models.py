@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Column, String
+from sqlalchemy import Column, Enum as SAEnum, String
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -103,7 +103,26 @@ class Job(SQLModel, table=True):
     ensemble: bool = Field(default=False)
 
     # Status
-    status: JobStatus = Field(default=JobStatus.PENDING, index=True)
+    # (U18) sa_column with values_callable so SQLAlchemy maps the
+    # Python enum by .value (lowercase) instead of .name (uppercase).
+    # Without this, reading a row with the lowercase value 'cancelled'
+    # (written by U11 + migration 024) throws LookupError because the
+    # default mapping looks up by NAME 'CANCELLED'. Migrations 025+026
+    # ensure all existing rows are lowercase too. Combined fix: every
+    # path through select(Job) works on cancelled jobs.
+    status: JobStatus = Field(
+        default=JobStatus.PENDING,
+        sa_column=Column(
+            SAEnum(
+                JobStatus,
+                name="jobstatus",
+                native_enum=True,
+                values_callable=lambda enum_cls: [m.value for m in enum_cls],
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     error_message: Optional[str] = None
 
     # Live-updated stage slug the runner writes via services.runner.set_stage
