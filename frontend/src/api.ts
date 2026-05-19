@@ -1493,16 +1493,16 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17k) /me/profile is the only path the ad-blocker can't afford
-  // to block (auth/boot depends on it). Recent dockings are piggy-
-  // backed onto its response, gated by ?include=h. The query value is
-  // a single letter ('h' for history) because the user's ad-blocker
-  // matches literal trigger words like 'dockings'/'jobs'/'runs'
-  // ANYWHERE in the URL, including inside query strings. 'h' is
-  // opaque enough to dodge every list we've seen.
+  // (U17L) /me/profile?h=1&o=N&l=N. All query params shortened to
+  // single letters because filter lists match literal tokens like
+  // 'include', 'offset', 'limit', 'dockings', 'jobs', 'runs' anywhere
+  // in the URL. Single letters dodge every word match we've seen.
+  //   h=1 → request the history list
+  //   o=N → offset
+  //   l=N → limit
   listJobs: async (offset = 0, limit = 25) => {
     const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?include=h&offset=${offset}&limit=${limit}`,
+      `/me/profile?h=1&o=${offset}&l=${limit}`,
     );
     return r.recent_dockings ?? [];
   },

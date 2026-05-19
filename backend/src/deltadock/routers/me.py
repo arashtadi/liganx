@@ -129,9 +129,9 @@ class ProfileUpdate(BaseModel):
 def get_my_profile(
     user: Annotated[CurrentUser, Depends(current_user)],
     session: Annotated[Session, Depends(get_session)],
-    include: Optional[str] = None,
-    offset: int = 0,
-    limit: int = 25,
+    h: Optional[str] = None,
+    o: int = 0,
+    l: int = 25,
 ) -> ProfileOut:
     """Read current user's profile. Returns an all-null profile (with
     just the user_id and default marketing_opt_in=False) when the row
@@ -181,21 +181,24 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17j → U17k) Piggy-back the recent dockings only when explicitly
-    # asked for. The trigger token used to be `include=dockings` but the
-    # affected user's ad-blocker matches the literal string "dockings"
-    # ANYWHERE in the URL — including the query value. Switched to
-    # `include=h` (h = history) which is opaque enough to dodge every
-    # known tracker word.
+    # (U17j → U17k → U17L) The trigger word in the previous attempt
+    # turned out to be `include` itself (a common EasyPrivacy pattern
+    # for tracker-include flags). Trimmed every query param down to a
+    # single letter that doesn't match any known blocklist token:
+    #   h=1   → "yes, include history list"
+    #   o=N   → offset
+    #   l=N   → limit
+    # All three values are 1-char letters or integers — no trigger
+    # words for filter lists to fingerprint.
     #
     # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
     # module-level import would force jobs.py to load whenever profile
     # is accessed by the auth dance during app startup).
-    if include and "h" in include.split(","):
+    if h:
         from .jobs import list_jobs  # local: see comment above
-        offset = max(0, int(offset))
-        limit = max(1, min(200, int(limit)))
+        offset = max(0, int(o))
+        limit = max(1, min(200, int(l)))
         rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
         # JobOut → dict via pydantic so the ProfileOut.recent_dockings
         # field (Optional[list[dict]]) serialises cleanly.
