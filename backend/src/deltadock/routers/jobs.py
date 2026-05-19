@@ -37,23 +37,29 @@ _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|in
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 # (U17) Secondary router whose ONLY purpose is to expose the list
-# endpoint under a path that doesn't trigger ad-blockers. Multiple
-# users hit the History page and got "Failed to fetch" — uBlock
+# endpoint under a path that doesn't trigger ad-blockers. uBlock
 # Origin / EasyPrivacy / Brave Shields all carry filter rules that
-# match the literal collection path `/jobs` as a tracking pattern,
-# blocking the request before it ever leaves the browser. Same auth
-# header, same origin, but only THIS path dies.
+# match BARE ROOT-LEVEL collection paths like `/jobs` and `/runs`
+# as tracking patterns, blocking the request before it ever leaves
+# the browser. Confirmed in the user's own browser:
+#   /jobs        → Failed to fetch
+#   /runs        → Failed to fetch    ← first attempt at fix, still blocked
+#   /me/runs     → request goes through
+#   /fep/studies → works
+#   /me/profile  → works
+# Pattern: root-level single-word paths are flagged; nested paths
+# (a `/me/` or `/fep/` prefix) bypass the filter.
 #
-# Mitigation: register `GET /runs` as a 1-line alias that delegates
-# to list_jobs(). The frontend's History page calls /runs instead
-# of /jobs. Detail endpoints (/jobs/{share_id}, /jobs/{id}/cancel,
-# etc.) stay on /jobs because the per-id suffix breaks the filter
-# pattern — only the bare collection path is flagged.
+# Mitigation: register `GET /me/runs` as a 1-line alias that
+# delegates to list_jobs(). The frontend's History page calls
+# /me/runs instead of /jobs. Detail endpoints (/jobs/{share_id},
+# /jobs/{id}/cancel, etc.) stay on /jobs — per-id suffixes break
+# the filter pattern so they keep working.
 #
 # We keep /jobs (collection) working too for backward compat: old
 # share links, the validation harness in scripts/validation/run.py,
 # and any external integrations that crawl the API still resolve.
-runs_router = APIRouter(prefix="/runs", tags=["jobs"])
+runs_router = APIRouter(prefix="/me/runs", tags=["jobs"])
 
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:

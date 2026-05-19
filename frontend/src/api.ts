@@ -1486,16 +1486,15 @@ export const api = {
    *
    *  Both args are optional so existing callers (none today, but future
    *  consumers) get the legacy 20-row default. */
-  // (U17) Calls /runs instead of /jobs because uBlock / EasyPrivacy /
-  // Brave Shields match the literal collection path `/jobs` as a
-  // tracking pattern and block the fetch before it leaves the browser
-  // — users see "Couldn't reach the server" on the History page even
-  // though every other endpoint works fine. /runs is a backend alias
-  // that delegates to the same list_jobs() handler. Detail endpoints
-  // (/jobs/:id, /jobs/:id/cancel, etc.) stay on /jobs since per-id
-  // suffixes don't trigger the filter.
+  // (U17) Calls /me/runs instead of /jobs because uBlock / EasyPrivacy /
+  // Brave Shields match BARE ROOT-LEVEL collection paths (/jobs AND
+  // /runs both fail; /me/runs and /fep/studies work). Prefixing the
+  // path with /me/ reliably bypasses these filter patterns. The
+  // alias delegates to the same list_jobs() handler. Detail endpoints
+  // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
+  // don't trigger the filter.
   listJobs: (offset = 0, limit = 25) =>
-    request<Job[]>(`/runs?offset=${offset}&limit=${limit}`),
+    request<Job[]>(`/me/runs?offset=${offset}&limit=${limit}`),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
   /** Reverse lookup — given a SMILES, return PubChem's preferred
