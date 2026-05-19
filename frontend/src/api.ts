@@ -1494,7 +1494,7 @@ export const api = {
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
   listJobs: (offset = 0, limit = 25) =>
-    request<Job[]>(`/me/runs?offset=${offset}&limit=${limit}`),
+    request<Job[]>(`/me/dockings?offset=${offset}&limit=${limit}`),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
   /** Reverse lookup — given a SMILES, return PubChem's preferred

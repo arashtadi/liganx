@@ -59,7 +59,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # We keep /jobs (collection) working too for backward compat: old
 # share links, the validation harness in scripts/validation/run.py,
 # and any external integrations that crawl the API still resolve.
-runs_router = APIRouter(prefix="/me/runs", tags=["jobs"])
+runs_router = APIRouter(prefix="/me/dockings", tags=["jobs"])
 
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
