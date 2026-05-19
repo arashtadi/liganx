@@ -37,14 +37,54 @@ if _sentry_dsn:
         # to also fire a Sentry issue + Telegram webhook. Drop any
         # event whose logger is the watchdog or that originates
         # inside services/watchdog.py.
+        #
+        # (U14) Extended to suppress the "every Fly redeploy fires a
+        # Sentry storm" pattern. Mid-deploy SIGTERM kills the docking
+        # runner, every in-flight DB query / pod HTTP fails, and each
+        # cascading exception fires its own webhook → user sees 14+
+        # Telegram pings in 90s. Drop these expected-during-shutdown
+        # exception classes; the M18 reaper already classifies the
+        # orphaned job correctly ("Interrupted by a backend restart").
+        #
+        # Suppression list — ALL of these are routine, not pages:
+        #   - JobCancelled                       → user clicked Cancel
+        #   - asyncio.CancelledError             → graceful shutdown
+        #   - InFailedSqlTransactionError +
+        #     "current transaction is aborted"   → session poisoning
+        #                                          cascade — original
+        #                                          error is already
+        #                                          captured upstream
+        _SUPPRESS_EXC_TYPES = {
+            "JobCancelled",
+            "CancelledError",
+            "InFailedSqlTransactionError",
+            "InFailedSqlTransaction",
+        }
+        _SUPPRESS_MSG_FRAGMENTS = (
+            "current transaction is aborted",
+            "Cancelled by user",
+            # Pod HTTP transient — pod redeploys / network hiccups
+            # surface here but the M18 reaper + N9 cancel path
+            # already handle them.
+            "Connection aborted",
+            "Read timed out",
+        )
+
         def _drop_watchdog(event, hint):
             try:
                 if event.get("logger") == "deltadock.services.watchdog":
                     return None
                 # Also catch exceptions raised from within the watchdog
                 # module — they may not carry the logger field.
-                frames = (event.get("exception", {}) or {}).get("values", [])
-                for v in frames:
+                exc_values = (event.get("exception", {}) or {}).get("values", [])
+                for v in exc_values:
+                    # (U14) Suppress by exception type — these are the
+                    # routine "Fly redeployed mid-job" cascade.
+                    if v.get("type") in _SUPPRESS_EXC_TYPES:
+                        return None
+                    msg = v.get("value") or ""
+                    if any(frag in msg for frag in _SUPPRESS_MSG_FRAGMENTS):
+                        return None
                     for f in (v.get("stacktrace", {}) or {}).get("frames", []):
                         if "services/watchdog.py" in (f.get("abs_path") or ""):
                             return None
