@@ -333,26 +333,37 @@ def _reap_cancelled_orphans(session: Session) -> int:
     a fresh user cancel goes through /fep_edge_cancel first; only if
     that's been failing for an hour do we give up and reap locally.
 
-    Returns rows reaped. Idempotent.
+    Returns rows reaped. Idempotent. Does NOT commit — caller's
+    transaction boundary is the right place to do that, same pattern
+    as _propagate_cancellations and the other reconciler steps.
     """
     from sqlalchemy import text as _text
-    res = session.execute(_text(
-        "UPDATE fep_perturbation"
-        "   SET status = 'failed',"
-        "       dispatch_state = 'failed',"
-        "       error_message = COALESCE(error_message, '')"
-        "                        || ' [orphan-reaped: parent cancelled >1h ago]',"
-        "       completed_at = now(),"
-        "       updated_at = now()"
-        " WHERE dispatch_state IN ('dispatching', 'running')"
-        "   AND fep_job_id IN ("
-        "       SELECT id FROM fep_job"
-        "        WHERE status::text = 'cancelled'"
-        "          AND updated_at < now() - interval '1 hour'"
-        "   )"
-        " RETURNING id"
-    )).mappings().all()
-    session.commit()
+    try:
+        res = session.execute(_text(
+            "UPDATE fep_perturbation"
+            "   SET status = 'failed',"
+            "       dispatch_state = 'failed',"
+            "       error_message = COALESCE(error_message, '')"
+            "                        || ' [orphan-reaped: parent cancelled >1h ago]',"
+            "       completed_at = now(),"
+            "       updated_at = now()"
+            " WHERE dispatch_state IN ('dispatching', 'running')"
+            "   AND fep_job_id IN ("
+            "       SELECT id FROM fep_job"
+            "        WHERE status::text = 'cancelled'"
+            "          AND updated_at < now() - interval '1 hour'"
+            "   )"
+            " RETURNING id"
+        )).mappings().all()
+    except Exception:
+        # Roll back so the caller's session isn't stuck in a failed
+        # transaction state — every subsequent SQL would 'commands
+        # ignored until end of transaction block' otherwise.
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        raise
     if res:
         log.warning(
             "reconciler: reaped %d orphan edge(s) whose parent jobs were "
