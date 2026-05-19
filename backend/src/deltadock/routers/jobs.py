@@ -36,20 +36,13 @@ _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|in
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-# (U17) Secondary router for the list endpoint, designed to dodge
-# aggressive ad-blockers. After /jobs, /runs, /me/runs, /me/dockings,
-# /me/dockings.json, /me/dockings/{tok}.json all got dynamically
-# learned and blocked in sequence (see U17a → U17f commit log), the
-# winning shape turned out to be a path with NO stable word and a
-# random per-request token in the final filename:
-#
-#   GET /data/{token}.json   ← serves the user's job list
-#
-# `{token}` is 8 chars of base36 generated client-side per call. The
-# server ignores it entirely — it's just a cache-buster. The /data/
-# prefix and `.json` suffix together look like a static-asset CDN
-# path, which filter lists treat as exempt; the random body
-# eliminates any URL fingerprint to learn.
+# (U17T cleanup) The runs_router below is a vestige of the U17a-S
+# "ad-blocker chase". The real bug (datetime serialization + JobStatus
+# enum mapping for cancelled rows) is fixed elsewhere; the History
+# page now reads recent_dockings from /me/profile directly. This
+# router stays in place only as a hidden alias so any cached client
+# bundle from the chase window doesn't 404. Safe to delete after a
+# few weeks once nobody's still serving the old bundle.
 runs_router = APIRouter(prefix="/me/profile", tags=["jobs"])
 
 
@@ -1098,15 +1091,69 @@ def list_jobs(
     The user_id filter is already covered by idx_job_user_created from
     migration 001.
     """
-    stmt = (
-        select(Job)
-        .where(Job.user_id == user.id)
-        .order_by(Job.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .options(selectinload(Job.compounds))  # one bulk query, not N+1
-    )
-    return [_to_summary_out(j) for j in session.exec(stmt)]
+    # (U17T) Use raw SQL with status::text to bypass SQLAlchemy's
+    # JobStatus enum mapping. The mapping is broken for the value
+    # 'cancelled' — Python enum is JobStatus.CANCELLED with
+    # value='cancelled', but SQLAlchemy maps by NAME 'CANCELLED'.
+    # Rows written via the U11 raw-SQL cancel path store 'cancelled'
+    # (lowercase), and SQLAlchemy then throws LookupError on load:
+    #
+    #   LookupError: 'cancelled' is not among the defined enum values.
+    #   Enum name: jobstatus. Possible values: PENDING, RUNNING,
+    #   COMPLETED, ..., CANCELLED
+    #
+    # The user-visible symptom was the entire History list 500'ing the
+    # moment any user had a cancelled job. Raw SQL here keeps the API
+    # working until we ship a proper model fix (migrate Job.status to
+    # `sa_column=Column(Enum(JobStatus, values_callable=lambda x:
+    # [e.value for e in x]))` plus a migration that lowercases all
+    # existing enum values).
+    from sqlalchemy import text as _text  # local: keep imports tidy
+    rows = session.execute(
+        _text(
+            "SELECT id, share_id, pdb_id, chain, uniprot_id, mutations,"
+            "       status::text AS status, error_message,"
+            "       created_at, updated_at, exhaustiveness, include_wt,"
+            "       COALESCE(ensemble, FALSE) AS ensemble,"
+            "       engine, user_id, title, COALESCE(tags, '{}') AS tags"
+            "  FROM job"
+            " WHERE user_id = :uid"
+            " ORDER BY created_at DESC"
+            " LIMIT :lim OFFSET :off"
+        ),
+        {"uid": user.id, "lim": limit, "off": offset},
+    ).mappings().all()
+    if not rows:
+        return []
+    job_ids = [r["id"] for r in rows]
+    compound_rows = session.execute(
+        _text(
+            "SELECT id, job_id, name, smiles FROM compound"
+            " WHERE job_id = ANY(:ids)"
+        ),
+        {"ids": job_ids},
+    ).mappings().all()
+    compounds_by_job: dict[int, list] = {}
+    for c in compound_rows:
+        compounds_by_job.setdefault(c["job_id"], []).append(
+            CompoundOut(id=c["id"], name=c["name"], smiles=c["smiles"]),
+        )
+    return [
+        JobOut(
+            id=r["id"], share_id=r["share_id"], pdb_id=r["pdb_id"],
+            chain=r["chain"], uniprot_id=r["uniprot_id"],
+            mutations=[m for m in (r["mutations"] or "").split(",") if m],
+            status=r["status"],
+            error_message=r["error_message"],
+            created_at=r["created_at"], updated_at=r["updated_at"],
+            exhaustiveness=r["exhaustiveness"], include_wt=r["include_wt"],
+            ensemble=bool(r["ensemble"]),
+            engine=r["engine"], user_id=r["user_id"], title=r["title"],
+            tags=list(r["tags"] or []),
+            compounds=compounds_by_job.get(r["id"], []),
+        )
+        for r in rows
+    ]
 
 
 # (U17 → U17d) Alias for GET /jobs. The route exists in two flavors so

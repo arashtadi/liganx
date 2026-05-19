@@ -397,20 +397,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     // 2026-05-12 user-reported bug: a network-level fetch failure landed
     // in the UI as the raw browser TypeError "Failed to fetch". That's
-    // technically accurate but completely useless to the user — they
-    // can't tell if the backend is down, their internet's flaky, an
-    // ad-blocker ate the request, or a VPN is in the way. Catch the
-    // TypeError specifically (every browser uses this name for
-    // network-level fetch errors) and replace with an actionable message.
-    // ApiError(0, ...) signals "didn't reach the server" — same status
-    // as AbortError above, so callers that already special-case 0 keep
-    // working unchanged.
+    // technically accurate but useless to the user. Catch the TypeError
+    // (every browser uses this name for network-level fetch errors) and
+    // replace with an actionable message.
+    //
+    // (U17T) Tone-down. The original message blamed the user's
+    // ad-blocker, but TypeError is ALSO what fires when the backend
+    // returns a 5xx without CORS headers — which is what burned us in
+    // the 17-attempt U17a-S chase. The phrasing now leads with a
+    // generic "having trouble" and lists possible causes in priority
+    // order (backend hiccup > network > blocker) instead of pointing
+    // straight at the blocker.
     if (e instanceof TypeError) {
       throw new ApiError(
         0,
-        "Couldn't reach the server. Check your internet connection, " +
-          "disable any ad-blocker or VPN that might be blocking api.liganx.com, " +
-          "and retry. If this keeps happening, status.liganx.com shows current health.",
+        "Having trouble reaching the server. Please retry. " +
+          "If this keeps happening: check status.liganx.com, your " +
+          "internet connection, or whether an ad-blocker / VPN is " +
+          "blocking api.liganx.com.",
       );
     }
     throw e;
