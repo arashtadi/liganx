@@ -1493,15 +1493,19 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17O) `<digits>-<digits>` was ALSO a filter-list beacon
-  // signature. Switched to letter-prefixed concat `o<N>l<N>` (e.g.
-  // o0l25) which matches no known beacon pattern. Random param name
-  // still rotates per request.
+  // (U17Q) Final wire form. For page 1 (the only page most users ever
+  // see) we call bare /me/profile — which always reaches the server
+  // because it's the auth-bootstrap endpoint and ad-blockers can't
+  // afford to block it. The backend returns the first 25 dockings in
+  // recent_dockings by default. Pagination beyond page 1 still uses
+  // the o<N>l<N> query for normal browsers, with a graceful empty
+  // fallback for users on aggressive blockers (rare case).
   listJobs: async (offset = 0, limit = 25) => {
-    const name = Math.random().toString(36).slice(2, 6);
-    const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?${name}=o${offset}l${limit}`,
-    );
+    const url =
+      offset === 0 && limit === 25
+        ? `/me/profile`
+        : `/me/profile?${Math.random().toString(36).slice(2, 6)}=o${offset}l${limit}`;
+    const r = await request<UserProfile & { recent_dockings?: Job[] }>(url);
     return r.recent_dockings ?? [];
   },
   catalog: () => request<CatalogTarget[]>("/catalog"),

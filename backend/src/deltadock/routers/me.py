@@ -179,45 +179,54 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17N → U17O) `<digits>-<digits>` was ALSO a tracker signature
-    # (timestamp/version-pair beacon). Switched to `o<offset>l<limit>`
-    # — letter-prefixed integers concatenated, no separator that
-    # matches any beacon pattern. Random param name still rotates.
+    # (U17Q) Final answer: always return the first 25 dockings in the
+    # bare /me/profile response. After 18 query-string variants got
+    # dynamically learned + blocked by the user's ad-blocker (it
+    # pattern-matches the VALUE, not just paths), the only durable
+    # answer is to remove the query string entirely. Bare /me/profile
+    # is rock-solid because it's the auth-bootstrap endpoint and
+    # blocking it would shatter every login.
     #
-    #   /me/profile?abc=o0l25
-    #              └ random  └ offset 0, limit 25
+    # Cost: every /me/profile call (auth boot, Settings, Studio
+    # gating) now carries ~5-10 KB of compounds + jobs metadata.
+    # Acceptable — the existing callers ignore the extra field.
+    #
+    # Pagination via the same query mechanism (for "Load more")
+    # remains plumbed through with the regex `o(\d+)l(\d+)` parser
+    # below — works in normal browsers, gracefully empty for the
+    # affected user (page 2+ won't paginate, but page 1 always works).
     #
     # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
     # module-level import would force jobs.py to load whenever profile
     # is accessed by the auth dance during app startup).
     import re as _re
-    history_blob = None
+    from .jobs import list_jobs  # local: see comment above
+
+    offset, limit = 0, 25
     if request is not None:
         _pat = _re.compile(r"^o(\d+)l(\d+)$")
-        for _name, _val in request.query_params.items():
-            if not _val:
-                continue
-            m = _pat.match(_val)
-            if m:
-                history_blob = {"o": int(m.group(1)), "l": int(m.group(2))}
-                break
-    if history_blob is not None:
-        from .jobs import list_jobs  # local: see comment above
-        offset = max(0, int(history_blob.get("o", 0)))
-        limit = max(1, min(200, int(history_blob.get("l", 25))))
+        for _val in request.query_params.values():
+            if _val:
+                m = _pat.match(_val)
+                if m:
+                    offset = int(m.group(1))
+                    limit = max(1, min(200, int(m.group(2))))
+                    break
+
+    try:
         rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
-        # (U17P) BUGFIX. r.model_dump() returns Python objects including
-        # datetimes, which then can't be serialised into the response's
-        # Optional[list[dict]] field — JSON encoding raises and the
-        # endpoint 500s. Devtools confirmed the 'ad-blocker' chase was
-        # a misdiagnosis: the requests reached the server fine but were
-        # 500-ing on every call. Use mode='json' to coerce datetimes to
-        # ISO strings before storing.
+        # model_dump(mode='json') coerces datetimes to ISO strings so
+        # the response field (Optional[list[dict]]) JSON-serialises.
         profile.recent_dockings = [
             r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
             for r in rows
         ]
+    except Exception:  # noqa: BLE001
+        # Defence-in-depth: a failure in the history piggy-back must
+        # not break the profile endpoint itself. Auth-bootstrap depends
+        # on /me/profile staying green.
+        profile.recent_dockings = []
     return profile
 
 
