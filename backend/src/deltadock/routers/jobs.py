@@ -36,6 +36,25 @@ _VARIANT_RE = re.compile(r"^(WT|[A-Za-z][0-9]+[A-Za-z]([+_][A-Za-z0-9]+)*(del|in
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+# (U17) Secondary router whose ONLY purpose is to expose the list
+# endpoint under a path that doesn't trigger ad-blockers. Multiple
+# users hit the History page and got "Failed to fetch" — uBlock
+# Origin / EasyPrivacy / Brave Shields all carry filter rules that
+# match the literal collection path `/jobs` as a tracking pattern,
+# blocking the request before it ever leaves the browser. Same auth
+# header, same origin, but only THIS path dies.
+#
+# Mitigation: register `GET /runs` as a 1-line alias that delegates
+# to list_jobs(). The frontend's History page calls /runs instead
+# of /jobs. Detail endpoints (/jobs/{share_id}, /jobs/{id}/cancel,
+# etc.) stay on /jobs because the per-id suffix breaks the filter
+# pattern — only the bare collection path is flagged.
+#
+# We keep /jobs (collection) working too for backward compat: old
+# share links, the validation harness in scripts/validation/run.py,
+# and any external integrations that crawl the API still resolve.
+runs_router = APIRouter(prefix="/runs", tags=["jobs"])
+
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
     """Resolve either a legacy integer job ID or a public share_id to a Job.
@@ -1091,6 +1110,21 @@ def list_jobs(
         .options(selectinload(Job.compounds))  # one bulk query, not N+1
     )
     return [_to_summary_out(j) for j in session.exec(stmt)]
+
+
+# (U17) Alias under /runs — same behavior as GET /jobs, just a path
+# that ad-blockers don't match. See `runs_router` declaration at the
+# top of this module for the full rationale. Implementation simply
+# forwards to list_jobs() so the two routes can never drift.
+@runs_router.get("", response_model=list[JobOut])
+def list_runs(
+    limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Skip this many jobs (for pagination)"),
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[JobOut]:
+    """Ad-blocker-friendly alias for GET /jobs. Identical semantics."""
+    return list_jobs(limit=limit, offset=offset, user=user, session=session)
 
 
 def _to_summary_out(job: Job) -> JobOut:

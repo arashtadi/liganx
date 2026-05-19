@@ -868,6 +868,12 @@ app.add_middleware(
 )
 
 app.include_router(jobs.router)
+# (U17) Ad-blocker-friendly alias for the /jobs collection list. See
+# jobs.py runs_router declaration for full rationale — short version:
+# uBlock / EasyPrivacy / Brave Shields block the literal path /jobs
+# as a tracking pattern, so the frontend's History page falls back
+# to /runs for the list. Detail endpoints stay on /jobs.
+app.include_router(jobs.runs_router)
 app.include_router(screening.router)
 app.include_router(catalog.router)
 app.include_router(structures.router)
