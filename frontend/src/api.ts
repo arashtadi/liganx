@@ -1493,17 +1493,16 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17j) Path-rotation lost. uBlock learned every alternative
-  // (/jobs, /runs, /me/runs, /me/dockings*, /me/q/*, /data/*,
-  // /me/profile/{tok}.json) within seconds of first use. The ONE
-  // endpoint the ad-blocker never blocks is /me/profile itself,
-  // because the app's auth/profile boot would shatter without it.
-  // So: pass ?include=dockings to /me/profile and read the jobs out
-  // of the response's recent_dockings field. Same auth, same data,
-  // wrapped inside an endpoint blocklists can't afford to flag.
+  // (U17k) /me/profile is the only path the ad-blocker can't afford
+  // to block (auth/boot depends on it). Recent dockings are piggy-
+  // backed onto its response, gated by ?include=h. The query value is
+  // a single letter ('h' for history) because the user's ad-blocker
+  // matches literal trigger words like 'dockings'/'jobs'/'runs'
+  // ANYWHERE in the URL, including inside query strings. 'h' is
+  // opaque enough to dodge every list we've seen.
   listJobs: async (offset = 0, limit = 25) => {
     const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?include=dockings&offset=${offset}&limit=${limit}`,
+      `/me/profile?include=h&offset=${offset}&limit=${limit}`,
     );
     return r.recent_dockings ?? [];
   },

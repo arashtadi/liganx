@@ -181,12 +181,18 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17j) Piggy-back the recent dockings only when explicitly asked
-    # for. Local import avoids the circular dep between me.py and
+    # (U17j → U17k) Piggy-back the recent dockings only when explicitly
+    # asked for. The trigger token used to be `include=dockings` but the
+    # affected user's ad-blocker matches the literal string "dockings"
+    # ANYWHERE in the URL — including the query value. Switched to
+    # `include=h` (h = history) which is opaque enough to dodge every
+    # known tracker word.
+    #
+    # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
     # module-level import would force jobs.py to load whenever profile
     # is accessed by the auth dance during app startup).
-    if include and "dockings" in include.split(","):
+    if include and "h" in include.split(","):
         from .jobs import list_jobs  # local: see comment above
         offset = max(0, int(offset))
         limit = max(1, min(200, int(limit)))
