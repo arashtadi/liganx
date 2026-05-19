@@ -1493,15 +1493,14 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17N) base64 was a trap — strings starting with 'eyJ' (b64 of `{"`)
-  // are a known EasyPrivacy tracker-beacon signature. Switched to
-  // plain dash-separated numerics: random param name, value is
-  // `<offset>-<limit>`. URL never repeats AND the value matches no
-  // known filter signature.
+  // (U17O) `<digits>-<digits>` was ALSO a filter-list beacon
+  // signature. Switched to letter-prefixed concat `o<N>l<N>` (e.g.
+  // o0l25) which matches no known beacon pattern. Random param name
+  // still rotates per request.
   listJobs: async (offset = 0, limit = 25) => {
     const name = Math.random().toString(36).slice(2, 6);
     const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?${name}=${offset}-${limit}`,
+      `/me/profile?${name}=o${offset}l${limit}`,
     );
     return r.recent_dockings ?? [];
   },

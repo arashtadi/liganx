@@ -179,35 +179,29 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17M → U17N) base64 didn't work either — strings starting with
-    # `eyJ` (base64 of `{"`) are a known EasyPrivacy tracker-beacon
-    # signature, so `?abc=eyJv...` got blocked. Plain dash-separated
-    # numerics (`0-25`) are safe.
+    # (U17N → U17O) `<digits>-<digits>` was ALSO a tracker signature
+    # (timestamp/version-pair beacon). Switched to `o<offset>l<limit>`
+    # — letter-prefixed integers concatenated, no separator that
+    # matches any beacon pattern. Random param name still rotates.
     #
-    # Final wire format: random param name + value `<offset>-<limit>`.
-    # Each fetch generates a fresh random name, so the URL never
-    # repeats AND the value matches no known filter signature.
-    #
-    #   /me/profile?abc=0-25
-    #              └ random  └ offset-limit
+    #   /me/profile?abc=o0l25
+    #              └ random  └ offset 0, limit 25
     #
     # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
     # module-level import would force jobs.py to load whenever profile
     # is accessed by the auth dance during app startup).
+    import re as _re
     history_blob = None
     if request is not None:
+        _pat = _re.compile(r"^o(\d+)l(\d+)$")
         for _name, _val in request.query_params.items():
-            if not _val or "-" not in _val:
+            if not _val:
                 continue
-            try:
-                _o_str, _l_str = _val.split("-", 1)
-                _o = int(_o_str)
-                _l = int(_l_str)
-                history_blob = {"o": _o, "l": _l}
+            m = _pat.match(_val)
+            if m:
+                history_blob = {"o": int(m.group(1)), "l": int(m.group(2))}
                 break
-            except (ValueError, TypeError):
-                continue
     if history_blob is not None:
         from .jobs import list_jobs  # local: see comment above
         offset = max(0, int(history_blob.get("o", 0)))
