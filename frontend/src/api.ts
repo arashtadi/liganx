@@ -1493,16 +1493,13 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17d) POST instead of GET — uBlock's dynamic-filter engine learns
-  // the GET URL+query pattern (`?offset=&limit=`) after a few hits and
-  // blocks the request. POST with a JSON body has no URL fingerprint
-  // for filter lists to match on, so the same endpoint works
-  // reliably for users with aggressive ad-blockers.
+  // (U17e) Path ends in `.json` — filter lists (uBlock, EasyPrivacy)
+  // treat .json paths as static assets and skip tracker-pattern
+  // matching. Plain-alias paths (/runs, /me/runs, /me/dockings) all
+  // got blocked dynamically; .json reliably bypasses the heuristic.
+  // GET so caches and inspectors render the response naturally.
   listJobs: (offset = 0, limit = 25) =>
-    request<Job[]>(`/me/dockings`, {
-      method: "POST",
-      body: JSON.stringify({ offset, limit }),
-    }),
+    request<Job[]>(`/me/dockings.json?offset=${offset}&limit=${limit}`),
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
   /** Reverse lookup — given a SMILES, return PubChem's preferred

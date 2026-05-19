@@ -59,7 +59,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # We keep /jobs (collection) working too for backward compat: old
 # share links, the validation harness in scripts/validation/run.py,
 # and any external integrations that crawl the API still resolve.
-runs_router = APIRouter(prefix="/me/dockings", tags=["jobs"])
+runs_router = APIRouter(prefix="/me", tags=["jobs"])
 
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
@@ -1135,28 +1135,34 @@ class _ListPageBody(BaseModel):
     offset: int = 0
     limit: int = 25
 
-@runs_router.get("", response_model=list[JobOut])
+@runs_router.get("/dockings.json", response_model=list[JobOut])
 def list_runs(
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
     offset: int = Query(0, ge=0, description="Skip this many jobs (for pagination)"),
     user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> list[JobOut]:
-    """Ad-blocker-friendly alias for GET /jobs. Identical semantics."""
+    """Ad-blocker-friendly alias for GET /jobs.
+
+    The `.json` suffix matters: filter lists (EasyPrivacy, uBlock's
+    dynamic rules) treat paths ending in `.json` as static assets and
+    skip their tracker-pattern matching. Without it, the dynamic-
+    learning engine flagged every plain alias we tried (/runs,
+    /me/runs, /me/dockings — see U17a/b/c/d). The `.json` extension
+    consistently bypasses the heuristic across the major filter lists.
+
+    Same auth, same response shape, same pagination semantics.
+    """
     return list_jobs(limit=limit, offset=offset, user=user, session=session)
 
-@runs_router.post("", response_model=list[JobOut])
+@runs_router.post("/dockings.json", response_model=list[JobOut])
 def list_runs_post(
     body: _ListPageBody,
     user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> list[JobOut]:
-    """POST variant — no query string for filter lists to fingerprint.
-
-    Same auth, same response, same pagination semantics; only the
-    transport differs. Defends against uBlock's dynamic-rules engine
-    learning the path/query pattern over time. See runs_router
-    declaration at the top of this module for the full history.
+    """POST variant of /me/dockings.json. Kept for clients that need to
+    avoid query-string fingerprinting entirely. Same semantics.
     """
     limit = max(1, min(200, body.limit))
     offset = max(0, body.offset)
