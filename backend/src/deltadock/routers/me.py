@@ -74,6 +74,17 @@ class ProfileOut(BaseModel):
     # ensemble=true submissions from that user with 402. Defaults True
     # here so a missing profile row (fresh OAuth user) keeps full access.
     ensemble_enabled: bool = True
+    # (U17j) Recent docking jobs piggybacked on /me/profile to dodge
+    # aggressive ad-blockers that block every other path the History
+    # page tries. /me/profile is heavily used by the app for legitimate
+    # auth/profile reads and consistently reaches the server across
+    # blocklists. Populated only when ?include=dockings is passed so
+    # the existing callers (Studio, login flow, Settings) don't pay the
+    # extra payload cost. List shape is intentionally Any-typed at the
+    # Pydantic level so we don't have to introduce a circular import
+    # from routers/jobs; the frontend uses the same Job interface it
+    # uses for the regular list endpoint.
+    recent_dockings: Optional[list[dict]] = None
 
 
 class ProfileUpdate(BaseModel):
@@ -118,11 +129,24 @@ class ProfileUpdate(BaseModel):
 def get_my_profile(
     user: Annotated[CurrentUser, Depends(current_user)],
     session: Annotated[Session, Depends(get_session)],
+    include: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 25,
 ) -> ProfileOut:
     """Read current user's profile. Returns an all-null profile (with
     just the user_id and default marketing_opt_in=False) when the row
     doesn't exist yet — happens for OAuth users on whom the trigger
-    fired with empty metadata."""
+    fired with empty metadata.
+
+    (U17j) When ?include=dockings is passed, the response also carries
+    the user's recent docking jobs in `recent_dockings`. This is the
+    only path the History page can rely on — uBlock / EasyPrivacy
+    learn-and-block every other endpoint within seconds. /me/profile is
+    too heavily used by app boot, Studio gating, and Settings for any
+    blocklist to block, so embedding job data here is the durable
+    workaround. Existing callers that don't pass `include` get the
+    same slim profile they always did.
+    """
     row = session.execute(
         text(
             "SELECT full_name, organization, role, role_other,"
@@ -150,12 +174,30 @@ def get_my_profile(
     )
 
     if row is None:
-        return ProfileOut(user_id=user.id, is_pro=bool(admin_is_pro_override))
-    # Build the response dict from the row, then override is_pro for admin.
-    payload = dict(row)
-    if admin_is_pro_override:
-        payload["is_pro"] = True
-    return ProfileOut(user_id=user.id, **payload)
+        profile = ProfileOut(user_id=user.id, is_pro=bool(admin_is_pro_override))
+    else:
+        payload = dict(row)
+        if admin_is_pro_override:
+            payload["is_pro"] = True
+        profile = ProfileOut(user_id=user.id, **payload)
+
+    # (U17j) Piggy-back the recent dockings only when explicitly asked
+    # for. Local import avoids the circular dep between me.py and
+    # routers/jobs.py (jobs.py imports nothing from me.py, but the
+    # module-level import would force jobs.py to load whenever profile
+    # is accessed by the auth dance during app startup).
+    if include and "dockings" in include.split(","):
+        from .jobs import list_jobs  # local: see comment above
+        offset = max(0, int(offset))
+        limit = max(1, min(200, int(limit)))
+        rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
+        # JobOut → dict via pydantic so the ProfileOut.recent_dockings
+        # field (Optional[list[dict]]) serialises cleanly.
+        profile.recent_dockings = [
+            r.model_dump() if hasattr(r, "model_dump") else dict(r)
+            for r in rows
+        ]
+    return profile
 
 
 @router.put("/profile", response_model=ProfileOut)

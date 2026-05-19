@@ -1493,17 +1493,19 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17i) Path: GET /me/profile/{token}.json. After /me/q/* got
-  // learned and blocked, moved under the /me/profile/ prefix which is
-  // empirically whitelisted by the affected user's ad-blocker — the
-  // existing /me/profile endpoint always reaches the server, so paths
-  // nested under it inherit that trust. Combined with the random
-  // per-request token and .json suffix this defeats dynamic learning.
-  listJobs: (offset = 0, limit = 25) => {
-    const tok = Math.random().toString(36).slice(2, 10);
-    return request<Job[]>(
-      `/me/profile/${tok}.json?offset=${offset}&limit=${limit}`,
+  // (U17j) Path-rotation lost. uBlock learned every alternative
+  // (/jobs, /runs, /me/runs, /me/dockings*, /me/q/*, /data/*,
+  // /me/profile/{tok}.json) within seconds of first use. The ONE
+  // endpoint the ad-blocker never blocks is /me/profile itself,
+  // because the app's auth/profile boot would shatter without it.
+  // So: pass ?include=dockings to /me/profile and read the jobs out
+  // of the response's recent_dockings field. Same auth, same data,
+  // wrapped inside an endpoint blocklists can't afford to flag.
+  listJobs: async (offset = 0, limit = 25) => {
+    const r = await request<UserProfile & { recent_dockings?: Job[] }>(
+      `/me/profile?include=dockings&offset=${offset}&limit=${limit}`,
     );
+    return r.recent_dockings ?? [];
   },
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
