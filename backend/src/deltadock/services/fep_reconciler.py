@@ -302,7 +302,64 @@ def reconcile_once_sync(session: Session) -> dict:
             log.exception("reconciler: cancel propagation failed: %s", e)
             _capture_to_sentry(e, where="propagate_cancellations")
 
+    # ── Step 5: (U21) reap orphans whose parent job is cancelled ──
+    # If a study was cancelled by the user but its edges are still
+    # sitting in dispatch_state ∈ (dispatching, running) and the cancel
+    # propagation has been retrying for hours against an unreachable
+    # pod, give up: mark the edges failed locally. The user already
+    # cancelled; the pod will eventually time out on its own (Q2's
+    # orphan auto-canceller); we just need our DB to reflect "this is
+    # done" so the UI clears and budget caps release.
+    #
+    # Guarded by a 1-hour staleness gate so we don't race the
+    # propagate_cancellations step on a fresh cancel.
+    if not is_shadow_mode():
+        try:
+            counters["orphans_reaped"] = _reap_cancelled_orphans(session)
+        except Exception as e:                                       # noqa: BLE001
+            counters["errors"] += 1
+            log.exception("reconciler: orphan reap failed: %s", e)
+            _capture_to_sentry(e, where="reap_cancelled_orphans")
+
     return counters
+
+
+def _reap_cancelled_orphans(session: Session) -> int:
+    """(U21) Force-fail edges whose parent FepJob is CANCELLED but
+    whose edge dispatch_state is still (dispatching, running) AND
+    the cancel has been pending for ≥ 1 hour.
+
+    1-hour gate avoids racing the normal cancel propagation path —
+    a fresh user cancel goes through /fep_edge_cancel first; only if
+    that's been failing for an hour do we give up and reap locally.
+
+    Returns rows reaped. Idempotent.
+    """
+    from sqlalchemy import text as _text
+    res = session.execute(_text(
+        "UPDATE fep_perturbation"
+        "   SET status = 'failed',"
+        "       dispatch_state = 'failed',"
+        "       error_message = COALESCE(error_message, '')"
+        "                        || ' [orphan-reaped: parent cancelled >1h ago]',"
+        "       completed_at = now(),"
+        "       updated_at = now()"
+        " WHERE dispatch_state IN ('dispatching', 'running')"
+        "   AND fep_job_id IN ("
+        "       SELECT id FROM fep_job"
+        "        WHERE status::text = 'cancelled'"
+        "          AND updated_at < now() - interval '1 hour'"
+        "   )"
+        " RETURNING id"
+    )).mappings().all()
+    session.commit()
+    if res:
+        log.warning(
+            "reconciler: reaped %d orphan edge(s) whose parent jobs were "
+            "cancelled >1h ago — local DB now reflects 'failed'",
+            len(res),
+        )
+    return len(res)
 
 
 def _propagate_cancellations(session: Session) -> int:
