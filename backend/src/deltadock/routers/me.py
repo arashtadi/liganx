@@ -222,10 +222,16 @@ def get_my_profile(
             r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
             for r in rows
         ]
-    except Exception:  # noqa: BLE001
+    except Exception as _ex:  # noqa: BLE001
         # Defence-in-depth: a failure in the history piggy-back must
         # not break the profile endpoint itself. Auth-bootstrap depends
-        # on /me/profile staying green.
+        # on /me/profile staying green. Log loudly so we can debug.
+        import logging as _logging
+        import traceback as _tb
+        _logging.getLogger(__name__).error(
+            "recent_dockings piggy-back failed for user=%s: %s\n%s",
+            getattr(user, "id", "?"), _ex, _tb.format_exc(),
+        )
         profile.recent_dockings = []
     return profile
 
