@@ -172,7 +172,7 @@ _QUEUED_EDGES_SQL = text(
       FROM fep_perturbation p
       JOIN fep_job          j ON j.id = p.fep_job_id
      WHERE p.dispatch_state = 'queued'
-       AND j.status::text IN ('pending', 'preparing', 'running')
+       AND j.status IN ('PENDING', 'PREPARING', 'RUNNING')
      ORDER BY j.created_at, p.id
     """
 )
@@ -354,7 +354,9 @@ def _reap_cancelled_orphans(session: Session) -> int:
             " WHERE dispatch_state IN ('dispatching', 'running')"
             "   AND fep_job_id IN ("
             "       SELECT id FROM fep_job"
-            "        WHERE status::text = 'cancelled'"
+            # FepJob.status is mapped by enum NAME (uppercase). DB
+            # literal is 'CANCELLED', not 'cancelled'.
+            "        WHERE status::text = 'CANCELLED'"
             "          AND updated_at < now() - interval '1 hour'"
             "   )"
             " RETURNING id"
@@ -605,10 +607,10 @@ def _sweep_stale_pod(session: Session) -> int:
             session.execute(
                 text(
                     "UPDATE fep_job"
-                    " SET status = 'failed',"
+                    " SET status = 'FAILED',"
                     "     error_message = COALESCE(error_message, :msg),"
                     "     updated_at = now()"
-                    " WHERE id = :jid AND status::text IN ('pending','preparing','running')"
+                    " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
                 ),
                 {
                     "jid": jid,
@@ -898,10 +900,10 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
         session.execute(
             text(
                 "UPDATE fep_job"
-                " SET status = 'failed',"
+                " SET status = 'FAILED',"
                 "     error_message = COALESCE(error_message, :msg),"
                 "     updated_at = now()"
-                " WHERE id = :jid AND status::text IN ('pending','preparing','running')"
+                " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
             ),
             {
                 "jid": queued_row.fep_job_id,

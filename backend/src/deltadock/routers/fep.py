@@ -986,7 +986,7 @@ def fep_admin_inflight(
         "  FROM fep_perturbation p"
         "  JOIN fep_job          j ON j.id = p.fep_job_id"
         " WHERE p.dispatch_state = 'queued'"
-        "   AND j.status::text IN ('pending', 'preparing', 'running')"
+        "   AND j.status IN ('PENDING', 'PREPARING', 'RUNNING')"
     )).scalar() or 0
 
     return {
@@ -1065,7 +1065,9 @@ def fep_admin_reap_orphans(
         "       completed_at = now()"
         " WHERE dispatch_state IN ('dispatching', 'running')"
         "   AND fep_job_id IN ("
-        "       SELECT id FROM fep_job WHERE status::text = 'cancelled'"
+        # FepJob.status is mapped by enum NAME (uppercase). DB literal
+        # is 'CANCELLED', not 'cancelled'.
+        "       SELECT id FROM fep_job WHERE status::text = 'CANCELLED'"
         "   )"
         " RETURNING id, fep_job_id"
     )).mappings().all()

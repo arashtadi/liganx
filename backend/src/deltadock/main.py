@@ -220,7 +220,7 @@ def _bump_inflight_fep_timestamps() -> None:
                 text(
                     "UPDATE fep_job"
                     " SET updated_at = now()"
-                    " WHERE status::text IN ('pending', 'preparing', 'running')"
+                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
                     " RETURNING id, share_id"
                 ),
             )
@@ -277,12 +277,13 @@ def _reap_orphan_fep_studies() -> None:
         with Session(engine) as session:
             # Postgres ENUM type fepjobstatus uses ENUM MEMBER NAMES
             # (uppercase) as valid values — Python's FepJobStatus.PENDING
-            # FepJobStatus enum values are lowercase ('pending',
-            # 'preparing', 'running', ...). The previous comment here
-            # claimed enum NAMES were used in the DB — that was wrong;
-            # the enum class declares .value as lowercase, so SQLModel
-            # writes lowercase. Cast through ::text so this is robust
-            # to any straggler uppercase rows from old data.
+            # FepJob.status mapping is by enum NAME (uppercase) — the
+            # Field declaration on FepJob doesn't pass values_callable,
+            # so SQLAlchemy's default Enum mapping kicks in and writes
+            # the member name, not the .value. So the DB literal IS
+            # 'RUNNING' / 'PENDING' / etc. — NOT lowercase. Unlike
+            # Job.status which was migrated to lowercase in U18.
+            # (Confirmed via DB-dependent CI tests after U22.)
             #
             # (N4.0b + N5.2b) The OR clause splits stale rows into two
             # cohorts: rows WITH any in-flight signal (non-null stage
@@ -294,13 +295,13 @@ def _reap_orphan_fep_studies() -> None:
             result = session.execute(
                 text(
                     "UPDATE fep_job j"
-                    " SET status = 'failed',"
+                    " SET status = 'FAILED',"
                     "     error_message = COALESCE(error_message,"
                     "         'Interrupted by a backend restart — the FEP runner"
                     " was killed before this study could finish. Please re-submit"
                     " from /fep/new.'),"
                     "     updated_at = now()"
-                    " WHERE status::text IN ('pending', 'preparing', 'running')"
+                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
                     "   AND ("
                     "     ("                 # pre-dispatch: 90 min threshold
                     "       NOT EXISTS (SELECT 1 FROM fep_perturbation p"
