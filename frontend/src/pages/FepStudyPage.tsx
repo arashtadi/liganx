@@ -22,6 +22,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, type FepStudyGraph } from "../api";
 import { Spinner } from "../components/Icons";
 import MoleculePreview from "../components/MoleculePreview";
+import { FepHoloLoader } from "../components/FepHoloLoader";
 import { usePageMeta } from "../lib/usePageMeta";
 
 // (O13) Translate a mutation code (e.g. "Q61H", "T790M") into a
@@ -817,6 +818,25 @@ export default function FepStudyPage() {
           </div>
         )}
       </div>
+
+      {/* (U13) Sample G — alchemical-morph holo loader.
+          Mounted for the entire isRunning span (pending / preparing /
+          running). Three.js scene continuously animates the λ
+          ping-pong, ligand A→B morph, water drift, and replica
+          exchange ladder. Stays on screen until the study reaches a
+          terminal state — explicitly NOT gated on edge progress, so
+          the user sees motion even during the long opaque MD stages.
+          Pairs with the StageStepper above (real progress) and the
+          Perturbation map below (real structure). */}
+      {isRunning && (() => {
+        // Build a friendly stage label for the loader's terminal row.
+        // Prefer the running edge's sub-stage; fall back to the study
+        // stage. Same humaniser as the stepper uses.
+        const liveEdge = graph.edges.find((e) => e.status === "running");
+        const rawStage = liveEdge?.stage ?? extractEdgeStage(graph.stage);
+        const friendly = rawStage ? humaniseFepStage(rawStage) : null;
+        return <FepHoloLoader graph={graph} stageLabel={friendly} />;
+      })()}
 
       {/* (N1) Error banner — when the study has failed, show the
           persisted error_message from the runner. Without this, the
