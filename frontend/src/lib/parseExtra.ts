@@ -109,6 +109,16 @@ export interface ParsedExtra {
    *  "mutation has no effect". The number is the CA-to-pocket-center
    *  distance in Å. */
   outsidePocketA?: number;
+  /** (U20.4) Fraction of the target's canonical binding-pocket
+   *  residues that the docked pose actually contacts (0.0-1.0).
+   *  Backend writes `pocket_overlap=0.43` etc. When < ~0.20, the
+   *  runner also sets the `altSite` flag below, which the matrix
+   *  surfaces as a loud "alt site" badge — chemists immediately
+   *  see when a pose landed in the wrong pocket (e.g. a switch-II
+   *  inhibitor docked into KRAS's nucleotide pocket because the
+   *  switch-II cleft was closed in the selected PDB). */
+  pocketOverlap?: number;
+  altSite?: boolean;
   /** v1.26 — Interface KPIs. Buried surface area (Å²) of the
    *  protein-ligand interface, computed via freesasa as
    *  SASA(receptor) + SASA(ligand) − SASA(complex). Larger = bigger
@@ -256,6 +266,17 @@ export function parseExtra(extra: string | null | undefined): ParsedExtra {
         if ((verdict === "ok" || verdict === "mild" || verdict === "high") && Number.isFinite(k)) {
           out.strain = { verdict: verdict as "ok" | "mild" | "high", kcal: k };
         }
+        break;
+      }
+      case "pocket_overlap": {
+        // (U20.4) 0.0-1.0 fraction of canonical pocket residues hit.
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) out.pocketOverlap = n;
+        break;
+      }
+      case "alt_site": {
+        // (U20.4) Backend writes `alt_site=true` when overlap < 0.20.
+        out.altSite = v === "true" || v === "1";
         break;
       }
       case "water": {

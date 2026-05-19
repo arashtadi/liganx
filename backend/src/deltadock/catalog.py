@@ -36,6 +36,21 @@ class ReferenceCompound:
     name: str
     smiles: str
     mechanism: str          # short description
+    # (U20.2) Which pocket this compound is DESIGNED to bind. Used by
+    # the pre-flight to warn when a user pairs the compound with a
+    # target whose pocket_label doesn't match — e.g. selecting Adagrasib
+    # (switch_II inhibitor) against a KRAS structure where switch-II
+    # is closed (4OBE) means the dock will land in the wrong site and
+    # the scores won't reflect the compound's real biology.
+    #
+    # Free-form short slug. Conventions:
+    #   "switch_II"        — KRAS cryptic Switch-II pocket (Adagrasib,
+    #                        Sotorasib, MRTX1133, etc.)
+    #   "atp_site"         — kinase ATP-binding cleft (most kinase inhibitors)
+    #   "allosteric_*"     — named allosteric site, e.g. allosteric_dfg_out
+    #   "nucleotide"       — GDP/GTP-binding site (rare for inhibitors)
+    #   ""                 — unknown / multi-site / not annotated
+    known_pocket: str = ""
 
 
 @dataclass
@@ -73,6 +88,12 @@ class Target:
     # Use the standard one-letter+number form ("T790", "M793"). Order is
     # not significant.
     canonical_pocket_residues: list[str] = field(default_factory=list)
+    # (U20.1) Which pocket the catalog's `pocket` box actually covers.
+    # Same vocabulary as ReferenceCompound.known_pocket (switch_II,
+    # atp_site, nucleotide, ...). Pre-flight matches compound.known_pocket
+    # against this and warns on mismatch. Empty = uncharacterised; in
+    # that case the pre-flight skips the check (no false positives).
+    pocket_label: str = ""
     # (T1) Typical Vina-score range (in kcal/mol; more negative = stronger)
     # for KNOWN ACTIVE COMPOUNDS at this target. Used as a calibration
     # band: a result well above the upper bound is "below typical for a
@@ -204,10 +225,12 @@ KRAS = Target(
         # Both InChI keys also re-checked: Sotorasib NXQKSXLFSAEQCZ.
         ReferenceCompound("Sotorasib",
                           "CC(C)c1nccc(C)c1N2C(=O)N=C(N3CCN(C[C@@H]3C)C(=O)C=C)c4cc(F)c(nc24)c5c(O)cccc5F",
-                          "Approved G12C-selective covalent (AMG 510)"),
+                          "Approved G12C-selective covalent (AMG 510)",
+                          known_pocket="switch_II"),
         ReferenceCompound("Adagrasib",
                           "O=C(C(F)=C)N([C@@H](CC#N)C1)CCN1C2=NC(OC[C@H]3N(C)CCC3)=NC4=C2CCN(C5=CC=CC6=C5C(Cl)=CC=C6)C4",
-                          "Approved G12C-selective (MRTX849)"),
+                          "Approved G12C-selective (MRTX849)",
+                          known_pocket="switch_II"),
     ],
     # (T1) KRAS sits between "recent" and "experimental" — G12C was cracked
     # in 2021 (Sotorasib/Adagrasib) by exploiting the cryptic Switch II
@@ -229,6 +252,19 @@ KRAS = Target(
     # binder is expected to contact. Cys12 only matters for G12C-covalent
     # compounds.
     canonical_pocket_residues=["G12", "T58", "G60", "Y96", "Q99", "I100", "Y32"],
+    # (U20.1) 4OBE is the GDP-bound state of KRAS — the cryptic Switch-II
+    # cleft that Sotorasib/Adagrasib actually bind to is CLOSED in this
+    # conformation. The pocket box at (2, -10.4, 38.2) is the GDP/
+    # nucleotide-adjacent region, NOT switch-II. Rigid-receptor Vina
+    # against 4OBE will dock switch-II ligands into the nucleotide
+    # pocket and score them ~-7 to -8.5 kcal/mol there — looks plausible
+    # but is in the wrong site for those compounds. For canonical
+    # Adagrasib/Sotorasib binding-mode work, a follow-up should add a
+    # second KRAS entry on PDB 6OIM (Sotorasib + G12C, switch-II open)
+    # or 6UT0 (Adagrasib + G12C). The compound.known_pocket vs target
+    # .pocket_label mismatch warning (U20.2) plus the alt-site badge
+    # (U20.4) make it loud when this happens until that work lands.
+    pocket_label="nucleotide",
     # KRAS is hard to drug — even the approved covalent inhibitors score
     # in the -7 to -9 kcal range against rigid Vina (the covalent reaction
     # isn't modeled). Anything weaker than -6 is firmly in the noise

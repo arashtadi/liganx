@@ -2704,6 +2704,26 @@ def _run_real(session: Session, job: Job) -> None:
                                 # and a real contact list on aromatic-rich ligands.
                                 ligand_smiles=compound.smiles,
                             )
+                            # (U20.4) Compute the canonical-pocket overlap
+                            # using the target's catalog entry. Surfaces
+                            # poses that landed in an alternate site
+                            # (e.g. Adagrasib docked into the nucleotide
+                            # pocket of a switch-II-closed KRAS).
+                            try:
+                                from deltadock_pipeline.validate import compute_pocket_overlap
+                                _target_for_pocket = _catalog_by_pdb(job.pdb_id)
+                                _canonical = (
+                                    _target_for_pocket.canonical_pocket_residues
+                                    if _target_for_pocket else []
+                                )
+                                _frac = compute_pocket_overlap(
+                                    v.interactions, _canonical,
+                                )
+                                if _frac is not None:
+                                    v.pocket_overlap_frac = _frac
+                                    v.alt_site = _frac < 0.20
+                            except Exception as _pe:  # noqa: BLE001
+                                log.debug("pocket-overlap check skipped: %s", _pe)
                             parts.append(v.to_extra_string())
                         except Exception as ve:
                             log.warning("Validation crashed for c%s × %s: %s", compound.id, variant, ve)

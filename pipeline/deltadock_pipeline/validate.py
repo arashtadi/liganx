@@ -40,6 +40,17 @@ class Validation:
     # Empty dict when not computed (e.g. SDF missing) or when RDKit failed.
     # Shape: {pose_kcal, relaxed_kcal, strain_kcal, verdict in {ok,mild,high}}
     strain: dict = field(default_factory=dict)
+    # (U20.4) Fraction of the target's canonical binding-pocket residues
+    # that the docked pose actually contacts (0.0-1.0). Set by the runner
+    # after validation completes, using the target's
+    # canonical_pocket_residues catalog field. None when we can't compute
+    # (no catalog entry / no observed contacts). Triggers the
+    # "alt site" badge in the matrix UI when below 0.20 — surfaced so
+    # chemists immediately spot poses that landed in the wrong pocket
+    # (e.g. a switch-II inhibitor like Adagrasib docking into the
+    # nucleotide pocket of a switch-II-closed KRAS structure).
+    pocket_overlap_frac: float | None = None
+    alt_site: bool = False
 
     def to_extra_string(self) -> str:
         """Pack the validation into the existing `extra` text field on DockingResult.
@@ -74,7 +85,54 @@ class Validation:
             parts.append(f"summary={self.sentence}")
         if self.error:
             parts.append(f"err={self.error[:80]}")
+        # (U20.4) Canonical-pocket overlap and alt-site flag. Encoded
+        # compactly so the existing pipe-delimited extra parser picks
+        # them up alongside everything else.
+        if self.pocket_overlap_frac is not None:
+            parts.append(f"pocket_overlap={self.pocket_overlap_frac:.2f}")
+        if self.alt_site:
+            parts.append("alt_site=true")
         return "|".join(parts)
+
+
+def compute_pocket_overlap(
+    interactions: list[dict],
+    canonical_residues: list[str],
+) -> float | None:
+    """(U20.4) Fraction of canonical pocket residues actually contacted
+    by the docked pose.
+
+    `interactions` is the shape ProLIF emits — each item has a "residue"
+    string like 'MET793' (three-letter code + sequence number). The
+    catalog stores canonical residues as 'Y32', 'M793' (one-letter +
+    number). We compare by sequence number only, which is robust to
+    coding-style differences and is what a chemist eyeballs anyway.
+
+    Returns 0.0-1.0 (fraction of canonical residues hit) or None if
+    we can't tell (no canonical list, no observed interactions).
+
+    Caller treats a fraction below ~0.20 as "alt site found" and
+    surfaces it as a badge on the cell.
+    """
+    if not canonical_residues:
+        return None
+    if not interactions:
+        return None
+
+    def _seq_num(s: str) -> str | None:
+        digits = "".join(c for c in s if c.isdigit())
+        return digits or None
+
+    canonical_nums = {n for n in (_seq_num(r) for r in canonical_residues) if n}
+    if not canonical_nums:
+        return None
+    observed_nums = {
+        n for n in (_seq_num(str(i.get("residue", ""))) for i in interactions) if n
+    }
+    if not observed_nums:
+        return 0.0
+    hit = canonical_nums & observed_nums
+    return len(hit) / len(canonical_nums)
 
 
 def validate_pose(
@@ -354,10 +412,34 @@ def _run_posebusters(pose_sdf: Path, receptor_pdb: Path) -> tuple[int, int, str]
 
     row = df.iloc[0]
     passed, failed_checks = 0, []
+    # (U20.3) BUGFIX. The previous check `isinstance(val, bool)` missed
+    # every column when pandas returned numpy.bool_ (the default for
+    # boolean columns in pandas >= 2.0). With numpy.bool_, isinstance
+    # returns False AND `val is True` returns False too because
+    # numpy.bool_(True) is a different singleton. Result: passed=0,
+    # failed=0, summary="passed all 0 checks" on every pose, which the
+    # confidence ribbon then rendered as `unknown` (see
+    # _confidence_from_bust). Users had no idea PoseBusters wasn't
+    # actually running. Fix: explicitly accept numpy.bool_ via numpy
+    # itself, with a defensive lazy import so the pipeline still works
+    # if numpy is somehow missing (unlikely; PoseBusters depends on it).
+    try:
+        import numpy as _np
+        _bool_types: tuple = (bool, _np.bool_)
+    except ImportError:
+        _bool_types = (bool,)
+    # Skip path/string columns explicitly — PoseBusters returns
+    # 'mol_pred' / 'mol_cond' as strings; iterating those would never
+    # match the bool check but the explicit skip makes intent clear.
+    _PATH_COLS = {"mol_pred", "mol_cond", "name", "file", "molecule_name"}
     for col, val in row.items():
-        if isinstance(val, bool) or val is True or val is False:
-            if val: passed += 1
-            else:   failed_checks.append(str(col))
+        if str(col) in _PATH_COLS:
+            continue
+        if isinstance(val, _bool_types):
+            if bool(val):
+                passed += 1
+            else:
+                failed_checks.append(str(col))
 
     if failed_checks:
         summary = f"failed: {','.join(failed_checks[:5])}"

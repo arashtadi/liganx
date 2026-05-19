@@ -866,6 +866,31 @@ function ScoreCell({
               tooltip={true}
             />
           )}
+          {/* (U20.4) "Alt site" badge — the pose landed somewhere
+              outside the target's canonical binding pocket. Common
+              when a switch-II inhibitor (Adagrasib/Sotorasib) is
+              docked against a structure where switch-II is closed
+              (e.g. 4OBE = GDP-bound KRAS), so Vina settles for the
+              nucleotide pocket instead. Loud purple chip so chemists
+              don't interpret the score as binding to the intended
+              pocket. */}
+          {ext.altSite && (
+            <span
+              className="text-[9px] font-mono uppercase tracking-wider bg-purple-900/40 text-purple-200 px-1.5 py-0.5 rounded ring-1 ring-purple-500/40"
+              title={
+                "This pose landed outside the target's canonical binding pocket" +
+                (typeof ext.pocketOverlap === "number"
+                  ? ` (only ${Math.round(ext.pocketOverlap * 100)}% of expected residues contacted).`
+                  : ".") +
+                " The score is real for the alternate site Vina found, but the compound was DESIGNED to bind a different pocket — interpret the score with caution. Common cause: the selected PDB has the intended pocket in a closed conformation, so rigid Vina docked the ligand into the next-best site."
+              }
+            >
+              alt site
+              {typeof ext.pocketOverlap === "number"
+                ? ` · ${Math.round(ext.pocketOverlap * 100)}%`
+                : ""}
+            </span>
+          )}
         </div>
       ) : null}
     </td>

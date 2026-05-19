@@ -587,6 +587,60 @@ def check_target_fit(
                 ),
             ))
 
+        # (5b / U20.2) Pocket mismatch: this compound was designed for
+        # a specific pocket (e.g. switch_II for Adagrasib/Sotorasib)
+        # but the chosen PDB's pocket box covers a different region.
+        # Rigid-receptor Vina can't open a closed cryptic pocket, so
+        # the dock will land in the next-best site and the score won't
+        # reflect the compound's real biology.
+        #
+        # Detected by matching the SMILES against catalog reference
+        # compounds (same target or any target) — if any catalog entry
+        # carries the same canonical SMILES AND a known_pocket label,
+        # AND target.pocket_label disagrees, we flag.
+        try:
+            from ..catalog import CATALOG as _CATALOG
+
+            def _canon(s: str) -> str:
+                m = Chem.MolFromSmiles(s)
+                return Chem.MolToSmiles(m) if m else ""
+
+            input_canon = _canon(smiles)
+            compound_pocket = ""
+            if input_canon:
+                for _t in _CATALOG:
+                    for _c in _t.compounds:
+                        if _c.known_pocket and _canon(_c.smiles) == input_canon:
+                            compound_pocket = _c.known_pocket
+                            break
+                    if compound_pocket:
+                        break
+            if (
+                compound_pocket
+                and target.pocket_label
+                and compound_pocket != target.pocket_label
+            ):
+                out_warnings.append(FitWarning(
+                    kind="pocket_mismatch",
+                    level="warn",
+                    message=(
+                        f"This compound is designed to bind the "
+                        f"'{compound_pocket}' pocket, but the PDB "
+                        f"{target.pdb_id} covers the '{target.pocket_label}' "
+                        f"region. Rigid Vina can't open a closed cryptic "
+                        f"pocket, so this dock will land in the wrong site "
+                        f"and the score will not reflect the compound's "
+                        f"true binding mode. To validate the canonical "
+                        f"binding pose, use a structure where the target "
+                        f"pocket is already open (typically a co-crystal "
+                        f"with the same compound class)."
+                    ),
+                ))
+        except Exception:  # noqa: BLE001
+            # Pre-flight is best-effort; never fail submission because
+            # of the pocket-mismatch check.
+            pass
+
         # (5) Target druggability tier. Experimental = no approved
         # binder; recent = one chemical class succeeded. Surface this so
         # the user knows the score interpretation is constrained.
