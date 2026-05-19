@@ -207,10 +207,15 @@ def get_my_profile(
         offset = max(0, int(history_blob.get("o", 0)))
         limit = max(1, min(200, int(history_blob.get("l", 25))))
         rows = list_jobs(limit=limit, offset=offset, user=user, session=session)
-        # JobOut → dict via pydantic so the ProfileOut.recent_dockings
-        # field (Optional[list[dict]]) serialises cleanly.
+        # (U17P) BUGFIX. r.model_dump() returns Python objects including
+        # datetimes, which then can't be serialised into the response's
+        # Optional[list[dict]] field — JSON encoding raises and the
+        # endpoint 500s. Devtools confirmed the 'ad-blocker' chase was
+        # a misdiagnosis: the requests reached the server fine but were
+        # 500-ing on every call. Use mode='json' to coerce datetimes to
+        # ISO strings before storing.
         profile.recent_dockings = [
-            r.model_dump() if hasattr(r, "model_dump") else dict(r)
+            r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
             for r in rows
         ]
     return profile
