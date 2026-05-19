@@ -1493,13 +1493,20 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17e) Path ends in `.json` — filter lists (uBlock, EasyPrivacy)
-  // treat .json paths as static assets and skip tracker-pattern
-  // matching. Plain-alias paths (/runs, /me/runs, /me/dockings) all
-  // got blocked dynamically; .json reliably bypasses the heuristic.
-  // GET so caches and inspectors render the response naturally.
-  listJobs: (offset = 0, limit = 25) =>
-    request<Job[]>(`/me/dockings.json?offset=${offset}&limit=${limit}`),
+  // (U17f) Per-request random token in the path so each URL is unique.
+  // Combined with the `.json` suffix, this defeats uBlock /
+  // EasyPrivacy / Brave Shields dynamic-learning entirely — they
+  // can't learn a pattern that never repeats. Path rotation alone
+  // didn't work (every alias got blocked within minutes once the
+  // History page used it); randomising on every fetch eliminates
+  // the URL fingerprint completely. Token is purely a cache-buster,
+  // the backend ignores it.
+  listJobs: (offset = 0, limit = 25) => {
+    const tok = Math.random().toString(36).slice(2, 10);
+    return request<Job[]>(
+      `/me/dockings/${tok}.json?offset=${offset}&limit=${limit}`,
+    );
+  },
   catalog: () => request<CatalogTarget[]>("/catalog"),
   target: (id: string) => request<CatalogTarget>(`/catalog/${id}`),
   /** Reverse lookup — given a SMILES, return PubChem's preferred

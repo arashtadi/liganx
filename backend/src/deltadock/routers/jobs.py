@@ -1135,37 +1135,37 @@ class _ListPageBody(BaseModel):
     offset: int = 0
     limit: int = 25
 
-@runs_router.get("/dockings.json", response_model=list[JobOut])
+@runs_router.get("/dockings/{token}.json", response_model=list[JobOut])
 def list_runs(
+    token: str,  # noqa: ARG001 — cache-buster only; ignored
     limit: int = Query(20, ge=1, le=200, description="Max jobs to return (1-200)"),
     offset: int = Query(0, ge=0, description="Skip this many jobs (for pagination)"),
     user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> list[JobOut]:
-    """Ad-blocker-friendly alias for GET /jobs.
+    """Ad-blocker-evading alias for GET /jobs.
 
-    The `.json` suffix matters: filter lists (EasyPrivacy, uBlock's
-    dynamic rules) treat paths ending in `.json` as static assets and
-    skip their tracker-pattern matching. Without it, the dynamic-
-    learning engine flagged every plain alias we tried (/runs,
-    /me/runs, /me/dockings — see U17a/b/c/d). The `.json` extension
-    consistently bypasses the heuristic across the major filter lists.
+    `{token}` is a random per-request token (8-char base36) that the
+    frontend regenerates on every call. Combined with the `.json`
+    suffix, this defeats uBlock / EasyPrivacy / Brave Shields
+    dynamic-learning entirely: filter lists can't learn a pattern
+    that never repeats, and they treat `.json` paths as static
+    assets which exempts them from tracker matching.
 
-    Same auth, same response shape, same pagination semantics.
+    Server-side the token is purely a cache-buster — it's not
+    validated, not logged for auth purposes, and not used for
+    anything. Same auth, same response shape, same pagination
+    semantics as GET /jobs.
+
+    History of this dance:
+      U17a  /runs              — blocked
+      U17b  /me/runs           — blocked
+      U17c  /me/dockings       — blocked after first use
+      U17d  POST /me/dockings  — also blocked
+      U17e  /me/dockings.json  — also blocked after first use
+      U17f  /me/dockings/{token}.json — uBlock can't learn a moving
+                                        target. End of chase.
     """
-    return list_jobs(limit=limit, offset=offset, user=user, session=session)
-
-@runs_router.post("/dockings.json", response_model=list[JobOut])
-def list_runs_post(
-    body: _ListPageBody,
-    user: CurrentUser = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> list[JobOut]:
-    """POST variant of /me/dockings.json. Kept for clients that need to
-    avoid query-string fingerprinting entirely. Same semantics.
-    """
-    limit = max(1, min(200, body.limit))
-    offset = max(0, body.offset)
     return list_jobs(limit=limit, offset=offset, user=user, session=session)
 
 
