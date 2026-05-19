@@ -175,8 +175,9 @@ def get_admin_stats(
             (SELECT COUNT(*) FROM job) AS total_jobs,
             (SELECT COUNT(*) FROM job WHERE created_at >= NOW() - INTERVAL '24 hours') AS jobs_24h,
             (SELECT COUNT(*) FROM job WHERE created_at >= NOW() - INTERVAL '7 days') AS jobs_7d,
-            (SELECT COUNT(*) FROM job WHERE status IN ('PENDING', 'RUNNING')) AS jobs_running,
-            (SELECT COUNT(*) FROM job WHERE status = 'FAILED' AND created_at >= NOW() - INTERVAL '7 days') AS jobs_failed_7d
+            -- (U22) ::text cast — jobstatus enum is lowercase post-U18.
+            (SELECT COUNT(*) FROM job WHERE status::text IN ('pending', 'running')) AS jobs_running,
+            (SELECT COUNT(*) FROM job WHERE status::text = 'failed' AND created_at >= NOW() - INTERVAL '7 days') AS jobs_failed_7d
         """
     )).mappings().first()
     return AdminStats(**row)
@@ -230,9 +231,10 @@ def list_users(
                 --  comments and the query then needs a value supplied
                 --  — which crashed the admin panel with "A value is
                 --  required for bind parameter".)
+                -- (U22) ::text cast — jobstatus enum is lowercase post-U18.
                 (SELECT COUNT(*) FROM job j
                  WHERE j.user_id = u.id
-                   AND j.status IN ('PENDING','RUNNING','COMPLETED')
+                   AND j.status::text IN ('pending','running','completed')
                 ) AS jobs_used,
                 (SELECT COUNT(*) FROM job j WHERE j.user_id = u.id) AS jobs_total
             FROM auth.users u

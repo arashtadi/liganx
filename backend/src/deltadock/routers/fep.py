@@ -986,7 +986,7 @@ def fep_admin_inflight(
         "  FROM fep_perturbation p"
         "  JOIN fep_job          j ON j.id = p.fep_job_id"
         " WHERE p.dispatch_state = 'queued'"
-        "   AND j.status IN ('PENDING', 'PREPARING', 'RUNNING')"
+        "   AND j.status::text IN ('pending', 'preparing', 'running')"
     )).scalar() or 0
 
     return {

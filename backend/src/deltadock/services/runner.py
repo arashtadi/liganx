@@ -307,7 +307,7 @@ def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
     prior = session.execute(
         _sql_text(
             "SELECT COUNT(*) FROM job"
-            " WHERE user_id = :uid AND status = 'COMPLETED' AND id != :jid"
+            " WHERE user_id = :uid AND status::text = 'completed' AND id != :jid"
         ),
         {"uid": str(job.user_id), "jid": job.id},
     ).scalar() or 0

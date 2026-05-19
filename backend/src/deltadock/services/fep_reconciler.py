@@ -172,7 +172,7 @@ _QUEUED_EDGES_SQL = text(
       FROM fep_perturbation p
       JOIN fep_job          j ON j.id = p.fep_job_id
      WHERE p.dispatch_state = 'queued'
-       AND j.status IN ('PENDING', 'PREPARING', 'RUNNING')
+       AND j.status::text IN ('pending', 'preparing', 'running')
      ORDER BY j.created_at, p.id
     """
 )
@@ -605,10 +605,10 @@ def _sweep_stale_pod(session: Session) -> int:
             session.execute(
                 text(
                     "UPDATE fep_job"
-                    " SET status = 'FAILED',"
+                    " SET status = 'failed',"
                     "     error_message = COALESCE(error_message, :msg),"
                     "     updated_at = now()"
-                    " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
+                    " WHERE id = :jid AND status::text IN ('pending','preparing','running')"
                 ),
                 {
                     "jid": jid,
@@ -898,10 +898,10 @@ def _try_dispatch_next(session: Session, queued_row) -> None:
         session.execute(
             text(
                 "UPDATE fep_job"
-                " SET status = 'FAILED',"
+                " SET status = 'failed',"
                 "     error_message = COALESCE(error_message, :msg),"
                 "     updated_at = now()"
-                " WHERE id = :jid AND status IN ('PENDING','PREPARING','RUNNING')"
+                " WHERE id = :jid AND status::text IN ('pending','preparing','running')"
             ),
             {
                 "jid": queued_row.fep_job_id,

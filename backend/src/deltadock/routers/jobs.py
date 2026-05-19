@@ -309,7 +309,7 @@ def create_job(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
             " (SELECT COUNT(*) FROM job j"
-            "  WHERE j.user_id = :uid AND j.status IN ('PENDING','RUNNING','COMPLETED')"
+            "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
             " ) AS used"
             " FROM (SELECT 1) _"
             " LEFT JOIN public.user_profile p ON p.user_id = :uid"
@@ -707,7 +707,7 @@ def create_job_from_screening(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
             " (SELECT COUNT(*) FROM job j"
-            "  WHERE j.user_id = :uid AND j.status IN ('PENDING','RUNNING','COMPLETED')"
+            "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
             " ) AS used"
             " FROM (SELECT 1) _"
             " LEFT JOIN public.user_profile p ON p.user_id = :uid"

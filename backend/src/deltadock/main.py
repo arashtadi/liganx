@@ -155,15 +155,23 @@ def _reap_orphan_jobs() -> None:
         from sqlalchemy import text
         from .db import engine
         with Session(engine) as session:
+            # NOTE: as of U18 the jobstatus PG enum holds lowercase
+            # values ('pending', 'running', 'failed', ...). Pre-U18
+            # this SQL used uppercase literals and fired
+            # `InvalidTextRepresentation: invalid input value for enum
+            # jobstatus: "RUNNING"` on every boot. Cast through ::text
+            # so the SQL works regardless of whether the enum on this
+            # particular env is fully migrated or still has stragglers
+            # from old uppercase rows.
             result = session.execute(
                 text(
                     "UPDATE job"
-                    " SET status = 'FAILED',"
+                    " SET status = 'failed',"
                     "     error_message = COALESCE(error_message,"
                     "         'Interrupted by a backend restart — the docking worker"
                     " was killed before this job could finish. Please re-submit.'),"
                     "     updated_at = now()"
-                    " WHERE status IN ('RUNNING', 'PENDING')"
+                    " WHERE status::text IN ('running', 'pending')"
                     "   AND updated_at < now() - make_interval(mins => :stale_mins)"
                     " RETURNING id, status"
                 ),
@@ -212,7 +220,7 @@ def _bump_inflight_fep_timestamps() -> None:
                 text(
                     "UPDATE fep_job"
                     " SET updated_at = now()"
-                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
+                    " WHERE status::text IN ('pending', 'preparing', 'running')"
                     " RETURNING id, share_id"
                 ),
             )
@@ -269,15 +277,16 @@ def _reap_orphan_fep_studies() -> None:
         with Session(engine) as session:
             # Postgres ENUM type fepjobstatus uses ENUM MEMBER NAMES
             # (uppercase) as valid values — Python's FepJobStatus.PENDING
-            # serialises to 'PENDING' in the DB, not the lowercase .value.
-            # SQLAlchemy translates between the two for ORM operations,
-            # but raw SQL bypasses that translation, so we must match
-            # the DB representation exactly. Same convention as the
-            # docking reaper (_reap_orphan_jobs uses 'RUNNING'/'PENDING').
+            # FepJobStatus enum values are lowercase ('pending',
+            # 'preparing', 'running', ...). The previous comment here
+            # claimed enum NAMES were used in the DB — that was wrong;
+            # the enum class declares .value as lowercase, so SQLModel
+            # writes lowercase. Cast through ::text so this is robust
+            # to any straggler uppercase rows from old data.
             #
             # (N4.0b + N5.2b) The OR clause splits stale rows into two
             # cohorts: rows WITH any in-flight signal (non-null stage
-            # OR non-null pod_job_id) get a 6-hour threshold; rows
+            # OR non-null pod_job_id) get a 14-hour threshold; rows
             # WITHOUT any keep the original 90-minute one. Using
             # (stage OR pod_job_id) instead of just pod_job_id
             # works around the FEP #19 bug where pod_job_id stays
@@ -285,13 +294,13 @@ def _reap_orphan_fep_studies() -> None:
             result = session.execute(
                 text(
                     "UPDATE fep_job j"
-                    " SET status = 'FAILED',"
+                    " SET status = 'failed',"
                     "     error_message = COALESCE(error_message,"
                     "         'Interrupted by a backend restart — the FEP runner"
                     " was killed before this study could finish. Please re-submit"
                     " from /fep/new.'),"
                     "     updated_at = now()"
-                    " WHERE status IN ('PENDING', 'PREPARING', 'RUNNING')"
+                    " WHERE status::text IN ('pending', 'preparing', 'running')"
                     "   AND ("
                     "     ("                 # pre-dispatch: 90 min threshold
                     "       NOT EXISTS (SELECT 1 FROM fep_perturbation p"
