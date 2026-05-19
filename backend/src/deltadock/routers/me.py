@@ -179,20 +179,17 @@ def get_my_profile(
             payload["is_pro"] = True
         profile = ProfileOut(user_id=user.id, **payload)
 
-    # (U17L → U17M) Even `?h=1&o=0&l=5` was learned by the user's
-    # adblocker within seconds. Random param NAMES still work though.
-    # So we accept the request payload as a base64-encoded JSON blob
-    # under ANY param name the client chooses to invent. The frontend
-    # generates a fresh random name + base64 payload per request, so
-    # the URL never repeats:
+    # (U17M → U17N) base64 didn't work either — strings starting with
+    # `eyJ` (base64 of `{"`) are a known EasyPrivacy tracker-beacon
+    # signature, so `?abc=eyJv...` got blocked. Plain dash-separated
+    # numerics (`0-25`) are safe.
     #
-    #   /me/profile?xY7p=eyJvIjowLCJsIjoyNX0=
-    #                └ random name  └ base64({o:0,l:25})
+    # Final wire format: random param name + value `<offset>-<limit>`.
+    # Each fetch generates a fresh random name, so the URL never
+    # repeats AND the value matches no known filter signature.
     #
-    # Backend logic: scan query params, decode the first one whose
-    # value looks like base64-encoded JSON, treat its decoded payload
-    # as {o, l}. If none found / decode fails, treat as plain profile
-    # request (no history list).
+    #   /me/profile?abc=0-25
+    #              └ random  └ offset-limit
     #
     # Local import avoids the circular dep between me.py and
     # routers/jobs.py (jobs.py imports nothing from me.py, but the
@@ -201,16 +198,15 @@ def get_my_profile(
     history_blob = None
     if request is not None:
         for _name, _val in request.query_params.items():
-            if not _val:
+            if not _val or "-" not in _val:
                 continue
             try:
-                import base64, json
-                decoded = base64.urlsafe_b64decode(_val + "==").decode("utf-8")
-                parsed = json.loads(decoded)
-                if isinstance(parsed, dict) and ("o" in parsed or "l" in parsed):
-                    history_blob = parsed
-                    break
-            except Exception:  # noqa: BLE001
+                _o_str, _l_str = _val.split("-", 1)
+                _o = int(_o_str)
+                _l = int(_l_str)
+                history_blob = {"o": _o, "l": _l}
+                break
+            except (ValueError, TypeError):
                 continue
     if history_blob is not None:
         from .jobs import list_jobs  # local: see comment above

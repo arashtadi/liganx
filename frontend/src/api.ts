@@ -1493,20 +1493,15 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17M) Even single-letter param names got dynamically learned.
-  // Final form: encode the payload as base64-JSON under a fresh
-  // random param NAME per request. The URL never repeats, so the
-  // adblocker has nothing to learn:
-  //   /me/profile?aB3p=eyJvIjowLCJsIjoyNX0=
-  // Backend scans query params, decodes the first base64-JSON one,
-  // treats it as the history-request payload. Falls back to plain
-  // profile read if no decodable blob found (so existing callers are
-  // unaffected).
+  // (U17N) base64 was a trap — strings starting with 'eyJ' (b64 of `{"`)
+  // are a known EasyPrivacy tracker-beacon signature. Switched to
+  // plain dash-separated numerics: random param name, value is
+  // `<offset>-<limit>`. URL never repeats AND the value matches no
+  // known filter signature.
   listJobs: async (offset = 0, limit = 25) => {
-    const payload = btoa(JSON.stringify({ o: offset, l: limit }));
     const name = Math.random().toString(36).slice(2, 6);
     const r = await request<UserProfile & { recent_dockings?: Job[] }>(
-      `/me/profile?${name}=${encodeURIComponent(payload)}`,
+      `/me/profile?${name}=${offset}-${limit}`,
     );
     return r.recent_dockings ?? [];
   },
