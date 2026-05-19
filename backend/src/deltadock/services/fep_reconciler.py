@@ -340,16 +340,17 @@ def _reap_cancelled_orphans(session: Session) -> int:
     from sqlalchemy import text as _text
     try:
         res = session.execute(_text(
-            # NOTE: fep_perturbation has no `error_message` column —
-            # edge-level failure messages live in `pod_log_tail` (see
-            # the same column usage in watchdog.py:_reap_*).
+            # NOTE: fep_perturbation has no `error_message` *or*
+            # `updated_at` column. Edge-level failure context goes in
+            # `pod_log_tail`, and lifecycle timestamps use
+            # `completed_at`. Same column set the watchdog reap path
+            # writes (see watchdog.py:_reap).
             "UPDATE fep_perturbation"
             "   SET status = 'failed',"
             "       dispatch_state = 'failed',"
             "       pod_log_tail = COALESCE(pod_log_tail, '')"
             "                       || ' [orphan-reaped: parent cancelled >1h ago]',"
-            "       completed_at = now(),"
-            "       updated_at = now()"
+            "       completed_at = now()"
             " WHERE dispatch_state IN ('dispatching', 'running')"
             "   AND fep_job_id IN ("
             "       SELECT id FROM fep_job"

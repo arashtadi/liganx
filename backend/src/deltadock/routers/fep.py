@@ -1053,17 +1053,16 @@ def fep_admin_reap_orphans(
     no-op (UPDATE filters on dispatch_state IN dispatching/running).
     """
     from sqlalchemy import text as _text
-    # NOTE: fep_perturbation has no `error_message` column — write to
-    # `pod_log_tail` (same column the watchdog and reconciler reapers
-    # use for edge-level failure context).
+    # NOTE: fep_perturbation has no `error_message` or `updated_at`
+    # column — write to `pod_log_tail` and `completed_at` (same column
+    # set the watchdog reapers and reconciler orphan-reap use).
     res = session.execute(_text(
         "UPDATE fep_perturbation"
         "   SET status = 'failed',"
         "       dispatch_state = 'failed',"
         "       pod_log_tail = COALESCE(pod_log_tail, '')"
         "                       || ' [orphan-reaped: parent job was cancelled]',"
-        "       completed_at = now(),"
-        "       updated_at = now()"
+        "       completed_at = now()"
         " WHERE dispatch_state IN ('dispatching', 'running')"
         "   AND fep_job_id IN ("
         "       SELECT id FROM fep_job WHERE status::text = 'cancelled'"
