@@ -25,7 +25,16 @@ log = logging.getLogger("deltadock")
 # stays untouched. Wrapped in try/except so a missing sentry_sdk doesn't
 # break startup. Documented in the May 2026 platform audit (#256).
 _sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
-if _sentry_dsn:
+# (U15) Operator kill switch — flip `fly secrets set SENTRY_DISABLED=1`
+# to mute ALL Sentry events instantly without a code redeploy. Use when
+# Sentry is firing a webhook storm we can't suppress fast enough through
+# before_send filters (e.g. a brand-new exception path that bypassed the
+# U5c / U14 patterns). Empty / unset = Sentry runs normally. Costs one
+# `fly secrets set` + ~30 s for the machines to pick up the new env.
+_sentry_disabled = os.environ.get("SENTRY_DISABLED", "").strip() in ("1", "true", "yes")
+if _sentry_disabled:
+    log.warning("SENTRY_DISABLED=1 — skipping Sentry init (operator kill switch)")
+if _sentry_dsn and not _sentry_disabled:
     try:
         import sentry_sdk  # type: ignore
         from sentry_sdk.integrations.fastapi import FastApiIntegration  # type: ignore
