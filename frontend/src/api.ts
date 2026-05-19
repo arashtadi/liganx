@@ -1493,16 +1493,17 @@ export const api = {
   // alias delegates to the same list_jobs() handler. Detail endpoints
   // (/jobs/:id, /jobs/:id/cancel) stay on /jobs since per-id suffixes
   // don't trigger the filter.
-  // (U17g) Path: GET /data/{random-token}.json. After /me/dockings/*
-  // got dynamically learned by aggressive ad-blockers (the `dockings`
-  // word was the fingerprint), moved to a path with no stable word at
-  // all — just a generic /data/ prefix and an 8-char random token as
-  // the filename. uBlock / EasyPrivacy can't learn a moving target
-  // and treat `.json` paths as static assets.
+  // (U17h) Path: GET /me/q/{random-token}.json. /data/ was a default
+  // EasyList tracker prefix (also blocked). /me/ is empirically a safe
+  // prefix on this app — /me/profile, /me/compounds all work in the
+  // same browser sessions that block /data/. The /q/ sub-segment is
+  // application-specific (won't conflict with existing /me/ routes
+  // or be matched by any blocklist word), and the random per-request
+  // token + .json suffix prevents pattern learning.
   listJobs: (offset = 0, limit = 25) => {
     const tok = Math.random().toString(36).slice(2, 10);
     return request<Job[]>(
-      `/data/${tok}.json?offset=${offset}&limit=${limit}`,
+      `/me/q/${tok}.json?offset=${offset}&limit=${limit}`,
     );
   },
   catalog: () => request<CatalogTarget[]>("/catalog"),
