@@ -50,7 +50,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # prefix and `.json` suffix together look like a static-asset CDN
 # path, which filter lists treat as exempt; the random body
 # eliminates any URL fingerprint to learn.
-runs_router = APIRouter(prefix="/me/q", tags=["jobs"])
+runs_router = APIRouter(prefix="/me/profile", tags=["jobs"])
 
 
 def _resolve_job(session: Session, key: str, *, allow_integer_id: bool = True) -> Job | None:
