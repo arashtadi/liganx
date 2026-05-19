@@ -411,8 +411,15 @@ def notify_auto_repair(
     out_e = _escape_html(_truncate(outcome, 300))
     tb_e = _escape_html(_truncate(triggered_by_title, 180)) if triggered_by_title else None
 
-    parts = [f"🔧 <b>Auto-repair fired</b>: <code>{fp_e}</code>"]
-    parts.append(f"↳ {out_e}")
+    # Dry-run match (kill switch off) reads very differently from an
+    # actual mutation — make the difference unmissable in the thread.
+    if outcome == "dry_run_would_fire":
+        parts = [
+            f"👀 <b>Auto-repair DRY-RUN</b>: <code>{fp_e}</code> would have fired",
+            "<i>(SENTRY_AUTO_REPAIR_ENABLED is off — no action taken)</i>",
+        ]
+    else:
+        parts = [f"🔧 <b>Auto-repair fired</b>: <code>{fp_e}</code>", f"↳ {out_e}"]
     if tb_e:
         parts.append(f"<i>in response to:</i> {tb_e}")
     return _send("\n".join(parts))

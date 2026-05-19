@@ -26,15 +26,32 @@ def _clean_state():
 
 # ─── Kill switch ─────────────────────────────────────────────────────────
 
-def test_disabled_by_default():
-    """If SENTRY_AUTO_REPAIR_ENABLED isn't set, dispatcher returns
-    'disabled' and runs NO repair."""
+def test_disabled_is_dry_run_when_title_matches():
+    """If SENTRY_AUTO_REPAIR_ENABLED isn't set but the title DOES match
+    a dispatch entry, we report a dry-run would-fire (so the operator
+    sees it in Telegram) but run NO repair."""
+    fake_calls = []
+
+    def fake_repair():
+        fake_calls.append(1)
+        return "should not run"
+
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("SENTRY_AUTO_REPAIR_ENABLED", None)
-        result = auto_repair.auto_repair_for(
-            "Interrupted by a backend restart — the docking worker was killed"
-        )
-    assert result == {"fingerprint": None, "outcome": "disabled"}
+        with patch.object(auto_repair, "_DISPATCH", [("fake_fp", "needle", fake_repair)]):
+            result = auto_repair.auto_repair_for("alert with NEEDLE in it")
+    assert result == {"fingerprint": "fake_fp", "outcome": "dry_run_would_fire"}
+    # Critically: the repair did NOT execute in dry-run mode.
+    assert fake_calls == []
+
+
+def test_disabled_with_no_match_returns_none():
+    """Kill switch off + title matches nothing → None (stay silent),
+    same as the enabled no-match case."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("SENTRY_AUTO_REPAIR_ENABLED", None)
+        with patch.object(auto_repair, "_DISPATCH", [("fp", "needle", lambda: "x")]):
+            assert auto_repair.auto_repair_for("unrelated alert") is None
 
 
 def test_enabled_fires_repair():

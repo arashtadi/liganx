@@ -151,42 +151,71 @@ def is_enabled() -> bool:
     return (os.environ.get("SENTRY_AUTO_REPAIR_ENABLED", "0").strip() == "1")
 
 
+def _match_fingerprint(
+    title: Optional[str],
+) -> Optional[tuple[str, Callable[[], str]]]:
+    """Pure matching — no side effects, no kill-switch check. Returns
+    (fingerprint, repair_fn) for the first dispatch entry whose
+    substring appears in `title`, or None. Split out from
+    `auto_repair_for` so we can compute *would-fire* matches in dry-run
+    mode without touching the kill switch or cooldown."""
+    if not title:
+        return None
+    needle = title.lower()
+    for fingerprint, substr, fn in _DISPATCH:
+        if substr.lower() in needle:
+            return (fingerprint, fn)
+    return None
+
+
 def auto_repair_for(title: Optional[str]) -> Optional[dict]:
     """Look at a Sentry alert title and try to fire a matching repair.
 
     Returns:
       None — nothing in the dispatch table matched (the common case;
              most Sentry alerts are NOT auto-repairable)
-      {"fingerprint": ..., "outcome": "disabled"}      — kill-switch off
-      {"fingerprint": ..., "outcome": "cooldown_skip"} — too many recent fires
-      {"fingerprint": ..., "outcome": "<msg>"}         — repair ran ok
-      {"fingerprint": ..., "outcome": "failed: ..."}   — repair raised
+      {"fingerprint": fp, "outcome": "dry_run_would_fire"}
+             — a repair matched, but SENTRY_AUTO_REPAIR_ENABLED is off,
+               so we report the would-be match and do NOT execute. This
+               is the observation mode: a week of these in Telegram
+               tells the operator the dispatch table matches the right
+               titles before they flip the switch.
+      {"fingerprint": fp, "outcome": "cooldown_skip"} — too many recent fires
+      {"fingerprint": fp, "outcome": "<msg>"}         — repair ran ok
+      {"fingerprint": fp, "outcome": "failed: ..."}   — repair raised
 
     Never raises — a failing repair becomes a returned-string outcome.
     """
-    if not is_enabled():
-        return {"fingerprint": None, "outcome": "disabled"}
-    if not title:
+    match = _match_fingerprint(title)
+    if match is None:
+        # Nothing recognised — stay silent (most alerts land here).
         return None
-    needle = title.lower()
-    for fingerprint, substr, fn in _DISPATCH:
-        if substr.lower() in needle:
-            if _is_in_cooldown(fingerprint):
-                log.warning(
-                    "auto_repair: %s in cooldown — skipping (≥%d fires in %ds)",
-                    fingerprint, _MAX_FIRES_PER_WINDOW, _WINDOW_SECONDS,
-                )
-                return {"fingerprint": fingerprint, "outcome": "cooldown_skip"}
-            try:
-                outcome = fn()
-                _record_fire(fingerprint)
-                log.info("auto_repair: %s → %s", fingerprint, outcome)
-                return {"fingerprint": fingerprint, "outcome": outcome}
-            except Exception as e:  # noqa: BLE001
-                log.exception("auto_repair: %s failed: %s", fingerprint, e)
-                # Still record the fire — a repair that's failing
-                # *should* cool down, otherwise we loop on the same
-                # broken fix.
-                _record_fire(fingerprint)
-                return {"fingerprint": fingerprint, "outcome": f"failed: {e}"}
-    return None
+    fingerprint, fn = match
+
+    # Dry-run: matched, but the operator hasn't opted in yet. Report
+    # the would-be action so it shows up in Telegram, but don't mutate
+    # any state.
+    if not is_enabled():
+        log.info(
+            "auto_repair: DRY-RUN — '%s' would fire (SENTRY_AUTO_REPAIR_ENABLED off)",
+            fingerprint,
+        )
+        return {"fingerprint": fingerprint, "outcome": "dry_run_would_fire"}
+
+    if _is_in_cooldown(fingerprint):
+        log.warning(
+            "auto_repair: %s in cooldown — skipping (≥%d fires in %ds)",
+            fingerprint, _MAX_FIRES_PER_WINDOW, _WINDOW_SECONDS,
+        )
+        return {"fingerprint": fingerprint, "outcome": "cooldown_skip"}
+    try:
+        outcome = fn()
+        _record_fire(fingerprint)
+        log.info("auto_repair: %s → %s", fingerprint, outcome)
+        return {"fingerprint": fingerprint, "outcome": outcome}
+    except Exception as e:  # noqa: BLE001
+        log.exception("auto_repair: %s failed: %s", fingerprint, e)
+        # Still record the fire — a repair that's failing *should*
+        # cool down, otherwise we loop on the same broken fix.
+        _record_fire(fingerprint)
+        return {"fingerprint": fingerprint, "outcome": f"failed: {e}"}
