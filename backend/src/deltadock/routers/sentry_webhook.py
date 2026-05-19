@@ -35,7 +35,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 
-from ..services.notifications import notify_sentry_alert
+from ..services.auto_repair import auto_repair_for, is_enabled as _auto_repair_enabled
+from ..services.notifications import notify_auto_repair, notify_sentry_alert
 
 log = logging.getLogger(__name__)
 
@@ -138,4 +139,35 @@ async def sentry_webhook(request: Request) -> Dict[str, Any]:
         url=s["url"],
         action=s["action"],
     )
-    return {"ok": bool(sent)}
+
+    # (U23) Layer 2 — try to auto-repair. Default OFF; gated on
+    # SENTRY_AUTO_REPAIR_ENABLED. The dispatcher returns None if
+    # nothing in the dispatch table matched, or a dict describing
+    # the outcome (ran / failed / cooldown_skip / disabled).
+    repair_outcome: Optional[Dict[str, Any]] = None
+    try:
+        repair_outcome = auto_repair_for(s["title"])
+    except Exception as e:  # noqa: BLE001
+        # auto_repair_for is documented as never-raises, but belt-and-
+        # braces: we never want this branch to break the Sentry-→-Telegram
+        # forward. Log + carry on.
+        log.exception("auto_repair_for raised unexpectedly: %s", e)
+        repair_outcome = {"fingerprint": None, "outcome": f"dispatcher_error: {e}"}
+
+    # Post a follow-up Telegram only when the repair actually had
+    # something to say (skip the silent "no match" case to avoid spam).
+    if repair_outcome is not None and repair_outcome.get("outcome") not in (None,):
+        try:
+            notify_auto_repair(
+                fingerprint=repair_outcome.get("fingerprint") or "unknown",
+                outcome=repair_outcome.get("outcome") or "",
+                triggered_by_title=s.get("title"),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("notify_auto_repair failed (non-fatal)")
+
+    return {
+        "ok": bool(sent),
+        "auto_repair_enabled": _auto_repair_enabled(),
+        "auto_repair": repair_outcome,
+    }

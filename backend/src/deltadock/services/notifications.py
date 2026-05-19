@@ -392,6 +392,32 @@ def notify_sentry_alert(
     return _send("\n".join(parts))
 
 
+def notify_auto_repair(
+    *,
+    fingerprint: str,
+    outcome: str,
+    triggered_by_title: Optional[str] = None,
+) -> bool:
+    """(U23) Fired immediately after the auto-repair dispatcher runs a
+    repair in response to a Sentry alert. Sent as a follow-up message
+    so the operator can see the alert *and* see what the bot did about
+    it, in the same Telegram thread.
+
+    `outcome` is the human-readable result string returned by the
+    repair callable (e.g. "orphan FEP edges reaped: 3"). For
+    cooldown-skipped / disabled outcomes, the message still goes out
+    so the operator knows the bot saw the alert and chose not to act."""
+    fp_e = _escape_html(fingerprint or "unknown")
+    out_e = _escape_html(_truncate(outcome, 300))
+    tb_e = _escape_html(_truncate(triggered_by_title, 180)) if triggered_by_title else None
+
+    parts = [f"🔧 <b>Auto-repair fired</b>: <code>{fp_e}</code>"]
+    parts.append(f"↳ {out_e}")
+    if tb_e:
+        parts.append(f"<i>in response to:</i> {tb_e}")
+    return _send("\n".join(parts))
+
+
 def notify_user_report(
     *,
     job_id: int,
