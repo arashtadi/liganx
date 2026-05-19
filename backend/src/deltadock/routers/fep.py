@@ -1030,6 +1030,52 @@ def fep_admin_inflight(
     }
 
 
+@router.post("/admin/reap-orphans")
+def fep_admin_reap_orphans(
+    _admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> dict:
+    """(U21) Force-fail edges whose parent job is already CANCELLED but
+    whose edge dispatch_state is still ('dispatching', 'running').
+
+    Why this exists: the reconciler's normal cancel propagation
+    (services/fep_reconciler.py — N9 path) POSTs /fep_edge_cancel to
+    the pod when a study is cancelled. If the pod is unreachable (it
+    often is once a real-physics edge has been abandoned long enough
+    for the GPU to release back to the rotation), that POST fails and
+    the edge sits in 'running' state forever. The reconciler doesn't
+    give up; it keeps trying. This endpoint is the manual override —
+    operator says 'the pod is never going to honor those cancels, just
+    mark them failed and stop trying'.
+
+    SAFE: only touches edges whose parent FepJob.status::text =
+    'cancelled'. Idempotent — running it twice on the same set is a
+    no-op (UPDATE filters on dispatch_state IN dispatching/running).
+    """
+    from sqlalchemy import text as _text
+    res = session.execute(_text(
+        "UPDATE fep_perturbation"
+        "   SET status = 'failed',"
+        "       dispatch_state = 'failed',"
+        "       error_message = COALESCE(error_message, '')"
+        "                        || ' [orphan-reaped: parent job was cancelled]',"
+        "       completed_at = now(),"
+        "       updated_at = now()"
+        " WHERE dispatch_state IN ('dispatching', 'running')"
+        "   AND fep_job_id IN ("
+        "       SELECT id FROM fep_job WHERE status::text = 'cancelled'"
+        "   )"
+        " RETURNING id, fep_job_id"
+    )).mappings().all()
+    session.commit()
+    return {
+        "reaped_count": len(res),
+        "reaped_edges": [
+            {"edge_id": r["id"], "fep_job_id": r["fep_job_id"]} for r in res
+        ],
+    }
+
+
 def _serialise_graph(
     job: FepJob,
     nodes: list[FepNode],
