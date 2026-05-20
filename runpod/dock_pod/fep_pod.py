@@ -631,6 +631,40 @@ def _run_openfe_edge(
     # 4 fs timesteps. Standard practice for production RBFE.
     settings.forcefield_settings.hydrogen_mass = hmr_mass
 
+    # (W2 2026-05-20) Disable openfe's online "real-time" MBAR analysis.
+    #
+    # ROOT CAUSE of the FEP #23 5h+ hang: by default openfe re-runs an
+    # MBAR free-energy analysis every `real_time_analysis_interval`
+    # (250 ps of sampling) to decide whether the edge can stop early.
+    # The early-termination target defaults to
+    # `early_termination_target_error = 0.0 kcal/mol` — an error that
+    # can NEVER be reached — so the run never terminates early and
+    # instead executes the full schedule of online analyses. Each online
+    # MBAR solve runs on the partially-sampled (poor-overlap) data, so
+    # pymbar drives the self-consistent solver to its 10,000-iteration
+    # ceiling ("Did not converge … iterations completed = 9999") and
+    # then bootstraps. Across both legs over a multi-hour run these
+    # stack up (observed: 3974 MBAR solves) and wedge the edge in
+    # analysis forever while still reporting status="running".
+    #
+    # We don't use openfe's online early-termination — the final ΔG and
+    # MBAR uncertainty are computed exactly once at the end via
+    # `protocol.gather().get_estimate()/.get_uncertainty()`, which is
+    # unchanged. Turning the online analysis off is therefore safe for
+    # correctness and removes the runaway entirely.
+    #
+    # NOTE for a future live-convergence feature (W1): re-enabling this
+    # is the right source of partial ΔΔG points, but it MUST be paired
+    # with a reachable `early_termination_target_error` (e.g. 0.12
+    # kcal/mol) and a larger interval so the online solves can actually
+    # stop instead of running away.
+    if hasattr(settings.simulation_settings, "real_time_analysis_interval"):
+        settings.simulation_settings.real_time_analysis_interval = None
+        log.info(
+            "Disabled openfe real_time_analysis_interval (W2 — was the "
+            "FEP #23 MBAR-runaway root cause); MBAR runs once at the end."
+        )
+
     # (L5) Force the openmm Platform via the openfe settings. This is
     # the REAL fix for the CUDA_ERROR_UNSUPPORTED_PTX_VERSION crash
     # the J17 env-var trick failed to actually prevent.
