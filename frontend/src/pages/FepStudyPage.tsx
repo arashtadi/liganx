@@ -1163,31 +1163,49 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
   const analogs = graph.nodes.filter((n) => !n.is_hit);
   if (!hit || analogs.length === 0) return null;
 
-  // Layout constants. 600x420 viewport is wide enough for ~6 analogs
-  // before they start crowding. Node tile is 130x110. Hit sits at the
-  // center; analogs distributed on a circle of radius R.
-  const W = 600;
-  const H = 420;
+  // (U27) Layout. Node tiles are bumped up so the structures are
+  // legible rather than postage stamps, and — critically — the radius
+  // is DERIVED from the tile size so tiles never overlap, for any
+  // analog count. The old code hard-coded R=110 with 130-wide tiles,
+  // which forced a ~20px overlap on the single-edge view.
+  const NW = 168;            // node tile width
+  const NH = 150;            // node tile height
+  const GAP = 46;            // minimum clear space between adjacent tiles
+  const nAnalogs = analogs.length;
+  const minCenterDist = NW + GAP;  // centre-to-centre so boxes don't touch
+
+  // Radius from the hit:
+  //   1 analog  → symmetric horizontal pair (hit left, analog right),
+  //               centres minCenterDist apart for a clean side-by-side gap.
+  //   ≥2 analogs → ring sized so the chord between adjacent tiles
+  //               (2·R·sin(π/n)) is at least minCenterDist.
+  const R =
+    nAnalogs === 1
+      ? minCenterDist / 2
+      : Math.max(150, minCenterDist / (2 * Math.sin(Math.PI / nAnalogs)));
+
+  // Viewport grows to fit the ring + tile half-extents + padding, so a
+  // larger study scales down (maxWidth:100%) instead of overflowing or
+  // overlapping.
+  const PAD = 20;
+  const W = Math.max(560, Math.round(2 * (R + NW / 2) + 2 * PAD));
+  const H = Math.max(340, Math.round(2 * (R + NH / 2) + 2 * PAD));
   const cx = W / 2;
   const cy = H / 2;
-  const R = analogs.length === 1 ? 110 : 140;
-  const NW = 130;
-  const NH = 110;
 
-  // Compute node positions. Hit at center; analogs equally spaced
-  // starting from the top (angle = -π/2).
-  //
-  // (O7) Special case for 1 analog: a single node placed at -π/2 lands
-  // straight above the hit — vertical layout with masses of empty space
-  // left + right. For n=1 we want a horizontal layout (hit on the left,
-  // analog on the right). Start angle 0 instead of -π/2 does exactly
-  // that. For n≥2 the ring layout starting at -π/2 (top) still works.
+  // Node positions. Hit at centre (or shifted left for the n=1 pair so
+  // the two tiles straddle the centre symmetrically); analogs equally
+  // spaced on the ring from the top (n=1 starts at angle 0 → to the
+  // right of centre).
   const positions: Record<string, { x: number; y: number }> = {};
-  positions[`${hit.compound_id ?? "hit"}`] = { x: cx, y: cy };
-  const startAngle = analogs.length === 1 ? 0 : (-Math.PI / 2);
-  analogs.forEach((n, i) => {
-    const theta = startAngle + (2 * Math.PI * i) / Math.max(1, analogs.length);
-    positions[`${n.compound_id ?? `analog${i}`}`] = {
+  positions[`${hit.compound_id ?? "hit"}`] = {
+    x: nAnalogs === 1 ? cx - R : cx,
+    y: cy,
+  };
+  const startAngle = nAnalogs === 1 ? 0 : (-Math.PI / 2);
+  analogs.forEach((node, i) => {
+    const theta = startAngle + (2 * Math.PI * i) / Math.max(1, nAnalogs);
+    positions[`${node.compound_id ?? `analog${i}`}`] = {
       x: cx + R * Math.cos(theta),
       y: cy + R * Math.sin(theta),
     };
@@ -1301,7 +1319,7 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
               title={`${n.name || "(unnamed)"} — ${n.smiles}`}
             >
               <div className="flex items-center justify-center">
-                <MoleculePreview smiles={n.smiles} width={NW - 8} height={NH - 26} dark refSmiles={isHit ? undefined : hit?.smiles} />
+                <MoleculePreview smiles={n.smiles} width={NW - 14} height={NH - 36} dark refSmiles={isHit ? undefined : hit?.smiles} />
               </div>
               <div className="text-[10px] font-bold text-center mt-0.5 truncate px-1">
                 {n.name || (isHit ? "Hit" : `Analog ${i}`)}
