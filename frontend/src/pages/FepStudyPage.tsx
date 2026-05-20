@@ -1244,14 +1244,10 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
             const to = positions[`${e.to_compound_id ?? ""}`];
             if (!from || !to) return null;
             const color = edgeColor(e.status);
-            const mx = (from.x + to.x) / 2;
-            const my = (from.y + to.y) / 2;
-            const label =
-              e.ddg_binding_kcal_mol != null
-                ? `${e.ddg_binding_kcal_mol > 0 ? "+" : ""}${e.ddg_binding_kcal_mol.toFixed(2)}`
-                : e.lomap_score != null
-                ? `LOMAP ${e.lomap_score.toFixed(2)}`
-                : "—";
+            // (U28) Label moved OUT of the SVG into the HTML overlay
+            // below — the SVG layer renders beneath the node tiles, so
+            // the label chip kept getting clipped by them. Here we draw
+            // only the connecting line.
             return (
               <g key={i}>
                 <line
@@ -1263,26 +1259,6 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
                   strokeWidth={e.status === "ok" ? 3 : 2}
                   strokeDasharray={e.status === "pending" ? "6 4" : undefined}
                 />
-                <rect
-                  x={mx - 28}
-                  y={my - 9}
-                  width={56}
-                  height={18}
-                  rx={9}
-                  fill="rgba(15, 23, 42, 0.85)"
-                  stroke={color}
-                  strokeWidth={1}
-                />
-                <text
-                  x={mx}
-                  y={my + 4}
-                  textAnchor="middle"
-                  fontSize="11"
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                  fill="#e2e8f0"
-                >
-                  {label}
-                </text>
               </g>
             );
           })}
@@ -1324,6 +1300,41 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
               <div className="text-[10px] font-bold text-center mt-0.5 truncate px-1">
                 {n.name || (isHit ? "Hit" : `Analog ${i}`)}
               </div>
+            </div>
+          );
+        })}
+
+        {/* (U28) Edge-label overlay — rendered AFTER the node tiles so
+            it sits on TOP of them (auto-width pill), instead of being
+            clipped behind them in the SVG layer. One chip per edge at
+            the edge midpoint. */}
+        {graph.edges.map((e, i) => {
+          const from = positions[`${e.from_compound_id ?? ""}`];
+          const to = positions[`${e.to_compound_id ?? ""}`];
+          if (!from || !to) return null;
+          const mx = (from.x + to.x) / 2;
+          const my = (from.y + to.y) / 2;
+          const color = edgeColor(e.status);
+          const label =
+            e.ddg_binding_kcal_mol != null
+              ? `${e.ddg_binding_kcal_mol > 0 ? "+" : ""}${e.ddg_binding_kcal_mol.toFixed(2)} kcal/mol`
+              : e.lomap_score != null
+              ? `LOMAP ${e.lomap_score.toFixed(2)}`
+              : "—";
+          return (
+            <div
+              key={`lbl-${i}`}
+              className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-mono font-semibold shadow-md"
+              style={{
+                left: mx,
+                top: my,
+                background: "rgba(15, 23, 42, 0.92)",
+                border: `1px solid ${color}`,
+                color: "#e2e8f0",
+                zIndex: 10,
+              }}
+            >
+              {label}
             </div>
           );
         })}
