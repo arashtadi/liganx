@@ -494,11 +494,23 @@ export default function NewFepStudyPage() {
               {catalog.length === 0 ? (
                 <option>Loading catalog…</option>
               ) : (
-                catalog.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.pdb_id})
-                  </option>
-                ))
+                <>
+                  {/* (U26) Placeholder option matching the empty initial
+                      state. Without a value="" option, the browser shows
+                      the FIRST real target (e.g. EGFR) as selected while
+                      React state is still "" — so currentTarget is
+                      undefined and the Variant dropdown stays empty until
+                      the user re-triggers a change. With this option the
+                      displayed value matches state: the form genuinely
+                      reads "Select a target…" until a deliberate pick,
+                      which fires onChange and populates the variants. */}
+                  <option value="">Select a target…</option>
+                  {catalog.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.pdb_id})
+                    </option>
+                  ))}
+                </>
               )}
             </select>
           </label>
