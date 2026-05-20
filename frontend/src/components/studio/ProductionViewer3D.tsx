@@ -210,6 +210,12 @@ export default function ProductionViewer3D({
         // names like "OA", "NA" map to O, N.
         const name = line.slice(12, 16).trim();
         const element = name.replace(/^[0-9]+/, "")[0] || "C";
+        // (U24) Skip hydrogens. AutoDock PDBQT retains polar H; the
+        // results-page /poses endpoint strips ALL H (obabel -d) so the
+        // two viewers render the SAME heavy-atom representation. Drop
+        // H here too so Studio and the results page always match, for
+        // every ligand — not just ones whose PDBQT happens to be H-free.
+        if (element === "H") continue;
         lines.push(trimmed + "          " + element.padStart(2, " "));
       }
     }

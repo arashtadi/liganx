@@ -1311,6 +1311,17 @@ def get_pose(
 
     # Convert PDBQT → PDB so 3Dmol parses every atom (its PDBQT mode is buggy).
     # Falls back to raw PDBQT if obabel isn't available.
+    #
+    # (U24) `-d` deletes hydrogens. WHY: Open Babel ADDS explicit hydrogens
+    # during PDBQT→PDB conversion (valence perception), so without this the
+    # results-page viewer rendered a fully-protonated ligand while the Studio
+    # viewer — which parses the raw PDBQT heavy atoms directly and never runs
+    # obabel — showed none. Same docked pose, same heavy-atom coordinates, but
+    # the two views looked materially different, which read as "are these even
+    # the same molecule?". Those added H positions are geometric guesses (NOT
+    # from docking), so heavy-atom display is both the more honest
+    # representation AND now consistent with Studio. Contacts/H-bonds are
+    # computed server-side (ProLIF) and don't depend on these display H.
     if not _shutil.which("obabel"):
         return best_pdbqt
     with _tempfile.TemporaryDirectory() as td:
@@ -1318,7 +1329,7 @@ def get_pose(
         out_path = Path(td) / "pose.pdb"
         in_path.write_text(best_pdbqt)
         res = _subprocess.run(
-            ["obabel", str(in_path), "-O", str(out_path)],
+            ["obabel", str(in_path), "-O", str(out_path), "-d"],
             capture_output=True, text=True, check=False,
         )
         if res.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
