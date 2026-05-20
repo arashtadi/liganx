@@ -923,7 +923,7 @@ export default function ProductionViewer3D({
           ? <span className="text-amber-300" title="The SMILES has changed since the last dock — this is the free-state shape of the new structure, not the binding pose. Re-dock to score.">⚠ free conformer · re-dock to score</span>
           : <span className="text-cyan-300 animate-pulse">▮ updating preview…</span>
         : receptorPdb && posePdbqt
-          ? <span className="text-emerald-400" title="Bound conformation from the docking run — the shape the ligand actually folded into to fit the pocket.">● docked pose · {variant}</span>
+          ? <span className="text-sky-300" title="Quick Dock preview — a fast, SEPARATE docking run. Docking is stochastic on the GPU, so the saved Full Job pose is the authoritative one and will differ slightly from this preview. Same molecule, different run.">◐ quick-dock preview · {variant}</span>
           : <span className="text-cyan-300 animate-pulse">▮ loading receptor…</span>
     : loading
       ? <span className="text-cyan-300 animate-pulse">▮ updating 3D…</span>
@@ -974,6 +974,24 @@ export default function ProductionViewer3D({
           conformation will fold differently to fit the pocket. Click{" "}
           <span className="font-mono text-amber-100">Run Dock</span>{" "}
           to compute it.
+        </div>
+      )}
+
+      {/* (U28) Docked-preview explainer. Once a Quick Dock lands, this
+          IS a bound pose — but it's a fast, SEPARATE docking run from
+          the saved Full Job. Docking is stochastic on the GPU (parallel
+          Monte-Carlo, not bit-reproducible even at a fixed seed), so the
+          preview pose here and the saved job's pose are the same molecule
+          from two different runs and will look slightly different. Say so
+          plainly so the difference reads as expected, not a bug. Only
+          shown for the clean docked-preview state (not while editing,
+          not pre-dock). */}
+      {hasDock && !smilesEdited && !loading && receptorPdb && posePdbqt && (
+        <div className="px-3 py-1.5 border-b border-slate-800/70 bg-sky-950/30 text-[10px] text-sky-200/90 leading-relaxed">
+          <span className="font-semibold">Quick Dock preview.</span>{" "}
+          A fast, separate docking run. The saved Full Job pose is the
+          authoritative one — because GPU docking is stochastic, it will
+          differ slightly from this preview (same molecule, different run).
         </div>
       )}
 
