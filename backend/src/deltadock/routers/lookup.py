@@ -437,6 +437,19 @@ class SmilesInspectIn(BaseModel):
     # large SVGs cost frontend rendering time, so cap at something sane.
     width: int = 220
     height: int = 130
+    # (U25) Dark-mode depiction. When true the SVG uses RDKit's dark
+    # palette (light bonds + bright heteroatom colours) on a transparent
+    # background, so it sits natively on a dark UI surface instead of a
+    # forced white tile. Default False → byte-identical to the existing
+    # light rendering for every current caller.
+    dark: bool = False
+    # (U25) Reference SMILES for change-highlighting. When provided, the
+    # MCS (maximum common substructure) between `smiles` and `ref_smiles`
+    # is computed and the atoms of `smiles` that are NOT in that shared
+    # core are highlighted — i.e. the part that CHANGES relative to the
+    # reference. The FEP perturbation view passes the edge partner / hit
+    # here so each alchemical change pops. Ignored when empty/unparseable.
+    ref_smiles: str | None = None
 
 
 class SmilesFragmentInfo(BaseModel):
@@ -491,9 +504,16 @@ def _trim_error(msg: str, limit: int = 200) -> str:
 
 
 @lru_cache(maxsize=512)
-def _inspect_cached(smiles: str, embed: bool, w: int, h: int) -> dict:
+def _inspect_cached(
+    smiles: str, embed: bool, w: int, h: int,
+    dark: bool = False, ref_smiles: str | None = None,
+) -> dict:
     """LRU-cached inspect — same SMILES on the same call type returns the
-    same answer, so debounced keystrokes don't reparse on every call."""
+    same answer, so debounced keystrokes don't reparse on every call.
+
+    `dark` and `ref_smiles` (U25) extend the cache key so the dark /
+    change-highlighted depiction caches separately from the default
+    light one; callers that pass neither hit the original key shape."""
     out: dict = {
         "valid": False, "error": None, "canonical_smiles": None,
         "svg": None, "fragment_count": 0, "largest_fragment": None,
@@ -561,7 +581,71 @@ def _inspect_cached(smiles: str, embed: bool, w: int, h: int) -> dict:
         opts.bondLineWidth = 1.4
         opts.padding = 0.05
         # Transparent background so the host card colors show through.
-        drawer.DrawMolecule(mol)
+
+        # (U25) Change-highlighting: when a reference SMILES is supplied,
+        # highlight the atoms of THIS molecule that fall outside the
+        # maximum-common-substructure with the reference — i.e. the part
+        # that changes across a FEP edge. Cheap (~ms) and self-contained:
+        # no LOMAP / DB dependency, computed straight from the two SMILES.
+        hl_atoms: list[int] = []
+        hl_bonds: list[int] = []
+        if ref_smiles:
+            try:
+                from rdkit.Chem import rdFMCS
+                ref_mol = Chem.MolFromSmiles(ref_smiles)
+                if ref_mol is not None:
+                    res = rdFMCS.FindMCS(
+                        [mol, ref_mol], timeout=5,
+                        atomCompare=rdFMCS.AtomCompare.CompareElements,
+                        bondCompare=rdFMCS.BondCompare.CompareOrder,
+                        completeRingsOnly=True, ringMatchesRingOnly=True,
+                    )
+                    patt = (
+                        Chem.MolFromSmarts(res.smartsString)
+                        if res and res.smartsString else None
+                    )
+                    common = set(mol.GetSubstructMatch(patt)) if patt else set()
+                    hl_atoms = [
+                        a.GetIdx() for a in mol.GetAtoms()
+                        if a.GetIdx() not in common
+                    ]
+                    hset = set(hl_atoms)
+                    hl_bonds = [
+                        b.GetIdx() for b in mol.GetBonds()
+                        if b.GetBeginAtomIdx() in hset or b.GetEndAtomIdx() in hset
+                    ]
+            except Exception as _hl_e:  # noqa: BLE001
+                log.debug("MCS highlight skipped for %s: %s", smiles[:40], _hl_e)
+
+        # (U25) Dark palette — light bonds + bright heteroatom colours on
+        # a transparent surface. Applied LAST so it doesn't disturb the
+        # default (light) path, which stays byte-for-byte unchanged.
+        if dark:
+            try:
+                rdMolDraw2D.SetDarkMode(drawer)
+            except Exception:
+                try:
+                    rdMolDraw2D.SetDarkMode(opts)
+                except Exception:
+                    pass
+            try:
+                opts.clearBackground = False  # inherit the dark card surface
+                opts.bondLineWidth = 1.7      # slightly bolder reads better on dark
+            except Exception:
+                pass
+
+        if hl_atoms:
+            # Amber pops on both light and dark backgrounds.
+            hl_color = (0.98, 0.62, 0.16)
+            hac = {i: hl_color for i in hl_atoms}
+            hbc = {i: hl_color for i in hl_bonds}
+            drawer.DrawMolecule(
+                mol,
+                highlightAtoms=hl_atoms, highlightBonds=hl_bonds,
+                highlightAtomColors=hac, highlightBondColors=hbc,
+            )
+        else:
+            drawer.DrawMolecule(mol)
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
         # Strip xml prolog so the SVG can be inlined directly.
@@ -612,7 +696,10 @@ def inspect_smiles(payload: SmilesInspectIn) -> SmilesInspectOut:
         return SmilesInspectOut(valid=False, error=f"SMILES too long ({len(smi)} chars; max 1000)")
     width = max(80, min(400, int(payload.width)))
     height = max(60, min(300, int(payload.height)))
-    data = _inspect_cached(smi, bool(payload.embed_check), width, height)
+    ref = (payload.ref_smiles or "").strip()[:1000] or None
+    data = _inspect_cached(
+        smi, bool(payload.embed_check), width, height, bool(payload.dark), ref
+    )
     return SmilesInspectOut(**data)
 
 

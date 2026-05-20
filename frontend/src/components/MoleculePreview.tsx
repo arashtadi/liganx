@@ -34,6 +34,14 @@ interface Props {
   /** Called when the user clicks "Open in sketcher" on a parse error —
    *  caller opens Ketcher for this row. */
   onOpenInSketcher?: () => void;
+  /** (U25) Dark-native depiction: light strokes + bright heteroatom
+   *  palette on a transparent tile, instead of the default white card.
+   *  Opt-in so existing light surfaces (the New-job form) are untouched. */
+  dark?: boolean;
+  /** (U25) When set, the atoms that differ from this reference SMILES
+   *  (the maximum-common-substructure diff) are highlighted amber — i.e.
+   *  the part that changes across a FEP edge. */
+  refSmiles?: string;
 }
 
 export default function MoleculePreview({
@@ -42,6 +50,8 @@ export default function MoleculePreview({
   height = 100,
   onUseLargestFragment,
   onOpenInSketcher,
+  dark = false,
+  refSmiles,
 }: Props) {
   // Debounced — we only fire the inspect call after the user pauses
   // typing for 400 ms. Prevents a 50-keystroke SMILES from generating
@@ -50,9 +60,21 @@ export default function MoleculePreview({
   const debounced = useDebouncedValue(smiles.trim(), 400);
   const [zoomed, setZoomed] = useState(false);
 
+  // (U25) Only extend the query key when the new options are actually
+  // used, so default (light, no-highlight) callers keep the EXACT key
+  // shape ["inspect-smiles", smiles, w, h] — preserving cache-sharing
+  // with useSmilesValidity / useSmilesSaScore and zero behavior change.
+  const extraKey = dark || refSmiles ? [dark, refSmiles ?? ""] : [];
   const { data, isFetching } = useQuery({
-    queryKey: ["inspect-smiles", debounced, width, height],
-    queryFn: () => api.inspectSmiles({ smiles: debounced, width, height }),
+    queryKey: ["inspect-smiles", debounced, width, height, ...extraKey],
+    queryFn: () =>
+      api.inspectSmiles({
+        smiles: debounced,
+        width,
+        height,
+        ...(dark ? { dark: true } : {}),
+        ...(refSmiles ? { ref_smiles: refSmiles } : {}),
+      }),
     enabled: debounced.length > 0,
     staleTime: 5 * 60 * 1000,  // SMILES → depiction is deterministic
     retry: 1,
@@ -134,8 +156,15 @@ export default function MoleculePreview({
         type="button"
         onClick={() => setZoomed(true)}
         className={
-          "block rounded-md border bg-white dark:bg-white/95 overflow-hidden hover:ring-2 hover:ring-delta-300 dark:hover:ring-delta-500/40 transition " +
-          (showFragmentWarn ? "border-amber-300 dark:border-amber-600/40" : "border-slate-200 dark:border-slate-700")
+          "block rounded-lg border overflow-hidden transition hover:ring-2 hover:ring-delta-300 dark:hover:ring-delta-500/50 " +
+          (dark
+            // (U25) Dark-native tile: faint translucent surface + subtle
+            // ring so the light-stroke SVG reads cleanly, instead of the
+            // forced white card that clashed with the dark FEP page.
+            ? "bg-slate-800/40 ring-1 ring-inset ring-white/5 " +
+              (showFragmentWarn ? "border-amber-500/40" : "border-slate-700/70")
+            : "bg-white dark:bg-white/95 " +
+              (showFragmentWarn ? "border-amber-300 dark:border-amber-600/40" : "border-slate-200 dark:border-slate-700"))
         }
         style={{ width, height }}
         title="Click to enlarge"
@@ -171,11 +200,16 @@ export default function MoleculePreview({
           role="dialog"
         >
           <div
-            className="bg-white rounded-xl shadow-2xl ring-1 ring-slate-200 p-4 max-w-2xl"
+            className={
+              "rounded-xl shadow-2xl p-4 max-w-2xl " +
+              (dark
+                ? "bg-slate-900 ring-1 ring-slate-700"
+                : "bg-white ring-1 ring-slate-200")
+            }
             onClick={(e) => e.stopPropagation()}
           >
-            <BigPreview smiles={debounced} />
-            <div className="mt-2 text-[11px] font-mono text-slate-600 break-all">
+            <BigPreview smiles={debounced} dark={dark} refSmiles={refSmiles} />
+            <div className={"mt-2 text-[11px] font-mono break-all " + (dark ? "text-slate-300" : "text-slate-600")}>
               {data.canonical_smiles ?? debounced}
             </div>
             <div className="text-[11px] text-slate-500 mt-2 flex justify-end">
@@ -197,10 +231,18 @@ export default function MoleculePreview({
 /** Larger 600×400 SVG fetched on demand when the user clicks the
  *  thumbnail. Separate query so the small thumbnail isn't re-fetched
  *  at the larger size; the cache naturally splits by (smiles, w, h). */
-function BigPreview({ smiles }: { smiles: string }) {
+function BigPreview({ smiles, dark = false, refSmiles }: { smiles: string; dark?: boolean; refSmiles?: string }) {
+  const extraKey = dark || refSmiles ? [dark, refSmiles ?? ""] : [];
   const { data } = useQuery({
-    queryKey: ["inspect-smiles", smiles, 600, 400],
-    queryFn: () => api.inspectSmiles({ smiles, width: 600, height: 400 }),
+    queryKey: ["inspect-smiles", smiles, 600, 400, ...extraKey],
+    queryFn: () =>
+      api.inspectSmiles({
+        smiles,
+        width: 600,
+        height: 400,
+        ...(dark ? { dark: true } : {}),
+        ...(refSmiles ? { ref_smiles: refSmiles } : {}),
+      }),
     staleTime: 5 * 60 * 1000,
   });
   if (!data?.svg) {

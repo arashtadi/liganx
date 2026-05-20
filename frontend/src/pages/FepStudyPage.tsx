@@ -865,7 +865,7 @@ export default function FepStudyPage() {
           </div>
           <div className="flex items-start gap-4 mt-2">
             <div className="shrink-0">
-              <MoleculePreview smiles={hit.smiles} width={260} height={170} />
+              <MoleculePreview smiles={hit.smiles} width={260} height={170} dark />
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-bold text-base">{hit.name || "(unnamed)"}</div>
@@ -992,7 +992,7 @@ export default function FepStudyPage() {
             {sortedAnalogs.map((n, i) => (
               <tr key={i} className="border-b border-slate-100 dark:border-slate-800 align-top">
                 <td className="py-2 pr-3">
-                  <MoleculePreview smiles={n.smiles} width={180} height={120} />
+                  <MoleculePreview smiles={n.smiles} width={180} height={120} dark refSmiles={hit?.smiles} />
                 </td>
                 <td className="py-2 pr-4">
                   <div className="font-semibold">{n.name || `Analog ${i + 1}`}</div>
@@ -1089,7 +1089,7 @@ export default function FepStudyPage() {
                       <div className="flex items-center gap-2">
                         <div className="shrink-0">
                           {fromNode?.smiles ? (
-                            <MoleculePreview smiles={fromNode.smiles} width={110} height={70} />
+                            <MoleculePreview smiles={fromNode.smiles} width={110} height={70} dark refSmiles={toNode?.smiles} />
                           ) : (
                             <span className="font-mono text-slate-400">#{e.from_compound_id ?? "?"}</span>
                           )}
@@ -1097,7 +1097,7 @@ export default function FepStudyPage() {
                         <span className="text-slate-400">→</span>
                         <div className="shrink-0">
                           {toNode?.smiles ? (
-                            <MoleculePreview smiles={toNode.smiles} width={110} height={70} />
+                            <MoleculePreview smiles={toNode.smiles} width={110} height={70} dark refSmiles={fromNode?.smiles} />
                           ) : (
                             <span className="font-mono text-slate-400">#{e.to_compound_id ?? "?"}</span>
                           )}
@@ -1291,7 +1291,7 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
           return (
             <div
               key={key}
-              className={`absolute rounded-lg bg-white dark:bg-slate-900 ${ringClass} p-1 shadow-md`}
+              className={`absolute rounded-lg bg-slate-900 ${ringClass} p-1 shadow-md`}
               style={{
                 width: NW,
                 height: NH,
@@ -1301,7 +1301,7 @@ function PerturbationMap({ graph }: { graph: FepStudyGraph }) {
               title={`${n.name || "(unnamed)"} — ${n.smiles}`}
             >
               <div className="flex items-center justify-center">
-                <MoleculePreview smiles={n.smiles} width={NW - 8} height={NH - 26} />
+                <MoleculePreview smiles={n.smiles} width={NW - 8} height={NH - 26} dark refSmiles={isHit ? undefined : hit?.smiles} />
               </div>
               <div className="text-[10px] font-bold text-center mt-0.5 truncate px-1">
                 {n.name || (isHit ? "Hit" : `Analog ${i}`)}

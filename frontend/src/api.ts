@@ -812,7 +812,7 @@ export const api = {
    *  debounces calls at ~400ms with embed_check=false; submit-time uses
    *  embed_check=true to catch the runtime ligand-prep failure mode at
    *  the form level instead of after a wasted GPU run. */
-  inspectSmiles: (payload: { smiles: string; embed_check?: boolean; width?: number; height?: number }) =>
+  inspectSmiles: (payload: { smiles: string; embed_check?: boolean; width?: number; height?: number; dark?: boolean; ref_smiles?: string }) =>
     request<{
       valid: boolean;
       error: string | null;
