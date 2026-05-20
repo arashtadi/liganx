@@ -689,6 +689,9 @@ export interface FepStudyGraph {
     // `progress_pct` is 0-100, currently a coarse milestone mapping.
     stage: string | null;
     progress_pct: number | null;
+    // (W1) Live convergence series: partial-MBAR ΔΔG estimate + 95% CI
+    // half-width as sampling accumulates. Empty until the pod emits.
+    ddg_history?: { t: number | null; ddg: number | null; ci: number | null }[];
   }[];
   // (J13) Submission timestamp + protocol knobs so the UI can render
   // elapsed wall-time + an estimated remaining time from the same

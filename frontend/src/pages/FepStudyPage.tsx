@@ -23,6 +23,7 @@ import { api, type FepStudyGraph } from "../api";
 import { Spinner } from "../components/Icons";
 import MoleculePreview from "../components/MoleculePreview";
 import { FepHoloLoader } from "../components/FepHoloLoader";
+import FepConvergenceChart from "../components/FepConvergenceChart";
 import { usePageMeta } from "../lib/usePageMeta";
 
 // (O13) Translate a mutation code (e.g. "Q61H", "T790M") into a
@@ -1053,6 +1054,40 @@ export default function FepStudyPage() {
           </div>
         )
       )}
+
+      {/* (W1) Live convergence — the ΔΔG estimate settling + its 95%
+          confidence band shrinking as sampling accumulates. Real data
+          from the pod's partial-MBAR reader (edge.ddg_history). Shown
+          when any edge has reported convergence points, or while the
+          study is still running (honest empty state until the first
+          window reports). Picks the edge with the most history (the
+          active one). */}
+      {(() => {
+        const studyRunning = ["preparing", "running"].includes(String(graph.status || "").toLowerCase());
+        const withHist = graph.edges
+          .map((e) => ({ e, n: (e.ddg_history?.length ?? 0) }))
+          .sort((a, b) => b.n - a.n);
+        const convEdge = withHist.length ? withHist[0].e : null;
+        const hasAny = (convEdge?.ddg_history?.length ?? 0) > 0;
+        if (!hasAny && !studyRunning) return null;
+        return (
+          <div className="card">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Live convergence
+            </h2>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-snug">
+              The ΔΔG estimate (green) and its 95% confidence band as the simulation
+              accumulates sampling. A band that narrows toward a steady line means the
+              result is converging; a wandering line with a wide band means it isn&apos;t
+              trustworthy yet. Real per-window MBAR output — not an animation.
+            </p>
+            <FepConvergenceChart
+              history={(convEdge?.ddg_history ?? []) as { t: number | null; ddg: number | null; ci: number | null }[]}
+              running={studyRunning && (convEdge?.status === "running" || !hasAny)}
+            />
+          </div>
+        );
+      })()}
 
       {/* Perturbation edges — expandable. */}
       <details className="card group">

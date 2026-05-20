@@ -793,6 +793,46 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
         _check_and_finalize_study(session, edge_row.fep_job_id)
         return
 
+    # (W1) Live convergence point. When the pod reports a running
+    # partial-MBAR estimate (ddg_running + ddg_running_ci, emitted by
+    # the pod-side reporter reader), append it to the edge's
+    # ddg_history_json time series so the frontend can plot the estimate
+    # settling + its CI shrinking. Read-modify-write is safe here: N12
+    # serialises reconciler dispatch per study, and we cap the array so
+    # a long run can't bloat the row.
+    ddg_running = payload.get("ddg_running")
+    history_sql = ""
+    history_params: dict = {}
+    if ddg_running is not None:
+        try:
+            import json as _json
+            cur = session.execute(
+                text("SELECT ddg_history_json FROM fep_perturbation WHERE id = :id"),
+                {"id": edge_row.id},
+            ).scalar()
+            hist = _json.loads(cur) if cur else []
+            if not isinstance(hist, list):
+                hist = []
+            # `t` axis: accumulated sampling (ns) if the pod gives it,
+            # else fall back to progress_pct so the curve still advances.
+            t_val = payload.get("ddg_running_t")
+            if t_val is None:
+                t_val = progress_pct
+            hist.append({
+                "t": t_val,
+                "ddg": round(float(ddg_running), 3),
+                "ci": (round(float(payload["ddg_running_ci"]), 3)
+                       if payload.get("ddg_running_ci") is not None else None),
+            })
+            # Cap: keep the most recent 250 points (a 14h edge polled
+            # every 30s is ~1680 polls; 250 is plenty for a smooth curve).
+            if len(hist) > 250:
+                hist = hist[-250:]
+            history_sql = ", ddg_history_json = :hist"
+            history_params = {"hist": _json.dumps(hist)}
+        except Exception as _he:  # noqa: BLE001
+            log.debug("W1: ddg_history append skipped for edge %s: %s", edge_row.id, _he)
+
     # Still running — just tick the timestamps + stage label so the
     # UI + the orphan-reaper both see fresh state.
     session.execute(
@@ -801,10 +841,11 @@ def _reconcile_one_edge(session: Session, edge_row) -> None:
             " SET last_polled_at = now(),"
             "     stage = :stage,"
             "     progress_pct = :pct"
+            + history_sql +
             " WHERE id = :id"
             "   AND dispatch_state = 'running'"
         ),
-        {"id": edge_row.id, "stage": pod_stage, "pct": progress_pct},
+        {"id": edge_row.id, "stage": pod_stage, "pct": progress_pct, **history_params},
     )
     # Also tick the parent job's updated_at so the orphan reaper
     # doesn't fire on this row.

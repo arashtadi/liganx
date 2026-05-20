@@ -639,6 +639,17 @@ class FepPerturbation(SQLModel, table=True):
     progress_pct: Optional[int] = None
     pod_job_id: Optional[str] = Field(default=None, max_length=64)
 
+    # (W1) Live convergence time-series. JSON array of partial-MBAR
+    # estimates the pod emits as sampling accumulates:
+    #   [{"t": 0.4, "ddg": -3.4, "ci": 1.9}, ...]
+    # t = sampling accumulated (ns), ddg = partial ΔΔG_binding
+    # (kcal/mol), ci = 95% CI half-width. The reconciler appends a point
+    # whenever the pod reports a fresh running estimate; the FEP study
+    # graph serves the array; the frontend plots the estimate + the
+    # shrinking confidence band. NULL until the pod reader ships
+    # (migration 027).
+    ddg_history_json: Optional[str] = None
+
     # (R1) Reconciler-owned lifecycle state. See
     # docs/fep_reconciler_design.md §2 for the state machine.
     #

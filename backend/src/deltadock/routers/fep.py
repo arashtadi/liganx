@@ -132,6 +132,35 @@ class FepEdgeResult(BaseModel):
     # until the openmm reporter hook lands in J14.
     stage: Optional[str] = None
     progress_pct: Optional[int] = None
+    # (W1) Live convergence time-series for the chart on FepStudyPage:
+    # [{"t": <ns>, "ddg": <kcal/mol>, "ci": <95% CI half-width>}, ...].
+    # Populated as the pod emits partial-MBAR estimates during sampling;
+    # empty list until the pod reader ships / for old edges.
+    ddg_history: list[dict] = []
+
+
+def _parse_ddg_history(raw: Optional[str]) -> list[dict]:
+    """(W1) Parse the stored ddg_history_json TEXT column into a clean
+    list of {t, ddg, ci} points. Returns [] on null/garbage so a
+    malformed row never breaks the whole study graph response."""
+    if not raw:
+        return []
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        out: list[dict] = []
+        for p in data:
+            if isinstance(p, dict) and "ddg" in p:
+                out.append({
+                    "t": p.get("t"),
+                    "ddg": p.get("ddg"),
+                    "ci": p.get("ci"),
+                })
+        return out
+    except Exception:
+        return []
 
 
 class FepStudyGraphResponse(BaseModel):
@@ -1123,6 +1152,7 @@ def _serialise_graph(
             completed_at=(e.completed_at.isoformat() if e.completed_at else None),
             stage=getattr(e, "stage", None),
             progress_pct=getattr(e, "progress_pct", None),
+            ddg_history=_parse_ddg_history(getattr(e, "ddg_history_json", None)),
         ))
 
     return FepStudyGraphResponse(

@@ -778,6 +778,7 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # mapping landed in the same release.
     ("025_jobstatus_lowercase_values.sql", "Migration 025 (jobstatus enum lowercase values)"),
     ("026_jobstatus_lowercase_rows.sql", "Migration 026 (lowercase existing job.status rows)"),
+    ("027_fep_ddg_history.sql", "Migration 027 (FEP ddg_history_json for live convergence chart)"),
 ]
 
 

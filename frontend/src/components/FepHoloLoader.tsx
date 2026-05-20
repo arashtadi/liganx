@@ -67,7 +67,7 @@ export function FepHoloLoader({ graph, stageLabel }: FepHoloLoaderProps) {
     stageLabel || "running λ windows",
   );
   const [elapsed, setElapsed] = useState<string>("00:00");
-  const [hudDdg, setHudDdg] = useState<string>("−calc");
+  const [hudDdg] = useState<string>("computing");
   const [hudLambda, setHudLambda] = useState<string>("1 / 12");
   const [hudReplicas, setHudReplicas] = useState<string>("12");
   const [logsShown, setLogsShown] = useState<number>(0);
@@ -420,9 +420,12 @@ export function FepHoloLoader({ graph, stageLabel }: FepHoloLoaderProps) {
     const id = setInterval(() => {
       lambdaIdx = (lambdaIdx + 1) % nWindows;
       setHudLambda(`${lambdaIdx + 1} / ${nWindows}`);
-      // ΔΔG.EST jitters around -1.7 ± 0.4 (a typical kinase FEP+ result range).
-      // This is decorative, NOT the real-time ΔΔG.
-      setHudDdg((-(1.4 + Math.random() * 0.8)).toFixed(2));
+      // (W1) ΔΔG is NOT shown here as a number any more. It used to
+      // jitter a fake value around -1.7, which read as a real-time
+      // estimate and was a trust landmine — the real ΔΔG only exists
+      // once MBAR runs on accumulated sampling. The live convergence
+      // chart on the study page shows the genuine partial estimate; the
+      // loader just says it's being computed.
       // Replicas count + exchange acceptance rate, both decorative.
       setHudReplicas(`${nWindows} · ${(40 + Math.random() * 10).toFixed(0)}%`);
     }, 1100);
@@ -533,7 +536,7 @@ export function FepHoloLoader({ graph, stageLabel }: FepHoloLoaderProps) {
         <div style={hudCornerStyle({ top: 12, left: 12 })}>
           <div style={hudRow}>
             <div style={hudLine} />
-            <span style={hudLabel}>ΔΔG.EST</span>
+            <span style={hudLabel}>ΔΔG</span>
           </div>
           <span style={hudValue}>{hudDdg}</span>
         </div>
