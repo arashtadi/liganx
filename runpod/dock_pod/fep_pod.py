@@ -402,28 +402,61 @@ def run_edge(
         receptor_path = td_path / "receptor.pdb"
         receptor_path.write_text(receptor_pdb_text)
 
-        try:
-            ddg_complex_kj, ddg_solvent_kj, mbar_info = _run_openfe_edge(
-                receptor_pdb_path=receptor_path,
-                ligand_a=mol_a,
-                ligand_b=mol_b,
-                stage_callback=stage,
-                n_windows=n_lambda_windows,
-                ns_total=ns_per_window,
-                ns_equil=ns_equilibration,
-                salt_conc=salt_conc_mol_per_l,
-                temperature_k=temperature_k,
-                hmr_mass=hmr_mass_amu,
-                timestep_fs=timestep_fs,
-                work_dir=td_path,
-            )
-        except Exception as e:                                       # noqa: BLE001
-            log.exception("openfe RFE edge failed")
+        # (W3 2026-05-21) NaN-instability auto-retry. A rigid drug-like
+        # ligand wedged into a tight pocket can blow the MD up
+        # (openmmtools SimulationNaNError: "Propagating replica … resulted
+        # in a NaN!") at the 4 fs / HMR timestep when the short
+        # cheap-protocol minimisation+equilibration doesn't fully relax an
+        # initial contact. This is a numerical-stability failure, NOT a
+        # code bug — the standard remedy is gentler MD. We retry the edge
+        # ONCE at a halved timestep (≤2 fs) with 4× the minimisation
+        # steps. A second NaN fails cleanly with kind="nan_instability".
+        # Non-NaN errors are never retried (no point + saves GPU).
+        _attempts = [
+            {"timestep_fs": timestep_fs, "min_steps": 5000, "label": "primary"},
+            {"timestep_fs": min(timestep_fs, 2.0), "min_steps": 20000, "label": "nan_retry"},
+        ]
+        ddg_complex_kj = ddg_solvent_kj = mbar_info = None
+        last_exc: Optional[BaseException] = None
+        for _i, _att in enumerate(_attempts):
+            try:
+                ddg_complex_kj, ddg_solvent_kj, mbar_info = _run_openfe_edge(
+                    receptor_pdb_path=receptor_path,
+                    ligand_a=mol_a,
+                    ligand_b=mol_b,
+                    stage_callback=stage,
+                    n_windows=n_lambda_windows,
+                    ns_total=ns_per_window,
+                    ns_equil=ns_equilibration,
+                    salt_conc=salt_conc_mol_per_l,
+                    temperature_k=temperature_k,
+                    hmr_mass=hmr_mass_amu,
+                    timestep_fs=_att["timestep_fs"],
+                    minimization_steps=_att["min_steps"],
+                    work_dir=td_path / _att["label"],
+                )
+                last_exc = None
+                break
+            except Exception as e:                                   # noqa: BLE001
+                last_exc = e
+                # Only retry a NaN blow-up, and only on the first pass.
+                if _is_nan_error(e) and _i == 0:
+                    log.warning(
+                        "openfe RFE edge NaN'd at %.1f fs — auto-retrying once "
+                        "at %.1f fs with %dx minimisation (W3)",
+                        _att["timestep_fs"], _attempts[1]["timestep_fs"],
+                        _attempts[1]["min_steps"] // 5000,
+                    )
+                    stage("retrying_after_nan")
+                    continue
+                break
+        if last_exc is not None:
+            log.exception("openfe RFE edge failed", exc_info=last_exc)
             # (M5) Classify common failure modes into specific `kind`
             # codes so the UI can render targeted user messages instead
             # of a bare stack trace. Pattern-match on type + message;
             # falls back to generic "runtime" if nothing matches.
-            err_kind, err_msg = _classify_runtime_error(e)
+            err_kind, err_msg = _classify_runtime_error(last_exc)
             return _err(err_kind, err_msg, t0)
 
     # ─── Combine into ΔΔG_binding + apply convergence flags. ───────
@@ -494,6 +527,7 @@ def _run_openfe_edge(
     n_windows: int, ns_total: float, ns_equil: float,
     salt_conc: float, temperature_k: float, hmr_mass: float,
     timestep_fs: float, work_dir: Path,
+    minimization_steps: int = 5000,
     stage_callback: StageCallback = _noop_stage,
 ) -> tuple[dict, dict, dict]:
     """Run the actual openfe RelativeHybridTopologyProtocol for one
@@ -627,6 +661,13 @@ def _run_openfe_edge(
     settings.simulation_settings.equilibration_length = ns_equil * offunit.nanosecond
     settings.simulation_settings.production_length = ns_production * offunit.nanosecond
     settings.integrator_settings.timestep = timestep_fs * offunit.femtosecond
+    # (W3 2026-05-21) Energy-minimisation steps before MD. The default
+    # (5000) can leave a stubborn initial atomic contact unrelaxed for a
+    # rigid drug-like ligand in a tight pocket, which then blows the MD
+    # up into a NaN at the first integration steps. run_edge raises the
+    # count on its NaN-retry pass to give minimisation a better chance.
+    if hasattr(settings.simulation_settings, "minimization_steps"):
+        settings.simulation_settings.minimization_steps = minimization_steps
     # HMR — distribute heavy-atom mass to attached H so we can take
     # 4 fs timesteps. Standard practice for production RBFE.
     settings.forcefield_settings.hydrogen_mass = hmr_mass
@@ -827,6 +868,20 @@ def _leg_diagnostics(protocol_result) -> dict:
         return {"diagnostics_unavailable": True}
 
 
+def _is_nan_error(e: BaseException) -> bool:
+    """(W3) True iff the exception is an openmm(tools) NaN blow-up —
+    the MD integrator diverged and produced non-finite coordinates.
+    Used by run_edge to decide whether a gentler-timestep retry is
+    worth attempting (NaN: yes; anything else: no)."""
+    s = str(e).lower()
+    return (
+        type(e).__name__ == "SimulationNaNError"
+        or "resulted in a nan" in s
+        or "nan!" in s
+        or ("nan" in s and ("propagat" in s or "replica" in s or "particle position" in s))
+    )
+
+
 def _classify_runtime_error(e: BaseException) -> tuple[str, str]:
     """(M5) Map a deep-stack openfe/openmm exception to a structured
     (kind, user-friendly message) tuple. Each return tuple represents
@@ -867,6 +922,18 @@ def _classify_runtime_error(e: BaseException) -> tuple[str, str]:
             "receptor_invalid",
             "Receptor PDB has residues PDBFixer couldn't repair (likely a "
             f"non-standard residue mid-chain). Original error: {raw}",
+        )
+
+    # — MD numerical blow-up (NaN). Checked before the generic openmm/
+    #   platform bucket because a NaN error can also mention "openmm". —
+    if _is_nan_error(e):
+        return (
+            "nan_instability",
+            "The molecular dynamics became numerically unstable (a NaN "
+            "blow-up) even after an automatic gentler-timestep (2 fs) retry "
+            "with extra minimisation. This usually means a bad initial "
+            "atomic contact for this ligand pair in the pocket. Try a longer "
+            f"equilibration or a more conservative analog. Original error: {raw}",
         )
 
     # — GPU out-of-memory: openmm raises OpenMMException with specific text —
