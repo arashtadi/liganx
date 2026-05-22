@@ -34,7 +34,12 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 from ..config import get_settings
-from ..db import engine
+# Import the SQLAlchemy Engine under a private alias: the public ``store``
+# function takes a parameter literally named ``engine`` (the docking-engine
+# label, e.g. "quickvina2-gpu"), which would otherwise shadow this import and
+# make ``Session(engine)`` receive a str → "'str' object has no attribute
+# 'connect'". The alias keeps the DB engine reachable inside that scope.
+from ..db import engine as _db_engine
 
 log = logging.getLogger(__name__)
 
@@ -118,7 +123,7 @@ def lookup(cache_key: str) -> Optional[dict[str, Any]]:
     if not settings.dock_cache_enabled or not cache_key:
         return None
     try:
-        with Session(engine) as s:
+        with Session(_db_engine) as s:
             row = s.execute(
                 text(
                     "SELECT best_score, pose_pdbqt, extra FROM dock_cache "
@@ -170,7 +175,7 @@ def store(
     if not settings.dock_cache_enabled or not cache_key or not inchikey:
         return
     try:
-        with Session(engine) as s:
+        with Session(_db_engine) as s:
             s.execute(
                 text(
                     "INSERT INTO dock_cache (cache_key, inchikey, pdb_id, chain, "
