@@ -1830,6 +1830,108 @@ def _run_real(session: Session, job: Job) -> None:
         pending_interface_extras: list[dict] = []
         defer_val = settings.defer_validation and validate_on
 
+        # ── Dock result cache (services/dock_cache.py) — flag-gated + fail-open.
+        # A HIT serves a stored score+pose for an IDENTICAL molecule (canonical
+        # isomeric InChIKey) under identical conditions, skipping the GPU dock
+        # entirely; validation still re-runs so quality chips resolve like a
+        # normal dock. Any error, or DOCK_CACHE_ENABLED=off, behaves exactly
+        # like a normal uncached dock. Nothing is written to the pod — the cache
+        # lives in the app DB.
+        def _canon_engine(engine_used: str) -> str:
+            """Map a path-specific engine label to a canonical dock engine, so a
+            GNINA result can never be served for a QuickVina request (and the
+            batched 'pod_gpu_batch' label matches a plain QuickVina dock)."""
+            e = (engine_used or "").lower()
+            if "gnina" in e:
+                return "gnina"
+            if "boltz" in e:
+                return "boltz2"
+            return "quickvina2-gpu"
+
+        def _dock_cache_key(compound, variant, engine_canon):
+            try:
+                from . import dock_cache as _dc
+                ik = _dc.canonical_inchikey(compound.smiles)
+                if not ik:
+                    return None, None
+                key = _dc.make_cache_key(
+                    inchikey=ik, pdb_id=job.pdb_id, chain=job.chain, variant=variant,
+                    engine=engine_canon, engine_version="v1",
+                    exhaustiveness=exhaustiveness,
+                    box=(box.center_x, box.center_y, box.center_z,
+                         box.size_x, box.size_y, box.size_z),
+                    prep_version=settings.dock_cache_prep_version,
+                )
+                return ik, key
+            except Exception:  # noqa: BLE001 — uncacheable → behave as a miss
+                return None, None
+
+        def _dock_cache_store(compound, variant, result, extra, engine_used):
+            if not settings.dock_cache_enabled:
+                return
+            try:
+                from . import dock_cache as _dc
+                engine_canon = _canon_engine(engine_used)
+                ik, key = _dock_cache_key(compound, variant, engine_canon)
+                if not key:
+                    return
+                try:
+                    pose_text = Path(result.pose_pdbqt).read_text()
+                except Exception:  # noqa: BLE001
+                    pose_text = None
+                if pose_text is None:
+                    return
+                _dc.store(
+                    cache_key=key, inchikey=ik, pdb_id=job.pdb_id, chain=job.chain,
+                    variant=variant, engine=engine_canon, engine_version="v1",
+                    exhaustiveness=exhaustiveness,
+                    prep_version=settings.dock_cache_prep_version,
+                    best_score=float(result.best_score), pose_pdbqt=pose_text,
+                    extra=extra,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.info("dock_cache store skipped (%s)", e)
+
+        def _dock_cache_try_hit(compound, variant, receptor, receptor_pdb, run_dir):
+            """On a hit: write the DockingResult row from cache + enqueue
+            validation, return True (caller skips the GPU dock). Else False."""
+            if not settings.dock_cache_enabled:
+                return False
+            try:
+                from . import dock_cache as _dc
+                ik, key = _dock_cache_key(compound, variant, "quickvina2-gpu")
+                if not key:
+                    return False
+                cached = _dc.lookup(key)
+                if not cached or not cached.get("pose_pdbqt"):
+                    return False
+                pose_path = Path(run_dir) / f"cachehit_c{compound.id}_{variant}.pdbqt"
+                pose_path.write_text(cached["pose_pdbqt"])
+                from .pose_store import get_pose_store
+                try:
+                    pose_uri = get_pose_store().write(job.id, compound.id, variant, pose_path)
+                except Exception:  # noqa: BLE001
+                    pose_uri = str(pose_path)
+                # Re-validate from the cached pose so quality chips resolve like a
+                # normal dock — we skipped only the GPU dock, not validation.
+                pending_validations.append({
+                    "job_id": job.id, "compound_id": compound.id, "variant": variant,
+                    "receptor": receptor, "receptor_pdb": receptor_pdb,
+                    "pose_pdbqt": str(pose_path), "run_dir": run_dir,
+                    "ligand_smiles": compound.smiles,
+                    "current_extra": "engine=cache|validate=pending",
+                })
+                session.add(DockingResult(
+                    job_id=job.id, compound_id=compound.id, variant=variant,
+                    best_score=float(cached["best_score"]), pose_uri=pose_uri,
+                    extra="engine=cache|validate=pending",
+                ))
+                log.info("dock_cache HIT c%s x %s — skipped GPU dock", compound.id, variant)
+                return True
+            except Exception as e:  # noqa: BLE001
+                log.info("dock_cache hit path failed (%s) — docking normally", e)
+                return False
+
         # ── Per-cell finalize: shared between the legacy per-cell path and
         # the new batched-per-variant path. Runs vinardo rescore + (eagerly
         # OR deferred) ProLIF/PoseBusters validation, persists the pose to
@@ -1980,6 +2082,12 @@ def _run_real(session: Session, job: Job) -> None:
                     "ligand_smiles": compound.smiles,
                     "current_extra": "|".join(parts) if parts else None,
                 })
+
+            # Cache this fresh result for instant repeat docks (flag-gated,
+            # fail-open, app-DB only — never written to the pod). Stores
+            # score + pose keyed by canonical InChIKey + conditions.
+            _dock_cache_store(compound, variant, result,
+                              "|".join(parts) if parts else None, engine_used)
 
         # ── Ensemble dispatch path. Activates when the job opted into
         # ensemble docking AND a Pod is configured. For each variant we
@@ -2309,11 +2417,20 @@ def _run_real(session: Session, job: Job) -> None:
                 run_dir = work / f"batch_{variant}"
                 run_dir.mkdir(exist_ok=True)
 
-                batch_ligs = [
-                    BatchLigand(id=str(c.id), pdbqt_path=prepped[c.id])
-                    for c in compounds if c.id in prepped
-                ]
+                # Cache pass: serve identical prior docks from the cache (skips
+                # the GPU dock entirely) and send only genuine misses to the
+                # pod. Fail-open: _dock_cache_try_hit returns False on any error
+                # or when the cache is disabled, so this degrades cleanly to a
+                # normal full batch.
+                batch_ligs = []
+                for c in compounds:
+                    if c.id not in prepped:
+                        continue
+                    if _dock_cache_try_hit(c, variant, receptor, receptor_pdb, run_dir):
+                        continue
+                    batch_ligs.append(BatchLigand(id=str(c.id), pdbqt_path=prepped[c.id]))
                 if not batch_ligs:
+                    _commit_retry(session)  # persist cache-hit rows for this all-hit variant
                     continue
 
                 # Single HTTP call — the Pod loads the receptor once and
