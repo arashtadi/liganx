@@ -33,10 +33,16 @@ from typing import Any, Optional
 from sqlalchemy import text
 from sqlmodel import Session
 
-from ..config import settings
+from ..config import get_settings
 from ..db import engine
 
 log = logging.getLogger(__name__)
+
+# Match the rest of the codebase: config exposes get_settings() (lru-cached),
+# NOT a module-level `settings` object. Importing `settings` directly raised
+# ImportError on every cache call, so the whole feature silently failed open
+# (no rows ever stored, no hits ever served).
+settings = get_settings()
 
 # Cache-key format version. Bump if the key construction below ever changes.
 _KEY_FORMAT = "k1"
