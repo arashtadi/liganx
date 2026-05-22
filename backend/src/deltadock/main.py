@@ -779,6 +779,11 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("025_jobstatus_lowercase_values.sql", "Migration 025 (jobstatus enum lowercase values)"),
     ("026_jobstatus_lowercase_rows.sql", "Migration 026 (lowercase existing job.status rows)"),
     ("027_fep_ddg_history.sql", "Migration 027 (FEP ddg_history_json for live convergence chart)"),
+    # Dock result cache (docking critical-path optimisation). Repeat docks of an
+    # identical molecule + identical conditions return instantly from this table
+    # instead of re-running the GPU. Inert until DOCK_CACHE_ENABLED is set; the
+    # docking schema is otherwise untouched. See services/dock_cache.py.
+    ("028_dock_cache.sql", "Migration 028 (dock result cache table)"),
 ]
 
 

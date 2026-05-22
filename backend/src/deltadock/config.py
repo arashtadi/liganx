@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     # would match the bare CACHE_ROOT which is too generic for a shared host.
     cache_root: str = Field(default="", validation_alias="LIGANX_CACHE_ROOT")
 
+    # ── Dock result cache (services/dock_cache.py) ───────────────────────────
+    # When on, a repeat dock of an identical molecule (canonical InChIKey) under
+    # identical conditions is served instantly from the dock_cache table instead
+    # of re-running the GPU. Default OFF so the feature ships inert and is
+    # enabled deliberately via the DOCK_CACHE_ENABLED Fly secret after verifying
+    # docking is unaffected. Fail-open: any cache error falls through to a normal
+    # dock, so flipping this on can never break docking.
+    dock_cache_enabled: bool = Field(default=False, validation_alias="DOCK_CACHE_ENABLED")
+    # Bump to invalidate every cached row at once (folded into the cache key).
+    # Increment whenever the receptor-prep pipeline changes in a way that would
+    # change docking inputs (box defaults, protonation, mutant build, etc.).
+    dock_cache_prep_version: str = Field(default="prep-v1", validation_alias="DOCK_CACHE_PREP_VERSION")
+
     # RunPod serverless docking — when both api_key and endpoint_id are set,
     # the runner dispatches Vina jobs to a RunPod worker instead of running
     # locally. Falls back to local automatically on transient failures.
