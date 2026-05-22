@@ -1631,8 +1631,34 @@ export default function StudioPage() {
     // (v0.62-0.64) Build the compound list. If the user has staged
     // compounds, use those; otherwise fall back to currentSmiles
     // (the singleton path). Filter out empties.
+    //
+    // (bugfix 2026-05-22) Dock WHAT'S IN THE EDITOR. The user can edit the
+    // sketcher canvas (currentSmiles) without explicitly "committing" the
+    // change into the active staged row — most notably via Edit & re-dock,
+    // which stages the ORIGINAL compound and loads it into the canvas. If we
+    // submit the staged `compounds` verbatim, an uncommitted canvas edit is
+    // silently dropped and the ORIGINAL molecule gets docked (→ for a
+    // "changed" molecule the user sees the original's score, often served
+    // straight from the dock cache). So before building the payload, fold the
+    // live canvas into the active staged compound when it differs. Same
+    // "stagedDirty" condition the unsaved-edits guard uses (see the
+    // beforeunload effect). The brand-new-compound case (canvas not pointing
+    // at a staged row) is untouched: activeCompoundIdx is out of range, so no
+    // overwrite happens.
+    const canvasOverridesActive =
+      activeCompoundIdx >= 0 &&
+      activeCompoundIdx < compounds.length &&
+      !!currentSmiles &&
+      currentSmiles !== compounds[activeCompoundIdx].smiles;
     const compoundList: { name?: string | null; smiles: string }[] = compounds.length > 0
-      ? compounds.filter((c) => c.smiles).map((c) => ({ name: c.name || null, smiles: c.smiles }))
+      ? compounds
+          .map((c, i) =>
+            canvasOverridesActive && i === activeCompoundIdx
+              ? { ...c, smiles: currentSmiles }
+              : c,
+          )
+          .filter((c) => c.smiles)
+          .map((c) => ({ name: c.name || null, smiles: c.smiles }))
       : currentSmiles
       ? [{ name: loadedCompound?.name || activeDraft?.name || "Studio compound", smiles: currentSmiles }]
       : [];
