@@ -1861,6 +1861,7 @@ def _run_real(session: Session, job: Job) -> None:
                     box=(box.center_x, box.center_y, box.center_z,
                          box.size_x, box.size_y, box.size_z),
                     prep_version=settings.dock_cache_prep_version,
+                    ensemble=ensemble_on,
                 )
                 return ik, key
             except Exception:  # noqa: BLE001 — uncacheable → behave as a miss

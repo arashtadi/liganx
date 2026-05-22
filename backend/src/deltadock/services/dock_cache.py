@@ -78,11 +78,16 @@ def make_cache_key(
     exhaustiveness: int,
     box: tuple[float, float, float, float, float, float],
     prep_version: str,
+    ensemble: bool = False,
 ) -> str:
     """Deterministic sha256 over every input that affects a docking result.
 
     Box floats are rounded to 3 dp so trivial float noise doesn't fragment the
-    key; a genuinely different box still yields a different key."""
+    key; a genuinely different box still yields a different key.
+
+    ``ensemble`` is folded in because an ensemble dock (multiple receptor
+    conformations) and a single-structure dock can produce different scores for
+    the same ligand+target, so they must never share a cache entry."""
     box_str = ",".join(f"{float(v):.3f}" for v in box)
     raw = "|".join([
         _KEY_FORMAT,
@@ -95,6 +100,7 @@ def make_cache_key(
         str(int(exhaustiveness)),
         box_str,
         prep_version or "",
+        "ensemble" if ensemble else "single",
     ])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
