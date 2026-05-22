@@ -4246,7 +4246,32 @@ export default function StudioPage() {
                 setActiveCompoundIdx(insertAt);
                 setPromoteToast(`✓ "${savedName}" saved to library + staged for this run`);
               } else {
-                setPromoteToast(`✓ "${savedName}" saved · "${promoteDialog.originalName}" preserved`);
+                // (bugfix 2026-05-22) Top "Save compound" button: the user
+                // edited the ACTIVE staged compound and saved it under a new
+                // name (e.g. Sotorasib → "Testi"). They expect the staged row
+                // to now show the SAVED name + edited structure. Previously
+                // this branch only updated loadedCompound + the library, so
+                // the suite still read the original name/SMILES. Rename +
+                // re-SMILES the active staged row in place so what's docked
+                // and what's labelled both match the save. Guard: only when
+                // the canvas actually points at a staged row (otherwise this
+                // was a library-only save with nothing staged to update).
+                const updatesStaged =
+                  activeCompoundIdx >= 0 && activeCompoundIdx < compounds.length;
+                if (updatesStaged) {
+                  setCompounds((prev) =>
+                    prev.map((entry, j) =>
+                      j === activeCompoundIdx
+                        ? { ...entry, name: savedName, smiles: currentSmiles }
+                        : entry,
+                    ),
+                  );
+                }
+                setPromoteToast(
+                  updatesStaged
+                    ? `✓ "${savedName}" saved`
+                    : `✓ "${savedName}" saved to your library`,
+                );
               }
             }
             setPromoteDialog(null);
