@@ -43,10 +43,17 @@ _KEY_FORMAT = "k1"
 
 
 def canonical_inchikey(smiles: str) -> Optional[str]:
-    """Full isomeric InChIKey for a SMILES, or None if RDKit can't parse it.
+    """Canonical molecular-identity string for a SMILES, or None if RDKit can't
+    parse it. Same molecule (written any way) -> same string; ANY structural
+    change (one atom, a bond, a flipped stereocenter) -> a different string.
 
-    The InChIKey is the molecular-identity fingerprint. Same molecule (any
-    notation) -> same key. Any structural change -> different key."""
+    Uses canonical *isomeric SMILES*, NOT an InChIKey: this codebase's RDKit
+    build is standardized on MolToSmiles and InChI support is not guaranteed —
+    MolToInchiKey was silently raising here, returning None, and leaving the
+    cache empty (no rows ever stored). Canonical isomeric SMILES is an equally
+    strict identity for cache-key purposes and is what the rest of the codebase
+    relies on. (Function name kept for call-site stability; the returned value
+    is the identity fingerprint, whatever its exact form.)"""
     if not smiles:
         return None
     try:
@@ -54,10 +61,9 @@ def canonical_inchikey(smiles: str) -> Optional[str]:
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             return None
-        key = Chem.MolToInchiKey(mol)
-        return key or None
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True) or None
     except Exception as e:  # noqa: BLE001
-        log.info("dock_cache: InChIKey failed for %r: %s", (smiles or "")[:40], e)
+        log.info("dock_cache: canonical SMILES failed for %r: %s", (smiles or "")[:40], e)
         return None
 
 
@@ -178,5 +184,7 @@ def store(
                 },
             )
             s.commit()
+            log.info("dock_cache: STORED key=%s engine=%s %s/%s/%s",
+                     cache_key[:10], engine, pdb_id, chain, variant)
     except Exception as e:  # noqa: BLE001
         log.info("dock_cache store failed (%s) — non-fatal, result not cached", e)
