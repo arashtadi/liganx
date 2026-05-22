@@ -2874,6 +2874,16 @@ def _run_real(session: Session, job: Job) -> None:
                         pose_uri=pose_uri,
                         extra="|".join(parts) if parts else None,
                     ))
+                    # Cache this fresh result for instant repeat docks. The
+                    # legacy per-cell path writes its DockingResult inline and
+                    # never calls _finalize_cell (where the batched/ensemble
+                    # paths store), so the store MUST be invoked here too —
+                    # otherwise single-compound jobs (< pod_batch_dock_min_cells,
+                    # which is exactly this path) would look up the cache at
+                    # line ~2680 but never populate it, so no hit could ever
+                    # fire. Flag-gated, fail-open, app-DB only.
+                    _dock_cache_store(compound, variant, result,
+                                      "|".join(parts) if parts else None, engine_used)
                 except Exception as e:
                     log.warning("Docking failed for compound %s × %s: %s", compound.id, variant, e)
                     session.add(DockingResult(
