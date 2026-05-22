@@ -1892,14 +1892,17 @@ def _run_real(session: Session, job: Job) -> None:
             except Exception as e:  # noqa: BLE001
                 log.info("dock_cache store skipped (%s)", e)
 
-        def _dock_cache_try_hit(compound, variant, receptor, receptor_pdb, run_dir):
+        def _dock_cache_try_hit(compound, variant, receptor, receptor_pdb, run_dir,
+                                engine_canon="quickvina2-gpu"):
             """On a hit: write the DockingResult row from cache + enqueue
-            validation, return True (caller skips the GPU dock). Else False."""
+            validation, return True (caller skips the GPU dock). Else False.
+            engine_canon must match the engine the cell would otherwise dock
+            with, so a QuickVina result is never served for a GNINA request."""
             if not settings.dock_cache_enabled:
                 return False
             try:
                 from . import dock_cache as _dc
-                ik, key = _dock_cache_key(compound, variant, "quickvina2-gpu")
+                ik, key = _dock_cache_key(compound, variant, engine_canon)
                 if not key:
                     return False
                 cached = _dc.lookup(key)
@@ -2670,6 +2673,12 @@ def _run_real(session: Session, job: Job) -> None:
                     continue
                 run_dir = work / f"compound_{compound.id}_{variant}"
                 run_dir.mkdir(exist_ok=True)
+                # Cache hit → write the row from cache + skip the GPU dock.
+                # Keyed by the engine this cell would actually use (gnina vs
+                # quickvina) so a result is never served for the wrong engine.
+                if _dock_cache_try_hit(compound, variant, receptor, receptor_pdb, run_dir,
+                                       "gnina" if gnina_requested else "quickvina2-gpu"):
+                    continue
                 try:
                     # Try the configured remote engine first (Pod GPU > RunPod
                     # serverless > local). On any error fall back to local Vina
