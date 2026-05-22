@@ -4219,61 +4219,67 @@ export default function StudioPage() {
           smiles={currentSmiles}
           onClose={() => setPromoteDialog(null)}
           onSaved={(savedName) => {
+            // (bugfix 2026-05-22) Whichever save path fired, the user named
+            // the current structure (e.g. Sotorasib → "Testi"). The top
+            // "Save compound" button routes through PROMOTE *or* FORK mode
+            // depending on whether a loadedCompound lock exists (e.g. after a
+            // session resume it's promote), so the rename has to be handled
+            // independent of mode — previously only the fork path updated the
+            // staged row, so a promote-mode save left the suite reading the
+            // original name. The ONLY case that must NOT rename in place is an
+            // explicit "Save as new" from a staged row (stageAfterIdx set),
+            // which deliberately preserves the original and inserts a new row.
+            const isExplicitInsert =
+              promoteDialog.mode === "fork" && promoteDialog.stageAfterIdx !== undefined;
+
+            // Mode-specific side effects.
             if (promoteDialog.mode === "promote" && activeDraft) {
               deleteDraft(activeDraft.id);
               setActiveDraft(null);
-              setPromoteToast(`✓ "${savedName}" saved to your library`);
-            } else if (promoteDialog.mode === "fork") {
-              setLoadedCompound({ name: savedName, smiles: currentSmiles });
-              // (v0.70) When SAVE AS NEW from a staged row drove this
-              // dialog, the user wants the new compound BOTH in their
-              // library AND staged for this run. PromoteDialog handled
-              // the library save; we handle the suite insert here so
-              // it lands right after the parent row and becomes active.
-              if (promoteDialog.stageAfterIdx !== undefined) {
-                const insertAt = promoteDialog.stageAfterIdx + 1;
-                const newId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-                const newC: CompoundEntry = { id: newId, smiles: currentSmiles, name: savedName };
-                setCompounds((prev) => {
-                  // Cap-aware insert — if user already filled the suite
-                  // between opening the dialog and submitting, refuse
-                  // gracefully rather than blowing past MAX_COMPOUNDS.
-                  if (prev.length >= MAX_COMPOUNDS) return prev;
-                  const next = [...prev];
-                  next.splice(insertAt, 0, newC);
-                  return next;
-                });
-                setActiveCompoundIdx(insertAt);
-                setPromoteToast(`✓ "${savedName}" saved to library + staged for this run`);
-              } else {
-                // (bugfix 2026-05-22) Top "Save compound" button: the user
-                // edited the ACTIVE staged compound and saved it under a new
-                // name (e.g. Sotorasib → "Testi"). They expect the staged row
-                // to now show the SAVED name + edited structure. Previously
-                // this branch only updated loadedCompound + the library, so
-                // the suite still read the original name/SMILES. Rename +
-                // re-SMILES the active staged row in place so what's docked
-                // and what's labelled both match the save. Guard: only when
-                // the canvas actually points at a staged row (otherwise this
-                // was a library-only save with nothing staged to update).
-                const updatesStaged =
-                  activeCompoundIdx >= 0 && activeCompoundIdx < compounds.length;
-                if (updatesStaged) {
-                  setCompounds((prev) =>
-                    prev.map((entry, j) =>
-                      j === activeCompoundIdx
-                        ? { ...entry, name: savedName, smiles: currentSmiles }
-                        : entry,
-                    ),
-                  );
-                }
-                setPromoteToast(
-                  updatesStaged
-                    ? `✓ "${savedName}" saved`
-                    : `✓ "${savedName}" saved to your library`,
-                );
-              }
+            } else if (promoteDialog.mode === "fork" && promoteDialog.stageAfterIdx !== undefined) {
+              // SAVE AS NEW from a staged row → insert a brand-new staged
+              // entry right after the parent, leaving the parent intact.
+              const insertAt = promoteDialog.stageAfterIdx + 1;
+              const newId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+              const newC: CompoundEntry = { id: newId, smiles: currentSmiles, name: savedName };
+              setCompounds((prev) => {
+                // Cap-aware insert — refuse gracefully if the suite filled
+                // up between opening the dialog and submitting.
+                if (prev.length >= MAX_COMPOUNDS) return prev;
+                const next = [...prev];
+                next.splice(insertAt, 0, newC);
+                return next;
+              });
+              setActiveCompoundIdx(insertAt);
             }
+
+            // The editor's loaded reference now is the saved compound.
+            setLoadedCompound({ name: savedName, smiles: currentSmiles });
+
+            // Rename + re-SMILES the ACTIVE staged row so the suite label and
+            // the docked structure both match the save. Skipped for the
+            // explicit "save as new" insert (which keeps the original row).
+            const renamesStaged =
+              !isExplicitInsert &&
+              activeCompoundIdx >= 0 &&
+              activeCompoundIdx < compounds.length;
+            if (renamesStaged) {
+              setCompounds((prev) =>
+                prev.map((entry, j) =>
+                  j === activeCompoundIdx
+                    ? { ...entry, name: savedName, smiles: currentSmiles }
+                    : entry,
+                ),
+              );
+            }
+
+            setPromoteToast(
+              isExplicitInsert
+                ? `✓ "${savedName}" saved to library + staged for this run`
+                : renamesStaged
+                ? `✓ "${savedName}" saved`
+                : `✓ "${savedName}" saved to your library`,
+            );
             setPromoteDialog(null);
             window.setTimeout(() => setPromoteToast(null), 4000);
           }}
