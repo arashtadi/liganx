@@ -22,6 +22,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -63,6 +64,61 @@ POSE_CACHE = (
     else _CACHE_ROOT / "poses"
 )
 FOLDX_PATH = os.environ.get("FOLDX_PATH", str(Path.home() / ".local" / "bin" / "foldx"))
+
+# Auto-retry transient per-cell failures. Set DOCK_AUTO_RETRY_ENABLED=0 to
+# disable in 30s if it misbehaves. The retry layer only fires for failures
+# that look transient (timeouts, pod overflow, 5xx). RDKit/Meeko parse errors
+# and other obviously-permanent failures skip the retry and surface as
+# `docking_failed:` immediately, same as before. See _is_permanent_dock_error.
+#
+# Symptom this fixes: a one-off transient pod stall returns 0.00/Caution for
+# a compound that docks fine on a manual re-run (e.g., Job #360 Sotorasib vs
+# #361, same inputs, different outcome — the pod was warming up during #360).
+DOCK_AUTO_RETRY_ENABLED = os.getenv("DOCK_AUTO_RETRY_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+DOCK_AUTO_RETRY_DELAY_S = float(os.getenv("DOCK_AUTO_RETRY_DELAY_S", "30"))
+_MAX_DOCK_ATTEMPTS = 2 if DOCK_AUTO_RETRY_ENABLED else 1
+
+
+def _is_permanent_dock_error(e: Exception) -> bool:
+    """Return True if `e` is the kind of failure that won't get better with
+    a retry — so we should surface it immediately instead of waiting another
+    30s + retrying. Conservative on purpose: when in doubt, return False
+    (retry) so the user benefits from the auto-recovery layer."""
+    msg = str(e).lower()
+    permanent_markers = (
+        "ligand_prep",          # rdkit/meeko prep failure
+        "could not parse",      # smiles parse error
+        "invalid smiles",
+        "embedding failed",     # rdkit 3D embed failure
+        "could not embed",
+        "no conformer",
+        "kekulize",             # rdkit aromaticity fault
+        "explicit valence",     # rdkit valence error
+        "atom_type",            # meeko atom-typing failure
+        "rdkit.chem.rdmolops",  # rdkit module error path
+    )
+    return any(m in msg for m in permanent_markers)
+
+
+def _retry_sleep_cancellable(seconds: float, session, job_id) -> bool:
+    """Sleep up to `seconds`, polling for job cancellation every ~5s so a
+    user-initiated cancel doesn't wait out the full retry delay. Returns
+    True if the job was cancelled mid-sleep. Uses the module-level
+    `is_cancelled` helper defined further down in this file."""
+    elapsed = 0.0
+    step = 5.0
+    while elapsed < seconds:
+        wait_for = min(step, seconds - elapsed)
+        time.sleep(wait_for)
+        elapsed += wait_for
+        try:
+            if is_cancelled(session, job_id):
+                return True
+        except Exception:  # noqa: BLE001
+            # is_cancelled does a DB query; if the conn is briefly bad,
+            # don't crash the dock — just continue sleeping.
+            pass
+    return False
 
 
 def _real_pipeline_available() -> tuple[bool, str | None]:
@@ -2680,216 +2736,269 @@ def _run_real(session: Session, job: Job) -> None:
                 if _dock_cache_try_hit(compound, variant, receptor, receptor_pdb, run_dir,
                                        "gnina" if gnina_requested else "quickvina2-gpu"):
                     continue
-                try:
-                    # Try the configured remote engine first (Pod GPU > RunPod
-                    # serverless > local). On any error fall back to local Vina
-                    # so one bad call doesn't take down the whole job.
-                    engine_used = "local"
-                    result = None
-                    # When the user picked engine=gnina on this job AND the
-                    # feature flag is on AND the Pod is reachable, GNINA
-                    # takes priority over QuickVina2-GPU for the cell. Same
-                    # error-handling shape: GNINA failure → fall through to
-                    # Pod (QuickVina), then to local Vina, just like the
-                    # Pod path does for RunPod overflow.
-                    if gnina_requested:
-                        try:
-                            # Pocket-best wrapper applies to GNINA too — same
-                            # off-pocket failure mode (Vina-family search
-                            # under the hood) so the 3× re-roll buys the
-                            # same parity gain. See pocket_filter.py.
-                            result, _pb_meta = dock_one_with_pocket_best(
-                                dock_one_gnina,
-                                receptor_pdbqt=receptor,
-                                ligand_pdbqt=lig_pdbqt,
-                                box=box,
-                                work_dir=run_dir,
-                                cfg=gnina_cfg,
-                                exhaustiveness=exhaustiveness,
-                                num_modes=9,
-                            )
-                            engine_used = engine_label_with_attempts(
-                                f"gnina_{settings.gnina_cnn_mode}", _pb_meta,
-                            )
-                        except GninaDockError as gde:
-                            log.warning("GNINA failed for c%s × %s: %s — falling back to QuickVina2-GPU",
-                                        compound.id, variant, gde)
-                            # Don't set engine_used yet — let the Pod branch
-                            # below run and overwrite engine_used appropriately.
-                    if result is None and pod_on:
-                        try:
-                            # Pocket-best wrapper: dock_one_pod runs once,
-                            # then up to 2 more times if the first pose
-                            # drifted off-pocket. Median cost overhead is
-                            # ~33% (most cells in-pocket on attempt 1).
-                            # See services/pocket_filter.py.
-                            result, _pb_meta = dock_one_with_pocket_best(
-                                dock_one_pod,
-                                receptor_pdbqt=receptor,
-                                ligand_pdbqt=lig_pdbqt,
-                                box=box,
-                                work_dir=run_dir,
-                                cfg=pod_cfg,
-                                exhaustiveness=exhaustiveness,
-                                num_modes=9,
-                            )
-                            engine_used = engine_label_with_attempts("pod_gpu", _pb_meta)
-                        except PodDockError as pde:
-                            # Burst overflow: Pod busy / down → try RunPod
-                            # serverless before falling to local CPU. This
-                            # is the whole point of having both engines on.
-                            if runpod_on:
-                                log.warning("Pod GPU failed for c%s × %s: %s — overflowing to RunPod serverless",
-                                            compound.id, variant, pde)
-                                try:
-                                    # Pocket-best applies to RunPod serverless
-                                    # too — same Vina, same off-pocket failure
-                                    # mode. Each retry uses a different seed
-                                    # which the worker forwards to vina --seed.
-                                    result, _pb_meta = dock_one_with_pocket_best(
-                                        dock_one_runpod,
-                                        receptor_pdbqt=receptor,
-                                        ligand_pdbqt=lig_pdbqt,
-                                        box=box,
-                                        work_dir=run_dir,
-                                        cfg=runpod_cfg,
-                                        exhaustiveness=exhaustiveness,
-                                        num_modes=9,
-                                    )
-                                    engine_used = engine_label_with_attempts(
-                                        "runpod_after_pod_busy", _pb_meta,
-                                    )
-                                except RunPodError as rpe:
-                                    log.warning("RunPod also failed for c%s × %s: %s — falling back to local",
-                                                compound.id, variant, rpe)
-                                    engine_used = "local_after_pod_and_runpod_fail"
-                            else:
-                                log.warning("Pod GPU failed for c%s × %s: %s — falling back to local",
-                                            compound.id, variant, pde)
-                                engine_used = "local_after_pod_fail"
-                    # RunPod-only path: Pod not configured (or GNINA path
-                    # already covered Pod). Pod-busy overflow is handled
-                    # inside the `if result is None and pod_on:` branch
-                    # above; this branch fires only when there's no Pod
-                    # at all so RunPod is the *primary* remote engine.
-                    if result is None and runpod_on and not pod_on:
-                        try:
-                            # Pocket-best wraps RunPod-serverless calls just
-                            # like the Pod path above — keeps full-job pose
-                            # quality on parity with Quick Dock.
-                            result, _pb_meta = dock_one_with_pocket_best(
-                                dock_one_runpod,
-                                receptor_pdbqt=receptor,
-                                ligand_pdbqt=lig_pdbqt,
-                                box=box,
-                                work_dir=run_dir,
-                                cfg=runpod_cfg,
-                                exhaustiveness=exhaustiveness,
-                                num_modes=9,
-                            )
-                            engine_used = engine_label_with_attempts("runpod", _pb_meta)
-                        except RunPodError as rpe:
-                            log.warning("RunPod failed for c%s × %s: %s — falling back to local",
-                                        compound.id, variant, rpe)
-                            engine_used = "local_after_runpod_fail"
-                    if result is None:
-                        result = dock_one(
-                            receptor_pdbqt=receptor,
-                            ligand_pdbqt=lig_pdbqt,
-                            box=box,
-                            work_dir=run_dir,
-                            exhaustiveness=exhaustiveness,
-                            num_modes=9,
-                            vina_path=settings.vina_path,
-                        )
-                    # Build the `extra` string by combining variant info + validation
-                    parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
-                    parts.append(f"engine={engine_used}")
-
-                    # Vinardo rescoring (smina --score_only). Cheap second-pass
-                    # score that often discriminates close analogs better than
-                    # raw Vina. Failure here is silent — the original Vina
-                    # score still ships; we just skip the refined column.
+                # Auto-retry transient cell failures (DOCK_AUTO_RETRY_ENABLED).
+                # The whole engine chain re-runs from scratch on the second
+                # attempt — run_dir is wiped between tries so stale .pdbqt
+                # artifacts can't confuse the next pass. Permanent errors
+                # (RDKit/Meeko parse failures, invalid SMILES) skip the retry
+                # and surface as docking_failed immediately. See
+                # _is_permanent_dock_error + the constants at the top of this
+                # module. Shipped 2026-05-31 in response to Job #360 Sotorasib
+                # (returned 0.00/Caution on a warm-up stall, docked cleanly on
+                # the very next attempt in #361).
+                _cell_attempt = 0
+                _cell_done = False
+                while not _cell_done:
+                    _cell_attempt += 1
                     try:
-                        from deltadock_pipeline.rescore import smina_rescore
-                        v_score = smina_rescore(receptor, result.pose_pdbqt, scoring="vinardo")
-                        if v_score is not None:
-                            parts.append(f"vinardo={v_score:.2f}")
-                    except Exception as e:
-                        log.info("Vinardo rescore failed for c%s × %s: %s", compound.id, variant, e)
-
-                    if validate_on:
-                        try:
-                            v = validate_pose(
-                                receptor_pdbqt=receptor,
-                                pose_pdbqt=result.pose_pdbqt,
-                                receptor_pdb=receptor_pdb,
-                                work_dir=run_dir,
-                                # Pass the original SMILES so ProLIF can re-template
-                                # bond orders that obabel's PDBQT round-trip drops.
-                                # This is the difference between "no interactions"
-                                # and a real contact list on aromatic-rich ligands.
-                                ligand_smiles=compound.smiles,
-                            )
-                            # (U20.4) Compute the canonical-pocket overlap
-                            # using the target's catalog entry. Surfaces
-                            # poses that landed in an alternate site
-                            # (e.g. Adagrasib docked into the nucleotide
-                            # pocket of a switch-II-closed KRAS).
+                        # Try the configured remote engine first (Pod GPU > RunPod
+                        # serverless > local). On any error fall back to local Vina
+                        # so one bad call doesn't take down the whole job.
+                        engine_used = "local"
+                        result = None
+                        # When the user picked engine=gnina on this job AND the
+                        # feature flag is on AND the Pod is reachable, GNINA
+                        # takes priority over QuickVina2-GPU for the cell. Same
+                        # error-handling shape: GNINA failure → fall through to
+                        # Pod (QuickVina), then to local Vina, just like the
+                        # Pod path does for RunPod overflow.
+                        if gnina_requested:
                             try:
-                                from deltadock_pipeline.validate import compute_pocket_overlap
-                                _target_for_pocket = _catalog_by_pdb(job.pdb_id)
-                                _canonical = (
-                                    _target_for_pocket.canonical_pocket_residues
-                                    if _target_for_pocket else []
+                                # Pocket-best wrapper applies to GNINA too — same
+                                # off-pocket failure mode (Vina-family search
+                                # under the hood) so the 3× re-roll buys the
+                                # same parity gain. See pocket_filter.py.
+                                result, _pb_meta = dock_one_with_pocket_best(
+                                    dock_one_gnina,
+                                    receptor_pdbqt=receptor,
+                                    ligand_pdbqt=lig_pdbqt,
+                                    box=box,
+                                    work_dir=run_dir,
+                                    cfg=gnina_cfg,
+                                    exhaustiveness=exhaustiveness,
+                                    num_modes=9,
                                 )
-                                _frac = compute_pocket_overlap(
-                                    v.interactions, _canonical,
+                                engine_used = engine_label_with_attempts(
+                                    f"gnina_{settings.gnina_cnn_mode}", _pb_meta,
                                 )
-                                if _frac is not None:
-                                    v.pocket_overlap_frac = _frac
-                                    v.alt_site = _frac < 0.20
-                            except Exception as _pe:  # noqa: BLE001
-                                log.debug("pocket-overlap check skipped: %s", _pe)
-                            parts.append(v.to_extra_string())
-                        except Exception as ve:
-                            log.warning("Validation crashed for c%s × %s: %s", compound.id, variant, ve)
-                            parts.append(f"validate_err={str(ve)[:80]}")
+                            except GninaDockError as gde:
+                                log.warning("GNINA failed for c%s × %s: %s — falling back to QuickVina2-GPU",
+                                            compound.id, variant, gde)
+                                # Don't set engine_used yet — let the Pod branch
+                                # below run and overwrite engine_used appropriately.
+                        if result is None and pod_on:
+                            try:
+                                # Pocket-best wrapper: dock_one_pod runs once,
+                                # then up to 2 more times if the first pose
+                                # drifted off-pocket. Median cost overhead is
+                                # ~33% (most cells in-pocket on attempt 1).
+                                # See services/pocket_filter.py.
+                                result, _pb_meta = dock_one_with_pocket_best(
+                                    dock_one_pod,
+                                    receptor_pdbqt=receptor,
+                                    ligand_pdbqt=lig_pdbqt,
+                                    box=box,
+                                    work_dir=run_dir,
+                                    cfg=pod_cfg,
+                                    exhaustiveness=exhaustiveness,
+                                    num_modes=9,
+                                )
+                                engine_used = engine_label_with_attempts("pod_gpu", _pb_meta)
+                            except PodDockError as pde:
+                                # Burst overflow: Pod busy / down → try RunPod
+                                # serverless before falling to local CPU. This
+                                # is the whole point of having both engines on.
+                                if runpod_on:
+                                    log.warning("Pod GPU failed for c%s × %s: %s — overflowing to RunPod serverless",
+                                                compound.id, variant, pde)
+                                    try:
+                                        # Pocket-best applies to RunPod serverless
+                                        # too — same Vina, same off-pocket failure
+                                        # mode. Each retry uses a different seed
+                                        # which the worker forwards to vina --seed.
+                                        result, _pb_meta = dock_one_with_pocket_best(
+                                            dock_one_runpod,
+                                            receptor_pdbqt=receptor,
+                                            ligand_pdbqt=lig_pdbqt,
+                                            box=box,
+                                            work_dir=run_dir,
+                                            cfg=runpod_cfg,
+                                            exhaustiveness=exhaustiveness,
+                                            num_modes=9,
+                                        )
+                                        engine_used = engine_label_with_attempts(
+                                            "runpod_after_pod_busy", _pb_meta,
+                                        )
+                                    except RunPodError as rpe:
+                                        log.warning("RunPod also failed for c%s × %s: %s — falling back to local",
+                                                    compound.id, variant, rpe)
+                                        engine_used = "local_after_pod_and_runpod_fail"
+                                else:
+                                    log.warning("Pod GPU failed for c%s × %s: %s — falling back to local",
+                                                compound.id, variant, pde)
+                                    engine_used = "local_after_pod_fail"
+                        # RunPod-only path: Pod not configured (or GNINA path
+                        # already covered Pod). Pod-busy overflow is handled
+                        # inside the `if result is None and pod_on:` branch
+                        # above; this branch fires only when there's no Pod
+                        # at all so RunPod is the *primary* remote engine.
+                        if result is None and runpod_on and not pod_on:
+                            try:
+                                # Pocket-best wraps RunPod-serverless calls just
+                                # like the Pod path above — keeps full-job pose
+                                # quality on parity with Quick Dock.
+                                result, _pb_meta = dock_one_with_pocket_best(
+                                    dock_one_runpod,
+                                    receptor_pdbqt=receptor,
+                                    ligand_pdbqt=lig_pdbqt,
+                                    box=box,
+                                    work_dir=run_dir,
+                                    cfg=runpod_cfg,
+                                    exhaustiveness=exhaustiveness,
+                                    num_modes=9,
+                                )
+                                engine_used = engine_label_with_attempts("runpod", _pb_meta)
+                            except RunPodError as rpe:
+                                log.warning("RunPod failed for c%s × %s: %s — falling back to local",
+                                            compound.id, variant, rpe)
+                                engine_used = "local_after_runpod_fail"
+                        if result is None:
+                            result = dock_one(
+                                receptor_pdbqt=receptor,
+                                ligand_pdbqt=lig_pdbqt,
+                                box=box,
+                                work_dir=run_dir,
+                                exhaustiveness=exhaustiveness,
+                                num_modes=9,
+                                vina_path=settings.vina_path,
+                            )
+                        # If a retry produced the result, note that on the row so
+                        # we can spot the pattern in logs later — useful both for
+                        # tuning the retry heuristic and for knowing whether the
+                        # warm-up stall theory matches reality.
+                        if _cell_attempt > 1:
+                            engine_used = f"{engine_used}_retry{_cell_attempt - 1}"
+                        # Build the `extra` string by combining variant info + validation
+                        parts = [variant_extra.get(variant)] if variant_extra.get(variant) else []
+                        parts.append(f"engine={engine_used}")
 
-                    # Persist the pose via the storage abstraction so the API
-                    # endpoint still finds it after the runner's tmpdir is
-                    # cleaned. Backend is R2 in prod, local disk otherwise.
-                    from .pose_store import get_pose_store
-                    try:
-                        pose_uri = get_pose_store().write(
-                            job.id, compound.id, variant, Path(result.pose_pdbqt)
-                        )
+                        # Vinardo rescoring (smina --score_only). Cheap second-pass
+                        # score that often discriminates close analogs better than
+                        # raw Vina. Failure here is silent — the original Vina
+                        # score still ships; we just skip the refined column.
+                        try:
+                            from deltadock_pipeline.rescore import smina_rescore
+                            v_score = smina_rescore(receptor, result.pose_pdbqt, scoring="vinardo")
+                            if v_score is not None:
+                                parts.append(f"vinardo={v_score:.2f}")
+                        except Exception as e:
+                            log.info("Vinardo rescore failed for c%s × %s: %s", compound.id, variant, e)
+
+                        if validate_on:
+                            try:
+                                v = validate_pose(
+                                    receptor_pdbqt=receptor,
+                                    pose_pdbqt=result.pose_pdbqt,
+                                    receptor_pdb=receptor_pdb,
+                                    work_dir=run_dir,
+                                    # Pass the original SMILES so ProLIF can re-template
+                                    # bond orders that obabel's PDBQT round-trip drops.
+                                    # This is the difference between "no interactions"
+                                    # and a real contact list on aromatic-rich ligands.
+                                    ligand_smiles=compound.smiles,
+                                )
+                                # (U20.4) Compute the canonical-pocket overlap
+                                # using the target's catalog entry. Surfaces
+                                # poses that landed in an alternate site
+                                # (e.g. Adagrasib docked into the nucleotide
+                                # pocket of a switch-II-closed KRAS).
+                                try:
+                                    from deltadock_pipeline.validate import compute_pocket_overlap
+                                    _target_for_pocket = _catalog_by_pdb(job.pdb_id)
+                                    _canonical = (
+                                        _target_for_pocket.canonical_pocket_residues
+                                        if _target_for_pocket else []
+                                    )
+                                    _frac = compute_pocket_overlap(
+                                        v.interactions, _canonical,
+                                    )
+                                    if _frac is not None:
+                                        v.pocket_overlap_frac = _frac
+                                        v.alt_site = _frac < 0.20
+                                except Exception as _pe:  # noqa: BLE001
+                                    log.debug("pocket-overlap check skipped: %s", _pe)
+                                parts.append(v.to_extra_string())
+                            except Exception as ve:
+                                log.warning("Validation crashed for c%s × %s: %s", compound.id, variant, ve)
+                                parts.append(f"validate_err={str(ve)[:80]}")
+
+                        # Persist the pose via the storage abstraction so the API
+                        # endpoint still finds it after the runner's tmpdir is
+                        # cleaned. Backend is R2 in prod, local disk otherwise.
+                        from .pose_store import get_pose_store
+                        try:
+                            pose_uri = get_pose_store().write(
+                                job.id, compound.id, variant, Path(result.pose_pdbqt)
+                            )
+                        except Exception as e:
+                            log.warning("Could not persist pose for c%s × %s: %s", compound.id, variant, e)
+                            pose_uri = str(result.pose_pdbqt)  # fallback to tmp
+
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=compound.id, variant=variant,
+                            best_score=result.best_score,
+                            pose_uri=pose_uri,
+                            extra="|".join(parts) if parts else None,
+                        ))
+                        # Cache this fresh result for instant repeat docks. The
+                        # legacy per-cell path writes its DockingResult inline and
+                        # never calls _finalize_cell (where the batched/ensemble
+                        # paths store), so the store MUST be invoked here too —
+                        # otherwise single-compound jobs (< pod_batch_dock_min_cells,
+                        # which is exactly this path) would look up the cache at
+                        # line ~2680 but never populate it, so no hit could ever
+                        # fire. Flag-gated, fail-open, app-DB only.
+                        _dock_cache_store(compound, variant, result,
+                                          "|".join(parts) if parts else None, engine_used)
+                        _cell_done = True
+                    except JobCancelled:
+                        # Cancellation isn't a "retry" candidate — bubble out.
+                        raise
                     except Exception as e:
-                        log.warning("Could not persist pose for c%s × %s: %s", compound.id, variant, e)
-                        pose_uri = str(result.pose_pdbqt)  # fallback to tmp
-
-                    session.add(DockingResult(
-                        job_id=job.id, compound_id=compound.id, variant=variant,
-                        best_score=result.best_score,
-                        pose_uri=pose_uri,
-                        extra="|".join(parts) if parts else None,
-                    ))
-                    # Cache this fresh result for instant repeat docks. The
-                    # legacy per-cell path writes its DockingResult inline and
-                    # never calls _finalize_cell (where the batched/ensemble
-                    # paths store), so the store MUST be invoked here too —
-                    # otherwise single-compound jobs (< pod_batch_dock_min_cells,
-                    # which is exactly this path) would look up the cache at
-                    # line ~2680 but never populate it, so no hit could ever
-                    # fire. Flag-gated, fail-open, app-DB only.
-                    _dock_cache_store(compound, variant, result,
-                                      "|".join(parts) if parts else None, engine_used)
-                except Exception as e:
-                    log.warning("Docking failed for compound %s × %s: %s", compound.id, variant, e)
-                    session.add(DockingResult(
-                        job_id=job.id, compound_id=compound.id, variant=variant,
-                        best_score=0.0, extra=f"docking_failed: {e}",
-                    ))
+                        # If we still have a retry budget AND this doesn't look
+                        # like a permanent failure (RDKit/Meeko parse error,
+                        # invalid SMILES, etc.), sleep ~30s and try the whole
+                        # chain again. Most cell-level failures on Liganx are
+                        # transient — pod warm-up stalls, brief 5xx from the
+                        # GPU container, network blips — so the silent retry
+                        # is what feels right. Permanent errors skip the wait
+                        # and surface immediately, same as before this layer
+                        # existed.
+                        if _cell_attempt < _MAX_DOCK_ATTEMPTS and not _is_permanent_dock_error(e):
+                            log.warning(
+                                "Transient docking failure for c%s × %s (attempt %s/%s): %s — sleeping %ss + retrying",
+                                compound.id, variant, _cell_attempt, _MAX_DOCK_ATTEMPTS,
+                                e, DOCK_AUTO_RETRY_DELAY_S,
+                            )
+                            if _retry_sleep_cancellable(DOCK_AUTO_RETRY_DELAY_S, session, job.id):
+                                raise JobCancelled()
+                            # Wipe stale per-cell artifacts between attempts so
+                            # a half-written .pdbqt or partial log file from
+                            # the failed attempt can't confuse the next pass.
+                            try:
+                                shutil.rmtree(run_dir, ignore_errors=True)
+                                run_dir.mkdir(exist_ok=True)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            continue
+                        # Final failure: log + write the docking_failed row.
+                        log.warning("Docking failed for compound %s × %s (attempt %s/%s): %s",
+                                    compound.id, variant, _cell_attempt, _MAX_DOCK_ATTEMPTS, e)
+                        session.add(DockingResult(
+                            job_id=job.id, compound_id=compound.id, variant=variant,
+                            best_score=0.0, extra=f"docking_failed: {e}",
+                        ))
+                        _cell_done = True
                 _commit_retry(session)
         # Common drain for both batched and legacy paths. Runs deferred
         # validation (when DEFER_VALIDATION=1) in a thread pool that
