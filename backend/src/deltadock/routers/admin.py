@@ -537,12 +537,20 @@ def delete_user(
     # then jobs, then the user's directly-owned tables, then auth.users.
     # (1) FEP studies — CASCADEs to fep_node + fep_perturbation.
     session.execute(text("DELETE FROM public.fep_job WHERE user_id = :uid"), {"uid": user_id})
-    # (2) Compound rows attached to this user's jobs (compound.job_id, no
-    #     cascade — this is the FK that blocked the original delete).
-    #     compound has NO user_id column (verified live 2026-05-31) — it's
+    # (2) Docking results — dockingresult.compound_id → compound has no
+    #     cascade, so deleting compounds without first clearing the
+    #     results blocks with `dockingresult_compound_id_fkey`. Wipe
+    #     every result tied to this user's jobs FIRST. (Verified live
+    #     2026-05-31: dockingresult has job_id column → cheap scoped
+    #     delete with no orphan risk.)
+    session.execute(text(
+        "DELETE FROM dockingresult WHERE job_id IN (SELECT id FROM job WHERE user_id = :uid)"
+    ), {"uid": user_id})
+    # (3) Compound rows attached to this user's jobs (compound.job_id, no
+    #     cascade). compound has NO user_id column (verified live) — it's
     #     scoped to jobs only; the user's library compounds live in
-    #     user_compound (deleted below). After step (1) no FEP nodes
-    #     reference these compounds anymore, so the delete is unblocked.
+    #     user_compound (deleted below). After steps (1)+(2) no FEP nodes
+    #     and no dockingresults reference these compounds anymore.
     session.execute(text(
         "DELETE FROM compound WHERE job_id IN (SELECT id FROM job WHERE user_id = :uid)"
     ), {"uid": user_id})
