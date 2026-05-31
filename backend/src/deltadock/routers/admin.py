@@ -537,13 +537,14 @@ def delete_user(
     # then jobs, then the user's directly-owned tables, then auth.users.
     # (1) FEP studies — CASCADEs to fep_node + fep_perturbation.
     session.execute(text("DELETE FROM public.fep_job WHERE user_id = :uid"), {"uid": user_id})
-    # (2) Compound rows — both the user's library compounds (user_id) AND
-    #     any compounds attached to their jobs (job_id, no cascade). After
-    #     step (1) no FEP nodes reference these anymore, so the delete is
-    #     unblocked.
+    # (2) Compound rows attached to this user's jobs (compound.job_id, no
+    #     cascade — this is the FK that blocked the original delete).
+    #     compound has NO user_id column (verified live 2026-05-31) — it's
+    #     scoped to jobs only; the user's library compounds live in
+    #     user_compound (deleted below). After step (1) no FEP nodes
+    #     reference these compounds anymore, so the delete is unblocked.
     session.execute(text(
-        "DELETE FROM compound "
-        " WHERE user_id = :uid OR job_id IN (SELECT id FROM job WHERE user_id = :uid)"
+        "DELETE FROM compound WHERE job_id IN (SELECT id FROM job WHERE user_id = :uid)"
     ), {"uid": user_id})
     # (3) Jobs — CASCADEs docking_result.
     session.execute(text("DELETE FROM job WHERE user_id = :uid"), {"uid": user_id})
