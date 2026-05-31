@@ -753,6 +753,17 @@ export const api = {
   // string clears a column (so user can blank out their org if they
   // want).
   getMyProfile: () => request<UserProfile>("/me/profile"),
+  /** Per-user approval gate state (migration 029 backend). Returns
+   *  { status: 'pending'|'approved'|'denied', decided_at: string|null }.
+   *  PendingRedirect uses this to hard-block non-approved users from
+   *  the cockpit pages until the admin flips them via Telegram or
+   *  /admin/users. Backend also enforces the gate on POST /jobs +
+   *  /assist/quick_dock + /assist/optimize + /jobs/.../mmgbsa — this
+   *  fetch only decides which UI to render. */
+  getMyAccessStatus: () =>
+    request<{ status: "pending" | "approved" | "denied"; decided_at: string | null }>(
+      "/me/access_status",
+    ),
   updateMyProfile: (patch: UserProfileUpdate) =>
     request<UserProfile>("/me/profile", {
       method: "PUT",

@@ -20,6 +20,7 @@ import SettingsPage from "./pages/SettingsPage";
 import ValidationPage from "./pages/ValidationPage";
 import CompleteProfilePage from "./pages/CompleteProfilePage";
 import CompoundsPage from "./pages/CompoundsPage";
+import PendingApprovalPage from "./pages/PendingApprovalPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
 import ContactPage from "./pages/ContactPage";
 import AdminPage from "./pages/AdminPage";
@@ -85,6 +86,7 @@ export default function App() {
             <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
             <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
             <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />
+            <Route path="/pending" element={withBoundary(<RequireAuth><PendingApprovalPage /></RequireAuth>, "Pending approval")} />
             <Route path="/jobs/:id" element={withBoundary(<JobPage />, "Job results")} />
             {/* Public — anyone with the share_id can view the ranked
                 hit list. Like /jobs/:id, this is read-only and we
@@ -146,6 +148,7 @@ export default function App() {
             popup-modal pattern — users prefer a real page where they
             can take their time over a modal that feels like a blocker. */}
         <ProfileRedirect />
+        <PendingRedirect />
       </div>
     </AuthProvider>
   );
@@ -234,7 +237,17 @@ const REDIRECT_SKIP_PATHS = [
   "/privacy",
   "/terms",
   "/contact",
+  // /pending owns its own redirect logic — once approved it sends the
+  // user to /studio, before approval it auto-polls. We don't want
+  // ProfileRedirect to bounce them off it.
+  "/pending",
 ];
+
+// Once we've confirmed a user is approved, cache for the page's lifetime
+// so we don't /me/access_status-spam on every nav. Keyed by user.id so a
+// different sign-in on the same browser doesn't inherit the previous
+// user's approval state.
+const accessApprovedCache = new Set<string>();
 // Once we've confirmed a user's profile is complete, cache the user.id
 // for the page's lifetime so we don't /me/profile-spam on every nav.
 // Keyed by user.id so a different user signing in on the same browser
@@ -284,6 +297,59 @@ function ProfileRedirect() {
       }
       navigate("/welcome", { replace: true });
     });
+    return () => { cancelled = true; };
+  }, [authLoading, user, location.pathname, navigate]);
+
+  return null;
+}
+
+/**
+ * PendingRedirect — hard-blocks every cockpit route until the signed-in
+ * user's access_status is 'approved' (backend migration 029).
+ *
+ * Mirrors ProfileRedirect: fetch /me/access_status; if anything other
+ * than 'approved', bounce to /pending. Cached per user.id for the
+ * page's lifetime so we don't poll on every nav — the PendingPage
+ * itself does the live polling once a user is parked there.
+ *
+ * Skip-list matches ProfileRedirect's plus /pending so the lock
+ * screen doesn't redirect-loop itself. The home page (/) is also
+ * skipped — anonymous browsers see marketing copy; once they sign in
+ * and try to enter a gated page, this kicks in.
+ *
+ * Backend remains the authority (POST /jobs etc. return 403 for
+ * non-approved users), so a tampered client can't bypass — this
+ * redirect is purely UX.
+ */
+function PendingRedirect() {
+  const { user, loading: authLoading } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+    if (REDIRECT_SKIP_PATHS.includes(location.pathname)) return;
+    if (location.pathname === "/") return;  // marketing homepage; sign-in is the next gate
+    if (accessApprovedCache.has(user.id)) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.getMyAccessStatus();
+        if (cancelled) return;
+        if (r.status === "approved") {
+          accessApprovedCache.add(user.id);
+          return;
+        }
+        // pending OR denied → park them on the lock screen.
+        navigate("/pending", { replace: true });
+      } catch {
+        // Transient fetch failure (cold start, network blip). Don't
+        // bounce on a transient — the next nav will retry. Backend
+        // still enforces the gate so a request that actually needs
+        // approval will fail loudly.
+      }
+    })();
     return () => { cancelled = true; };
   }, [authLoading, user, location.pathname, navigate]);
 
