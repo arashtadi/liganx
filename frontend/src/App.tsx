@@ -334,7 +334,31 @@ function PendingRedirect() {
 
     let cancelled = false;
     (async () => {
+      // (bugfix 2026-05-31) Profile-completion takes priority. A brand-new
+      // Google-OAuth user lands in the app authenticated but with no
+      // user_profile row. ProfileRedirect bounces them to /welcome where
+      // they fill the form → POST /me/profile fires notify_new_user (the
+      // Telegram + admin-email alert). If PendingRedirect wins the race
+      // first, the user gets parked on /pending and never completes
+      // /welcome → no notification ever fires → admin doesn't see the
+      // sign-up. To avoid that, we fetch the profile here too; if it's
+      // incomplete we bounce to /welcome and let ProfileRedirect (or this
+      // very check) finish the chain — only when profile IS complete do
+      // we consult /me/access_status. Sequential, not racing.
       try {
+        const prof = await api.getMyProfile();
+        if (cancelled) return;
+        const orgFilled = !!(prof?.organization && String(prof.organization).trim());
+        const roleFilled = !!(prof?.role && String(prof.role).trim());
+        if (!orgFilled || !roleFilled) {
+          if (location.pathname !== "/welcome") {
+            navigate("/welcome", { replace: true });
+          }
+          return;
+        }
+        // Profile is complete → mirror ProfileRedirect's cache to stop it
+        // from re-fetching too, then check approval state.
+        profileCompleteCache.add(user.id);
         const r = await api.getMyAccessStatus();
         if (cancelled) return;
         if (r.status === "approved") {
