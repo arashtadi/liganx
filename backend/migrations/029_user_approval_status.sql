@@ -37,17 +37,16 @@ ALTER TABLE public.user_profile
     ALTER COLUMN access_status SET DEFAULT 'pending';
 
 -- Tight CHECK so an out-of-band write can't slip an unknown value in.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conname = 'user_profile_access_status_chk'
-    ) THEN
-        ALTER TABLE public.user_profile
-            ADD CONSTRAINT user_profile_access_status_chk
-            CHECK (access_status IN ('pending','approved','denied'));
-    END IF;
-END $$;
+-- Idempotent via DROP-IF-EXISTS + ADD instead of a DO/IF NOT EXISTS PL/pgSQL
+-- block, because the startup-migration SQL splitter doesn't understand
+-- $$-quoted dollar-blocks and would shred the DO statement (the previous
+-- attempt boot-failed with `syntax error at or near "IF"` because the
+-- splitter treated `IF NOT EXISTS` as its own top-level statement).
+ALTER TABLE public.user_profile
+    DROP CONSTRAINT IF EXISTS user_profile_access_status_chk;
+ALTER TABLE public.user_profile
+    ADD CONSTRAINT user_profile_access_status_chk
+    CHECK (access_status IN ('pending','approved','denied'));
 
 -- Index for the admin "pending users" list (typically small, but cheap
 -- and lets the WHERE clause be plan-stable).
