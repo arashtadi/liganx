@@ -363,6 +363,23 @@ def update_my_profile(
             # Observability must not cascade; log + swallow.
             import logging
             logging.getLogger(__name__).exception("notify_new_user failed")
+        # Belt-and-braces: also email the admin via Resend. Telegram is the
+        # actionable path (has Approve/Deny buttons); the email is a
+        # heads-up so a muted phone doesn't keep a sign-up sitting in
+        # 'pending' for hours. Fail-soft (services/email.py swallows
+        # internally) so a Resend hiccup can't take down the sign-up.
+        try:
+            from ..services.email import notify_admin_new_signup
+            notify_admin_new_signup(
+                user_email=getattr(user, "email", None),
+                user_id=user.id,
+                full_name=payload.full_name,
+                organization=payload.organization,
+                role=payload.role,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("notify_admin_new_signup failed")
 
     return get_my_profile(user, session)
 

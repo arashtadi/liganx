@@ -153,6 +153,20 @@ async def telegram_webhook(
     target_status = "approved" if action == "approve" else "denied"
     changed, user_email = _flip_status(user_id, target_status, actor)
 
+    # Email the user so they know — they may have closed the tab between
+    # sign-up and your tap. Fail-soft inside services/email; never
+    # interferes with the Telegram acknowledgement below. Only fire when
+    # we actually changed state (re-deliveries shouldn't re-spam).
+    if changed and user_email:
+        try:
+            from ..services import email as _email
+            if target_status == "approved":
+                _email.notify_user_approved(user_email=user_email)
+            else:
+                _email.notify_user_denied(user_email=user_email)
+        except Exception:  # noqa: BLE001
+            log.exception("user-approval email failed (non-fatal)")
+
     # Build the confirmation text that REPLACES the original notification.
     # Keep the user_id visible so the message remains a useful audit row.
     pretty = "APPROVED ✅" if action == "approve" else "DENIED ❌"

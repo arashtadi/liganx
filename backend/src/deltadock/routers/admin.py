@@ -778,6 +778,30 @@ def update_user_access(
     session.commit()
     log.info("Admin %s set user %s access_status=%s", admin.email, user_id, payload.status)
 
+    # Email the user about the decision so they don't have to refresh
+    # the lock screen to find out. Same trigger semantics as the
+    # Telegram-webhook handler; both paths land here for approved/denied.
+    # Fail-soft via services/email.
+    if payload.status in ("approved", "denied"):
+        target_email = None
+        try:
+            erow = session.execute(
+                text("SELECT email FROM auth.users WHERE id = :uid"),
+                {"uid": user_id},
+            ).first()
+            target_email = (erow[0] if erow else None)
+        except Exception:  # noqa: BLE001
+            log.exception("auth.users email lookup failed for %s", user_id)
+        if target_email:
+            try:
+                from ..services import email as _email
+                if payload.status == "approved":
+                    _email.notify_user_approved(user_email=target_email)
+                else:
+                    _email.notify_user_denied(user_email=target_email)
+            except Exception:  # noqa: BLE001
+                log.exception("user-approval email failed (non-fatal)")
+
     rows = list_users(admin, session)
     for r in rows:
         if r.user_id == user_id:
