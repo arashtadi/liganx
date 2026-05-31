@@ -89,6 +89,13 @@ class AdminUserRow(BaseModel):
     # cost ~$100 of pod GPU each, so a fresh signup must not be able to
     # burn that. Admin flips True via PATCH /admin/users/{id}/fep.
     fep_enabled: bool = False
+    # Per-user approval gate (migration 029). 'pending' is the default for
+    # new sign-ups; existing users were grandfathered to 'approved'. The
+    # admin page sorts pending users to the top + offers Approve/Deny
+    # buttons. The Telegram inline keyboard also writes through to this.
+    access_status: str = "approved"
+    access_decided_at: Optional[str] = None
+    access_decided_by: Optional[str] = None
 
 
 class QuotaUpdate(BaseModel):
@@ -112,6 +119,16 @@ class FepUpdate(BaseModel):
     default, so this is the explicit grant rather than a kill-switch
     like ensemble."""
     fep_enabled: bool
+
+
+class AccessUpdate(BaseModel):
+    """PATCH payload for the per-user approval gate (migration 029).
+    `status` must be 'pending' | 'approved' | 'denied'. The CHECK
+    constraint on user_profile mirrors this, so a typo here would 500
+    rather than corrupt state. Same shape the Telegram inline-button
+    callback uses internally — keeps the two admin entry points (web
+    page + Telegram) writing through identical semantics."""
+    status: str = Field(..., pattern="^(pending|approved|denied)$")
 
 
 @router.get("/watchdog/status")
@@ -221,6 +238,13 @@ def list_users(
                 -- NULL/missing case to FALSE — opposite of ensemble — so a
                 -- fresh user reads as locked out until admin grants.
                 COALESCE(p.fep_enabled, FALSE) AS fep_enabled,
+                -- Approval gate (migration 029). Existing users were
+                -- grandfathered to 'approved' in the migration; NULL only
+                -- happens for a brand-new auth.users row before any
+                -- /me/profile bootstrap — treat that as 'pending'.
+                COALESCE(p.access_status, 'pending') AS access_status,
+                p.access_decided_at,
+                p.access_decided_by,
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
@@ -276,6 +300,12 @@ def list_users(
                 ),
                 # GATED by default: a NULL/missing value reads as False.
                 fep_enabled=bool(r.get("fep_enabled") or False),
+                access_status=str(r.get("access_status") or "pending").lower(),
+                access_decided_at=(
+                    r["access_decided_at"].isoformat()
+                    if r.get("access_decided_at") else None
+                ),
+                access_decided_by=r.get("access_decided_by"),
             ))
         except Exception as e:
             uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
@@ -679,3 +709,42 @@ async def admin_pod_start(_admin: Annotated[CurrentUser, Depends(admin_user)]) -
     except Exception as e:  # noqa: BLE001
         log.exception("admin_pod_start failed")
         raise HTTPException(502, f"RunPod start failed: {e}")
+
+@router.patch("/users/{user_id}/access", response_model=AdminUserRow)
+def update_user_access(
+    payload: AccessUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Approve / deny / re-pend a user (migration 029).
+
+    The same UPSERT pattern as update_user_pro: the profile row may not
+    exist yet for a brand-new OAuth user, so INSERT ... ON CONFLICT DO
+    UPDATE handles both first-time and existing rows. We stamp
+    access_decided_at + access_decided_by so the admin row records who
+    flipped the gate and when — useful when there are multiple admins
+    or when the Telegram webhook does the flip.
+
+    Mirrors what the /telegram/webhook handler writes; both paths go
+    through the same column + check constraint so a typo here is caught
+    at the DB layer."""
+    session.execute(text(
+        """
+        INSERT INTO public.user_profile (user_id, access_status, access_decided_at, access_decided_by, marketing_opt_in)
+        VALUES (:uid, :status, NOW(), :actor, FALSE)
+        ON CONFLICT (user_id) DO UPDATE SET
+            access_status = EXCLUDED.access_status,
+            access_decided_at = NOW(),
+            access_decided_by = EXCLUDED.access_decided_by
+        """
+    ), {"uid": user_id, "status": payload.status, "actor": (admin.email or "admin")[:80]})
+    session.commit()
+    log.info("Admin %s set user %s access_status=%s", admin.email, user_id, payload.status)
+
+    rows = list_users(admin, session)
+    for r in rows:
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+

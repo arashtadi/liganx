@@ -391,3 +391,42 @@ def dismiss_onboarding_modal(
     ), {"uid": user.id})
     session.commit()
     return None
+
+
+class AccessStatusOut(BaseModel):
+    """Per-user approval gate state (migration 029). The frontend polls
+    this to decide whether to render the pending-lock screen or the
+    normal Studio. The backend ALSO enforces the gate on POST /jobs
+    (defense-in-depth), so a tampered frontend can't bypass — but the
+    UI shouldn't show Run Dock when it'll be rejected."""
+    status: str = Field(..., description="pending | approved | denied")
+    decided_at: Optional[str] = None
+
+
+@router.get("/access_status", response_model=AccessStatusOut)
+def get_access_status(
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> AccessStatusOut:
+    """Return the caller's approval status. Pending users see a
+    locked-out UI; approved users see the normal app. Cheap (single
+    indexed lookup) so the frontend can call it on app load + after
+    sign-up to flip from "pending" → "approved" without a full reload."""
+    row = session.execute(
+        text(
+            "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at "
+            "FROM public.user_profile WHERE user_id = :uid"
+        ),
+        {"uid": user.id},
+    ).mappings().first()
+    if not row:
+        # No profile row yet (brand-new sign-up before the profile-bootstrap
+        # path has run) → treat as pending. The profile will be created on
+        # the next /me/profile read/write, with access_status defaulting to
+        # 'pending' via the migration 029 column default.
+        return AccessStatusOut(status="pending", decided_at=None)
+    decided_at = row["access_decided_at"]
+    return AccessStatusOut(
+        status=(row["status"] or "pending").lower(),
+        decided_at=decided_at.isoformat() if decided_at else None,
+    )

@@ -62,12 +62,16 @@ def _truncate(s: str, n: int) -> str:
     return s[: n - 1] + "…"
 
 
-def _send(text: str) -> bool:
+def _send(text: str, reply_markup: Optional[dict] = None) -> bool:
     """Send one HTML-formatted message. Returns True on success, False
     on any failure (missing creds, malformed token, HTTP error, network
     timeout). Logs at WARNING for misconfig, ERROR for delivery
     failures so the operator can spot a broken alert pipeline in Fly
-    logs even if they're not getting Telegram pings."""
+    logs even if they're not getting Telegram pings.
+
+    ``reply_markup`` optionally attaches a Telegram inline keyboard
+    (e.g. for one-tap admin actions like Approve/Deny). Pass a plain
+    dict in Telegram's documented JSON shape — see notify_new_user."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
@@ -81,12 +85,14 @@ def _send(text: str) -> bool:
         return False
 
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-    payload = {
+    payload: dict = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         with httpx.Client(timeout=TELEGRAM_TIMEOUT_S) as client:
             r = client.post(url, json=payload)
@@ -104,6 +110,59 @@ def _send(text: str) -> bool:
     except Exception as e:
         log.exception("Telegram alert unexpected error: %s", e)
         return False
+
+
+def _tg_post(method: str, payload: dict) -> bool:
+    """POST to an arbitrary Telegram Bot API method using the same token
+    + timeout + error handling as _send. Used by the /telegram/webhook
+    handler to acknowledge callback_query presses and edit the original
+    message after Approve/Deny. Returns True on 2xx, False otherwise —
+    NEVER raises (notifying the operator must not crash a webhook)."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return False
+    if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
+        log.error("Telegram %s skipped: TELEGRAM_BOT_TOKEN looks malformed", method)
+        return False
+    try:
+        with httpx.Client(timeout=TELEGRAM_TIMEOUT_S) as client:
+            r = client.post(f"{TELEGRAM_API_BASE}/bot{token}/{method}", json=payload)
+        if r.status_code >= 400:
+            log.warning("Telegram %s HTTP %d: %s", method, r.status_code, r.text[:200])
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("Telegram %s failed: %s", method, e)
+        return False
+
+
+def answer_callback(callback_query_id: str, text: str = "") -> bool:
+    """Dismiss the loading spinner on a tapped inline button and
+    optionally show a short toast to the admin who tapped it."""
+    return _tg_post("answerCallbackQuery", {
+        "callback_query_id": callback_query_id,
+        "text": text[:200],
+        "show_alert": False,
+    })
+
+
+def edit_message_after_action(
+    chat_id: int | str,
+    message_id: int,
+    new_text: str,
+) -> bool:
+    """After Approve/Deny is processed, rewrite the original notification
+    so the buttons are gone and the message records the outcome — keeps
+    the chat history a clean audit trail of who is approved when."""
+    return _tg_post("editMessageText", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": new_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        # Empty reply_markup removes the inline keyboard.
+        "reply_markup": {"inline_keyboard": []},
+    })
 
 
 def notify_new_user(
@@ -131,7 +190,7 @@ def notify_new_user(
     user_id_e = _escape_html(user_id or "—")
 
     parts = [
-        "🎉 <b>New user signed up</b>",
+        "🎉 <b>New user signed up — awaiting approval</b>",
         "",
         f"📧 Email: <code>{email_e}</code>",
     ]
@@ -143,7 +202,22 @@ def notify_new_user(
         parts.append(f"💼 Role: {role_e}")
     parts.append(f"🔐 Method: <code>{method_e}</code>")
     parts.append(f"🆔 <code>{user_id_e}</code>")
-    return _send("\n".join(parts))
+
+    # Inline Approve / Deny buttons. callback_data is parsed by the
+    # /telegram/webhook handler (see routers/telegram_webhook.py) which
+    # flips user_profile.access_status. Telegram caps callback_data at
+    # 64 bytes; a UUID is 36 chars so "approve:<uuid>" fits comfortably.
+    # If user_id is missing (shouldn't happen — caller always provides
+    # one) we omit the buttons rather than sending a broken callback.
+    reply_markup: Optional[dict] = None
+    if user_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"approve:{user_id}"},
+                {"text": "❌ Deny",    "callback_data": f"deny:{user_id}"},
+            ]],
+        }
+    return _send("\n".join(parts), reply_markup=reply_markup)
 
 
 def notify_first_dock(

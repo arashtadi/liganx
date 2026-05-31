@@ -308,6 +308,7 @@ def create_job(
     quota_row = session.execute(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
             " ) AS used"
@@ -318,6 +319,24 @@ def create_job(
     ).mappings().first()
     quota = int(quota_row["quota"]) if quota_row else 10
     used = int(quota_row["used"]) if quota_row else 0
+    # Access-status gate (migration 029). Pending/denied users cannot submit
+    # compute — every dock would wake the on-demand GPU pod. Existing users
+    # are grandfathered to `approved` so this is invisible to them. The
+    # frontend reads /me/access_status separately to render a friendly
+    # pending screen instead of hitting this 403 cold.
+    access_status = (quota_row["access_status"] if quota_row else "pending").lower()
+    if access_status != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Your account is pending admin approval. "
+                "You'll get an email as soon as it's approved."
+                if access_status == "pending"
+                else "Your account isn't approved for docking. "
+                "Contact the team if you think this is a mistake."
+            ),
+            headers={"X-Access-Status": access_status},
+        )
     if used >= quota:
         # 402 Payment Required is the closest semantic match in HTTP for
         # "you've used your free allocation". The frontend special-cases
@@ -706,6 +725,7 @@ def create_job_from_screening(
     quota_row = session.execute(
         text(
             "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
             " ) AS used"
@@ -716,6 +736,20 @@ def create_job_from_screening(
     ).mappings().first()
     quota = int(quota_row["quota"]) if quota_row else 10
     used = int(quota_row["used"]) if quota_row else 0
+    # Access-status gate (migration 029) — same as POST /jobs above.
+    access_status = (quota_row["access_status"] if quota_row else "pending").lower()
+    if access_status != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Your account is pending admin approval. "
+                "You'll get an email as soon as it's approved."
+                if access_status == "pending"
+                else "Your account isn't approved for docking. "
+                "Contact the team if you think this is a mistake."
+            ),
+            headers={"X-Access-Status": access_status},
+        )
     if used >= quota:
         raise HTTPException(
             status_code=402,

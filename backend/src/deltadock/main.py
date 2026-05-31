@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, screening, sentry_webhook, structures, suggest
+from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, screening, sentry_webhook, structures, suggest, telegram_webhook
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -784,6 +784,12 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # instead of re-running the GPU. Inert until DOCK_CACHE_ENABLED is set; the
     # docking schema is otherwise untouched. See services/dock_cache.py.
     ("028_dock_cache.sql", "Migration 028 (dock result cache table)"),
+    # Per-user approval gate. New sign-ups land as `pending` and cannot dock
+    # until approved. Existing rows are grandfathered to `approved` so this
+    # is non-disruptive. The gate is what makes auto-stopping the GPU pod
+    # safe (no random sign-up can wake it). See routers/admin.py + the
+    # `/jobs` POST gate in routers/jobs.py.
+    ("029_user_approval_status.sql", "Migration 029 (per-user approval gate)"),
 ]
 
 
@@ -916,6 +922,7 @@ app.include_router(atlas.router)  # Resistance Atlas — per-drug forecast landi
 app.include_router(fep.router)  # Phase B scaffold — endpoints return 501 until the FEP pod is wired up (docs/fep_plus_design.md)
 app.include_router(calibrate.router)  # Pro feature: score user's own (drug, mutation) data against Liganx model
 app.include_router(sentry_webhook.router)  # Sentry alerts → Telegram bridge (/internal/sentry-webhook)
+app.include_router(telegram_webhook.router)  # Telegram Approve/Deny callbacks for new-user notifications
 
 
 @app.get("/health", tags=["meta"])
