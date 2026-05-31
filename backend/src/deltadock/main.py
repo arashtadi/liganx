@@ -790,6 +790,13 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # safe (no random sign-up can wake it). See routers/admin.py + the
     # `/jobs` POST gate in routers/jobs.py.
     ("029_user_approval_status.sql", "Migration 029 (per-user approval gate)"),
+    # 029's backfill over-grandfathered — it set 'approved' for every
+    # pre-existing profile row, including dormant OAuth zombies who'd just
+    # touched the OAuth callback once and never used the system. 030 re-pends
+    # any row with zero job activity AND no explicit admin decision, while
+    # keeping the admin email approved so the operator can't lock themselves
+    # out. See the file header for the full rationale.
+    ("030_repend_zombie_approvals.sql", "Migration 030 (re-pend zombie approvals)"),
 ]
 
 

@@ -1528,6 +1528,12 @@ def rescore_with_mmgbsa(
     pattern in this router. See docs/mmgbsa_phase_a_audit.md (and
     the final verification report) for the rationale.
     """
+    # Per-user approval gate (migration 029). MM-GBSA burns 30-90s of pod
+    # GPU per call; a pending or revoked user shouldn't be able to wake
+    # the on-demand pod via this owner-only endpoint either.
+    from ..auth import require_access_approved
+    require_access_approved(user.id, session)
+
     import shutil as _shutil
     import subprocess as _subprocess
     import tempfile as _tempfile

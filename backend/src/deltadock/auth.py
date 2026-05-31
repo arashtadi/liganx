@@ -414,6 +414,37 @@ def fep_access_allowed(user_id: Optional[str], session) -> bool:
         return False
 
 
+def require_access_approved(user_id: Optional[str], session) -> None:
+    """Per-user approval gate (migration 029). Raise 403 unless the user's
+    user_profile.access_status is 'approved'. Use this on EVERY endpoint that
+    submits work to the GPU pod — POST /jobs already gates inline; the
+    Quick Dock / Optimize / MM-GBSA endpoints need to call this explicitly
+    so a random sign-up can't wake the (now on-demand) pod by clicking
+    'Try' on the Studio splash. Cheap: single indexed lookup.
+
+    Conservative: a NULL/missing row is treated as 'pending' (locked out)
+    — the migration default. Never raises silently — the 403 message tells
+    the user why so the frontend can show the right copy."""
+    row = session.execute(
+        text("SELECT COALESCE(access_status, 'pending') FROM public.user_profile WHERE user_id = :uid"),
+        {"uid": user_id},
+    ).first()
+    status_val = (row[0] if row else "pending").lower()
+    if status_val == "approved":
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Your account is pending admin approval. "
+            "You'll get an email as soon as it's approved."
+            if status_val == "pending"
+            else "Your account isn't approved for docking. "
+            "Contact the team if you think this is a mistake."
+        ),
+        headers={"X-Access-Status": status_val},
+    )
+
+
 def admin_user(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
     """Auth + admin email gate. Apply to /admin/* endpoints. Returns 403
     (not 401) for authenticated-but-not-admin users so we can distinguish

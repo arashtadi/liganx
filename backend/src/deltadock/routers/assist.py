@@ -41,9 +41,9 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from sqlmodel import Session
 
-from ..auth import CurrentUser, current_user
+from ..auth import CurrentUser, current_user, require_access_approved
 from ..config import get_settings
-from ..db import engine as db_engine
+from ..db import engine as db_engine, get_session
 from ..models import OptimizeAttempt
 from ..services.ai_assistant import call_anthropic
 from ..services.optimize_loop import generate_score_filter_optimize
@@ -278,12 +278,14 @@ def _check_quick_dock_enabled() -> None:
 def quick_dock_endpoint(
     payload: QuickDockRequest,
     user: Annotated[CurrentUser, Depends(current_user)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> dict:
     """Run a fast (exhaustiveness=4) Vina dock and extract residue
     contacts. Returns {ok, score, hits[], misses[], pose_pdbqt_b64}.
 
     HTTP errors:
-      403 — QUICK_DOCK_ENABLED=false (frontend renders a Contact us CTA)
+      403 — QUICK_DOCK_ENABLED=false OR caller's user_profile.access_status
+            != 'approved' (frontend renders a Contact us CTA / pending notice)
       429 — per-IP rate limit (20/hr)
 
     On in-pipeline failure (bad SMILES, pod down, mutation unbuildable)
@@ -292,6 +294,11 @@ def quick_dock_endpoint(
     message inline rather than treating it as an exception.
     """
     _check_quick_dock_enabled()
+    # Per-user approval gate (migration 029). Quick Dock hits the GPU pod
+    # just like POST /jobs, so a pending user clicking 'Try' on the splash
+    # would wake the on-demand pod and burn dollars. Defense-in-depth: even
+    # if the frontend hides the button, a tampered client can't bypass.
+    require_access_approved(user.id, session)
     # Belt-and-braces: if the caller passed a comma-separated multi-mutation
     # string (e.g. "G12R, G12V" — frontend's editor opens with the whole
     # job's mutation context, sometimes more than one), pick the first
@@ -323,6 +330,7 @@ def quick_dock_endpoint(
 async def optimize_endpoint(
     payload: OptimizeRequest,
     user: Annotated[CurrentUser, Depends(current_user)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> dict:
     """Generate-Score-Filter loop. Returns the top 3 variants (by composite
     fitness) from a wider AI-proposed pool of ~12 candidates that have all
@@ -367,6 +375,10 @@ async def optimize_endpoint(
     today" reports survive Fly's 15-minute log-buffer rollover. See
     _record_optimize_attempt() below."""
     _check_quick_dock_enabled()
+    # Per-user approval gate (migration 029). Optimize fans out into 6-12
+    # quick_dock calls, so it's the highest blast-radius bypass — gate it
+    # at the entry point. See routers/auth.py:require_access_approved.
+    require_access_approved(user.id, session)
     request_id = uuid.uuid4()
     started_at = time.monotonic()
 
