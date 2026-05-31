@@ -45,5 +45,5 @@ UPDATE public.user_profile p
        access_decided_by = 'migration_030_bootstrap'
   FROM auth.users u
  WHERE p.user_id = u.id
-   AND LOWER(u.email) = 'arashtadi83@gmail.com'
+   AND LOWER(u.email) IN ('arashtadu@gmail.com', 'arashtadi83@gmail.com')
    AND p.access_status <> 'approved';

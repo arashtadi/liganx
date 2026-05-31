@@ -517,16 +517,43 @@ def delete_user(
         )
 
     # Order matters: delete dependent rows before the auth.users row so
-    # we don't trip any FK that doesn't have ON DELETE CASCADE.
-    # (1) jobs — manual cleanup; results table CASCADEs from job.id.
+    # we don't trip any FK that doesn't have ON DELETE CASCADE. The
+    # dependency chain (discovered 2026-05-31 from a ForeignKeyViolation
+    # on compound_job_id_fkey when the original two-step delete fired):
+    #
+    #   auth.users
+    #     ← user_profile        (CASCADE, but we explicit-delete for atomicity)
+    #     ← user_compound       (CASCADE, same)
+    #     ← job                 (NO CASCADE — manual)
+    #          ← docking_result (CASCADE from job)
+    #          ← compound       (NO CASCADE — manual; compound.job_id blocks)
+    #               ← fep_node  (CASCADE from fep_job, but references compound!)
+    #     ← fep_job             (NO CASCADE on user_id — manual)
+    #          ← fep_perturbation (CASCADE from fep_job)
+    #          ← fep_node       (CASCADE from fep_job)
+    #
+    # Correct sequence: nuke FEP first (which CASCADEs its nodes/perts and
+    # frees the compound rows from fep_node's references), then compounds,
+    # then jobs, then the user's directly-owned tables, then auth.users.
+    # (1) FEP studies — CASCADEs to fep_node + fep_perturbation.
+    session.execute(text("DELETE FROM public.fep_job WHERE user_id = :uid"), {"uid": user_id})
+    # (2) Compound rows — both the user's library compounds (user_id) AND
+    #     any compounds attached to their jobs (job_id, no cascade). After
+    #     step (1) no FEP nodes reference these anymore, so the delete is
+    #     unblocked.
+    session.execute(text(
+        "DELETE FROM compound "
+        " WHERE user_id = :uid OR job_id IN (SELECT id FROM job WHERE user_id = :uid)"
+    ), {"uid": user_id})
+    # (3) Jobs — CASCADEs docking_result.
     session.execute(text("DELETE FROM job WHERE user_id = :uid"), {"uid": user_id})
-    # (2) user_profile + user_compound — both CASCADE on auth.users
+    # (4) user_profile + user_compound — both CASCADE on auth.users
     #     deletion, but we delete explicitly so the operation is atomic
     #     within the same transaction (cleaner rollback story if the
     #     auth.users delete itself fails).
     session.execute(text("DELETE FROM public.user_profile WHERE user_id = :uid"), {"uid": user_id})
     session.execute(text("DELETE FROM public.user_compound WHERE user_id = :uid"), {"uid": user_id})
-    # (3) the user itself.
+    # (5) the user itself.
     result = session.execute(text("DELETE FROM auth.users WHERE id = :uid"), {"uid": user_id})
     if result.rowcount == 0:
         # Roll back all the deletes — we don't want to nuke jobs/profile
