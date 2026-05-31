@@ -797,6 +797,11 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # keeping the admin email approved so the operator can't lock themselves
     # out. See the file header for the full rationale.
     ("030_repend_zombie_approvals.sql", "Migration 030 (re-pend zombie approvals)"),
+    # signup_notified_at — atomic flag for notify_new_user dedup. Lets the
+    # notification fire from /me/access_status on first call so OAuth users
+    # whose user_profile row is trigger-created (and who never hit /welcome)
+    # still trigger admin notification.
+    ("031_signup_notified_at.sql", "Migration 031 (signup notification flag)"),
 ]
 
 

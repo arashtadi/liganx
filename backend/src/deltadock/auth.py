@@ -414,7 +414,11 @@ def fep_access_allowed(user_id: Optional[str], session) -> bool:
         return False
 
 
-def require_access_approved(user_id: Optional[str], session) -> None:
+def require_access_approved(
+    user_id: Optional[str],
+    session,
+    user_email: Optional[str] = None,
+) -> None:
     """Per-user approval gate (migration 029). Raise 403 unless the user's
     user_profile.access_status is 'approved'. Use this on EVERY endpoint that
     submits work to the GPU pod — POST /jobs already gates inline; the
@@ -424,7 +428,14 @@ def require_access_approved(user_id: Optional[str], session) -> None:
 
     Conservative: a NULL/missing row is treated as 'pending' (locked out)
     — the migration default. Never raises silently — the 403 message tells
-    the user why so the frontend can show the right copy."""
+    the user why so the frontend can show the right copy.
+
+    ``user_email`` is an explicit bypass: when it matches ADMIN_EMAIL the
+    gate short-circuits without touching the DB. Defense-in-depth — even
+    if /me/access_status hasn't yet self-healed the admin's row to
+    'approved', the admin can still dock immediately."""
+    if user_email and ADMIN_EMAIL and user_email.strip().lower() == ADMIN_EMAIL:
+        return
     row = session.execute(
         text("SELECT COALESCE(access_status, 'pending') FROM public.user_profile WHERE user_id = :uid"),
         {"uid": user_id},

@@ -428,7 +428,104 @@ def get_access_status(
     """Return the caller's approval status. Pending users see a
     locked-out UI; approved users see the normal app. Cheap (single
     indexed lookup) so the frontend can call it on app load + after
-    sign-up to flip from "pending" → "approved" without a full reload."""
+    sign-up to flip from "pending" → "approved" without a full reload.
+
+    Two side effects layered onto the read (both idempotent, both
+    cheap):
+
+    1. **Admin auto-approve.** If the caller's email matches ADMIN_EMAIL
+       we UPSERT their user_profile row to access_status='approved' so
+       admin never sees the pending lock screen — and so the same row
+       reads as approved from every other gate (POST /jobs, the admin
+       page itself, etc.). Self-healing: if admin's row drifts to
+       pending for any reason, the next /me/access_status fixes it.
+
+    2. **First-sign-up notification.** notify_new_user used to fire only
+       from POST /me/profile. Google-OAuth users skip /welcome entirely
+       (their profile row is auto-created by the migration-003 trigger)
+       so the admin never got notified. Migration 031 added a
+       signup_notified_at flag; we atomically claim it here on first
+       call and fire the Telegram + admin-email notification only when
+       we win the race. Backfilled NOW() for existing rows so this
+       never double-notifies."""
+    import os
+    admin_email_env = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    user_email_lc = (getattr(user, "email", "") or "").strip().lower()
+    is_admin = bool(admin_email_env) and user_email_lc == admin_email_env
+
+    if is_admin:
+        # Self-heal: ensure admin's row exists and reads as approved. The
+        # COALESCE on marketing_opt_in keeps the existing column-defaults
+        # pattern in step with update_user_pro / update_user_access. The
+        # WHERE clause on the UPDATE side keeps this a true no-op once
+        # the row is already approved.
+        session.execute(text(
+            """
+            INSERT INTO public.user_profile (user_id, access_status, access_decided_at, access_decided_by, signup_notified_at, marketing_opt_in)
+            VALUES (:uid, 'approved', NOW(), 'admin_email_auto', NOW(), FALSE)
+            ON CONFLICT (user_id) DO UPDATE SET
+                access_status = 'approved',
+                access_decided_at = CASE
+                    WHEN public.user_profile.access_status = 'approved' THEN public.user_profile.access_decided_at
+                    ELSE NOW()
+                END,
+                access_decided_by = CASE
+                    WHEN public.user_profile.access_status = 'approved' THEN public.user_profile.access_decided_by
+                    ELSE 'admin_email_auto'
+                END,
+                signup_notified_at = COALESCE(public.user_profile.signup_notified_at, NOW())
+            """
+        ), {"uid": user.id})
+        session.commit()
+        return AccessStatusOut(status="approved", decided_at=None)
+
+    # First-sign-up notification: atomic claim. UPDATE … RETURNING tells
+    # us whether THIS request was the first to ever see the row pending +
+    # not-yet-notified. If rowcount=1 we won and fire the notifications;
+    # otherwise it was a re-call from a later page nav (or an earlier
+    # request already claimed it) and we silently move on.
+    claimed = False
+    try:
+        res = session.execute(text(
+            "UPDATE public.user_profile "
+            "   SET signup_notified_at = NOW() "
+            " WHERE user_id = :uid "
+            "   AND signup_notified_at IS NULL"
+        ), {"uid": user.id})
+        session.commit()
+        claimed = (res.rowcount or 0) > 0
+    except Exception:  # noqa: BLE001
+        # Don't break the read on a transient DB issue. Worst case the
+        # admin doesn't get notified for this user this time; the next
+        # /me/access_status hit will retry.
+        import logging
+        logging.getLogger(__name__).exception("signup_notified_at claim failed for user %s", user.id)
+        session.rollback()
+
+    if claimed:
+        # Fire Telegram (Approve/Deny inline buttons) + admin email.
+        # Both are fail-soft inside their respective modules — no need
+        # to wrap each individually.
+        try:
+            from ..services.notifications import notify_new_user
+            notify_new_user(
+                user_email=getattr(user, "email", None),
+                user_id=user.id,
+                signup_method=getattr(user, "provider", None),
+            )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception("notify_new_user failed (fired from access_status)")
+        try:
+            from ..services.email import notify_admin_new_signup
+            notify_admin_new_signup(
+                user_email=getattr(user, "email", None),
+                user_id=user.id,
+            )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception("notify_admin_new_signup failed (fired from access_status)")
+
     row = session.execute(
         text(
             "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at "
@@ -438,8 +535,8 @@ def get_access_status(
     ).mappings().first()
     if not row:
         # No profile row yet (brand-new sign-up before the profile-bootstrap
-        # path has run) → treat as pending. The profile will be created on
-        # the next /me/profile read/write, with access_status defaulting to
+        # trigger has run) → treat as pending. The profile will be created
+        # on the next read/write, with access_status defaulting to
         # 'pending' via the migration 029 column default.
         return AccessStatusOut(status="pending", decided_at=None)
     decided_at = row["access_decided_at"]

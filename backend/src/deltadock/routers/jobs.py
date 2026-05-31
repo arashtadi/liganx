@@ -325,7 +325,14 @@ def create_job(
     # frontend reads /me/access_status separately to render a friendly
     # pending screen instead of hitting this 403 cold.
     access_status = (quota_row["access_status"] if quota_row else "pending").lower()
-    if access_status != "approved":
+    # Admin email always passes the gate (defense-in-depth — even if their
+    # user_profile row hasn't been self-healed to 'approved' yet by
+    # /me/access_status). See auth.py:require_access_approved for the
+    # same bypass on the other compute endpoints.
+    import os as _os_admin
+    _admin_email_env = _os_admin.environ.get("ADMIN_EMAIL", "").strip().lower()
+    _is_admin = bool(_admin_email_env) and (user.email or "").strip().lower() == _admin_email_env
+    if access_status != "approved" and not _is_admin:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -738,7 +745,14 @@ def create_job_from_screening(
     used = int(quota_row["used"]) if quota_row else 0
     # Access-status gate (migration 029) — same as POST /jobs above.
     access_status = (quota_row["access_status"] if quota_row else "pending").lower()
-    if access_status != "approved":
+    # Admin email always passes the gate (defense-in-depth — even if their
+    # user_profile row hasn't been self-healed to 'approved' yet by
+    # /me/access_status). See auth.py:require_access_approved for the
+    # same bypass on the other compute endpoints.
+    import os as _os_admin
+    _admin_email_env = _os_admin.environ.get("ADMIN_EMAIL", "").strip().lower()
+    _is_admin = bool(_admin_email_env) and (user.email or "").strip().lower() == _admin_email_env
+    if access_status != "approved" and not _is_admin:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -1530,9 +1544,10 @@ def rescore_with_mmgbsa(
     """
     # Per-user approval gate (migration 029). MM-GBSA burns 30-90s of pod
     # GPU per call; a pending or revoked user shouldn't be able to wake
-    # the on-demand pod via this owner-only endpoint either.
+    # the on-demand pod via this owner-only endpoint either. Admin bypass
+    # via user_email.
     from ..auth import require_access_approved
-    require_access_approved(user.id, session)
+    require_access_approved(user.id, session, user_email=getattr(user, "email", None))
 
     import shutil as _shutil
     import subprocess as _subprocess

@@ -298,7 +298,8 @@ def quick_dock_endpoint(
     # just like POST /jobs, so a pending user clicking 'Try' on the splash
     # would wake the on-demand pod and burn dollars. Defense-in-depth: even
     # if the frontend hides the button, a tampered client can't bypass.
-    require_access_approved(user.id, session)
+    # Admin email bypasses (require_access_approved checks user_email).
+    require_access_approved(user.id, session, user_email=getattr(user, "email", None))
     # Belt-and-braces: if the caller passed a comma-separated multi-mutation
     # string (e.g. "G12R, G12V" — frontend's editor opens with the whole
     # job's mutation context, sometimes more than one), pick the first
@@ -377,8 +378,8 @@ async def optimize_endpoint(
     _check_quick_dock_enabled()
     # Per-user approval gate (migration 029). Optimize fans out into 6-12
     # quick_dock calls, so it's the highest blast-radius bypass — gate it
-    # at the entry point. See routers/auth.py:require_access_approved.
-    require_access_approved(user.id, session)
+    # at the entry point. Admin bypasses via user_email.
+    require_access_approved(user.id, session, user_email=getattr(user, "email", None))
     request_id = uuid.uuid4()
     started_at = time.monotonic()
 
