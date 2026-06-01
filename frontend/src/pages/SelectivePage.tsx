@@ -56,14 +56,22 @@ const LOCALIZATION_COPY: Record<Localization, { label: string; tone: string }> =
 };
 
 // The full pipeline, shown as a roadmap so the operator can see what's live.
-const PIPELINE_STEPS: { id: string; title: string; live: boolean; blurb: string }[] = [
-  { id: "A", title: "Target triage", live: true, blurb: "Locate the target (UniProt) → which binder modalities its location even allows." },
-  { id: "B", title: "WT-vs-mutant pocket map", live: false, blurb: "Build & relax the mutant structure, diff it against wild-type around the mutation." },
-  { id: "C", title: "Conformer ensemble", live: false, blurb: "Relax an ensemble for both pockets so flexibility is represented, not one rigid snapshot." },
-  { id: "D1", title: "Differential docking", live: false, blurb: "Dock candidates against both pockets; rank by ΔΔG_sel = score_mutant − score_WT." },
-  { id: "D2", title: "FEP confirmation (top 5)", live: false, blurb: "Rigorous relative free energy on the best 5 hits. Gated off until FEP completes a full cycle." },
-  { id: "E", title: "Analog expansion", live: false, blurb: "Broaden the hit list via RDKit similarity (+ ChEMBL when connected)." },
+// Step status: "live" (shipped + usable), "partial" (works internally but no
+// standalone deliverable yet), or "soon" (not built).
+const PIPELINE_STEPS: { id: string; title: string; status: "live" | "partial" | "soon"; blurb: string }[] = [
+  { id: "A", title: "Target triage", status: "live", blurb: "Locate the target (UniProt) → which binder modalities its location even allows." },
+  { id: "B", title: "WT-vs-mutant pocket map", status: "partial", blurb: "The mutant structure is built & docked against inside differential docking; a standalone pocket-diff view is still to come." },
+  { id: "C", title: "Conformer ensemble", status: "soon", blurb: "Relax an ensemble for both pockets so flexibility is represented, not one rigid snapshot. Currently a single snapshot." },
+  { id: "D1", title: "Differential docking", status: "live", blurb: "Dock candidates against both pockets; rank by ΔΔG_sel = score_mutant − score_WT." },
+  { id: "D2", title: "FEP confirmation (top 5)", status: "soon", blurb: "Rigorous relative free energy on the best 5 hits. Gated off until FEP completes a full cycle." },
+  { id: "E", title: "Analog expansion", status: "live", blurb: "Broaden the hit list via RDKit similarity (+ ChEMBL when connected)." },
 ];
+
+const STEP_BADGE: Record<"live" | "partial" | "soon", { label: string; cls: string }> = {
+  live: { label: "Live", cls: "text-emerald-400" },
+  partial: { label: "Partial", cls: "text-sky-400" },
+  soon: { label: "Soon", cls: "text-slate-500" },
+};
 
 function StatusPill({ status }: { status: string }) {
   const tone =
@@ -202,15 +210,21 @@ export default function SelectivePage() {
 
       {/* Pipeline roadmap */}
       <div className="mb-8 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        {PIPELINE_STEPS.map((s) => (
-          <div key={s.id} className={`rounded-lg border p-3 ${s.live ? "border-emerald-500/30 bg-emerald-500/5" : "border-white/10 bg-white/[0.03]"}`} title={s.blurb}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-slate-500">{s.id}</span>
-              <span className={`text-[9px] font-bold uppercase tracking-wider ${s.live ? "text-emerald-400" : "text-slate-500"}`}>{s.live ? "Live" : "Soon"}</span>
+        {PIPELINE_STEPS.map((s) => {
+          const badge = STEP_BADGE[s.status];
+          const cardCls = s.status === "live" ? "border-emerald-500/30 bg-emerald-500/5"
+            : s.status === "partial" ? "border-sky-500/20 bg-sky-500/[0.04]"
+            : "border-white/10 bg-white/[0.03]";
+          return (
+            <div key={s.id} className={`rounded-lg border p-3 ${cardCls}`} title={s.blurb}>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono text-slate-500">{s.id}</span>
+                <span className={`text-[9px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
+              </div>
+              <p className="mt-1 text-xs font-semibold text-slate-200">{s.title}</p>
             </div>
-            <p className="mt-1 text-xs font-semibold text-slate-200">{s.title}</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
