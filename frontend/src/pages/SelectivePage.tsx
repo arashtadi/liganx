@@ -9,11 +9,12 @@
 // expansion) are scaffolded on the backend and surfaced here as a clearly
 // labelled roadmap; submitting a run currently completes triage.
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { usePageMeta } from "../lib/usePageMeta";
 import {
   api,
+  type SelectivityAnalog,
   type SelectivityCandidate,
   type SelectivityHit,
   type SelectivityJob,
@@ -403,6 +404,23 @@ function RunDetail({ shareId, onBack }: { shareId: string; onBack: () => void })
 }
 
 function HitsTable({ hits }: { hits: SelectivityHit[] }) {
+  // Per-row analog expansion state, keyed by row index.
+  const [openRow, setOpenRow] = useState<number | null>(null);
+  const [analogs, setAnalogs] = useState<Record<number, SelectivityAnalog[] | "loading" | "error">>({});
+
+  async function toggleAnalogs(i: number, smiles: string) {
+    if (openRow === i) { setOpenRow(null); return; }
+    setOpenRow(i);
+    if (analogs[i] && analogs[i] !== "error") return; // cached
+    setAnalogs((s) => ({ ...s, [i]: "loading" }));
+    try {
+      const r = await api.findAnalogs(smiles);
+      setAnalogs((s) => ({ ...s, [i]: r.analogs }));
+    } catch {
+      setAnalogs((s) => ({ ...s, [i]: "error" }));
+    }
+  }
+
   return (
     <div className="mt-3 overflow-hidden rounded-lg border border-white/10">
       <table className="w-full text-sm">
@@ -414,37 +432,72 @@ function HitsTable({ hits }: { hits: SelectivityHit[] }) {
             <th className="px-3 py-2 text-right">Score Mut</th>
             <th className="px-3 py-2 text-right">ΔΔG_sel</th>
             <th className="px-3 py-2">Note</th>
+            <th className="px-3 py-2"></th>
           </tr>
         </thead>
         <tbody>
           {hits.map((h, i) => {
             const selective = typeof h.ddg_sel === "number" && h.ddg_sel < 0;
+            const a = analogs[i];
             return (
-              <tr key={`${h.name}-${i}`} className="border-t border-white/5">
-                <td className="px-3 py-2 text-slate-400">{h.rank ?? "—"}</td>
-                <td className="px-3 py-2">
-                  <div className="font-medium text-slate-200">{h.name}</div>
-                  <div className="truncate max-w-[220px] font-mono text-[10px] text-slate-500" title={h.smiles}>{h.smiles}</div>
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-slate-300">{h.score_wt ?? "—"}</td>
-                <td className="px-3 py-2 text-right font-mono text-slate-300">{h.score_mut ?? "—"}</td>
-                <td className={`px-3 py-2 text-right font-mono font-semibold ${selective ? "text-emerald-300" : typeof h.ddg_sel === "number" ? "text-slate-400" : "text-slate-600"}`}>
-                  {typeof h.ddg_sel === "number" ? h.ddg_sel.toFixed(2) : "—"}
-                </td>
-                <td className="px-3 py-2 text-xs text-slate-500">
-                  {h.error ? <span className="text-rose-400">{h.error}</span>
-                    : h.mutation_caveat ? <span className="text-amber-400">{h.mutation_caveat}</span>
-                    : selective ? <span className="text-emerald-400">mutant-selective</span>
-                    : "—"}
-                </td>
-              </tr>
+              <Fragment key={`${h.name}-${i}`}>
+                <tr className="border-t border-white/5">
+                  <td className="px-3 py-2 text-slate-400">{h.rank ?? "—"}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-slate-200">{h.name}</div>
+                    <div className="truncate max-w-[220px] font-mono text-[10px] text-slate-500" title={h.smiles}>{h.smiles}</div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-300">{h.score_wt ?? "—"}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-300">{h.score_mut ?? "—"}</td>
+                  <td className={`px-3 py-2 text-right font-mono font-semibold ${selective ? "text-emerald-300" : typeof h.ddg_sel === "number" ? "text-slate-400" : "text-slate-600"}`}>
+                    {typeof h.ddg_sel === "number" ? h.ddg_sel.toFixed(2) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">
+                    {h.error ? <span className="text-rose-400">{h.error}</span>
+                      : h.mutation_caveat ? <span className="text-amber-400">{h.mutation_caveat}</span>
+                      : selective ? <span className="text-emerald-400">mutant-selective</span>
+                      : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {h.smiles && (
+                      <button className="text-[11px] text-violet-300 hover:underline" onClick={() => toggleAnalogs(i, h.smiles)}>
+                        {openRow === i ? "hide" : "analogs"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {openRow === i && (
+                  <tr className="bg-white/[0.02]">
+                    <td colSpan={7} className="px-4 py-3">
+                      {a === "loading" ? <span className="text-xs text-slate-500">Searching analogs…</span>
+                        : a === "error" ? <span className="text-xs text-rose-400">Analog search failed.</span>
+                        : !a || a.length === 0 ? <span className="text-xs text-slate-500">No similar analogs found.</span>
+                        : (
+                          <div>
+                            <p className="mb-1 text-[11px] uppercase tracking-wider text-slate-500">Analogs of {h.name}</p>
+                            <div className="flex flex-wrap gap-2">
+                              {a.map((an, j) => (
+                                <span key={j} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300" title={an.smiles}>
+                                  <span className="font-medium">{an.name}</span>
+                                  {typeof an.similarity === "number" && <span className="text-slate-500">{(an.similarity * 100).toFixed(0)}%</span>}
+                                  <span className="text-[9px] uppercase text-slate-600">{an.source.startsWith("local") ? "local" : "chembl"}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             );
           })}
         </tbody>
       </table>
       <p className="border-t border-white/5 px-3 py-2 text-[11px] text-slate-500">
         ΔΔG_sel = score(mutant) − score(WT), kcal/mol. More negative = binds the mutant more tightly than wild-type.
-        Docking scores are a screen; confirm top hits with FEP once that tier is enabled.
+        Docking scores are a screen; confirm top hits with FEP once that tier is enabled. "analogs" broadens a hit via
+        structural similarity (local libraries + ChEMBL).
       </p>
     </div>
   );

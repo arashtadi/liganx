@@ -766,6 +766,21 @@ export interface SelectivityHit {
   error?: string;
 }
 
+export interface SelectivityAnalog {
+  name: string;
+  smiles: string;
+  similarity: number | null;
+  source: string;
+  chembl_id?: string | null;
+}
+
+export interface SelectivityAnalogResult {
+  seed_smiles: string;
+  analogs: SelectivityAnalog[];
+  sources: { local: number; chembl: number };
+  chembl_available: boolean;
+}
+
 export interface SelectivityJobRequest {
   pdb_id: string;
   chain?: string;
@@ -1723,5 +1738,12 @@ export const api = {
   cancelSelectivityJob: (shareId: string) =>
     request<SelectivityJob>(`/selective/jobs/${encodeURIComponent(shareId)}/cancel`, {
       method: "POST",
+    }),
+  /** Step E — find structurally similar analogs of a seed molecule (local
+   *  RDKit libraries + ChEMBL similarity). */
+  findAnalogs: (smiles: string, top_k = 10, include_chembl = true) =>
+    request<SelectivityAnalogResult>("/selective/analogs", {
+      method: "POST",
+      body: JSON.stringify({ smiles, top_k, include_chembl }),
     }),
 };

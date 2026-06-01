@@ -32,6 +32,7 @@ from sqlmodel import Session, select
 from ..auth import CurrentUser, current_user
 from ..db import get_session
 from ..models import SelectivityJob, SelectivityJobStatus
+from ..services.analog_search import expand_analogs
 from ..services.selective_runner import run_differential_pipeline, triage_target
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,19 @@ class TriageResponse(BaseModel):
 class CandidateIn(BaseModel):
     name: str = Field(default="", max_length=120)
     smiles: str = Field(..., max_length=600)
+
+
+class AnalogRequest(BaseModel):
+    smiles: str = Field(..., max_length=600, description="Seed molecule SMILES")
+    top_k: int = Field(default=10, ge=1, le=50)
+    include_chembl: bool = True
+
+
+class AnalogOut(BaseModel):
+    seed_smiles: str
+    analogs: list[dict]
+    sources: dict
+    chembl_available: bool
 
 
 class SelectivityJobRequest(BaseModel):
@@ -160,6 +174,24 @@ def get_triage(
         raise HTTPException(status_code=422, detail="Malformed gene symbol.")
     result = triage_target(uniprot_id=uniprot, gene=gene)
     return TriageResponse(**result)
+
+
+@router.post("/analogs", response_model=AnalogOut)
+def find_analogs(
+    payload: AnalogRequest,
+    user: Annotated[CurrentUser, Depends(current_user)],
+) -> AnalogOut:
+    """Step E — analog expansion. Given a seed molecule (e.g. a top mutant-
+    selective hit), return structurally similar molecules from the curated
+    local libraries (RDKit Tanimoto) plus a ChEMBL similarity top-up."""
+    if not payload.smiles.strip():
+        raise HTTPException(status_code=422, detail="Empty SMILES.")
+    result = expand_analogs(
+        payload.smiles.strip(),
+        top_k=payload.top_k,
+        include_chembl=payload.include_chembl,
+    )
+    return AnalogOut(**result)
 
 
 @router.post("/jobs", response_model=SelectivityJobOut)
