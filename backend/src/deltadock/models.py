@@ -681,3 +681,109 @@ class FepPerturbation(SQLModel, table=True):
     # stale, pod is unreachable and the reconciler bumps the study to
     # FAILED with a real error.
     last_polled_at: Optional[datetime] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Mutant-Selective Binder Discovery (standalone /selective feature)
+#
+# A SelectivityJob is ONE run of the mutant-selective pipeline (see
+# docs/mutant_selective_pipeline.md): given a target + a mutation, find
+# binders that prefer the MUTANT pocket over wild-type. It is deliberately
+# its own table — it shares NOTHING with the docking Job / Studio schema, so
+# nothing here can affect the docking critical path. The pipeline reuses
+# existing primitives (FoldX/PDBFixer mutant build, /relax_ensemble docking,
+# fep_runner) by *calling* them from services/selective_runner.py; the data
+# model below is self-contained.
+#
+# Portability note: columns use only dialect-portable types (str/int/float/
+# bool/datetime) because init_db()'s create_all() builds this table from the
+# model on first boot, BEFORE the idempotent migration 032 runs — and dev
+# runs on SQLite. JSON payloads (triage result, pocket diff, ranked hits)
+# are stored as TEXT (json.dumps) rather than JSONB for the same reason.
+# ─────────────────────────────────────────────────────────────────────────
+class SelectivityJobStatus(str, Enum):
+    PENDING = "pending"
+    TRIAGING = "triaging"            # step A — locating the target
+    BUILDING_POCKET = "building_pocket"  # step B — WT vs mutant structures
+    ENSEMBLE = "ensemble"            # step C — relaxing conformer ensembles
+    DOCKING = "docking"              # step D.1 — differential docking
+    RANKING = "ranking"              # step D.1 — computing ΔΔG_sel + ranking
+    ESCALATING_FEP = "escalating_fep"    # step D.2 — top-5 FEP (gated off)
+    EXPANDING = "expanding"          # step E — analog expansion
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class SelectivityJob(SQLModel, table=True):
+    """One mutant-selective binder-discovery run (target + mutation → ranked
+    mutant-selective hits). Standalone; never touches the docking Job schema."""
+
+    __tablename__ = "selectivity_job"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    share_id: str = Field(default_factory=_new_share_id, index=True, unique=True, max_length=32)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Owner uuid stored as a string (portable across SQLite/Postgres). The API
+    # layer scopes by it in Python, so we never need a DB-level UUID join.
+    user_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    # Per-user human-friendly sequential number (computed at submit time as
+    # MAX(existing)+1), like the docking + FEP jobs.
+    seq_number: int = Field(default=0, index=True)
+
+    # ── Target ────────────────────────────────────────────────────────
+    uniprot_id: Optional[str] = Field(default=None, index=True, max_length=20)
+    pdb_id: str = Field(index=True, max_length=8)
+    chain: str = Field(default="A", max_length=4)
+    # The mutation that defines the "mutant" pocket, e.g. "T790M". The pipeline
+    # compares binding at this mutant vs the WT baseline.
+    mutation: str = Field(default="", max_length=120)
+    # Structure provenance for step B: "mutate_relax" (option ② — mutate a WT
+    # structure + relax, the default) or "experimental" (option ① — a matched
+    # experimental mutant structure when one exists).
+    structure_source: str = Field(default="mutate_relax", max_length=32)
+
+    # ── Step A: triage ────────────────────────────────────────────────
+    # Subcellular localization from UniProt: "intracellular" | "extracellular"
+    # | "membrane" | "unknown". NULL until triage runs.
+    localization: Optional[str] = Field(default=None, max_length=32)
+    # Comma-separated modalities triage permits, e.g. "small_molecule" (intra-
+    # cellular) or "small_molecule,peptide,protein" (extracellular).
+    allowed_modalities: Optional[str] = Field(default=None, max_length=120)
+    # The modality chosen for THIS run. MVP supports small_molecule; peptide /
+    # protein are reserved (gated by triage) for later phases.
+    modality: str = Field(default="small_molecule", max_length=32)
+
+    # ── Step C: ensemble ──────────────────────────────────────────────
+    # Conformers per variant (WT and mutant each). 1 = rigid single snapshot.
+    ensemble_size: int = Field(default=1)
+
+    # ── Step D ────────────────────────────────────────────────────────
+    # Candidate source for the differential screen: a library slug, "user"
+    # (uploaded set), or NULL until chosen.
+    candidate_source: Optional[str] = Field(default=None, max_length=120)
+    # The actual candidate molecules to screen, TEXT-encoded JSON list of
+    # {"name": str, "smiles": str}. Provided at submit time (user paste/upload).
+    candidates_json: Optional[str] = None
+    # D.2 — FEP escalation of the top hits. SHIPS OFF: FEP has never completed
+    # a full cycle on the pod, so enabling it would break the run. Flip on only
+    # after FEP is validated end-to-end (see docs/mutant_selective_pipeline.md).
+    fep_escalation: bool = Field(default=False)
+    # How many top-ranked hits to escalate to FEP when enabled (decision: 5).
+    fep_top_n: int = Field(default=5)
+
+    # ── Payloads (TEXT-encoded JSON) ──────────────────────────────────
+    # Triage result detail (raw localization evidence + reasoning).
+    triage_json: Optional[str] = None
+    # WT-vs-mutant pocket diff summary (added/removed atoms, volume/charge Δ).
+    pocket_diff_json: Optional[str] = None
+    # Ranked hits: list of {name, smiles, score_wt, score_mut, ddg_sel, ...}
+    # sorted most-mutant-selective first. Populated when status=completed.
+    ranked_hits_json: Optional[str] = None
+
+    # ── State machine ─────────────────────────────────────────────────
+    status: SelectivityJobStatus = Field(default=SelectivityJobStatus.PENDING, index=True)
+    stage: Optional[str] = Field(default=None, max_length=120)
+    error_message: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=240)

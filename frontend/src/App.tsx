@@ -31,6 +31,7 @@ import AtlasPage from "./pages/AtlasPage";
 import CalibratePage from "./pages/CalibratePage";
 import NewFepStudyPage from "./pages/NewFepStudyPage";
 import FepStudyPage from "./pages/FepStudyPage";
+import SelectivePage from "./pages/SelectivePage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -83,6 +84,10 @@ export default function App() {
             <Route path="/new" element={<Navigate to="/studio" replace />} />
             <Route path="/studio" element={withBoundary(<RequireAuth><StudioPage /></RequireAuth>, "Studio")} />
             <Route path="/history" element={withBoundary(<RequireAuth><HistoryPage /></RequireAuth>, "History")} />
+            {/* Mutant-Selective Binder Discovery — standalone page. Self-contained;
+                does not touch Studio. See docs/mutant_selective_pipeline.md */}
+            <Route path="/selective" element={withBoundary(<RequireAuth><SelectivePage /></RequireAuth>, "Mutant-Selective")} />
+            <Route path="/selective/:shareId" element={withBoundary(<RequireAuth><SelectivePage /></RequireAuth>, "Mutant-Selective run")} />
             <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
             <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
             <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />
@@ -484,6 +489,14 @@ function Header() {
           <NavLink to="/blog" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Blog
           </NavLink>
+          {user && (
+            <NavLink to="/selective" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2 relative`}>
+              <span>Selective</span>
+              <span className="ml-1 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
+                NEW
+              </span>
+            </NavLink>
+          )}
           {/* (L4 2026-05-16) FEP+ menu link TEMPORARILY HIDDEN — the
               openmm CUDA_ERROR_UNSUPPORTED_PTX_VERSION crash is back
               on the pod, every real edge is failing. Routes /fep/new
@@ -588,6 +601,7 @@ function Header() {
                   </span>
                 </NavLink>
                 <NavLink to="/blog" className={mobileLinkCls}>Blog</NavLink>
+                {user && <NavLink to="/selective" className={mobileLinkCls}>Selective</NavLink>}
                 {/* (L4) FEP+ link hidden until CUDA crash is fixed — see desktop comment above. */}
                 {false && (
                   <NavLink to="/fep/new" className={mobileLinkCls}>

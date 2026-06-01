@@ -728,6 +728,84 @@ export interface FepStudyGraph {
   error_message: string | null;
 }
 
+// ── Mutant-Selective Binder Discovery (standalone /selective feature) ──
+// Self-contained types for the /selective page. Nothing here is shared with
+// the docking Studio types above.
+export type Localization = "intracellular" | "extracellular" | "membrane" | "unknown";
+export type SelectivityModality = "small_molecule" | "peptide" | "protein";
+export type SelectivityStatus =
+  | "pending" | "triaging" | "building_pocket" | "ensemble" | "docking"
+  | "ranking" | "escalating_fep" | "expanding" | "completed" | "failed" | "cancelled";
+
+export interface SelectivityTriage {
+  uniprot_id: string | null;
+  localization: Localization;
+  locations: string[];
+  allowed_modalities: SelectivityModality[];
+  reasoning: string;
+  source: "uniprot" | "none";
+}
+
+export interface SelectivityCandidate {
+  name: string;
+  smiles: string;
+}
+
+/** One ranked differential-docking result row. ddg_sel = score_mut − score_wt;
+ *  negative = binds the mutant more tightly than WT (mutant-selective). */
+export interface SelectivityHit {
+  rank?: number;
+  name: string;
+  smiles: string;
+  score_wt?: number;
+  score_mut?: number;
+  ddg_sel?: number;
+  pose_in_pocket_wt?: boolean;
+  pose_in_pocket_mut?: boolean;
+  mutation_caveat?: string | null;
+  error?: string;
+}
+
+export interface SelectivityJobRequest {
+  pdb_id: string;
+  chain?: string;
+  mutation: string;
+  uniprot_id?: string | null;
+  gene?: string | null;
+  modality?: SelectivityModality;
+  structure_source?: "mutate_relax" | "experimental";
+  ensemble_size?: number;
+  candidate_source?: string | null;
+  candidates?: SelectivityCandidate[];
+  title?: string | null;
+}
+
+export interface SelectivityJob {
+  share_id: string;
+  seq_number: number;
+  created_at: string;
+  updated_at: string;
+  pdb_id: string;
+  chain: string;
+  mutation: string;
+  uniprot_id: string | null;
+  structure_source: string;
+  localization: Localization | null;
+  allowed_modalities: SelectivityModality[] | null;
+  modality: SelectivityModality;
+  ensemble_size: number;
+  candidate_source: string | null;
+  fep_escalation: boolean;
+  fep_top_n: number;
+  status: SelectivityStatus;
+  stage: string | null;
+  error_message: string | null;
+  title: string | null;
+  triage: SelectivityTriage | null;
+  pocket_diff: Record<string, unknown> | null;
+  ranked_hits: SelectivityHit[] | null;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
   /**
@@ -1623,4 +1701,27 @@ export const api = {
     if (!r.ok) throw new Error(`Pose ${jobKey}/${compoundId}/${variant}: HTTP ${r.status}`);
     return r.text();
   },
+
+  // ── Mutant-Selective Binder Discovery (standalone /selective) ──
+  /** Step A — locate a target and get the binder modalities its location
+   *  allows. Pass a UniProt accession or a gene symbol. */
+  selectiveTriage: (params: { uniprot?: string; gene?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.uniprot) qs.set("uniprot", params.uniprot);
+    if (params.gene) qs.set("gene", params.gene);
+    return request<SelectivityTriage>(`/selective/triage?${qs.toString()}`);
+  },
+  createSelectivityJob: (payload: SelectivityJobRequest) =>
+    request<SelectivityJob>("/selective/jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listSelectivityJobs: (limit = 50) =>
+    request<SelectivityJob[]>(`/selective/jobs?limit=${limit}`),
+  getSelectivityJob: (shareId: string) =>
+    request<SelectivityJob>(`/selective/jobs/${encodeURIComponent(shareId)}`),
+  cancelSelectivityJob: (shareId: string) =>
+    request<SelectivityJob>(`/selective/jobs/${encodeURIComponent(shareId)}/cancel`, {
+      method: "POST",
+    }),
 };

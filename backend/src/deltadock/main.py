@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, screening, sentry_webhook, structures, suggest, telegram_webhook
+from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, screening, selective, sentry_webhook, structures, suggest, telegram_webhook
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -802,6 +802,11 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # whose user_profile row is trigger-created (and who never hit /welcome)
     # still trigger admin notification.
     ("031_signup_notified_at.sql", "Migration 031 (signup notification flag)"),
+    # Mutant-Selective Binder Discovery — standalone /selective feature.
+    # Creates ONLY the new selectivity_job table; the docking/FEP/Studio
+    # schema is untouched. Idempotent CREATE TABLE IF NOT EXISTS. See
+    # docs/mutant_selective_pipeline.md and services/selective_runner.py.
+    ("032_selectivity_tables.sql", "Migration 032 (mutant-selective binder discovery table)"),
 ]
 
 
@@ -933,6 +938,7 @@ app.include_router(library.router)  # v1.23 — pre-computed library screenings 
 app.include_router(atlas.router)  # Resistance Atlas — per-drug forecast landing pages (public)
 app.include_router(fep.router)  # Phase B scaffold — endpoints return 501 until the FEP pod is wired up (docs/fep_plus_design.md)
 app.include_router(calibrate.router)  # Pro feature: score user's own (drug, mutation) data against Liganx model
+app.include_router(selective.router)  # Mutant-Selective Binder Discovery — standalone /selective feature (docs/mutant_selective_pipeline.md)
 app.include_router(sentry_webhook.router)  # Sentry alerts → Telegram bridge (/internal/sentry-webhook)
 app.include_router(telegram_webhook.router)  # Telegram Approve/Deny callbacks for new-user notifications
 
