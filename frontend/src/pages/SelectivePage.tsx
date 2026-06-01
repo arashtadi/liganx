@@ -12,8 +12,11 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { usePageMeta } from "../lib/usePageMeta";
+import AutocompleteInput from "../components/AutocompleteInput";
 import {
   api,
+  type CatalogMutation,
+  type CatalogTarget,
   type PocketDiff,
   type SelectivityAnalog,
   type SelectivityCandidate,
@@ -149,6 +152,20 @@ export default function SelectivePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
+  // Catalog of curated targets (the ones docking actually supports). Drives
+  // the target + mutation autocompletes.
+  const [catalog, setCatalog] = useState<CatalogTarget[]>([]);
+  useEffect(() => {
+    let alive = true;
+    api.catalog().then((c) => { if (alive) setCatalog(c); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // The catalog target currently matching the PDB field (if any) — gives us
+  // its curated mutation list + chain + UniProt.
+  const selectedTarget = catalog.find(
+    (t) => t.pdb_id.toUpperCase() === pdbId.trim().toUpperCase()
+  ) || null;
+
   useEffect(() => {
     if (shareId) return;  // detail view doesn't need the list
     let alive = true;
@@ -261,8 +278,38 @@ export default function SelectivePage() {
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">New selectivity run</h2>
           <div className="mt-3 grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">PDB ID</label>
-              <input className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600" placeholder="4HJO" value={pdbId} onChange={(e) => setPdbId(e.target.value)} />
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Target (PDB)</label>
+              <AutocompleteInput<CatalogTarget>
+                value={pdbId}
+                onChange={(next) => {
+                  setPdbId(next);
+                  const t = catalog.find((c) => c.pdb_id.toUpperCase() === next.trim().toUpperCase());
+                  if (t) {
+                    setChain(t.chain || "A");
+                    if (t.uniprot) { setTriageBy("uniprot"); setTriageInput(t.uniprot); }
+                  }
+                }}
+                fetchSuggestions={async (q) => {
+                  const s = q.trim().toLowerCase();
+                  const list = !s ? catalog : catalog.filter((t) =>
+                    t.name.toLowerCase().includes(s) || t.id.toLowerCase().includes(s) ||
+                    t.pdb_id.toLowerCase().includes(s) || (t.uniprot || "").toLowerCase().includes(s) ||
+                    (t.indications || []).some((i) => i.toLowerCase().includes(s)));
+                  return list;
+                }}
+                getValue={(t) => t.pdb_id}
+                renderItem={(t, active) => (
+                  <div className={`flex items-baseline gap-2 ${active ? "text-slate-100" : "text-slate-300"}`}>
+                    <span className="font-semibold">{t.name}</span>
+                    <span className="font-mono text-[11px] text-violet-300">{t.pdb_id}</span>
+                    <span className="text-[10px] text-slate-500 truncate">{t.mutations.length} known mutation{t.mutations.length === 1 ? "" : "s"}</span>
+                  </div>
+                )}
+                openOnFocus
+                minChars={0}
+                placeholder="Click to pick a target…"
+                inputClassName="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+              />
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Chain</label>
@@ -270,7 +317,31 @@ export default function SelectivePage() {
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Mutation</label>
-              <input className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600" placeholder="T790M" value={mutation} onChange={(e) => setMutation(e.target.value)} />
+              <AutocompleteInput<CatalogMutation>
+                value={mutation}
+                onChange={setMutation}
+                fetchSuggestions={async (q) => {
+                  const muts = selectedTarget?.mutations || [];
+                  const s = q.trim().toLowerCase();
+                  return !s ? muts : muts.filter((m) =>
+                    m.code.toLowerCase().includes(s) || m.label.toLowerCase().includes(s));
+                }}
+                getValue={(m) => m.code}
+                renderItem={(m, active) => (
+                  <div className={active ? "text-slate-100" : "text-slate-300"}>
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono font-semibold text-violet-300">{m.code}</span>
+                      <span className="text-[11px] text-slate-400 truncate">{m.label}</span>
+                    </div>
+                    {m.significance && <div className="text-[10px] text-slate-500 truncate">{m.significance}</div>}
+                  </div>
+                )}
+                openOnFocus
+                minChars={0}
+                placeholder={selectedTarget ? "Click to pick a mutation…" : "Pick a target first, or type e.g. T790M"}
+                inputClassName="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+                emptyState={<div className="px-3 py-2 text-[11px] text-slate-500">No curated mutation matches — type any code like T790M.</div>}
+              />
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Modality</label>
