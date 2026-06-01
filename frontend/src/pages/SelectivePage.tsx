@@ -471,6 +471,9 @@ function HitsTable({ hits }: { hits: SelectivityHit[] }) {
                       : h.mutation_caveat ? <span className="text-amber-400">{h.mutation_caveat}</span>
                       : selective ? <span className="text-emerald-400">mutant-selective</span>
                       : "—"}
+                    {typeof h.n_conformers === "number" && h.n_conformers > 1 && (
+                      <span className="ml-1 text-slate-600">· {h.n_conformers}-conf ensemble</span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right">
                     {h.smiles && (

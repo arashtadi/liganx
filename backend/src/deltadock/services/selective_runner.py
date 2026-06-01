@@ -227,6 +227,173 @@ def _open_session():
     return Session(engine)
 
 
+# ── Step C: multi-conformer ensemble docking ──────────────────────────────
+def dock_candidate(
+    *,
+    smiles: str,
+    target_pdb: str,
+    chain: str,
+    mutation: Optional[str],
+    ensemble_size: int = 1,
+) -> dict:
+    """Dock one candidate against one variant, returning a quick_dock-shaped
+    dict {ok, score, pose_in_pocket, mutation_caveat, ...}.
+
+    ensemble_size <= 1  → delegate to the battle-tested single-snapshot
+                          quick_dock (unchanged behaviour).
+    ensemble_size  > 1  → step C: generate an MD-relaxed receptor conformer
+                          ensemble on the pod (/relax_ensemble), dock the
+                          ligand against each conformer, and keep the best
+                          pose+score (preferring in-pocket poses). This sees
+                          protein flexibility instead of one rigid snapshot.
+
+    FAIL-SOFT: any problem in the ensemble path (no pod, unconfigured target,
+    relax/dock failure) transparently falls back to quick_dock, so ensemble
+    can never score worse than — or break differently from — single docking.
+    """
+    from .quick_dock import quick_dock
+
+    if ensemble_size is None or ensemble_size <= 1:
+        return quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=mutation)
+
+    try:
+        result = _dock_best_over_ensemble(
+            smiles=smiles, target_pdb=target_pdb, chain=chain,
+            mutation=mutation, ensemble_size=ensemble_size,
+        )
+        if result is not None:
+            return result
+    except Exception as e:  # noqa: BLE001 — never let ensemble break a run
+        log.warning("selective.ensemble: failed, falling back to single dock: %s", e)
+    # Fallback: single-snapshot dock.
+    return quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=mutation)
+
+
+def _dock_best_over_ensemble(
+    *,
+    smiles: str,
+    target_pdb: str,
+    chain: str,
+    mutation: Optional[str],
+    ensemble_size: int,
+) -> Optional[dict]:
+    """The real ensemble path. Returns a quick_dock-shaped dict, or None to
+    signal the caller should fall back to single-snapshot quick_dock."""
+    import tempfile
+    from pathlib import Path
+
+    from deltadock_pipeline.prep import prepare_receptor, prepare_ligand
+    from deltadock_pipeline.dock import PocketBox
+    from deltadock_pipeline.pod_dock import (
+        dock_one_pod, PodDockConfig, PodDockError, relax_ensemble_pod,
+    )
+    from ..catalog import get_target
+    from ..config import get_settings
+    from .receptor_prep import prepare_receptor_for_target
+    from .pocket_filter import _POSE_DRIFT_THRESHOLD_A, compute_pose_offset_a
+    from .pod_activity import bump_pod_activity
+
+    settings = get_settings()
+    pod_url = settings.pod_dock_url
+    if not pod_url:
+        return None  # no pod → fall back
+
+    target = None
+    try:
+        target = get_target(target_pdb)
+    except Exception:  # noqa: BLE001
+        target = None
+    if target is None or target.pocket is None:
+        return None  # no cached pocket box → fall back (quick_dock emits the clear error)
+
+    bump_pod_activity()
+    pdb_id = target.pdb_id
+    chain = target.chain or chain
+    box = PocketBox(
+        center_x=target.pocket.center[0], center_y=target.pocket.center[1], center_z=target.pocket.center[2],
+        size_x=target.pocket.size[0], size_y=target.pocket.size[1], size_z=target.pocket.size[2],
+    )
+    box_center = (box.center_x, box.center_y, box.center_z)
+
+    cache_root = Path(settings.cache_root or "/var/lib/liganx/poses/cache")
+    pdb_cache = cache_root / "pdb"
+    receptor_cache = cache_root / "receptors"
+    pdb_cache.mkdir(parents=True, exist_ok=True)
+    receptor_cache.mkdir(parents=True, exist_ok=True)
+
+    rec = prepare_receptor_for_target(
+        pdb_id=pdb_id, chain=chain, mutation=mutation,
+        pdb_cache=pdb_cache, receptor_cache=receptor_cache,
+        minimize_mutant=getattr(target, "minimize_mutant", True),
+    )
+    if not rec.receptor_pdbqt.exists() or rec.receptor_pdbqt.stat().st_size == 0:
+        return None
+    mutation_caveat = rec.fallback_reason if (mutation and not rec.is_mutant) else None
+
+    cfg = PodDockConfig(base_url=pod_url, timeout_s=min(settings.pod_dock_timeout_s, 60))
+
+    with tempfile.TemporaryDirectory(prefix="sel_ens_") as tmpdir:
+        tmp = Path(tmpdir)
+        ligand_pdbqt = tmp / "ligand.pdbqt"
+        try:
+            prepare_ligand(smiles, ligand_pdbqt)
+        except Exception as e:  # noqa: BLE001 — bad ligand; report (don't fall back, single would fail too)
+            return {"ok": False, "error": f"Ligand preparation failed: {e}"}
+
+        ens_dir = tmp / "ensemble"
+        ens_dir.mkdir(exist_ok=True)
+        # relax_ensemble_pod NEVER raises; returns [input] + N relaxed. We want
+        # `ensemble_size` total conformers, so request ensemble_size-1 relaxed.
+        conformer_pdbs = relax_ensemble_pod(
+            receptor_pdb=rec.receptor_pdb, box_center=box_center, out_dir=ens_dir, cfg=cfg,
+            n_relaxed=max(1, ensemble_size - 1),
+        )
+
+        # conformer 0 is the original receptor whose PDBQT is already built.
+        conformers = [rec.receptor_pdbqt]
+        for i, conf_pdb in enumerate(conformer_pdbs[1:], start=1):
+            try:
+                conf_pdbqt = ens_dir / f"{conf_pdb.stem}.pdbqt"
+                prepare_receptor(conf_pdb, conf_pdbqt, chain=chain)
+                conformers.append(conf_pdbqt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("selective.ensemble: conformer %d prep failed: %s — dropping", i, e)
+
+        # Dock the ligand against each conformer; collect (offset, score).
+        attempts: list[tuple[float, float]] = []
+        for conf_pdbqt in conformers:
+            run_dir = ens_dir / f"dock_{conf_pdbqt.stem}"
+            run_dir.mkdir(exist_ok=True)
+            try:
+                roll = dock_one_pod(
+                    receptor_pdbqt=conf_pdbqt, ligand_pdbqt=ligand_pdbqt, box=box,
+                    work_dir=run_dir, cfg=cfg, exhaustiveness=8, num_modes=9,
+                )
+            except (PodDockError, Exception) as e:  # noqa: BLE001
+                log.warning("selective.ensemble: conformer dock failed: %s", e)
+                continue
+            if not roll.modes:
+                continue
+            offset = compute_pose_offset_a(pose_pdbqt=roll.pose_pdbqt, box_center=box_center)
+            attempts.append((offset, float(roll.modes[0].affinity_kcal_mol)))
+
+        if not attempts:
+            return None  # nothing docked → fall back to single quick_dock
+
+        # Prefer in-pocket poses; among those (or all, if none in pocket) take
+        # the most-negative score.
+        in_pocket = [a for a in attempts if a[0] <= _POSE_DRIFT_THRESHOLD_A]
+        pool = in_pocket if in_pocket else attempts
+        best_offset, best_score = min(pool, key=lambda a: a[1])
+        return {
+            "ok": True,
+            "score": best_score,
+            "pose_in_pocket": bool(in_pocket) and best_offset <= _POSE_DRIFT_THRESHOLD_A,
+            "mutation_caveat": mutation_caveat,
+            "n_conformers": len(conformers),
+        }
+
+
 def _load_job(session, job_share_id: str):
     from sqlmodel import select
     from ..models import SelectivityJob
@@ -276,6 +443,7 @@ def run_differential_pipeline(job_share_id: str) -> None:
         target_pdb = job.pdb_id
         chain = job.chain
         mutation = job.mutation
+        ensemble_size = job.ensemble_size or 1
         try:
             candidates = json.loads(job.candidates_json or "[]")
         except (ValueError, TypeError):
@@ -286,9 +454,10 @@ def run_differential_pipeline(job_share_id: str) -> None:
                       stage=None, error_message="No candidate molecules supplied.")
         return
 
-    # Lazy import — heavy pipeline deps; keep them out of cold start.
+    # Sanity import — fail early with a clear message if the docking pipeline
+    # is unavailable. dock_candidate() handles single vs ensemble internally.
     try:
-        from .quick_dock import quick_dock
+        from .quick_dock import quick_dock  # noqa: F401 — import-availability check
     except Exception as e:  # noqa: BLE001
         _set_progress(job_share_id, status=SelectivityJobStatus.FAILED,
                       error_message=f"Docking pipeline unavailable: {e}")
@@ -312,8 +481,12 @@ def run_differential_pipeline(job_share_id: str) -> None:
             ranked.append({"name": name, "smiles": smiles, "error": "empty SMILES"})
             continue
 
-        wt = quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=None)
-        mut = quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=mutation)
+        # dock_candidate handles single-snapshot (ensemble_size<=1) vs the
+        # multi-conformer ensemble path (step C) internally, with fallback.
+        wt = dock_candidate(smiles=smiles, target_pdb=target_pdb, chain=chain,
+                            mutation=None, ensemble_size=ensemble_size)
+        mut = dock_candidate(smiles=smiles, target_pdb=target_pdb, chain=chain,
+                             mutation=mutation, ensemble_size=ensemble_size)
 
         row: dict = {"name": name, "smiles": smiles}
         if not wt.get("ok"):
@@ -334,6 +507,8 @@ def run_differential_pipeline(job_share_id: str) -> None:
             "pose_in_pocket_wt": bool(wt.get("pose_in_pocket", False)),
             "pose_in_pocket_mut": bool(mut.get("pose_in_pocket", False)),
             "mutation_caveat": mut.get("mutation_caveat") or None,
+            # Number of receptor conformers actually docked (1 = single snapshot).
+            "n_conformers": max(int(wt.get("n_conformers", 1)), int(mut.get("n_conformers", 1))),
         })
         ranked.append(row)
 

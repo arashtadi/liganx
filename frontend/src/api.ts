@@ -763,6 +763,7 @@ export interface SelectivityHit {
   pose_in_pocket_wt?: boolean;
   pose_in_pocket_mut?: boolean;
   mutation_caveat?: string | null;
+  n_conformers?: number;
   error?: string;
 }
 
