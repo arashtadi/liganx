@@ -125,10 +125,9 @@ export default function SelectivePage() {
   const { shareId } = useParams();
   const navigate = useNavigate();
 
-  // ── Detail view ──────────────────────────────────────────────────
-  if (shareId) return <RunDetail shareId={shareId} onBack={() => navigate("/selective")} />;
-
-  // ── List + new-run view ──────────────────────────────────────────
+  // ── List + new-run view state ─────────────────────────────────────
+  // NOTE: all hooks must run unconditionally (Rules of Hooks). The
+  // shareId→detail-view branch is returned BELOW, after every hook.
   const [runs, setRuns] = useState<SelectivityJob[]>([]);
   const [loadingRuns, setLoadingRuns] = useState(true);
 
@@ -151,11 +150,15 @@ export default function SelectivePage() {
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
   useEffect(() => {
+    if (shareId) return;  // detail view doesn't need the list
     let alive = true;
     api.listSelectivityJobs().then((r) => { if (alive) { setRuns(r); setLoadingRuns(false); } })
       .catch(() => { if (alive) setLoadingRuns(false); });
     return () => { alive = false; };
-  }, []);
+  }, [shareId]);
+
+  // ── Detail view — returned after all hooks above (Rules of Hooks) ──
+  if (shareId) return <RunDetail shareId={shareId} onBack={() => navigate("/selective")} />;
 
   const allowedModalities = triage?.allowed_modalities ?? null;
 
