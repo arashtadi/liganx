@@ -9,7 +9,7 @@
 // expansion) are scaffolded on the backend and surfaced here as a clearly
 // labelled roadmap; submitting a run currently completes triage.
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { usePageMeta } from "../lib/usePageMeta";
 import AutocompleteInput from "../components/AutocompleteInput";
@@ -45,6 +45,15 @@ function parseCandidates(text: string): SelectivityCandidate[] {
 }
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+// "Add a molecule by name" suggestion. catalog = the selected target's
+// reference drugs (SMILES on hand); pubchem = name-only hit (SMILES resolved
+// on pick via lookupCompound).
+interface CompoundSuggestion {
+  name: string;
+  smiles?: string;
+  source: "catalog" | "pubchem";
+}
 
 const MODALITY_LABEL: Record<SelectivityModality, string> = {
   small_molecule: "Small molecule",
@@ -152,6 +161,11 @@ export default function SelectivePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
+  // "Add a molecule by name" autocomplete state.
+  const [compoundQuery, setCompoundQuery] = useState("");
+  const [addingCompound, setAddingCompound] = useState(false);
+  const lastCompoundSuggestions = useRef<CompoundSuggestion[]>([]);
+
   // Catalog of curated targets (the ones docking actually supports). Drives
   // the target + mutation autocompletes.
   const [catalog, setCatalog] = useState<CatalogTarget[]>([]);
@@ -212,6 +226,56 @@ export default function SelectivePage() {
       setSubmitErr(e instanceof Error ? e.message : "Submission failed");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // Suggestions for the "add by name" field: catalog drugs for the selected
+  // target (have SMILES) + PubChem name search (resolved on pick).
+  async function fetchCompoundSuggestions(q: string): Promise<CompoundSuggestion[]> {
+    const s = q.trim().toLowerCase();
+    const cat: CompoundSuggestion[] = (selectedTarget?.compounds || [])
+      .filter((c) => !s || c.name.toLowerCase().includes(s))
+      .map((c) => ({ name: c.name, smiles: c.smiles, source: "catalog" as const }));
+    let pub: CompoundSuggestion[] = [];
+    if (s.length >= 2) {
+      try {
+        const r = await api.suggestCompound(q.trim());
+        pub = (r.suggestions || []).map((n) => ({ name: n, source: "pubchem" as const }));
+      } catch { /* PubChem optional */ }
+    }
+    const seen = new Set<string>();
+    const merged: CompoundSuggestion[] = [];
+    for (const it of [...cat, ...pub]) {
+      const k = it.name.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); merged.push(it); }
+    }
+    const out = merged.slice(0, 12);
+    lastCompoundSuggestions.current = out;
+    return out;
+  }
+
+  // AutocompleteInput hands back only the picked NAME. Treat an exact match
+  // against the last suggestion list as a pick: resolve its SMILES (catalog
+  // item directly, else lookupCompound) and append a "name, SMILES" line.
+  async function handleCompoundPick(next: string) {
+    const match = lastCompoundSuggestions.current.find(
+      (c) => c.name.toLowerCase() === next.trim().toLowerCase()
+    );
+    if (!match) { setCompoundQuery(next); return; }
+    setAddingCompound(true);
+    try {
+      let smiles = match.smiles;
+      if (!smiles) smiles = (await api.lookupCompound(match.name)).smiles;
+      if (smiles) {
+        setCandidatesText((prev) => (prev.trim() ? prev.replace(/\s*$/, "") + "\n" : "") + `${match.name}, ${smiles}`);
+        setCompoundQuery("");
+      } else {
+        setCompoundQuery(next);
+      }
+    } catch {
+      setCompoundQuery(next);  // resolution failed — leave the typed text
+    } finally {
+      setAddingCompound(false);
     }
   }
 
@@ -363,6 +427,29 @@ export default function SelectivePage() {
               <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Ensemble size</label>
               <input type="number" min={1} max={50} className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100" value={ensembleSize} onChange={(e) => setEnsembleSize(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} />
             </div>
+          </div>
+          <div className="mt-3">
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Add a molecule by name {addingCompound && <span className="text-violet-300">· resolving…</span>}
+            </label>
+            <AutocompleteInput<CompoundSuggestion>
+              value={compoundQuery}
+              onChange={handleCompoundPick}
+              fetchSuggestions={fetchCompoundSuggestions}
+              getValue={(c) => c.name}
+              renderItem={(c, active) => (
+                <div className={`flex items-baseline gap-2 ${active ? "text-slate-100" : "text-slate-300"}`}>
+                  <span className="font-semibold">{c.name}</span>
+                  <span className="text-[9px] uppercase tracking-wider text-slate-500">{c.source}</span>
+                  {c.smiles && <span className="truncate font-mono text-[10px] text-slate-500">{c.smiles}</span>}
+                </div>
+              )}
+              openOnFocus
+              minChars={0}
+              placeholder={selectedTarget ? `e.g. ${selectedTarget.compounds?.[0]?.name || "osimertinib"} — picks add a line below` : "Type a drug name, e.g. osimertinib"}
+              inputClassName="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+              emptyState={<div className="px-3 py-2 text-[11px] text-slate-500">No match — type a SMILES directly in the box below.</div>}
+            />
           </div>
           <div className="mt-3">
             <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
