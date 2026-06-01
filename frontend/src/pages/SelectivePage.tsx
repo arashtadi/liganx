@@ -61,7 +61,7 @@ const LOCALIZATION_COPY: Record<Localization, { label: string; tone: string }> =
 const PIPELINE_STEPS: { id: string; title: string; status: "live" | "partial" | "soon"; blurb: string }[] = [
   { id: "A", title: "Target triage", status: "live", blurb: "Locate the target (UniProt) → which binder modalities its location even allows." },
   { id: "B", title: "WT-vs-mutant pocket map", status: "partial", blurb: "The mutant structure is built & docked against inside differential docking; a standalone pocket-diff view is still to come." },
-  { id: "C", title: "Conformer ensemble", status: "soon", blurb: "Relax an ensemble for both pockets so flexibility is represented, not one rigid snapshot. Currently a single snapshot." },
+  { id: "C", title: "Conformer ensemble", status: "live", blurb: "Set ensemble size > 1 to dock against an MD-relaxed conformer ensemble for both pockets, capturing protein flexibility instead of one rigid snapshot." },
   { id: "D1", title: "Differential docking", status: "live", blurb: "Dock candidates against both pockets; rank by ΔΔG_sel = score_mutant − score_WT." },
   { id: "D2", title: "FEP confirmation (top 5)", status: "soon", blurb: "Rigorous relative free energy on the best 5 hits. Gated off until FEP completes a full cycle." },
   { id: "E", title: "Analog expansion", status: "live", blurb: "Broaden the hit list via RDKit similarity (+ ChEMBL when connected)." },
