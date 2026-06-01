@@ -796,6 +796,34 @@ export interface SelectivityJobRequest {
   title?: string | null;
 }
 
+export interface ResidueProps {
+  code: string;
+  name: string;
+  volume_a3: number;
+  hydropathy_kd: number;
+  charge: number;
+  hbond: "donor" | "acceptor" | "both" | null;
+  aromatic: boolean;
+  description: string;
+}
+
+export interface PocketSubstitution {
+  position: number;
+  wt_residue: ResidueProps;
+  mut_residue: ResidueProps;
+  delta_volume_a3: number;
+  delta_hydropathy_kd: number;
+  delta_charge: number;
+  summary: string;
+}
+
+export interface PocketDiff {
+  mutation: string;
+  substitutions: PocketSubstitution[];
+  summary: string;
+  method: string;
+}
+
 export interface SelectivityJob {
   share_id: string;
   seq_number: number;
@@ -818,7 +846,7 @@ export interface SelectivityJob {
   error_message: string | null;
   title: string | null;
   triage: SelectivityTriage | null;
-  pocket_diff: Record<string, unknown> | null;
+  pocket_diff: PocketDiff | null;
   ranked_hits: SelectivityHit[] | null;
 }
 

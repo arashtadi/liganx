@@ -14,6 +14,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { usePageMeta } from "../lib/usePageMeta";
 import {
   api,
+  type PocketDiff,
   type SelectivityAnalog,
   type SelectivityCandidate,
   type SelectivityHit,
@@ -60,7 +61,7 @@ const LOCALIZATION_COPY: Record<Localization, { label: string; tone: string }> =
 // standalone deliverable yet), or "soon" (not built).
 const PIPELINE_STEPS: { id: string; title: string; status: "live" | "partial" | "soon"; blurb: string }[] = [
   { id: "A", title: "Target triage", status: "live", blurb: "Locate the target (UniProt) → which binder modalities its location even allows." },
-  { id: "B", title: "WT-vs-mutant pocket map", status: "partial", blurb: "The mutant structure is built & docked against inside differential docking; a standalone pocket-diff view is still to come." },
+  { id: "B", title: "WT-vs-mutant pocket map", status: "live", blurb: "Characterises how the mutation reshapes the pocket — size, hydrophobicity, charge, H-bonding — shown as a WT-vs-mutant comparison on each run." },
   { id: "C", title: "Conformer ensemble", status: "live", blurb: "Set ensemble size > 1 to dock against an MD-relaxed conformer ensemble for both pockets, capturing protein flexibility instead of one rigid snapshot." },
   { id: "D1", title: "Differential docking", status: "live", blurb: "Dock candidates against both pockets; rank by ΔΔG_sel = score_mutant − score_WT." },
   { id: "D2", title: "FEP confirmation (top 5)", status: "soon", blurb: "Rigorous relative free energy on the best 5 hits. Gated off until FEP completes a full cycle." },
@@ -395,6 +396,13 @@ function RunDetail({ shareId, onBack }: { shareId: string; onBack: () => void })
         </div>
       )}
 
+      {run.pocket_diff && (
+        <div className="mt-6">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-slate-300">Step B · WT-vs-mutant pocket map</h2>
+          <PocketMapCard diff={run.pocket_diff} />
+        </div>
+      )}
+
       <div className="mt-6 rounded-xl border border-white/10 bg-white/[0.03] p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Differential results</h2>
@@ -413,6 +421,46 @@ function RunDetail({ shareId, onBack }: { shareId: string; onBack: () => void })
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+function PocketMapCard({ diff }: { diff: PocketDiff }) {
+  const hbond = (v: string | null) => (v === null ? "none" : v);
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+      {diff.substitutions.map((s, i) => {
+        const rows: { label: string; wt: string; mut: string; delta?: string }[] = [
+          { label: "Residue", wt: `${s.wt_residue.name} (${s.wt_residue.code})`, mut: `${s.mut_residue.name} (${s.mut_residue.code})` },
+          { label: "Volume (Å³)", wt: String(s.wt_residue.volume_a3), mut: String(s.mut_residue.volume_a3), delta: `${s.delta_volume_a3 > 0 ? "+" : ""}${s.delta_volume_a3}` },
+          { label: "Hydropathy (KD)", wt: String(s.wt_residue.hydropathy_kd), mut: String(s.mut_residue.hydropathy_kd), delta: `${s.delta_hydropathy_kd > 0 ? "+" : ""}${s.delta_hydropathy_kd}` },
+          { label: "Charge", wt: String(s.wt_residue.charge), mut: String(s.mut_residue.charge), delta: s.delta_charge !== 0 ? `${s.delta_charge > 0 ? "+" : ""}${s.delta_charge}` : "0" },
+          { label: "H-bonding", wt: hbond(s.wt_residue.hbond), mut: hbond(s.mut_residue.hbond) },
+          { label: "Aromatic", wt: s.wt_residue.aromatic ? "yes" : "no", mut: s.mut_residue.aromatic ? "yes" : "no" },
+        ];
+        return (
+          <div key={i} className={i > 0 ? "mt-4 border-t border-white/10 pt-4" : ""}>
+            <div className="mb-2 grid grid-cols-3 gap-2 text-[11px] uppercase tracking-wider text-slate-500">
+              <span>Property</span>
+              <span className="text-center text-amber-300">WT pocket</span>
+              <span className="text-center text-emerald-300">Mutant pocket</span>
+            </div>
+            {rows.map((r) => (
+              <div key={r.label} className="grid grid-cols-3 gap-2 border-t border-white/5 py-1 text-sm">
+                <span className="text-slate-500">{r.label}</span>
+                <span className="text-center font-mono text-slate-300">{r.wt}</span>
+                <span className="text-center font-mono text-slate-200">
+                  {r.mut}{r.delta && r.delta !== "0" && <span className="ml-1 text-[10px] text-violet-300">({r.delta})</span>}
+                </span>
+              </div>
+            ))}
+            <p className="mt-3 text-sm text-slate-300">{s.summary}</p>
+          </div>
+        );
+      })}
+      <p className="mt-3 border-t border-white/5 pt-2 text-[11px] text-slate-500">
+        Method: {diff.method}. This is the structural difference the differential docking exploits — a binder is mutant-selective when it gains from these changes in the mutant pocket but not in WT.
+      </p>
     </div>
   );
 }

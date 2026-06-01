@@ -220,6 +220,122 @@ def triage_target(
 # and FEP escalation (step D.2), are follow-ups.
 
 
+# ── Step B: WT-vs-mutant pocket map (residue-property diff) ────────────────
+#
+# A point mutation reshapes the pocket by swapping one side chain for another.
+# The first-order, structure-free way to characterise that change is the delta
+# in the two residues' physicochemical properties: size (does it fill or open
+# pocket space?), hydrophobicity (polar↔greasy?), charge (gain/lose an ionic
+# contact?), and H-bonding (gain/lose a donor/acceptor?). This is the "two-blob
+# WT vs mutant pocket" comparison — computed from the mutation code alone, so
+# it works for ANY target instantly (no structure or pod needed).
+
+# Per-residue properties. volume = residue volume in Å³ (Zamyatnin 1972);
+# hydropathy = Kyte–Doolittle; charge at pH 7; hbond = side-chain H-bonding
+# ("donor"/"acceptor"/"both"/None); aromatic flag; one-line character.
+_AA = {
+    "A": (88.6, 1.8, 0, None, False, "Ala — small, hydrophobic"),
+    "R": (173.4, -4.5, 1, "donor", False, "Arg — large, positively charged"),
+    "N": (114.1, -3.5, 0, "both", False, "Asn — polar amide"),
+    "D": (111.1, -3.5, -1, "acceptor", False, "Asp — negatively charged"),
+    "C": (108.5, 2.5, 0, "donor", False, "Cys — thiol, can form disulfides"),
+    "Q": (143.8, -3.5, 0, "both", False, "Gln — polar amide"),
+    "E": (138.4, -3.5, -1, "acceptor", False, "Glu — negatively charged"),
+    "G": (60.1, -0.4, 0, None, False, "Gly — tiny, flexible (no side chain)"),
+    "H": (153.2, -3.2, 0, "both", True, "His — aromatic, weakly basic"),
+    "I": (166.7, 4.5, 0, None, False, "Ile — bulky, hydrophobic, β-branched"),
+    "L": (166.7, 3.8, 0, None, False, "Leu — bulky, hydrophobic"),
+    "K": (168.6, -3.9, 1, "donor", False, "Lys — large, positively charged"),
+    "M": (162.9, 1.9, 0, None, False, "Met — bulky, hydrophobic, flexible"),
+    "F": (189.9, 2.8, 0, None, True, "Phe — large aromatic, hydrophobic"),
+    "P": (112.7, -1.6, 0, None, False, "Pro — rigid, kinks the backbone"),
+    "S": (89.0, -0.8, 0, "both", False, "Ser — small, polar hydroxyl"),
+    "T": (116.1, -0.7, 0, "both", False, "Thr — polar hydroxyl, β-branched"),
+    "W": (227.8, -0.9, 0, "donor", True, "Trp — largest, aromatic"),
+    "Y": (193.6, -1.3, 0, "both", True, "Tyr — large aromatic, polar hydroxyl"),
+    "V": (140.0, 4.2, 0, None, False, "Val — hydrophobic, β-branched"),
+}
+_AA_NAME = {
+    "A": "Ala", "R": "Arg", "N": "Asn", "D": "Asp", "C": "Cys", "Q": "Gln",
+    "E": "Glu", "G": "Gly", "H": "His", "I": "Ile", "L": "Leu", "K": "Lys",
+    "M": "Met", "F": "Phe", "P": "Pro", "S": "Ser", "T": "Thr", "W": "Trp",
+    "Y": "Tyr", "V": "Val",
+}
+
+
+def _residue_props(aa: str) -> Optional[dict]:
+    aa = (aa or "").upper()
+    if aa not in _AA:
+        return None
+    v, h, c, hb, arom, desc = _AA[aa]
+    return {"code": aa, "name": _AA_NAME[aa], "volume_a3": v, "hydropathy_kd": h,
+            "charge": c, "hbond": hb, "aromatic": arom, "description": desc}
+
+
+def _one_substitution_diff(wt: str, pos: int, mut: str) -> Optional[dict]:
+    wp, mp = _residue_props(wt), _residue_props(mut)
+    if wp is None or mp is None:
+        return None
+    dv = round(mp["volume_a3"] - wp["volume_a3"], 1)
+    dh = round(mp["hydropathy_kd"] - wp["hydropathy_kd"], 1)
+    dc = mp["charge"] - wp["charge"]
+    notes: list[str] = []
+    if dv >= 25:
+        notes.append(f"bulkier side chain (+{dv:.0f} Å³) — fills pocket space; can sterically clash or add a new hydrophobic contact")
+    elif dv <= -25:
+        notes.append(f"smaller side chain ({dv:.0f} Å³) — opens a cavity the binder could exploit")
+    if dh >= 2:
+        notes.append("markedly more hydrophobic — favours greasy/aromatic groups, disfavours polar ones")
+    elif dh <= -2:
+        notes.append("markedly more polar — favours H-bonding/charged groups")
+    if dc != 0:
+        notes.append(f"net charge change ({'+' if dc > 0 else ''}{dc}) — gains/loses an ionic contact at the site")
+    if wp["hbond"] and not mp["hbond"]:
+        notes.append("loses a side-chain hydrogen-bonding group")
+    elif mp["hbond"] and not wp["hbond"]:
+        notes.append("gains a side-chain hydrogen-bonding group")
+    if mp["aromatic"] and not wp["aromatic"]:
+        notes.append("introduces an aromatic ring — enables π-stacking")
+    elif wp["aromatic"] and not mp["aromatic"]:
+        notes.append("removes an aromatic ring — loses π-stacking")
+    if mut.upper() == "P":
+        notes.append("introduces proline — rigidifies the backbone, may reshape the pocket")
+    if mut.upper() == "G":
+        notes.append("introduces glycine — adds backbone flexibility")
+    if not notes:
+        notes.append("a conservative substitution — modest change to the pocket")
+    return {
+        "position": pos, "wt_residue": wp, "mut_residue": mp,
+        "delta_volume_a3": dv, "delta_hydropathy_kd": dh, "delta_charge": dc,
+        "summary": f"{wp['name']}{pos}{mp['name']}: " + "; ".join(notes) + ".",
+    }
+
+
+def pocket_diff(mutation: str) -> Optional[dict]:
+    """Step B — characterise how the mutation(s) reshape the pocket, from the
+    mutation code alone (no structure needed). Handles one or more
+    substitutions separated by '+' or '_'. Returns None if unparseable."""
+    import re
+    if not mutation:
+        return None
+    subs: list[dict] = []
+    for tok in re.split(r"[+_]", mutation.strip()):
+        m = re.fullmatch(r"([A-Za-z])(\d+)([A-Za-z])", tok.strip())
+        if not m:
+            continue
+        d = _one_substitution_diff(m.group(1), int(m.group(2)), m.group(3))
+        if d:
+            subs.append(d)
+    if not subs:
+        return None
+    return {
+        "mutation": mutation,
+        "substitutions": subs,
+        "summary": subs[0]["summary"],
+        "method": "residue-property delta (size, hydrophobicity, charge, H-bonding)",
+    }
+
+
 def _open_session():
     """Fresh DB session for the background task (request session is gone)."""
     from sqlmodel import Session

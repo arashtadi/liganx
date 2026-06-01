@@ -33,7 +33,7 @@ from ..auth import CurrentUser, current_user
 from ..db import get_session
 from ..models import SelectivityJob, SelectivityJobStatus
 from ..services.analog_search import expand_analogs
-from ..services.selective_runner import run_differential_pipeline, triage_target
+from ..services.selective_runner import pocket_diff, run_differential_pipeline, triage_target
 
 log = logging.getLogger(__name__)
 
@@ -248,6 +248,10 @@ def create_selectivity_job(
 
     candidates = [{"name": c.name, "smiles": c.smiles} for c in payload.candidates]
 
+    # Step B — WT-vs-mutant pocket map. Structure-free residue-property diff,
+    # instant, computed at submit so it's available even on a triage-only run.
+    pdiff = pocket_diff(payload.mutation)
+
     job = SelectivityJob(
         user_id=user.id,
         seq_number=seq_number,
@@ -264,6 +268,7 @@ def create_selectivity_job(
         localization=localization,
         allowed_modalities=",".join(allowed),
         triage_json=json.dumps(triage),
+        pocket_diff_json=json.dumps(pdiff) if pdiff else None,
         status=SelectivityJobStatus.PENDING,
         stage="docking_queued" if candidates else "triage_complete",
     )
