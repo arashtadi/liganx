@@ -3,7 +3,7 @@ import type { PostMeta } from "../types";
 
 export const meta: PostMeta = {
   slug: "egfr-c797s-osimertinib-resistance-fourth-generation",
-  title: "EGFR C797S: when osimertinib loses its anchor",
+  title: "EGFR C797S: the mutation behind osimertinib resistance",
   description:
     "C797S is the mutation that breaks osimertinib's covalent bond. Here's the mechanism, why allelic context decides treatment, and the fourth-generation inhibitors chasing it.",
   date: "2026-05-23",

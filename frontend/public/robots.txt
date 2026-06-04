@@ -15,6 +15,7 @@ Allow: /library
 Allow: /validation
 Allow: /mutation-docking-guide
 Allow: /contact
+Allow: /about
 Allow: /privacy
 Allow: /terms
 Allow: /blog

@@ -18,6 +18,7 @@
 
 import { Link, useParams } from "react-router-dom";
 import { getPost } from "../blog/registry";
+import BlogArticleBody from "../blog/BlogArticleBody";
 import { usePageMeta } from "../lib/usePageMeta";
 import { useJsonLd } from "../lib/useJsonLd";
 
@@ -50,8 +51,18 @@ export default function BlogPostPage() {
           url,
           datePublished: meta.date,
           ...(meta.updated ? { dateModified: meta.updated } : { dateModified: meta.date }),
+          // "Liganx team" is a group, not a named individual, so the
+          // author is modeled as an Organization (schema-valid) rather than
+          // a Person. The /about page backs this with the team's expertise
+          // (E-E-A-T) and is referenced as the author URL.
           ...(meta.author
-            ? { author: { "@type": "Person", name: meta.author } }
+            ? {
+                author: {
+                  "@type": "Organization",
+                  name: meta.author,
+                  url: `${SITE}/about`,
+                },
+              }
             : {}),
           publisher: {
             "@type": "Organization",
@@ -102,78 +113,9 @@ export default function BlogPostPage() {
     );
   }
 
-  const { Component } = post;
-
-  return (
-    <article className="max-w-3xl mx-auto py-8 px-4 sm:px-6">
-      {/* Breadcrumb — visible AND in JSON-LD for crawler clarity. */}
-      <nav
-        aria-label="Breadcrumb"
-        className="mb-6 text-[11px] font-mono uppercase tracking-wider text-slate-500"
-      >
-        <Link to="/blog" className="hover:text-cyan-600 dark:hover:text-cyan-400">
-          ← Blog
-        </Link>
-      </nav>
-
-      <header className="mb-8 pb-6 border-b border-slate-200 dark:border-slate-800">
-        <div className="flex items-center gap-3 text-[11px] font-mono uppercase tracking-wider text-slate-500 dark:text-slate-500 mb-3">
-          <time dateTime={meta.date}>
-            {new Date(meta.date).toLocaleDateString("en-US", {
-              year: "numeric",
-              month: "short",
-              day: "numeric",
-            })}
-          </time>
-          {meta.readingMin && (
-            <>
-              <span aria-hidden>·</span>
-              <span>{meta.readingMin} min read</span>
-            </>
-          )}
-          {meta.author && (
-            <>
-              <span aria-hidden>·</span>
-              <span>{meta.author}</span>
-            </>
-          )}
-        </div>
-        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white">
-          {meta.title}
-        </h1>
-        <p className="mt-3 text-lg text-slate-600 dark:text-slate-400 leading-relaxed">
-          {meta.description}
-        </p>
-      </header>
-
-      {/* Prose body — relies on Tailwind typography-ish utilities baked
-          into index.css's .prose-blog class (added below) so post
-          components don't have to wrestle individual paragraph styles. */}
-      <div className="prose-blog text-slate-700 dark:text-slate-300">
-        <Component />
-      </div>
-
-      <footer className="mt-12 pt-6 border-t border-slate-200 dark:border-slate-800">
-        {meta.tags && meta.tags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 mb-4 text-[11px] font-mono uppercase tracking-wider">
-            <span className="text-slate-500">Tags</span>
-            {meta.tags.map((t) => (
-              <span
-                key={t}
-                className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"
-              >
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
-        <Link
-          to="/blog"
-          className="text-cyan-600 dark:text-cyan-400 hover:underline text-sm font-medium"
-        >
-          ← Back to all posts
-        </Link>
-      </footer>
-    </article>
-  );
+  // The visible article markup lives in BlogArticleBody so the prerender
+  // script can render the identical HTML at build time (see
+  // scripts/prerender.mjs). This page wraps it with the runtime SEO
+  // side-effects (usePageMeta + useJsonLd above) and not-found handling.
+  return <BlogArticleBody post={post} />;
 }

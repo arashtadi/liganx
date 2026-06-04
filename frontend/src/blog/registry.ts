@@ -56,3 +56,37 @@ export function getPost(slug: string): LoadedPost | undefined {
 export function allSlugs(): string[] {
   return posts.map((p) => p.meta.slug);
 }
+
+/**
+ * relatedPosts — pick the N posts most topically related to `slug`.
+ *
+ * Ranking: number of shared `meta.tags` (descending), tie-broken by
+ * recency (newer first). Posts with zero tag overlap are only used as
+ * filler to reach N when a post has few siblings, so every post still
+ * surfaces a "Related posts" block. This is the automatic internal-linking
+ * layer — it cross-links the entire catalogue without editing every post,
+ * which is the single highest-leverage, lowest-risk SEO lever for the blog.
+ */
+export function relatedPosts(slug: string, n = 3): LoadedPost[] {
+  const self = getPost(slug);
+  if (!self) return posts.slice(0, n);
+  const selfTags = new Set((self.meta.tags ?? []).map((t) => t.toLowerCase()));
+
+  const scored = posts
+    .filter((p) => p.meta.slug !== slug)
+    .map((p) => {
+      const overlap = (p.meta.tags ?? []).reduce(
+        (acc, t) => acc + (selfTags.has(t.toLowerCase()) ? 1 : 0),
+        0,
+      );
+      return { post: p, overlap };
+    });
+
+  scored.sort((a, b) => {
+    if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+    const cmp = b.post.meta.date.localeCompare(a.post.meta.date);
+    return cmp !== 0 ? cmp : a.post.meta.slug.localeCompare(b.post.meta.slug);
+  });
+
+  return scored.slice(0, n).map((s) => s.post);
+}

@@ -23,6 +23,7 @@ import CompoundsPage from "./pages/CompoundsPage";
 import PendingApprovalPage from "./pages/PendingApprovalPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
 import ContactPage from "./pages/ContactPage";
+import AboutPage from "./pages/AboutPage";
 import AdminPage from "./pages/AdminPage";
 import StudioPage from "./pages/StudioPage";
 import BlogIndexPage from "./pages/BlogIndexPage";
@@ -115,6 +116,7 @@ export default function App() {
             <Route path="/validation" element={withBoundary(<ValidationPage />, "Validation")} />
             <Route path="/mutation-docking-guide" element={withBoundary(<MutationDockingGuidePage />, "Mutation docking guide")} />
             <Route path="/contact" element={withBoundary(<ContactPage />, "Contact")} />
+            <Route path="/about" element={withBoundary(<AboutPage />, "About")} />
             {/* Blog — public, indexed by Google. /blog is the listing,
                 /blog/:slug renders one post. Posts are .tsx modules
                 under src/blog/posts/, discovered at build time via
@@ -242,6 +244,7 @@ const REDIRECT_SKIP_PATHS = [
   "/privacy",
   "/terms",
   "/contact",
+  "/about",
   // /pending owns its own redirect logic — once approved it sends the
   // user to /studio, before approval it auto-polls. We don't want
   // ProfileRedirect to bounce them off it.
@@ -802,6 +805,7 @@ function Footer() {
               the single highest-leverage thing we can do for its rank. */}
           <Link to="/mutation-docking-guide" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Guide</Link>
           <Link to="/validation" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Validation</Link>
+          <Link to="/about" className="hover:text-ink dark:hover:text-slate-100 transition-colors">About</Link>
           <Link to="/contact" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Contact</Link>
           <Link to="/privacy" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Privacy</Link>
           <Link to="/terms" className="hover:text-ink dark:hover:text-slate-100 transition-colors">Terms</Link>

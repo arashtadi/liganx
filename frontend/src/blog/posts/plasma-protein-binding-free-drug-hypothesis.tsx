@@ -13,7 +13,7 @@ export const meta: PostMeta = {
   slug: "plasma-protein-binding-free-drug-hypothesis",
   title: "Plasma protein binding and the free drug hypothesis",
   description:
-    "Only unbound drug reaches the target, so why does optimizing protein binding so often waste a medicinal chemistry program? A practical look at fraction unbound.",
+    "Only unbound drug reaches the target. Why chasing lower plasma protein binding usually wastes a med-chem program, and what fraction unbound really tells you.",
   date: "2026-05-22",
   author: "Liganx team",
   tags: ["admet", "plasma-protein-binding", "pharmacokinetics", "drug-design"],
