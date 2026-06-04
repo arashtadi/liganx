@@ -103,7 +103,7 @@ function Hero() {
                 reads as confident; six reads as a feature dump. */}
             <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
-              <span className="flex items-center gap-1.5"><Check /> Vina + GNINA + Boltz-2</span>
+              <span className="flex items-center gap-1.5"><Check /> Free GPU Vina · GNINA + Boltz-2 on Pro</span>
               <span className="flex items-center gap-1.5"><Check /> Mutation-aware virtual screening</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>
@@ -305,8 +305,8 @@ function FeatureGrid() {
     },
     {
       icon: <Sparkles />,
-      title: "Three engines, validated poses",
-      body: "QuickVina2-GPU, GNINA's CNN rescoring, and Boltz-2 ML co-folding \u2014 three genuinely different methods side-by-side on one job, each pose checked by PoseBusters, Vinardo re-score, and RDKit strain analysis. Most free tools give you one engine and no validation.",
+      title: "Validated poses on GPU Vina",
+      body: "Free jobs run on QuickVina2-GPU, with every pose checked by PoseBusters, Vinardo re-score, and RDKit strain analysis \u2014 most free tools give you no validation at all. GNINA CNN rescoring and Boltz-2 ML co-folding run side-by-side on the same job on Pro.",
     },
     {
       icon: <Shield />,
