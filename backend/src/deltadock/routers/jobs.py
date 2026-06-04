@@ -112,7 +112,7 @@ def _to_out(job: Job) -> JobOut:
         include_wt=job.include_wt,
         ensemble=bool(getattr(job, "ensemble", False)),
         engine=job.engine,
-        user_id=job.user_id,
+        user_id=str(job.user_id) if job.user_id else None,
         title=job.title,
         tags=list(job.tags or []),
         compounds=[
@@ -1197,7 +1197,7 @@ def list_jobs(
             created_at=r["created_at"], updated_at=r["updated_at"],
             exhaustiveness=r["exhaustiveness"], include_wt=r["include_wt"],
             ensemble=bool(r["ensemble"]),
-            engine=r["engine"], user_id=r["user_id"], title=r["title"],
+            engine=r["engine"], user_id=str(r["user_id"]) if r["user_id"] else None, title=r["title"],
             tags=list(r["tags"] or []),
             compounds=compounds_by_job.get(r["id"], []),
         )
@@ -1272,7 +1272,7 @@ def _to_summary_out(job: Job) -> JobOut:
         include_wt=job.include_wt,
         ensemble=bool(getattr(job, "ensemble", False)),
         engine=job.engine,
-        user_id=job.user_id,
+        user_id=str(job.user_id) if job.user_id else None,
         title=job.title,
         tags=list(job.tags or []),
         compounds=[
