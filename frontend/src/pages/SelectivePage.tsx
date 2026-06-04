@@ -371,8 +371,9 @@ export default function SelectivePage() {
                 )}
                 openOnFocus
                 minChars={0}
-                placeholder="Click to pick a target…"
+                placeholder="Pick a target — or type any PDB ID"
                 inputClassName="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+                emptyState={<div className="px-3 py-2 text-[11px] text-slate-500">Not in the curated list? Type any 4-character RCSB PDB ID (e.g. 4HJO) — the pocket is auto-detected.</div>}
               />
             </div>
             <div>

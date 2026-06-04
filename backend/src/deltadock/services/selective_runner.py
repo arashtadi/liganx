@@ -355,37 +355,30 @@ def dock_candidate(
     """Dock one candidate against one variant, returning a quick_dock-shaped
     dict {ok, score, pose_in_pocket, mutation_caveat, ...}.
 
-    ensemble_size <= 1  → delegate to the battle-tested single-snapshot
-                          quick_dock (unchanged behaviour).
-    ensemble_size  > 1  → step C: generate an MD-relaxed receptor conformer
-                          ensemble on the pod (/relax_ensemble), dock the
-                          ligand against each conformer, and keep the best
-                          pose+score (preferring in-pocket poses). This sees
-                          protein flexibility instead of one rigid snapshot.
+    Handles BOTH catalog targets and arbitrary PDBs: the pocket box comes from
+    the catalog when available, otherwise it's auto-detected (co-crystal HETATM
+    → fpocket), mirroring the Studio runner — so the demo user can pick any
+    target, not just curated ones. ensemble_size<=1 docks a single snapshot;
+    >1 docks an MD-relaxed conformer ensemble (step C) and keeps the best
+    in-pocket pose.
 
-    FAIL-SOFT: any problem in the ensemble path (no pod, unconfigured target,
-    relax/dock failure) transparently falls back to quick_dock, so ensemble
-    can never score worse than — or break differently from — single docking.
+    FAIL-SOFT: any problem transparently falls back to the single-snapshot
+    quick_dock (catalog targets), so a run never hard-crashes.
     """
-    from .quick_dock import quick_dock
-
-    if ensemble_size is None or ensemble_size <= 1:
-        return quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=mutation)
-
     try:
-        result = _dock_best_over_ensemble(
+        result = _dock_candidate_impl(
             smiles=smiles, target_pdb=target_pdb, chain=chain,
             mutation=mutation, ensemble_size=ensemble_size,
         )
         if result is not None:
             return result
-    except Exception as e:  # noqa: BLE001 — never let ensemble break a run
-        log.warning("selective.ensemble: failed, falling back to single dock: %s", e)
-    # Fallback: single-snapshot dock.
+    except Exception as e:  # noqa: BLE001 — never let docking break a run
+        log.warning("selective.dock: impl failed, falling back to quick_dock: %s", e)
+    from .quick_dock import quick_dock
     return quick_dock(smiles=smiles, target_pdb=target_pdb, chain=chain, mutation=mutation)
 
 
-def _dock_best_over_ensemble(
+def _dock_candidate_impl(
     *,
     smiles: str,
     target_pdb: str,
@@ -393,8 +386,11 @@ def _dock_best_over_ensemble(
     mutation: Optional[str],
     ensemble_size: int,
 ) -> Optional[dict]:
-    """The real ensemble path. Returns a quick_dock-shaped dict, or None to
-    signal the caller should fall back to single-snapshot quick_dock."""
+    """Dock one candidate against one variant. Resolves the pocket box from the
+    catalog when possible, else auto-detects it (co-crystal HETATM → fpocket)
+    so arbitrary PDBs work. Single snapshot when ensemble_size<=1, else an
+    MD-relaxed conformer ensemble. Returns a quick_dock-shaped dict, or None to
+    signal the caller should fall back to quick_dock."""
     import tempfile
     from pathlib import Path
 
@@ -403,7 +399,7 @@ def _dock_best_over_ensemble(
     from deltadock_pipeline.pod_dock import (
         dock_one_pod, PodDockConfig, PodDockError, relax_ensemble_pod,
     )
-    from ..catalog import get_target
+    from ..catalog import get_target, CATALOG
     from ..config import get_settings
     from .receptor_prep import prepare_receptor_for_target
     from .pocket_filter import _POSE_DRIFT_THRESHOLD_A, compute_pose_offset_a
@@ -414,56 +410,90 @@ def _dock_best_over_ensemble(
     if not pod_url:
         return None  # no pod → fall back
 
-    target = None
-    try:
-        target = get_target(target_pdb)
-    except Exception:  # noqa: BLE001
-        target = None
-    if target is None or target.pocket is None:
-        return None  # no cached pocket box → fall back (quick_dock emits the clear error)
-
-    bump_pod_activity()
-    pdb_id = target.pdb_id
-    chain = target.chain or chain
-    box = PocketBox(
-        center_x=target.pocket.center[0], center_y=target.pocket.center[1], center_z=target.pocket.center[2],
-        size_x=target.pocket.size[0], size_y=target.pocket.size[1], size_z=target.pocket.size[2],
-    )
-    box_center = (box.center_x, box.center_y, box.center_z)
-
     cache_root = Path(settings.cache_root or "/var/lib/liganx/poses/cache")
     pdb_cache = cache_root / "pdb"
     receptor_cache = cache_root / "receptors"
     pdb_cache.mkdir(parents=True, exist_ok=True)
     receptor_cache.mkdir(parents=True, exist_ok=True)
 
+    # ── Resolve the pocket box ────────────────────────────────────────────
+    # 1) Catalog by slug ('egfr') or by RCSB PDB id ('2ITY'). 2) Auto-detect
+    #    (co-crystal HETATM → fpocket) for arbitrary PDBs / user uploads.
+    target = None
+    try:
+        target = get_target(target_pdb)
+    except Exception:  # noqa: BLE001
+        target = None
+    if target is None:
+        try:
+            target = next((t for t in CATALOG if t.pdb_id.upper() == target_pdb.upper()), None)
+        except Exception:  # noqa: BLE001
+            target = None
+
+    bump_pod_activity()
+    pocket_caveat = None
+    minimize_mutant = True
+    if target is not None and target.pocket is not None:
+        pdb_id = target.pdb_id
+        chain = target.chain or chain
+        box = PocketBox(
+            center_x=target.pocket.center[0], center_y=target.pocket.center[1], center_z=target.pocket.center[2],
+            size_x=target.pocket.size[0], size_y=target.pocket.size[1], size_z=target.pocket.size[2],
+        )
+        minimize_mutant = getattr(target, "minimize_mutant", True)
+    else:
+        # Arbitrary PDB / user upload — fetch + auto-detect the pocket.
+        pdb_id = target_pdb
+        try:
+            from deltadock_pipeline.fetch import fetch_pdb
+            from deltadock_pipeline.pocket import detect_pocket
+            raw_pdb = fetch_pdb(pdb_id, pdb_cache)
+            detected = detect_pocket(raw_pdb, chain=chain)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"Couldn't fetch/scan {pdb_id}: {e}"}
+        if not detected:
+            return {"ok": False, "error": (
+                f"No binding pocket could be auto-detected in {pdb_id} "
+                "(no co-crystal ligand found). Use a target with a known pocket "
+                "or upload a structure with a bound ligand.")}
+        box = PocketBox(
+            center_x=detected.center[0], center_y=detected.center[1], center_z=detected.center[2],
+            size_x=22.0, size_y=22.0, size_z=22.0,
+        )
+        pocket_caveat = f"pocket auto-detected ({detected.source_het})"
+    box_center = (box.center_x, box.center_y, box.center_z)
+
     rec = prepare_receptor_for_target(
         pdb_id=pdb_id, chain=chain, mutation=mutation,
         pdb_cache=pdb_cache, receptor_cache=receptor_cache,
-        minimize_mutant=getattr(target, "minimize_mutant", True),
+        minimize_mutant=minimize_mutant,
     )
     if not rec.receptor_pdbqt.exists() or rec.receptor_pdbqt.stat().st_size == 0:
         return None
-    mutation_caveat = rec.fallback_reason if (mutation and not rec.is_mutant) else None
+    mutation_caveat = (rec.fallback_reason if (mutation and not rec.is_mutant) else None) or pocket_caveat
 
     cfg = PodDockConfig(base_url=pod_url, timeout_s=min(settings.pod_dock_timeout_s, 60))
 
-    with tempfile.TemporaryDirectory(prefix="sel_ens_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="sel_dock_") as tmpdir:
         tmp = Path(tmpdir)
         ligand_pdbqt = tmp / "ligand.pdbqt"
         try:
             prepare_ligand(smiles, ligand_pdbqt)
-        except Exception as e:  # noqa: BLE001 — bad ligand; report (don't fall back, single would fail too)
+        except Exception as e:  # noqa: BLE001 — bad ligand; report
             return {"ok": False, "error": f"Ligand preparation failed: {e}"}
 
         ens_dir = tmp / "ensemble"
         ens_dir.mkdir(exist_ok=True)
-        # relax_ensemble_pod NEVER raises; returns [input] + N relaxed. We want
-        # `ensemble_size` total conformers, so request ensemble_size-1 relaxed.
-        conformer_pdbs = relax_ensemble_pod(
-            receptor_pdb=rec.receptor_pdb, box_center=box_center, out_dir=ens_dir, cfg=cfg,
-            n_relaxed=max(1, ensemble_size - 1),
-        )
+        # Single snapshot when ensemble_size<=1 (skip the relax step entirely);
+        # otherwise generate ensemble_size-1 MD-relaxed conformers (relax never
+        # raises — returns [input] on failure, degrading to single).
+        if ensemble_size and ensemble_size > 1:
+            conformer_pdbs = relax_ensemble_pod(
+                receptor_pdb=rec.receptor_pdb, box_center=box_center, out_dir=ens_dir, cfg=cfg,
+                n_relaxed=max(1, ensemble_size - 1),
+            )
+        else:
+            conformer_pdbs = [rec.receptor_pdb]
 
         # conformer 0 is the original receptor whose PDBQT is already built.
         conformers = [rec.receptor_pdbqt]
