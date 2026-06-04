@@ -307,7 +307,7 @@ def create_job(
     )
     quota_row = session.execute(
         text(
-            "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            "SELECT COALESCE(p.job_quota, 20) AS quota,"
             "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
@@ -317,7 +317,7 @@ def create_job(
         ),
         {"uid": user.id},
     ).mappings().first()
-    quota = int(quota_row["quota"]) if quota_row else 10
+    quota = int(quota_row["quota"]) if quota_row else 20
     used = int(quota_row["used"]) if quota_row else 0
     # Access-status gate (migration 029). Pending/denied users cannot submit
     # compute — every dock would wake the on-demand GPU pod. Existing users
@@ -344,7 +344,7 @@ def create_job(
             ),
             headers={"X-Access-Status": access_status},
         )
-    if used >= quota:
+    if used >= quota and not _is_admin:
         # 402 Payment Required is the closest semantic match in HTTP for
         # "you've used your free allocation". The frontend special-cases
         # 402 to render a friendlier "you've used your N free dockings —
@@ -732,7 +732,7 @@ def create_job_from_screening(
     )
     quota_row = session.execute(
         text(
-            "SELECT COALESCE(p.job_quota, 10) AS quota,"
+            "SELECT COALESCE(p.job_quota, 20) AS quota,"
             "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
@@ -742,7 +742,7 @@ def create_job_from_screening(
         ),
         {"uid": user.id},
     ).mappings().first()
-    quota = int(quota_row["quota"]) if quota_row else 10
+    quota = int(quota_row["quota"]) if quota_row else 20
     used = int(quota_row["used"]) if quota_row else 0
     # Access-status gate (migration 029) — same as POST /jobs above.
     access_status = (quota_row["access_status"] if quota_row else "pending").lower()
@@ -765,7 +765,7 @@ def create_job_from_screening(
             ),
             headers={"X-Access-Status": access_status},
         )
-    if used >= quota:
+    if used >= quota and not _is_admin:
         raise HTTPException(
             status_code=402,
             detail=(
