@@ -228,7 +228,7 @@ def list_users(
                 p.full_name,
                 p.organization,
                 p.role,
-                COALESCE(p.job_quota, 10) AS job_quota,
+                COALESCE(p.job_quota, 20) AS job_quota,
                 COALESCE(p.is_pro, FALSE) AS is_pro,
                 -- Ensemble docking is ungated by default — COALESCE a NULL
                 -- (column predates migration 016, or admin never touched

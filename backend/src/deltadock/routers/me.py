@@ -479,6 +479,18 @@ def get_access_status(
         session.commit()
         return AccessStatusOut(status="approved", decided_at=None)
 
+    # Watched-user live monitor: ping the operator on Telegram when a
+    # watched user's app is active (this endpoint is polled on app load /
+    # after sign-in). Deduped to ~30 min inside the helper so a polling
+    # frontend doesn't spam. Side-effect only — never blocks the read.
+    try:
+        from ..services.notifications import is_watched_user, notify_watch_login
+        if is_watched_user(user_email_lc):
+            notify_watch_login(user_email=user_email_lc)
+    except Exception:
+        import logging as _wlog
+        _wlog.getLogger(__name__).exception("watch-login ping failed (non-fatal)")
+
     # First-sign-up notification: atomic claim. UPDATE … RETURNING tells
     # us whether THIS request was the first to ever see the row pending +
     # not-yet-notified. If rowcount=1 we won and fire the notifications;

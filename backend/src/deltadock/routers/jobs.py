@@ -611,6 +611,27 @@ def create_job(
     # this site again. See docs/celery_redis_migration_plan.md.
     dispatch_job(job.id, background_tasks=background)
 
+    # Watched-user live monitor: ping the operator on Telegram the moment
+    # a watched user submits a dock. Side-effect only; a Telegram blip
+    # must never fail the submission.
+    try:
+        from ..services.notifications import is_watched_user, notify_watch_dock_started
+        _watch_email = getattr(user, "email", None)
+        if is_watched_user(_watch_email):
+            _csum = ", ".join(
+                (c.name or c.smiles or "—")[:24] for c in (payload.compounds or [])
+            ) or "—"
+            notify_watch_dock_started(
+                user_email=_watch_email,
+                pdb_id=payload.pdb_id,
+                mutations=",".join(payload.mutations or []),
+                engine=_engine,
+                compound_summary=_csum,
+                share_id=job.share_id,
+            )
+    except Exception:
+        log.exception("watch dock-started ping failed (non-fatal)")
+
     return _to_out(job)
 
 

@@ -540,3 +540,121 @@ def notify_user_report(
     ]
 
     return _send("\n".join(parts))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Watched-user live activity monitor
+# ─────────────────────────────────────────────────────────────────────
+# When the operator wants a real-time feed of one specific user's
+# activity (e.g. a high-touch demo user being onboarded), list their
+# email in the WATCH_USER_EMAILS env var (comma-separated). Every login,
+# dock submission, and dock result for a watched user then fires a
+# Telegram ping to the same operator chat used everywhere else in this
+# module. All helpers are side-effect only: they short-circuit to False
+# for non-watched users and never raise.
+import time as _time
+
+_WATCH_DEFAULT = "konstantinnom@gmail.com"
+_LOGIN_PING_GAP_S = 1800  # re-announce a login at most once per 30 min
+_last_login_ping: dict[str, float] = {}
+
+
+def _watched_emails() -> set[str]:
+    """Lower-cased set of emails to watch. Defaults to the current demo
+    user so the feature works out-of-the-box; override with the
+    WATCH_USER_EMAILS secret (comma-separated) without a redeploy."""
+    raw = os.environ.get("WATCH_USER_EMAILS", _WATCH_DEFAULT)
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def is_watched_user(email: Optional[str]) -> bool:
+    if not email:
+        return False
+    return email.strip().lower() in _watched_emails()
+
+
+def notify_watch_login(
+    *,
+    user_email: Optional[str],
+    full_name: Optional[str] = None,
+    org: Optional[str] = None,
+    role: Optional[str] = None,
+) -> bool:
+    """Ping when a watched user's app is active (fires from the on-load
+    access-status poll). Deduped per-email to once / 30 min so a polling
+    frontend doesn't spam — in-memory, so a machine restart may emit one
+    extra ping (acceptable)."""
+    if not is_watched_user(user_email):
+        return False
+    key = user_email.strip().lower()  # type: ignore[union-attr]
+    now = _time.time()
+    if now - _last_login_ping.get(key, 0.0) < _LOGIN_PING_GAP_S:
+        return False
+    _last_login_ping[key] = now
+    parts = [
+        "👀 <b>Watched user is active</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or '—')}</code>",
+    ]
+    if full_name:
+        parts.append(f"📛 {_escape_html(full_name)}")
+    if org:
+        parts.append(f"🏢 {_escape_html(org)}")
+    if role:
+        parts.append(f"💼 {_escape_html(role)}")
+    parts.append("🟢 Signed in / app open")
+    return _send("\n".join(parts))
+
+
+def notify_watch_dock_started(
+    *,
+    user_email: Optional[str],
+    pdb_id: str,
+    mutations: str,
+    engine: str,
+    compound_summary: str,
+    share_id: Optional[str] = None,
+) -> bool:
+    """Ping when a watched user submits a docking job."""
+    if not is_watched_user(user_email):
+        return False
+    parts = [
+        "🧬 <b>Watched user started a dock</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or '—')}</code>",
+        f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
+        f"⚙️ Engine: {_escape_html(engine or '—')}",
+        f"🧪 Compounds: {_escape_html(_truncate(compound_summary or '—', 240))}",
+    ]
+    if share_id:
+        parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
+    return _send("\n".join(parts))
+
+
+def notify_watch_dock_completed(
+    *,
+    user_email: Optional[str],
+    pdb_id: str,
+    mutations: str,
+    engine: str,
+    share_id: Optional[str],
+    results_summary: str,
+) -> bool:
+    """Ping when a watched user's docking job lands COMPLETED, carrying
+    the per-compound best scores so the operator sees the result without
+    opening the app."""
+    if not is_watched_user(user_email):
+        return False
+    parts = [
+        "✅ <b>Watched user's dock finished</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or '—')}</code>",
+        f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
+        f"⚙️ Engine: {_escape_html(engine or '—')}",
+        "",
+        "📊 <b>Best scores</b> (kcal/mol):",
+        f"<code>{_escape_html(_truncate(results_summary or '(no results)', 1400))}</code>",
+    ]
+    if share_id:
+        parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
+    return _send("\n".join(parts))

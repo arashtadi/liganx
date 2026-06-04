@@ -807,6 +807,8 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # schema is untouched. Idempotent CREATE TABLE IF NOT EXISTS. See
     # docs/mutant_selective_pipeline.md and services/selective_runner.py.
     ("032_selectivity_tables.sql", "Migration 032 (mutant-selective binder discovery table)"),
+    # Raises free-tier quota 10 -> 20 (default + bump existing rows at 10).
+    ("033_bump_free_quota_20.sql", "Migration 033 (free quota 10 -> 20)"),
 ]
 
 

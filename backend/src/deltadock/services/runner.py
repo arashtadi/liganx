@@ -397,6 +397,50 @@ def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
     )
 
 
+def _maybe_notify_watched_completed(session: Session, job: "Job") -> None:
+    """If the job's owner is on the operator's watch list, fire a Telegram
+    alert with the per-compound best scores. Unlike _maybe_notify_first_dock
+    this fires on EVERY completed job for a watched user (the operator
+    asked for a live feed of one demo user's activity). Side-effect only —
+    never raises into the runner."""
+    if not job.user_id:
+        return
+    from sqlalchemy import text as _sql_text
+    user_row = session.execute(
+        _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
+        {"uid": str(job.user_id)},
+    ).first()
+    user_email = user_row[0] if user_row else None
+    from .notifications import is_watched_user, notify_watch_dock_completed
+    if not is_watched_user(user_email):
+        return
+    rows = session.execute(
+        _sql_text(
+            "SELECT c.name, dr.variant, dr.best_score"
+            " FROM dockingresult dr JOIN compound c ON c.id = dr.compound_id"
+            " WHERE dr.job_id = :jid"
+            " ORDER BY dr.best_score ASC NULLS LAST"
+        ),
+        {"jid": job.id},
+    ).all()
+    if rows:
+        lines = []
+        for name, variant, score in rows[:14]:
+            s = f"{score:.1f}" if score is not None else "failed"
+            lines.append(f"{name or '—'} [{variant or 'WT'}]: {s}")
+        results_summary = "\n".join(lines)
+    else:
+        results_summary = "(no result rows)"
+    notify_watch_dock_completed(
+        user_email=user_email,
+        pdb_id=job.pdb_id,
+        mutations=job.mutations or "",
+        engine=job.engine or "",
+        share_id=job.share_id,
+        results_summary=results_summary,
+    )
+
+
 def _safe_commit(session: Session, job_id: int, *, status: JobStatus,
                  error_message: str | None = None) -> bool:
     """Commit a final job status update, surviving a poisoned session.
@@ -531,6 +575,12 @@ def run_job_in_background(job_id: int) -> None:
                         _maybe_notify_first_dock(session, job)
                     except Exception:
                         log.exception("Telegram first-dock alert failed (non-fatal)")
+                    # Watched-user live feed: per-dock result alert for a
+                    # demo user the operator is actively monitoring.
+                    try:
+                        _maybe_notify_watched_completed(session, job)
+                    except Exception:
+                        log.exception("Telegram watched-completed alert failed (non-fatal)")
                 else:
                     log.error("Job %s: COULD NOT WRITE COMPLETED STATUS (DB unreachable)", job_id)
             else:
