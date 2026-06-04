@@ -78,6 +78,13 @@ async def get_pod_status() -> dict[str, Any]:
         desiredStatus
         runtime {
           uptimeInSeconds
+          ports {
+            ip
+            isIpPublic
+            privatePort
+            publicPort
+            type
+          }
         }
       }
     }
@@ -90,6 +97,9 @@ async def get_pod_status() -> dict[str, Any]:
         "name": pod.get("name"),
         "desiredStatus": pod.get("desiredStatus"),
         "uptimeSeconds": runtime.get("uptimeInSeconds"),
+        # Live port mappings — used to discover the current direct-TCP address
+        # for the dock server (private 7861) after a resume reassigns it.
+        "ports": runtime.get("ports") or [],
     }
 
 

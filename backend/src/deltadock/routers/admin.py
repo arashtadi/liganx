@@ -675,6 +675,9 @@ class PodStatusOut(BaseModel):
     last_activity_seconds_ago: Optional[float] = None
     idle_threshold_seconds: int
     error: Optional[str] = None
+    # Live RunPod port mappings (diagnostic) — current direct-TCP address(es)
+    # for the pod, used to discover the dock server's address after a resume.
+    ports: Optional[list] = None
 
 
 @router.get("/pod/status", response_model=PodStatusOut, tags=["admin"])
@@ -703,6 +706,7 @@ async def admin_pod_status(_admin: Annotated[CurrentUser, Depends(admin_user)]) 
             uptime_seconds=s.get("uptimeSeconds"),
             last_activity_seconds_ago=seconds_since_last_activity(),
             idle_threshold_seconds=threshold,
+            ports=s.get("ports"),
         )
     except Exception as e:  # noqa: BLE001
         log.warning("admin_pod_status: %s", e)
