@@ -491,24 +491,25 @@ def create_job(
     # entirely (log10 IC50 μM vs Vina kcal/mol).
     cfg = get_settings()
 
-    # Pro-tier gate: GNINA is Pro only. Free tier sees a 402 with a
-    # "contact us" message; the frontend Studio also hides/locks the
-    # button so this is defense-in-depth for a direct API call.
-    if payload.engine == "gnina":
-        from ..auth import is_pro_user
-        if not is_pro_user(user.id, session):
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "message": (
-                        "GNINA docking is a Liganx Pro feature. "
-                        "Free tier supports AutoDock Vina. "
-                        "Contact us to upgrade your account."
-                    ),
-                    "feature": "gnina",
-                    "contact_url": "https://liganx.com/contact",
-                },
-            )
+    # Engine access (2026-06-03): non-admin accounts may ONLY use AutoDock
+    # Vina (quickvina2_gpu). Every other engine — GNINA, Boltz-2, etc. — is
+    # admin-only; everyone else gets a 402 "Contact us". The Studio also
+    # hides/locks the non-Vina buttons, so this is defense-in-depth for a
+    # direct API call. `_is_admin` is computed in the access-gate block above.
+    _engine = payload.engine or "quickvina2_gpu"
+    if _engine != "quickvina2_gpu" and not _is_admin:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "message": (
+                    "Only AutoDock Vina (QuickVina2-GPU) docking is available "
+                    "on your account. Other docking engines aren't enabled — "
+                    "contact us to request access."
+                ),
+                "feature": f"engine_{_engine}",
+                "contact_url": "https://liganx.com/contact",
+            },
+        )
 
     # Ensemble-docking access gate. Ensemble docking is UNGATED BY DEFAULT
     # — this rejects ONLY users an admin has explicitly switched off

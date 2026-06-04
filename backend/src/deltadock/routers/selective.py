@@ -29,7 +29,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from ..auth import CurrentUser, current_user
+from ..auth import CurrentUser, admin_user
 from ..db import get_session
 from ..models import SelectivityJob, SelectivityJobStatus
 from ..services.analog_search import expand_analogs
@@ -160,7 +160,7 @@ def _to_out(job: SelectivityJob) -> SelectivityJobOut:
 # ─────────────────────────── endpoints ───────────────────────────
 @router.get("/triage", response_model=TriageResponse)
 def get_triage(
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
     uniprot: Optional[str] = Query(default=None, description="UniProt accession"),
     gene: Optional[str] = Query(default=None, description="Gene symbol"),
 ) -> TriageResponse:
@@ -179,7 +179,7 @@ def get_triage(
 @router.post("/analogs", response_model=AnalogOut)
 def find_analogs(
     payload: AnalogRequest,
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
 ) -> AnalogOut:
     """Step E — analog expansion. Given a seed molecule (e.g. a top mutant-
     selective hit), return structurally similar molecules from the curated
@@ -198,7 +198,7 @@ def find_analogs(
 def create_selectivity_job(
     payload: SelectivityJobRequest,
     background: BackgroundTasks,
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> SelectivityJobOut:
     """Create a mutant-selective run. Validates inputs, runs target triage
@@ -288,7 +288,7 @@ def create_selectivity_job(
 
 @router.get("/jobs", response_model=list[SelectivityJobOut])
 def list_selectivity_jobs(
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
     session: Annotated[Session, Depends(get_session)],
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[SelectivityJobOut]:
@@ -316,7 +316,7 @@ def _resolve_owned(session: Session, share_id: str, user: CurrentUser) -> Select
 @router.get("/jobs/{share_id}", response_model=SelectivityJobOut)
 def get_selectivity_job(
     share_id: str,
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> SelectivityJobOut:
     return _to_out(_resolve_owned(session, share_id, user))
@@ -325,7 +325,7 @@ def get_selectivity_job(
 @router.post("/jobs/{share_id}/cancel", response_model=SelectivityJobOut)
 def cancel_selectivity_job(
     share_id: str,
-    user: Annotated[CurrentUser, Depends(current_user)],
+    user: Annotated[CurrentUser, Depends(admin_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> SelectivityJobOut:
     job = _resolve_owned(session, share_id, user)

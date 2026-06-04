@@ -31,6 +31,8 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../lib/auth";
+import { isAdminEmail } from "../lib/admin";
 import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
@@ -380,6 +382,11 @@ export default function StudioPage() {
   // we never *accidentally* expose Pro features to a free user during
   // the brief loading window.
   const [isPro, setIsPro] = useState(false);
+  // Admin gate (2026-06-03): non-Vina engines are admin-only; everyone else
+  // is steered to Contact us. Derived from the auth email (same source as
+  // App.tsx + the backend admin_user dependency).
+  const { user: _authUser } = useAuth();
+  const isAdmin = isAdminEmail(_authUser?.email);
   const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
   // Ensemble-docking access. UNGATED BY DEFAULT — initialised true so the
   // toggle is usable during the profile-fetch window and for anonymous
@@ -4070,19 +4077,19 @@ export default function StudioPage() {
                         CNN-rerank state on current production. */}
                     <button
                       onClick={() => {
-                        // v1.24 — Pro gate. Free tier sees the lock modal
-                        // instead of submitting. Button stays interactable
-                        // so we can SHOW them what they're missing — a
-                        // straight disable+tooltip is too easy to overlook.
-                        if (!isPro) {
-                          setProGateFeature("gnina");
+                        // (2026-06-03) Admin gate. Non-Vina engines are
+                        // admin-only; everyone else is steered to Contact us
+                        // (backend also enforces this with a 402). Button stays
+                        // interactable so the affordance is visible.
+                        if (!isAdmin) {
+                          navigate("/contact");
                           return;
                         }
                         runFullJob("gnina");
                       }}
-                      disabled={isPro && isDisabled}
+                      disabled={isAdmin && isDisabled}
                       className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
-                        !isPro
+                        !isAdmin
                           ? "border-violet-700/40 bg-violet-950/15 text-violet-300/60 hover:bg-violet-950/30 hover:border-violet-600/60 cursor-pointer"
                           : submittingFull
                           ? "border-violet-500/40 bg-violet-950/30 text-violet-300/70"
@@ -4093,13 +4100,13 @@ export default function StudioPage() {
                           : "border-violet-600/50 bg-violet-950/25 text-violet-200 hover:bg-violet-900/40 hover:border-violet-500"
                       }`}
                       title={
-                        !isPro ? "GNINA is a Pro feature — click for details."
+                        !isAdmin ? "Only Vina docking is available on your account. Contact us for access to GNINA and other engines."
                         : !selectedTarget ? "Pick a target first."
                         : !hasCompound ? "Stage at least one compound first."
                         : "Dock with GNINA. CNN re-rank currently OFFLINE (Blackwell sm_120 incompatibility) — produces sampling-only differences from Vina until the planned 4090 deploy ships. Marked as engine=gnina in History."
                       }
                     >
-                      <span>{!isPro && <span className="mr-1">🔒</span>}{baseLabel}</span>
+                      <span>{!isAdmin && <span className="mr-1">🔒</span>}{baseLabel}</span>
                       <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
                   </div>

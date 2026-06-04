@@ -148,7 +148,8 @@ def _humanize_pod_error(raw: str) -> str:
 # Bumped 3 → 5 on 2026-05-05 — see pocket_filter.py for rationale (KRAS
 # switch-II ligands sometimes need more stochastic seeds to land in the
 # canonical site than the original kinase-tuned budget allowed for).
-_MAX_POCKET_RETRIES = 5
+# (2026-06-04) Trimmed 5→3 for speed (parity with pocket_filter.py).
+_MAX_POCKET_RETRIES = 3
 
 
 def quick_dock(

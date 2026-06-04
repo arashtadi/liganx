@@ -71,10 +71,13 @@ _POSE_DRIFT_THRESHOLD_A = 6.0
 # allosteric pockets like KRAS switch-II, ligands sometimes need a
 # few more stochastic seeds to find the canonical site. Cost: only
 # cells that drift past attempt 3 pay the extra; happy-path cells
-# still return on attempt 1. Worst-case 5×5s ≈ 25s per drifted cell.
+# still return on attempt 1. Worst-case now 3 attempts per drifted cell.
 # Same constant used by quick_dock for parity — bump there too if you
 # adjust here.
-_MAX_POCKET_RETRIES = 5
+# (2026-06-04) Trimmed 5→3 for speed: GPU docks are ~1s each, but on
+# drifty targets every cell maxed out 5 re-rolls. 3 keeps good in-pocket
+# pose recovery while cutting the long tail (~40% fewer worst-case docks).
+_MAX_POCKET_RETRIES = 3
 
 # Seed used on the FIRST dock attempt. Subsequent retries use seed +
 # attempt_index so each draw is reproducible but distinct. We keep the

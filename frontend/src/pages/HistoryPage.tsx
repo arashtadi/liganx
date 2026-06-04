@@ -17,6 +17,8 @@ import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Job, type Screening } from "../api";
+import { useAuth } from "../lib/auth";
+import { isAdminEmail } from "../lib/admin";
 import { Close, Spinner } from "../components/Icons";
 import { EnginePill } from "./JobPage";
 import {
@@ -165,6 +167,16 @@ export default function HistoryPage() {
     try { sessionStorage.setItem("liganx.history.tab", activeTab); } catch { /* noop */ }
   }, [activeTab]);
 
+  // (2026-06-03) FEP+ studies are admin-only in History. Non-admins never see
+  // the tab; if one had it stored from before, bounce them back to Jobs.
+  const { user } = useAuth();
+  const isAdmin = isAdminEmail(user?.email);
+  useEffect(() => {
+    if (!isAdmin && activeTab === "fep") setActiveTab("jobs");
+  }, [isAdmin, activeTab]);
+
+  const visibleTabs: HistoryTab[] = isAdmin ? ["jobs", "screenings", "fep"] : ["jobs", "screenings"];
+
   return (
     <div className="space-y-5 animate-fade-in">
       <div>
@@ -187,7 +199,7 @@ export default function HistoryPage() {
             menu link in App.tsx stays hidden until full validation, but
             History needs to show test studies (FEP #16, #17, etc.) so
             admin/dev users can check progress and results. */}
-        {(["jobs", "screenings", "fep"] as HistoryTab[]).map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab}
             type="button"
