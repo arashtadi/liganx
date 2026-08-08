@@ -23,8 +23,12 @@ name: Uptime Monitor
 # trigger an on-demand check.
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
+  # Schedule DISABLED 2026-06-04: the GPU pod is intentionally STOPPED for
+  # cost control, so the backend->pod check would fail every run and email
+  # the owner. Re-enable (uncomment the two lines below) when the pod is
+  # brought back up. workflow_dispatch stays so it can still be run on demand.
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:
