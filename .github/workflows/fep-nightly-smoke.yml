@@ -20,11 +20,11 @@ name: FEP Nightly Mock Smoke
 # push via fly-deploy.yml; this workflow doesn't duplicate them.
 
 on:
-  schedule:
-    # 03:00 UTC nightly — pick a time when GH Actions queue is empty
-    # so the run lands close to its scheduled slot (CI cron can drift
-    # by 10-15 min under load).
-    - cron: "0 3 * * *"
+  # Nightly schedule DISABLED 2026-06-04: FEP is gated off / not yet
+  # operational, so this smoke suite fails every night and emails the
+  # owner. Re-enable (uncomment the schedule) when FEP work resumes.
+  # schedule:
+  #   - cron: "0 3 * * *"
   workflow_dispatch:                          # manual trigger from Actions tab
 
 permissions:
