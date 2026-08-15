@@ -22,7 +22,9 @@ RUN (command -v pip3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --
 RUN gnina --version 2>&1 | head -3 || (echo "gnina not found in base image" && exit 1)
 
 WORKDIR /app
-COPY handler.py /app/handler.py
+# NOTE: RunPod's GitHub build uses the REPO ROOT as the build context (with
+# this Dockerfile referenced by path), so COPY sources are repo-root-relative.
+COPY runpod/gnina_worker/handler.py /app/handler.py
 
 # RunPod calls handler() per request via runpod.serverless.start() in __main__.
 CMD ["python3", "-u", "handler.py"]
