@@ -545,6 +545,81 @@ def _resolve_pocket_box(pdb_id: str, chain: str):
     )
 
 
+def _dock_cell_with_fallback(
+    *,
+    receptor_path,
+    lig_path,
+    box,
+    cell_dir,
+    exhaustiveness: int,
+    settings,
+):
+    """Dock one (compound, variant) cell with the same engine chain the
+    main /jobs runner uses: always-on GPU Pod → RunPod serverless →
+    local CPU AutoDock Vina.
+
+    (2026-08-15) Added so virtual screening no longer hard-requires the
+    GPU Pod. The Pod's QuickVina2-GPU build is incompatible with the
+    current RunPod GPU/driver (segfaults), so deployments now run with
+    POD_DOCK_URL unset and dock via serverless, with CPU Vina — which
+    ships in the backend image (see Dockerfile: autodock-vina) — as an
+    always-available floor so a job can ALWAYS complete.
+
+    Returns (DockingResult, engine_label). Raises only if the final CPU
+    Vina attempt fails (the caller marks the cell failed).
+    """
+    from deltadock_pipeline.pod_dock import dock_one_pod, PodDockConfig
+    from deltadock_pipeline.runpod_dock import dock_one_runpod, RunPodConfig
+    from deltadock_pipeline.dock import dock_one
+
+    tried_remote = False
+
+    # 1. Always-on GPU Pod (only when explicitly configured).
+    if settings.pod_dock_enabled:
+        tried_remote = True
+        try:
+            res = dock_one_pod(
+                receptor_pdbqt=receptor_path, ligand_pdbqt=lig_path, box=box,
+                work_dir=cell_dir,
+                cfg=PodDockConfig(
+                    base_url=(settings.pod_dock_url or "").rstrip("/"),
+                    timeout_s=settings.pod_dock_timeout_s,
+                ),
+                exhaustiveness=exhaustiveness, num_modes=9, seed=42,
+            )
+            return res, "pod_real"
+        except Exception as e:  # noqa: BLE001 — fall through to next engine
+            log.warning("screening dock: Pod failed (%s) — trying serverless/CPU", e)
+
+    # 2. RunPod serverless (pay-per-second burst GPU).
+    if settings.runpod_enabled:
+        was_after_pod = tried_remote
+        tried_remote = True
+        try:
+            res = dock_one_runpod(
+                receptor_pdbqt=receptor_path, ligand_pdbqt=lig_path, box=box,
+                work_dir=cell_dir,
+                cfg=RunPodConfig(
+                    api_key=settings.runpod_api_key,
+                    endpoint_id=settings.runpod_endpoint_id,
+                    timeout_s=settings.runpod_timeout_s,
+                ),
+                exhaustiveness=exhaustiveness, num_modes=9, seed=42,
+            )
+            return res, ("runpod_after_pod_fail" if was_after_pod else "runpod")
+        except Exception as e:  # noqa: BLE001 — fall through to CPU Vina
+            log.warning("screening dock: RunPod serverless failed (%s) — trying CPU Vina", e)
+
+    # 3. Local CPU AutoDock Vina — always available in the backend image.
+    res = dock_one(
+        receptor_pdbqt=receptor_path, ligand_pdbqt=lig_path, box=box,
+        work_dir=cell_dir,
+        exhaustiveness=exhaustiveness, num_modes=9, seed=42,
+        vina_path=settings.vina_path,
+    )
+    return res, ("cpu_vina_after_remote_fail" if tried_remote else "cpu_vina")
+
+
 def _run_real_screening(
     session: Session,
     sj: ScreeningJob,
@@ -612,18 +687,10 @@ def _run_real_screening(
     # Group rows by variant for efficient receptor reuse.
     variants_in_play = sorted({r.variant for r in rows}, key=lambda v: 0 if v == "WT" else 1)
 
-    # Pod config.
-    pod_cfg = PodDockConfig(
-        base_url=(settings.pod_dock_url or "").rstrip("/"),
-        timeout_s=settings.pod_dock_timeout_s,
-    )
-    if not pod_cfg.base_url:
-        _set_job_status(
-            session, sj.id,
-            status=ScreeningStatus.FAILED,
-            error_message="POD_DOCK_URL not configured on this deployment.",
-        )
-        return
+    # Engine selection is handled per-cell by _dock_cell_with_fallback
+    # (Pod → RunPod serverless → local CPU Vina), so we no longer hard-
+    # require POD_DOCK_URL — CPU Vina in the backend image is the floor,
+    # so a screening can always complete on some engine.
 
     # Box once per target (variants share the same pocket).
     try:
@@ -733,19 +800,13 @@ def _run_real_screening(
                 cell_dir = work / f"cell_{compound.id}_{variant}"
                 cell_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    dock_result = dock_one_pod(
-                        receptor_pdbqt=receptor_path,
-                        ligand_pdbqt=lig_path,
+                    dock_result, _engine_label = _dock_cell_with_fallback(
+                        receptor_path=receptor_path,
+                        lig_path=lig_path,
                         box=box,
-                        work_dir=cell_dir,
-                        cfg=pod_cfg,
+                        cell_dir=cell_dir,
                         exhaustiveness=sj.exhaustiveness or 4,
-                        num_modes=9,
-                        seed=42,
-                        # thread = OpenCL work-item count for QuickVina-GPU
-                        # (NOT a CPU thread count). 8000 matches the pod's
-                        # default + what services/runner.py uses for /jobs.
-                        thread=8000,
+                        settings=settings,
                     )
                     best_score = dock_result.best_score
                     pose_uri = None
@@ -772,7 +833,7 @@ def _run_real_screening(
                     r.error_message = None
                     # Pipe-delimited extras matching DockingResult.extra
                     # so AI panel + UI flag parsing reuses the same code.
-                    parts = ["engine=pod_real"]
+                    parts = [f"engine={_engine_label}"]
                     if foldx_ddg is not None and variant != "WT":
                         parts.append(f"foldx_ddg={foldx_ddg:.3f}")
                     r.extra = "|".join(parts)
