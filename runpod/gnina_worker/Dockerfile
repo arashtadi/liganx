@@ -27,4 +27,5 @@ WORKDIR /app
 COPY runpod/gnina_worker/handler.py /app/handler.py
 
 # RunPod calls handler() per request via runpod.serverless.start() in __main__.
+# build-rev: 2 (repo-root COPY fix)
 CMD ["python3", "-u", "handler.py"]

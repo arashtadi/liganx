@@ -1357,10 +1357,15 @@ def _run_real(session: Session, job: Job) -> None:
     # GNINA as an automatic fallback — users picked their engine on
     # purpose, falling them back silently to a different scoring function
     # would be misleading.
+    # GNINA now has two possible homes: a RunPod GPU serverless endpoint
+    # (preferred — pay-per-use, no idle cost) or the legacy always-on Pod.
+    # It's "requested" if the job picked engine=gnina, the feature flag is
+    # on, and EITHER backend is configured.
+    gnina_runpod_on = settings.gnina_runpod_enabled
     gnina_requested = (
         getattr(job, "engine", None) == "gnina"
         and settings.gnina_enabled
-        and pod_on  # GNINA hits the same Pod, so requires pod_dock_url
+        and (gnina_runpod_on or pod_on)
     )
     if ensemble_on and gnina_requested:
         # Ensemble docking v1 uses the QuickVina batch primitive
@@ -1376,22 +1381,42 @@ def _run_real(session: Session, job: Job) -> None:
             "(ensemble ignored for this job)", job.id,
         )
     if gnina_requested:
-        from deltadock_pipeline.gnina_dock import (
-            dock_one_gnina, dock_batch_gnina, GninaDockConfig, GninaDockError, GninaBatchLigand,
-        )
-        gnina_cfg = GninaDockConfig(
-            base_url=settings.pod_dock_url,
-            timeout_s=settings.gnina_timeout_s,
-            cnn_mode=settings.gnina_cnn_mode,
-        )
-        log.info("GNINA dispatch active for this job (cnn=%s)", settings.gnina_cnn_mode)
+        # GninaDockError is raised by BOTH the Pod and the serverless clients,
+        # so import it once here — the per-cell except clause below relies on
+        # it being in scope regardless of which backend we picked.
+        from deltadock_pipeline.gnina_dock import GninaDockError
+        if gnina_runpod_on:
+            # Preferred: real GNINA on a RunPod GPU serverless endpoint.
+            from deltadock_pipeline.gnina_runpod import (
+                dock_one_gnina_runpod, GninaRunpodConfig,
+            )
+            _gnina_dock_fn = dock_one_gnina_runpod
+            gnina_cfg = GninaRunpodConfig(
+                api_key=settings.runpod_api_key,
+                endpoint_id=settings.gnina_runpod_endpoint_id,
+                cnn_mode=settings.gnina_cnn_mode,
+                timeout_s=max(settings.gnina_timeout_s, 300),
+            )
+            log.info("GNINA dispatch active via RunPod GPU serverless → endpoint %s (cnn=%s)",
+                     settings.gnina_runpod_endpoint_id, settings.gnina_cnn_mode)
+        else:
+            # Legacy: GNINA on the always-on Pod.
+            from deltadock_pipeline.gnina_dock import dock_one_gnina, GninaDockConfig
+            _gnina_dock_fn = dock_one_gnina
+            gnina_cfg = GninaDockConfig(
+                base_url=settings.pod_dock_url,
+                timeout_s=settings.gnina_timeout_s,
+                cnn_mode=settings.gnina_cnn_mode,
+            )
+            log.info("GNINA dispatch active via Pod (cnn=%s)", settings.gnina_cnn_mode)
     elif getattr(job, "engine", None) == "gnina":
-        # User asked for GNINA but the flag's off OR Pod isn't configured.
-        # Log loudly so we can spot misconfiguration; the runner will fall
-        # through to QuickVina2-GPU below.
+        # User asked for GNINA but the flag's off OR no GNINA backend is
+        # configured. Log loudly so we can spot misconfiguration; the runner
+        # will fall through to QuickVina2-GPU below.
         log.warning(
-            "Job %s requested engine=gnina but GNINA_ENABLED=%s pod_on=%s — falling back to quickvina2_gpu",
-            job.id, settings.gnina_enabled, pod_on,
+            "Job %s requested engine=gnina but GNINA_ENABLED=%s gnina_runpod_on=%s pod_on=%s "
+            "— falling back to quickvina2_gpu",
+            job.id, settings.gnina_enabled, gnina_runpod_on, pod_on,
         )
 
     # ── Boltz-2 ML engine (#104, third engine option) ─────────────────────
@@ -2819,7 +2844,7 @@ def _run_real(session: Session, job: Job) -> None:
                                 # under the hood) so the 3× re-roll buys the
                                 # same parity gain. See pocket_filter.py.
                                 result, _pb_meta = dock_one_with_pocket_best(
-                                    dock_one_gnina,
+                                    _gnina_dock_fn,
                                     receptor_pdbqt=receptor,
                                     ligand_pdbqt=lig_pdbqt,
                                     box=box,

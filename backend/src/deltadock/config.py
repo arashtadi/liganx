@@ -161,6 +161,13 @@ class Settings(BaseSettings):
     # Override per-deploy via the GNINA_CNN_MODE env var / Fly secret.
     gnina_cnn_mode: str = "rescore"
 
+    # GNINA on RunPod GPU serverless (the modern, no-idle-cost home for GNINA
+    # after the always-on Pod was retired). When RUNPOD_API_KEY (declared
+    # above) and GNINA_RUNPOD_ENDPOINT_ID are both set, engine=gnina jobs
+    # dispatch to this dedicated GPU serverless endpoint (runpod/gnina_worker)
+    # instead of the Pod. Preferred over the Pod path when both are available.
+    gnina_runpod_endpoint_id: str = ""
+
     # Boltz-2 ML pose+affinity engine — third engine option (#104). Defaults
     # off so the engine picker stays inert until the Pod-side
     # /predict_boltz2 endpoint is live (see runpod/BOLTZ2_INSTALL.md). When
@@ -372,6 +379,13 @@ class Settings(BaseSettings):
     def pod_dock_enabled(self) -> bool:
         """Pod-hosted GPU docking is opt-in: set POD_DOCK_URL to enable."""
         return bool(self.pod_dock_url)
+
+    @property
+    def gnina_runpod_enabled(self) -> bool:
+        """GNINA on RunPod GPU serverless is opt-in: needs the shared RunPod
+        API key AND a dedicated GNINA endpoint ID. Either missing → GNINA
+        falls back to the Pod path (if any) or to QuickVina."""
+        return bool(self.runpod_api_key and self.gnina_runpod_endpoint_id)
 
     @property
     def r2_enabled(self) -> bool:
