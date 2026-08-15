@@ -423,6 +423,11 @@ export default function StudioPage() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   // (v0.32) Toast for the Promote button result. Auto-clears after 3-5s.
   const [promoteToast, setPromoteToast] = useState<string | null>(null);
+  // (v1.12) Paste-SMILES modal state — replaces the old blocking
+  // window.prompt() dialog (native prompt froze browser tooling/automation
+  // and looked out of place vs the rest of the app's modals).
+  const [pasteModalOpen, setPasteModalOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   // (v0.36) Inline Promote modal. When non-null, renders a custom
   // modal (Studio aesthetic, monospace, dark) instead of the v0.32
   // window.prompt. The `mode` distinguishes "promote a draft to the
@@ -3565,11 +3570,8 @@ export default function StudioPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        const blob = window.prompt(
-                          `Paste one SMILES per line (optional name after comma/tab).\nMax ${MAX_COMPOUNDS - compounds.length} more compounds.\n\nExample:\nCC(=O)Oc1ccccc1C(=O)O, aspirin\nCC(C)Cc1ccc(C(C)C(=O)O)cc1\n`,
-                          "",
-                        );
-                        if (blob) stageSmilesText(blob, "paste");
+                        setPasteText("");
+                        setPasteModalOpen(true);
                       }}
                       disabled={disabled}
                       className={`flex-1 px-3 py-1.5 rounded border font-mono text-[10px] flex items-center gap-2 transition-colors ${
@@ -3618,6 +3620,74 @@ export default function StudioPage() {
                         csv · sdf · up to {MAX_COMPOUNDS}
                       </span>
                     </button>
+                    {/* (v1.12) Paste-SMILES modal — in-app replacement for the
+                        old window.prompt(). Rendered here so stageSmilesText /
+                        compounds / MAX_COMPOUNDS are in closure scope. */}
+                    {pasteModalOpen && (
+                      <div
+                        className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4"
+                        onClick={() => setPasteModalOpen(false)}
+                      >
+                        <div
+                          className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 overflow-hidden"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <header className="px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+                            <h2 className="text-base font-semibold text-ink dark:text-white">Paste SMILES</h2>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                              One SMILES per line, with an optional name after a comma or tab.
+                              Up to {Math.max(0, MAX_COMPOUNDS - compounds.length)} more compound
+                              {MAX_COMPOUNDS - compounds.length === 1 ? "" : "s"}.
+                            </p>
+                          </header>
+                          <div className="px-5 py-4 space-y-3">
+                            <textarea
+                              autoFocus
+                              value={pasteText}
+                              onChange={(e) => setPasteText(e.target.value)}
+                              rows={8}
+                              spellCheck={false}
+                              placeholder={"CC(=O)Oc1ccccc1C(=O)O, aspirin\nCC(C)Cc1ccc(C(C)C(=O)O)cc1"}
+                              className="input font-mono text-xs w-full resize-y"
+                              onKeyDown={(e) => {
+                                if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && pasteText.trim()) {
+                                  e.preventDefault();
+                                  stageSmilesText(pasteText, "paste");
+                                  setPasteText("");
+                                  setPasteModalOpen(false);
+                                }
+                              }}
+                            />
+                            <div className="flex items-center justify-between gap-2 pt-1">
+                              <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                                ⌘/Ctrl + Enter to add
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setPasteModalOpen(false)}
+                                  className="btn-ghost btn-sm"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!pasteText.trim()}
+                                  onClick={() => {
+                                    stageSmilesText(pasteText, "paste");
+                                    setPasteText("");
+                                    setPasteModalOpen(false);
+                                  }}
+                                  className="btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  Add compounds
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </>;
                 })()}
               </div>
