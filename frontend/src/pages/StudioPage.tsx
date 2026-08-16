@@ -32,7 +32,6 @@ if (typeof window !== "undefined") (window as any).__LIGANX_BUILD_TAG__ = LIGANX
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { isAdminEmail } from "../lib/admin";
 import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
@@ -386,7 +385,6 @@ export default function StudioPage() {
   // is steered to Contact us. Derived from the auth email (same source as
   // App.tsx + the backend admin_user dependency).
   const { user: _authUser } = useAuth();
-  const isAdmin = isAdminEmail(_authUser?.email);
   const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
   // Ensemble-docking access. UNGATED BY DEFAULT — initialised true so the
   // toggle is usable during the profile-fetch window and for anonymous
@@ -4123,7 +4121,7 @@ export default function StudioPage() {
                     <button
                       onClick={() => runFullJob("quickvina2_gpu")}
                       disabled={isDisabled}
-                      className={`flex-[1.8] px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
+                      className={`w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
                         submittingFull
                           ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300"
                           : isCoolingOff
@@ -4140,44 +4138,6 @@ export default function StudioPage() {
                     >
                       <span>{baseLabel}</span>
                       <span className="opacity-60 ml-1.5">· Vina</span>
-                    </button>
-
-                    {/* GNINA half — secondary, ~35% width, violet.
-                        Same disable logic. Tooltip is honest about the
-                        CNN-rerank state on current production. */}
-                    <button
-                      onClick={() => {
-                        // (2026-06-03) Admin gate. Non-Vina engines are
-                        // admin-only; everyone else is steered to Contact us
-                        // (backend also enforces this with a 402). Button stays
-                        // interactable so the affordance is visible.
-                        if (!isAdmin) {
-                          navigate("/contact");
-                          return;
-                        }
-                        runFullJob("gnina");
-                      }}
-                      disabled={isAdmin && isDisabled}
-                      className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
-                        !isAdmin
-                          ? "border-violet-700/40 bg-violet-950/15 text-violet-300/60 hover:bg-violet-950/30 hover:border-violet-600/60 cursor-pointer"
-                          : submittingFull
-                          ? "border-violet-500/40 bg-violet-950/30 text-violet-300/70"
-                          : isCoolingOff
-                          ? "border-violet-700/30 bg-violet-950/15 text-violet-300/50"
-                          : !ketcherReady || !hasCompound || !selectedTarget
-                          ? "border-slate-800 bg-slate-900/30 text-slate-600"
-                          : "border-violet-600/50 bg-violet-950/25 text-violet-200 hover:bg-violet-900/40 hover:border-violet-500"
-                      }`}
-                      title={
-                        !isAdmin ? "Only Vina docking is available on your account. Contact us for access to GNINA and other engines."
-                        : !selectedTarget ? "Pick a target first."
-                        : !hasCompound ? "Stage at least one compound first."
-                        : "Dock with GNINA. CNN re-rank currently OFFLINE (Blackwell sm_120 incompatibility) — produces sampling-only differences from Vina until the planned 4090 deploy ships. Marked as engine=gnina in History."
-                      }
-                    >
-                      <span>{!isAdmin && <span className="mr-1">🔒</span>}{baseLabel}</span>
-                      <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
                   </div>
                 );
