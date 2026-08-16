@@ -88,5 +88,5 @@ RUN echo "=== ldd of installed gnina ==="; ldd /usr/local/bin/gnina || true; \
 WORKDIR /app
 COPY runpod/gnina_worker/handler.py /app/handler.py
 
-# build-rev: 4 (slim multi-stage: harvest binary+libs onto cuDNN runtime base)
+# build-rev: 5 (slim multi-stage: harvest binary+libs onto cuDNN runtime base)
 CMD ["python3", "-u", "handler.py"]
