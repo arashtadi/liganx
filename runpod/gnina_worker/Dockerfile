@@ -31,14 +31,24 @@ RUN set -x; \
     cp -L "$GNINA" /slim/bin/gnina; \
     # Make sure ldd can resolve everything the fat image resolves at runtime:
     # include torch/lib (libtorch) and the CUDA lib dir on the search path.
-    TORCHLIB="$(find / -type d -path '*/torch/lib' 2>/dev/null | head -1)"; \
-    echo "torch lib dir: ${TORCHLIB:-<none>}"; \
+    # Resolve libtorch via gnina's OWN RPATH first — do NOT override
+    # LD_LIBRARY_PATH yet. The fat image has more than one torch/lib on disk
+    # (e.g. a second copy bundled elsewhere); prepending a `find|head -1` guess
+    # to LD_LIBRARY_PATH made ldd resolve libtorch to the WRONG version, so we
+    # harvested a libtorch whose ABI mismatched gnina (undefined symbol
+    # at::GetPrivateUse1HooksInterface at runtime). Instead, let gnina's baked-in
+    # RPATH resolve its real libtorch, and derive TORCHLIB from that path.
+    echo "=== native ldd (gnina RPATH-resolved) ==="; ldd "$GNINA" || true; \
+    ldd "$GNINA" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u > /tmp/all.txt; \
+    TORCHLIB="$(ldd "$GNINA" 2>/dev/null | awk '/libtorch_cpu\.so|libtorch\.so|libc10\.so/{print $3}' | grep -v 'not found' | head -1 | xargs -r dirname)"; \
+    [ -z "$TORCHLIB" ] && TORCHLIB="$(find / -type d -path '*/torch/lib' 2>/dev/null | head -1)"; \
+    echo "torch lib dir (RPATH-resolved): ${TORCHLIB:-<none>}"; \
+    # Second pass WITH torch + cuda on the path to resolve any still-unresolved
+    # CUDA libs; union into the closure. libtorch is already captured (correctly)
+    # from the native pass above, so this cannot pull in a mismatched libtorch.
     export LD_LIBRARY_PATH="${TORCHLIB}:/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"; \
-    echo "=== full ldd of gnina ==="; ldd "$GNINA" || true; \
-    # Collect the transitive shared-library closure, then drop the CUDA/cuDNN/
-    # NCCL/math libs that the runtime base already provides (avoids shadowing
-    # the base's matched versions and their dlopen'd sub-libraries).
-    ldd "$GNINA" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u > /tmp/all.txt; \
+    ldd "$GNINA" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u >> /tmp/all.txt; \
+    sort -u /tmp/all.txt -o /tmp/all.txt; \
     # Drop (a) the system CUDA tree under /usr/local/cuda — the runtime base
     # provides matched 12.6 versions; (b) the libcuda driver stub — injected by
     # the GPU runtime; (c) core glibc / loader / libstdc++ — copying those onto
