@@ -1,31 +1,92 @@
-# Liganx GNINA GPU serverless worker.
+# Liganx GNINA GPU serverless worker — SLIM multi-stage build.
 #
-# GNINA = AutoDock Vina's pose-search + a CNN rescoring head trained on PDBbind.
-# The CNN needs a GPU to be fast, so this worker MUST run on a RunPod GPU
-# serverless endpoint (unlike the CPU QuickVina worker in ../Dockerfile).
+# GNINA = AutoDock Vina's pose-search + a CNN rescoring head. The upstream
+# gnina/gnina:latest image is ~23 GB compressed because it is built FROM the
+# CUDA *devel* base and leaves the entire gnina + OpenBabel *build tree* (git
+# clones, CMake object files) plus pip torchvision/torchaudio in the final
+# image. None of that is needed at runtime — only the `gnina` binary and the
+# shared libraries it actually links.
 #
-# Base image: the upstream gnina/gnina image already ships the `gnina` binary
-# built against CUDA + libmolgrid, plus Open Babel for format conversion.
-# We add only the RunPod serverless harness + our handler.
+# This Dockerfile harvests just the gnina binary + its ldd closure (which pulls
+# in libtorch/libc10, libmolgrid, boost, OpenBabel, etc.) from the fat image and
+# drops them onto a matching CUDA 12.6 cuDNN *runtime* base (same CUDA + Ubuntu
+# 24.04 as the upstream build, so the ABI matches). Result: a few GB instead of
+# 23, so RunPod cold-start image pulls drop from ~20 min to a few minutes.
 #
-# Build/deploy: RunPod builds this from the repo (GitHub integration) when a
-# GPU serverless endpoint is pointed at runpod/gnina_worker/Dockerfile.
-FROM gnina/gnina:latest
+# Build/deploy: RunPod builds this from the repo (GitHub integration) with the
+# repo ROOT as build context.
 
-# RunPod's serverless SDK (handler bootstrap + queue listener). The gnina
-# image is Ubuntu-based with system python3; install pip if missing, then the
-# runpod package. Kept tolerant so a base-image python bump doesn't break us.
-RUN (command -v pip3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3-pip && rm -rf /var/lib/apt/lists/*)) \
- && pip3 install --no-cache-dir --break-system-packages "runpod>=1.6,<2"
+# ----------------------------------------------------------------------------
+# Stage 1 — harvest gnina + its runtime shared-library closure from the fat img
+# ----------------------------------------------------------------------------
+FROM gnina/gnina:latest AS fat
+SHELL ["/bin/bash", "-c"]
+RUN set -euxo pipefail; \
+    mkdir -p /slim/bin /slim/libs /slim/ob; \
+    GNINA="$(command -v gnina)"; echo "gnina binary: $GNINA"; \
+    cp -L "$GNINA" /slim/bin/gnina; \
+    # Make sure ldd can resolve everything the fat image resolves at runtime:
+    # include torch/lib (libtorch) and the CUDA lib dir on the search path.
+    TORCHLIB="$(find / -type d -path '*/torch/lib' 2>/dev/null | head -1)"; \
+    echo "torch lib dir: ${TORCHLIB:-<none>}"; \
+    export LD_LIBRARY_PATH="${TORCHLIB}:/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"; \
+    echo "=== full ldd of gnina ==="; ldd "$GNINA" || true; \
+    # Collect the transitive shared-library closure, then drop the CUDA/cuDNN/
+    # NCCL/math libs that the runtime base already provides (avoids shadowing
+    # the base's matched versions and their dlopen'd sub-libraries).
+    ldd "$GNINA" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u > /tmp/all.txt; \
+    # Drop (a) the system CUDA tree under /usr/local/cuda — the runtime base
+    # provides matched 12.6 versions; (b) the libcuda driver stub — injected by
+    # the GPU runtime; (c) core glibc / loader / libstdc++ — copying those onto
+    # LD_LIBRARY_PATH ahead of the (same ubuntu24.04) base would risk ABI breaks.
+    # Everything torch bundles under .../torch/lib is KEPT (self-consistent set).
+    grep -vE '^/usr/local/cuda/|/(libcuda|ld-linux-x86-64|libc|libm|libdl|libpthread|librt|libresolv|libutil|libnss_[a-z]+|libgcc_s|libstdc\+\+)\.so' /tmp/all.txt > /tmp/keep.txt || true; \
+    echo "=== libraries being copied ==="; cat /tmp/keep.txt; \
+    while read -r f; do [ -e "$f" ] && cp -Lv "$f" /slim/libs/ || echo "MISSING: $f"; done < /tmp/keep.txt; \
+    # libmolgrid (gnina's gridding lib) — copy explicitly in case it is dlopen'd
+    find / -name 'libmolgrid*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    # OpenBabel is dlopen'd (format plugins) + reads element/typing data files,
+    # neither of which ldd captures. Copy the plugin dir + data dir + core lib.
+    find / -name 'libopenbabel*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    OBPLUGIN_PARENT="$(find / -type d -path '*/lib*/openbabel*' 2>/dev/null | head -1)"; \
+    OBDATA="$(find / -type d -path '*/share/openbabel*' 2>/dev/null | head -1)"; \
+    echo "OpenBabel plugins: ${OBPLUGIN_PARENT:-<none>}   data: ${OBDATA:-<none>}"; \
+    [ -n "${OBPLUGIN_PARENT:-}" ] && cp -rL "$OBPLUGIN_PARENT" /slim/ob/plugins || echo "WARN: no OB plugin dir"; \
+    [ -n "${OBDATA:-}" ] && cp -rL "$OBDATA" /slim/ob/data || echo "WARN: no OB data dir"; \
+    echo "=== harvested payload sizes ==="; du -sh /slim /slim/bin /slim/libs /slim/ob || true
 
-# Sanity: fail the build early if gnina isn't runnable in the image.
-RUN gnina --version 2>&1 | head -3 || (echo "gnina not found in base image" && exit 1)
+# ----------------------------------------------------------------------------
+# Stage 2 — lean runtime: CUDA 12.6 cuDNN runtime + harvested gnina
+# ----------------------------------------------------------------------------
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-pip libgomp1 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=fat /slim/bin/gnina /usr/local/bin/gnina
+COPY --from=fat /slim/libs/ /opt/gnina/libs/
+COPY --from=fat /slim/ob/ /opt/gnina/ob/
+
+# gnina's harvested libs live in one flat dir; put it (and the base CUDA libs)
+# on the loader path. Point OpenBabel at the copied plugin + data dirs.
+ENV LD_LIBRARY_PATH=/opt/gnina/libs:/usr/local/cuda/lib64
+ENV BABEL_LIBDIR=/opt/gnina/ob/plugins
+ENV BABEL_DATADIR=/opt/gnina/ob/data
+
+RUN pip3 install --no-cache-dir --break-system-packages "runpod>=1.6,<2"
+
+# Build-time smoke test: fail the build early if the shared-library closure is
+# incomplete. Runs on RunPod's GPU-less builder, so libcuda.so.1 (the driver,
+# injected only on a real GPU worker) is legitimately absent and ignored; ANY
+# other "not found" means a harvested lib is missing and must be fixed.
+RUN echo "=== ldd of installed gnina ==="; ldd /usr/local/bin/gnina || true; \
+    missing="$(ldd /usr/local/bin/gnina 2>/dev/null | grep -i 'not found' | grep -viE 'libcuda\.so' || true)"; \
+    if [ -n "$missing" ]; then echo "FATAL: unresolved libs:"; echo "$missing"; exit 1; fi; \
+    echo "OK: all non-driver libraries resolve"
 
 WORKDIR /app
-# NOTE: RunPod's GitHub build uses the REPO ROOT as the build context (with
-# this Dockerfile referenced by path), so COPY sources are repo-root-relative.
 COPY runpod/gnina_worker/handler.py /app/handler.py
 
-# RunPod calls handler() per request via runpod.serverless.start() in __main__.
-# build-rev: 3 (pip --break-system-packages for PEP 668)
+# build-rev: 4 (slim multi-stage: harvest binary+libs onto cuDNN runtime base)
 CMD ["python3", "-u", "handler.py"]
