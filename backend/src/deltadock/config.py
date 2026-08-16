@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     # Per-job timeout for the RunPod /runsync call. Vina at exhaustiveness=8
     # typically finishes in 25-60s; pad for cold starts.
     runpod_timeout_s: int = 240
+    # Cell-level parallelism for RunPod-serverless jobs. When > 1 (and RunPod
+    # is the primary engine — no Pod, not GNINA, not ensemble), the runner
+    # docks every (compound × variant) cell CONCURRENTLY across this many
+    # RunPod workers, then the sequential loop consumes the pre-computed
+    # poses (validation / pose-store / cache / DB all still run serially on
+    # the main thread — only the network dock is threaded). Set to your
+    # RunPod endpoint's max-worker count (e.g. 3). Default 1 = fully
+    # sequential (unchanged behaviour); flip to 1 to instantly revert.
+    # Override via the RUNPOD_PARALLEL_CELLS env var / Fly secret.
+    runpod_parallel_cells: int = 1
 
     # Pod-hosted GPU docking — points at a long-running FastAPI service that
     # wraps QuickVina2-GPU on a dedicated GPU Pod. Replaces the serverless

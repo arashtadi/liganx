@@ -2766,6 +2766,73 @@ def _run_real(session: Session, job: Job) -> None:
             set_stage(session, job.id, None)
             return  # batched path done; skip the legacy per-cell loop below
 
+        # ── (opt-in) Parallel cell pre-dock across RunPod workers.
+        # When RUNPOD_PARALLEL_CELLS > 1 and RunPod serverless is the
+        # primary engine (no Pod, not GNINA, not ensemble), dock every
+        # (compound × variant) cell CONCURRENTLY on RunPod's idle workers,
+        # storing each pose in `precomputed`. The sequential loop below then
+        # consumes those results (skipping its own dock) so ALL validation /
+        # pose-store / cache / DB / retry logic stays exactly as-is on the
+        # main thread. dock_one_with_pocket_best touches no DB session, so
+        # only the network dock is threaded — no session crosses a thread.
+        # Any per-cell failure is left out of `precomputed`, so the loop
+        # docks that cell normally (full retry chain) — fail-open.
+        precomputed: dict[tuple[int, str], tuple] = {}
+        _parallel_n = settings.runpod_parallel_cells
+        if (
+            _parallel_n > 1 and runpod_on and not pod_on
+            and not gnina_requested and not ensemble_on
+            and (len(compounds) * len(variants)) > 1
+            and not is_cancelled(session, job.id)
+        ):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            _pre_ligs: dict[int, Path] = {}
+            for _c in compounds:
+                try:
+                    _lp = work / f"compound_{_c.id}.pdbqt"
+                    prepare_ligand(_c.smiles, _lp, name=_c.name or f"c{_c.id}")
+                    _pre_ligs[_c.id] = _lp
+                except Exception as _e:  # noqa: BLE001 — sequential loop re-reports it
+                    log.info("parallel pre-dock: ligand prep failed for c%s (%s) — leaving to sequential path", _c.id, _e)
+            _cells = []
+            for _c in compounds:
+                if _c.id not in _pre_ligs:
+                    continue
+                for _v in variants:
+                    _rcpt = receptor_for_variant.get(_v, wt_receptor)
+                    if _rcpt is None:
+                        continue  # receptor sentinel — sequential path emits the fail row
+                    _cells.append((_c.id, _v, _rcpt, _pre_ligs[_c.id]))
+
+            def _net_dock(cell):
+                cid, v, rcpt, lig = cell
+                rd = work / f"compound_{cid}_{v}"
+                rd.mkdir(exist_ok=True)
+                res, meta = dock_one_with_pocket_best(
+                    dock_one_runpod,
+                    receptor_pdbqt=rcpt,
+                    ligand_pdbqt=lig,
+                    box=box,
+                    work_dir=rd,
+                    cfg=runpod_cfg,
+                    exhaustiveness=exhaustiveness,
+                    num_modes=9,
+                )
+                return cell, res, engine_label_with_attempts("runpod", meta)
+
+            if _cells:
+                _workers = min(len(_cells), _parallel_n)
+                log.info("parallel pre-dock: %d cells across %d RunPod workers", len(_cells), _workers)
+                with ThreadPoolExecutor(max_workers=_workers) as _ex:
+                    _futs = {_ex.submit(_net_dock, c): c for c in _cells}
+                    for _f in as_completed(_futs):
+                        _c = _futs[_f]
+                        try:
+                            _cc, _res, _eng = _f.result()
+                            precomputed[(_cc[0], _cc[1])] = (_res, _eng)
+                        except Exception as _e:  # noqa: BLE001 — loop docks this cell normally
+                            log.warning("parallel pre-dock failed for c%s × %s: %s — will dock sequentially", _c[0], _c[1], _e)
+
         # ── Legacy per-cell dispatch (untouched). Kept as fallback for
         # local Vina runs (no Pod), per-cell debugging, and as the safety
         # net while the batched path stabilizes.
@@ -2831,6 +2898,16 @@ def _run_real(session: Session, job: Job) -> None:
                         # so one bad call doesn't take down the whole job.
                         engine_used = "local"
                         result = None
+                        # Consume a parallel pre-dock result if Phase A produced
+                        # one for this cell (RUNPOD_PARALLEL_CELLS>1). Skips this
+                        # cell's own dock; the validation / pose-store / cache /
+                        # DB steps below run unchanged. gnina/pod branches are
+                        # inert here because parallel mode only engages when
+                        # they're off, and every `if result is None …` branch
+                        # below no-ops once result is set.
+                        _pre = precomputed.get((compound.id, variant))
+                        if _pre is not None:
+                            result, engine_used = _pre
                         # When the user picked engine=gnina on this job AND the
                         # feature flag is on AND the Pod is reachable, GNINA
                         # takes priority over QuickVina2-GPU for the cell. Same
