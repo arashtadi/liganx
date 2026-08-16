@@ -52,15 +52,21 @@ RUN set -x; \
     # libtorch runtime — gnina's CNN links it; torch dlopens sub-libs (e.g.
     # libtorch_cuda_linalg) NOT visible to ldd, so copy the whole torch/lib set.
     if [ -n "${TORCHLIB:-}" ]; then find "$TORCHLIB" -maxdepth 1 -name '*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; fi; \
-    # The cuDNN *runtime* base does not expose every CUDA library gnina links
-    # (confirmed missing: libcupti, libcufft — both under /usr/local/cuda, which
-    # the harvest filter excluded). Rather than chase them one by one, copy the
-    # WHOLE CUDA lib set from the fat image (matched 12.6, so ABI-safe). This is
-    # a couple GB but guarantees every CUDA dep resolves.
-    for d in /usr/local/cuda/lib64 /usr/local/cuda/targets/x86_64-linux/lib /usr/local/cuda/extras/CUPTI/lib64; do \
-      [ -d "$d" ] && find "$d" -maxdepth 1 -name '*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
-    done; \
-    find / -name 'libcupti*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    # CUDA math/runtime libs that gnina links. In this torch-based image they do
+    # NOT live in /usr/local/cuda/lib64 (that dir may not even exist) — they are
+    # pip nvidia-*-cu12 wheels under site-packages/nvidia/<pkg>/lib. ldd + the
+    # /usr/local/cuda copy both miss them. Name-based GLOBAL find catches each one
+    # wherever it lives (pip wheel, torch/lib, or /usr/local/cuda). Definitive.
+    find / \( \
+        -name 'libcufft*.so*'    -o -name 'libcublas*.so*'   -o -name 'libcublasLt*.so*' -o \
+        -name 'libcurand*.so*'   -o -name 'libcusparse*.so*' -o -name 'libcusolver*.so*' -o \
+        -name 'libcudart*.so*'   -o -name 'libcupti*.so*'    -o -name 'libnvrtc*.so*'     -o \
+        -name 'libnvjitlink*.so*' -o -name 'libnvToolsExt*.so*' -o -name 'libnppc*.so*'   -o \
+        -name 'libcudnn*.so*' \
+      \) -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    # Belt-and-suspenders: copy the ENTIRE pip nvidia-*-cu12 wheel lib tree so no
+    # CUDA lib can be missing even if not named above (cufft/cublas/cudnn/nccl/…).
+    find / -path '*/nvidia/*/lib/*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
     # OpenBabel is dlopen'd (format plugins) + reads element/typing data files,
     # neither of which ldd captures. Copy the plugin dir + data dir + core lib.
     find / -name 'libopenbabel*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
