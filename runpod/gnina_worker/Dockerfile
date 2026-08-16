@@ -96,6 +96,13 @@ RUN set -x; \
     # dependent object (root cause of the earlier gnina SIGABRT).
     rm -f /slim/ob/plugins/_openbabel*.so /slim/ob/plugins/*.py 2>/dev/null || true; \
     find /slim/ob/plugins -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true; \
+    # Each OB C++ format plugin links its own external libs (inchiformat.so ->
+    # libinchi; other formats -> libxml2/libz/etc.). OB's loader dlopens EVERY
+    # plugin at startup and a failed load aborts gnina, so harvest the full ldd
+    # closure of every remaining plugin. Skips cuda + core glibc/loader/libstdc++.
+    for so in /slim/ob/plugins/*.so; do [ -e "$so" ] && ldd "$so" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'; done \
+      | sort -u | grep -vE '^/usr/local/cuda/|/(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|ld-linux-x86-64)\.so' \
+      | while read -r f; do [ -e "$f" ] && cp -Lv "$f" /slim/libs/ || true; done; \
     echo "=== harvested payload sizes ==="; du -sh /slim /slim/bin /slim/libs /slim/ob || true
 
 # ----------------------------------------------------------------------------
