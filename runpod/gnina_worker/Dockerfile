@@ -78,13 +78,24 @@ RUN set -x; \
     # CUDA lib can be missing even if not named above (cufft/cublas/cudnn/nccl/…).
     find / -path '*/nvidia/*/lib/*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
     # OpenBabel is dlopen'd (format plugins) + reads element/typing data files,
-    # neither of which ldd captures. Copy the plugin dir + data dir + core lib.
+    # neither of which ldd captures. gnina needs OpenBabel's C++ FORMAT plugins
+    # (the version dir under lib/openbabel/<ver> with format .so's). It must NOT
+    # be the python-bindings dir (site-packages/openbabel, which contains
+    # _openbabel.so — the SWIG module that links libpython). If _openbabel.so is
+    # on BABEL_LIBDIR, OpenBabel's plugin loader tries to dlopen it, fails on the
+    # missing libpython, and gnina aborts (SIGABRT). So: pick the C++ dir and
+    # strip any python binding / .py files defensively.
     find / -name 'libopenbabel*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
-    OBPLUGIN_PARENT="$(find / -type d -path '*/lib*/openbabel*' 2>/dev/null | head -1)"; \
+    OBPLUGIN_PARENT="$(find / -type d -path '*/openbabel/*' -not -path '*site-packages*' -not -path '*/python*' 2>/dev/null | grep -E '/openbabel/[0-9]' | head -1)"; \
+    [ -z "$OBPLUGIN_PARENT" ] && OBPLUGIN_PARENT="$(find / -type d -path '*/lib*/openbabel*' -not -path '*site-packages*' -not -path '*/python*' 2>/dev/null | head -1)"; \
     OBDATA="$(find / -type d -path '*/share/openbabel*' 2>/dev/null | head -1)"; \
-    echo "OpenBabel plugins: ${OBPLUGIN_PARENT:-<none>}   data: ${OBDATA:-<none>}"; \
+    echo "OpenBabel C++ plugins: ${OBPLUGIN_PARENT:-<none>}   data: ${OBDATA:-<none>}"; \
     [ -n "${OBPLUGIN_PARENT:-}" ] && cp -rL "$OBPLUGIN_PARENT" /slim/ob/plugins || echo "WARN: no OB plugin dir"; \
     [ -n "${OBDATA:-}" ] && cp -rL "$OBDATA" /slim/ob/data || echo "WARN: no OB data dir"; \
+    # Strip python SWIG binding + .py so OB's loader never dlopens a libpython-
+    # dependent object (root cause of the earlier gnina SIGABRT).
+    rm -f /slim/ob/plugins/_openbabel*.so /slim/ob/plugins/*.py 2>/dev/null || true; \
+    find /slim/ob/plugins -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true; \
     echo "=== harvested payload sizes ==="; du -sh /slim /slim/bin /slim/libs /slim/ob || true
 
 # ----------------------------------------------------------------------------
