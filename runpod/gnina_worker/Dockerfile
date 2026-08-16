@@ -21,7 +21,11 @@
 # ----------------------------------------------------------------------------
 FROM gnina/gnina:latest AS fat
 SHELL ["/bin/bash", "-c"]
-RUN set -euxo pipefail; \
+# NOTE: best-effort harvest — `set -x` for tracing only, NOT `set -e`/pipefail.
+# `find /` legitimately exits non-zero (permission-denied on /proc etc.), which
+# under `set -e`+pipefail would abort inside `VAR="$(find ... | head)"`. The
+# real correctness gate is the ldd check in the runtime stage below.
+RUN set -x; \
     mkdir -p /slim/bin /slim/libs /slim/ob; \
     GNINA="$(command -v gnina)"; echo "gnina binary: $GNINA"; \
     cp -L "$GNINA" /slim/bin/gnina; \
