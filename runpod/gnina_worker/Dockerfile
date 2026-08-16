@@ -52,10 +52,15 @@ RUN set -x; \
     # libtorch runtime — gnina's CNN links it; torch dlopens sub-libs (e.g.
     # libtorch_cuda_linalg) NOT visible to ldd, so copy the whole torch/lib set.
     if [ -n "${TORCHLIB:-}" ]; then find "$TORCHLIB" -maxdepth 1 -name '*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; fi; \
-    # CUDA profiling/extra libs that gnina+torch link but the runtime base does
-    # NOT ship (they live under /usr/local/cuda and were excluded above). The
-    # confirmed one is libcupti; grab the related profiling libs too, defensively.
-    find / \( -name 'libcupti*.so*' -o -name 'libnvperf*.so*' -o -name 'libcheckpoint*.so*' -o -name 'libpcsamplingutil*.so*' -o -name 'libnvToolsExt*.so*' -o -name 'libnvrtc*.so*' \) -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    # The cuDNN *runtime* base does not expose every CUDA library gnina links
+    # (confirmed missing: libcupti, libcufft — both under /usr/local/cuda, which
+    # the harvest filter excluded). Rather than chase them one by one, copy the
+    # WHOLE CUDA lib set from the fat image (matched 12.6, so ABI-safe). This is
+    # a couple GB but guarantees every CUDA dep resolves.
+    for d in /usr/local/cuda/lib64 /usr/local/cuda/targets/x86_64-linux/lib /usr/local/cuda/extras/CUPTI/lib64; do \
+      [ -d "$d" ] && find "$d" -maxdepth 1 -name '*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
+    done; \
+    find / -name 'libcupti*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
     # OpenBabel is dlopen'd (format plugins) + reads element/typing data files,
     # neither of which ldd captures. Copy the plugin dir + data dir + core lib.
     find / -name 'libopenbabel*.so*' -exec cp -Lv {} /slim/libs/ \; 2>/dev/null || true; \
