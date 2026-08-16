@@ -16,7 +16,7 @@ FROM gnina/gnina:latest
 # image is Ubuntu-based with system python3; install pip if missing, then the
 # runpod package. Kept tolerant so a base-image python bump doesn't break us.
 RUN (command -v pip3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3-pip && rm -rf /var/lib/apt/lists/*)) \
- && pip3 install --no-cache-dir "runpod>=1.6,<2"
+ && pip3 install --no-cache-dir --break-system-packages "runpod>=1.6,<2"
 
 # Sanity: fail the build early if gnina isn't runnable in the image.
 RUN gnina --version 2>&1 | head -3 || (echo "gnina not found in base image" && exit 1)
@@ -27,5 +27,5 @@ WORKDIR /app
 COPY runpod/gnina_worker/handler.py /app/handler.py
 
 # RunPod calls handler() per request via runpod.serverless.start() in __main__.
-# build-rev: 2 (repo-root COPY fix)
+# build-rev: 3 (pip --break-system-packages for PEP 668)
 CMD ["python3", "-u", "handler.py"]
