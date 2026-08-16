@@ -106,9 +106,14 @@ RUN set -x; \
     echo "=== harvested payload sizes ==="; du -sh /slim /slim/bin /slim/libs /slim/ob || true
 
 # ----------------------------------------------------------------------------
-# Stage 2 — lean runtime: CUDA 12.6 cuDNN runtime + harvested gnina
-# ----------------------------------------------------------------------------
-FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu24.04
+# Stage 2 — runtime: CUDA 12.6 cuDNN *devel* base + harvested gnina.
+# NOTE: uses the -devel base (not -runtime) on purpose. gnina's bundled libtorch
+# ships PTX and JIT-compiles CUDA kernels for the target GPU at load time; the
+# lean -runtime base lacks the CUDA compiler/toolkit pieces (nvrtc/ptxas + full
+# runtime), so torch failed with "CUDA error: no kernel image is available for
+# execution on the device". The -devel base carries those, at ~5-6 GB more than
+# -runtime — still far below the 23 GB upstream image, and cold start stays fast.
+FROM nvidia/cuda:12.6.0-cudnn-devel-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip libgomp1 ca-certificates \
