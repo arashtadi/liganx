@@ -2786,6 +2786,7 @@ def _run_real(session: Session, job: Job) -> None:
             and not is_cancelled(session, job.id)
         ):
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from . import dock_cache as _dc_mod
             _pre_ligs: dict[int, Path] = {}
             for _c in compounds:
                 try:
@@ -2802,6 +2803,17 @@ def _run_real(session: Session, job: Job) -> None:
                     _rcpt = receptor_for_variant.get(_v, wt_receptor)
                     if _rcpt is None:
                         continue  # receptor sentinel — sequential path emits the fail row
+                    # Skip cells the dock-cache already has — the sequential
+                    # loop serves them instantly, so a parallel GPU dock would
+                    # just be wasted spend. Session-free lookup on the main
+                    # thread (before the pool); fail-open on any error.
+                    if settings.dock_cache_enabled:
+                        try:
+                            _ik, _ck = _dock_cache_key(_c, _v, "quickvina2-gpu")
+                            if _ck and _dc_mod.lookup(_ck):
+                                continue
+                        except Exception:  # noqa: BLE001
+                            pass
                     _cells.append((_c.id, _v, _rcpt, _pre_ligs[_c.id]))
 
             def _net_dock(cell):
