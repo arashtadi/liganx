@@ -94,8 +94,13 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             return {"error": "gnina exceeded 280s — try cnn_mode=rescore or lower exhaustiveness"}
 
         if res.returncode != 0:
-            tail = (res.stderr or res.stdout or "").strip()[-600:]
-            return {"error": f"gnina exited {res.returncode}: {tail}"}
+            err = (res.stderr or res.stdout or "").strip()
+            # Capture the HEAD (the C++ exception `what()` message + top stack
+            # frames — the actual cause) as well as the tail. A plain [-600:]
+            # only shows deep frames and hides why gnina aborted.
+            head = err[:1400]
+            tail = err[-500:]
+            return {"error": f"gnina exited {res.returncode}: HEAD>> {head} <<TAIL>> {tail}"}
 
         modes = _parse_modes(res.stdout)
         if not modes:
