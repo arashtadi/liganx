@@ -639,6 +639,7 @@ def notify_watch_dock_completed(
     engine: str,
     share_id: Optional[str],
     results_summary: str,
+    duration_s: Optional[float] = None,
 ) -> bool:
     """Ping when a watched user's docking job lands COMPLETED, carrying
     the per-compound best scores so the operator sees the result without
@@ -651,6 +652,10 @@ def notify_watch_dock_completed(
         f"👤 <code>{_escape_html(user_email or '—')}</code>",
         f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
         f"⚙️ Engine: {_escape_html(engine or '—')}",
+    ]
+    if duration_s is not None:
+        parts.append(f"⏱ Took: <b>{duration_s:.0f}s</b>")
+    parts += [
         "",
         "📊 <b>Best scores</b> (kcal/mol):",
         f"<code>{_escape_html(_truncate(results_summary or '(no results)', 1400))}</code>",

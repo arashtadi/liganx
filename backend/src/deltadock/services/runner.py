@@ -431,6 +431,10 @@ def _maybe_notify_watched_completed(session: Session, job: "Job") -> None:
         results_summary = "\n".join(lines)
     else:
         results_summary = "(no result rows)"
+    try:
+        _dur_s = (datetime.utcnow() - job.created_at).total_seconds() if job.created_at else None
+    except Exception:  # noqa: BLE001 — duration is best-effort telemetry
+        _dur_s = None
     notify_watch_dock_completed(
         user_email=user_email,
         pdb_id=job.pdb_id,
@@ -438,6 +442,7 @@ def _maybe_notify_watched_completed(session: Session, job: "Job") -> None:
         engine=job.engine or "",
         share_id=job.share_id,
         results_summary=results_summary,
+        duration_s=_dur_s,
     )
 
 
