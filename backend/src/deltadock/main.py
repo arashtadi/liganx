@@ -809,6 +809,8 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("032_selectivity_tables.sql", "Migration 032 (mutant-selective binder discovery table)"),
     # Raises free-tier quota 10 -> 20 (default + bump existing rows at 10).
     ("033_bump_free_quota_20.sql", "Migration 033 (free quota 10 -> 20)"),
+    # Raises free-tier quota 20 -> 50 (default + bump existing rows at 20).
+    ("034_bump_free_quota_50.sql", "Migration 034 (free quota 20 -> 50)"),
 ]
 
 

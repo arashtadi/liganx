@@ -103,7 +103,7 @@ function Hero() {
                 reads as confident; six reads as a feature dump. */}
             <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
-              <span className="flex items-center gap-1.5"><Check /> Free GPU Vina · Boltz-2 on Pro</span>
+              <span className="flex items-center gap-1.5"><Check /> Free Vina docking · Virtual screening on Pro</span>
               <span className="flex items-center gap-1.5"><Check /> Mutation-aware virtual screening</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>
@@ -305,8 +305,8 @@ function FeatureGrid() {
     },
     {
       icon: <Sparkles />,
-      title: "Validated poses on GPU Vina",
-      body: "Free jobs run on QuickVina2-GPU, with every pose checked by PoseBusters, Vinardo re-score, and RDKit strain analysis \u2014 most free tools give you no validation at all. GNINA CNN rescoring and Boltz-2 ML co-folding run side-by-side on the same job on Pro.",
+      title: "Validated poses, not just scores",
+      body: "Every job runs QuickVina2, with every pose checked by PoseBusters, Vinardo re-score, and RDKit strain analysis \u2014 most free tools give you no validation at all.",
     },
     {
       icon: <Shield />,
@@ -464,7 +464,6 @@ function Comparison() {
               ["Pre-computed FDA-drug screenings",              false,     true,      false],
               ["Bulk virtual screening, selectivity-ranked",    false,     true,      "partial"],
               ["Inline ADMET (hERG / DILI / CYP / BBB)",        false,     true,      "partial"],
-              ["Multiple scoring engines side-by-side",         false,     true,      "partial"],
               ["Ensemble / flexible-receptor docking",          false,     true,      true],
               ["Runs in the browser, no install",               true,      true,      false],
               ["Published, reproducible validation report",     false,     true,      false],

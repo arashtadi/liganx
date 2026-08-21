@@ -307,7 +307,7 @@ def create_job(
     )
     quota_row = session.execute(
         text(
-            "SELECT COALESCE(p.job_quota, 20) AS quota,"
+            "SELECT COALESCE(p.job_quota, 50) AS quota,"
             "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
@@ -753,7 +753,7 @@ def create_job_from_screening(
     )
     quota_row = session.execute(
         text(
-            "SELECT COALESCE(p.job_quota, 20) AS quota,"
+            "SELECT COALESCE(p.job_quota, 50) AS quota,"
             "       COALESCE(p.access_status, 'pending') AS access_status,"
             " (SELECT COUNT(*) FROM job j"
             "  WHERE j.user_id = :uid AND j.status::text IN ('pending','running','completed')"
