@@ -1075,7 +1075,9 @@ function ViewerCanvas({
     // Refresh screen bounds so the very first pick maps click-pixel → ray
     // correctly (stale bounds send the first click to the wrong atom).
     try { viewer.resize(); } catch { /* ignore */ }
+    const canvasEl = container?.querySelector("canvas") as HTMLCanvasElement | null;
     if (container) container.style.cursor = "crosshair";
+    if (canvasEl) canvasEl.style.cursor = "crosshair";
 
     const fmtAtom = (x: any) =>
       `${x.resn ?? "?"}${x.resi ?? ""}${x.chain ? `.${x.chain}` : ""}/${x.atom ?? "?"}`;
@@ -1111,7 +1113,7 @@ function ViewerCanvas({
     const onHover = (atom: any) => {
       if (!atom || typeof atom.x !== "number") return;
       if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } }
-      hoverHighlightRef.current = viewer.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.38, color: "#fde68a", opacity: 0.55 });
+      hoverHighlightRef.current = viewer.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.55, color: "#fbbf24", opacity: 0.85 });
       viewer.render();
     };
     const onUnhover = () => {
@@ -1134,6 +1136,7 @@ function ViewerCanvas({
       firstAtomRef.current = null;
       setFirstAtomPicked(false);
       if (container) container.style.cursor = "";
+      if (canvasEl) canvasEl.style.cursor = "";
       try { viewer.render(); } catch { /* ignore */ }
     };
   }, [measureMode, loading, error]);
