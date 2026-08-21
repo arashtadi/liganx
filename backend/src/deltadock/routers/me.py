@@ -36,6 +36,30 @@ from ..db import get_session
 router = APIRouter(prefix="/me", tags=["me"])
 
 
+def _best_full_name(session, user_id, fallback=None):
+    """Resolve the best available display name for operator notifications.
+
+    OAuth users don't fill the /welcome form, so we can't rely on the
+    payload — but Google/GitHub hand us their name at sign-in and it lands
+    in auth.users.raw_user_meta_data (and usually gets copied to
+    user_profile.full_name by the migration-003 trigger). Prefer the
+    profile value, fall back to the auth metadata (full_name, then name),
+    finally to `fallback`. Fail-soft: any DB hiccup returns the fallback so
+    a notification never breaks on name resolution."""
+    try:
+        row = session.execute(text(
+            "SELECT COALESCE(NULLIF(p.full_name, ''), "
+            "                u.raw_user_meta_data->>'full_name', "
+            "                u.raw_user_meta_data->>'name') AS name "
+            "FROM auth.users u "
+            "LEFT JOIN public.user_profile p ON p.user_id = u.id "
+            "WHERE u.id = :uid"
+        ), {"uid": user_id}).first()
+        return (row[0] if row and row[0] else fallback)
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 # Canonical role values accepted by the API. Keep in sync with
 # frontend SIGNUP_ROLES in lib/auth.tsx — we validate server-side
 # so direct API callers can't insert garbage.
@@ -428,7 +452,7 @@ def update_my_profile(
                 "SELECT full_name, organization, role"
                 " FROM public.user_profile WHERE user_id = :uid"
             ), {"uid": user.id}).first()
-            fn = (prof[0] if prof else None) or payload.full_name
+            fn = (prof[0] if prof else None) or payload.full_name or _best_full_name(session, user.id)
             org = (prof[1] if prof else None) or payload.organization
             rl = (prof[2] if prof else None) or payload.role
             try:
@@ -594,12 +618,14 @@ def get_access_status(
         # Fire Telegram (Approve/Deny inline buttons) + admin email.
         # Both are fail-soft inside their respective modules — no need
         # to wrap each individually.
+        _nm = _best_full_name(session, user.id)
         try:
             from ..services.notifications import notify_new_user
             notify_new_user(
                 user_email=getattr(user, "email", None),
                 user_id=user.id,
                 signup_method=getattr(user, "provider", None),
+                full_name=_nm,
             )
         except Exception:  # noqa: BLE001
             import logging
@@ -609,6 +635,7 @@ def get_access_status(
             notify_admin_new_signup(
                 user_email=getattr(user, "email", None),
                 user_id=user.id,
+                full_name=_nm,
             )
         except Exception:  # noqa: BLE001
             import logging
