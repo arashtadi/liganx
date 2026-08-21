@@ -93,12 +93,20 @@ function dominantType(types: string[]): string {
   return nonVdw ?? types[0] ?? "VdWContact";
 }
 
+type XYZ = { x: number; y: number; z: number };
+interface Measurement { id: number; label: string; distance: number; a: XYZ; b: XYZ }
+
 export default function MutationOverlayViewer(props: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   // One-shot flag: set when the user taps Measure on the INLINE viewer. It
   // opens fullscreen and tells the modal viewer to start in measure mode so
   // atom-picking happens on the big canvas (imprecise in the small view).
   const [autoMeasure, setAutoMeasure] = useState(false);
+  // Measurements are LIFTED here so they survive the inline<->fullscreen swap
+  // (both ViewerCanvas instances share the same molecule coords and redraw the
+  // list). Stored as endpoint coords + distance, NOT 3Dmol shape handles
+  // (those are per-viewer-instance and can't be shared).
+  const [measurements, setMeasurements] = useState<Measurement[]>([]);
 
   // ── Toolbar state, LIFTED to the parent ─────────────────────────────
   // These were previously local to ViewerCanvas, which meant the inline
@@ -166,6 +174,7 @@ export default function MutationOverlayViewer(props: Props) {
     surfaceColor, setSurfaceColor,
     blend, setBlend,
     cameraViewRef,
+    measurements, setMeasurements,
   };
 
   return (
@@ -327,6 +336,8 @@ function ViewerCanvas({
   onRequestFullscreenMeasure,
   autoMeasure,
   onAutoMeasureConsumed,
+  measurements,
+  setMeasurements,
 }: Props & {
   isFullscreen: boolean;
   onExpand: () => void;
@@ -363,6 +374,10 @@ function ViewerCanvas({
   autoMeasure?: boolean;
   /** Fullscreen viewer only: clears the one-shot autoMeasure flag. */
   onAutoMeasureConsumed?: () => void;
+  /** Persistent measurement list, lifted to the parent so it survives the
+   *  inline<->fullscreen viewer swap. */
+  measurements: Measurement[];
+  setMeasurements: (u: Measurement[] | ((prev: Measurement[]) => Measurement[])) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
@@ -411,14 +426,17 @@ function ViewerCanvas({
   //                           the click handler for distance math).
   //   `firstAtomPicked`     — paired state mirror so the button label can
   //                           re-render between the 1st and 2nd click.
-  //   `measureShapesRef`    — handles to drawn shapes/labels for cleanup.
+  //   `drawnMeasureRef`     — handles to persistent measurement shapes for redraw.
   const [measureMode, setMeasureMode] = useState(false);
   const firstAtomRef = useRef<any>(null);
   const [firstAtomPicked, setFirstAtomPicked] = useState(false);
-  const measureShapesRef = useRef<{ shapes: any[]; labels: any[] }>({ shapes: [], labels: [] });
-  const [measurements, setMeasurements] = useState<
-    { id: number; label: string; distance: number }[]
-  >([]);
+  // Transient highlight for the 1st-picked atom (before the pair completes).
+  const firstHighlightRef = useRef<any>(null);
+  // Hover highlight sphere — responsiveness feedback while picking.
+  const hoverHighlightRef = useRef<any>(null);
+  // Handles to the PERSISTENT measurement shapes/labels this instance drew, so
+  // the redraw effect can clear + redraw from the lifted `measurements` list.
+  const drawnMeasureRef = useRef<{ shapes: any[]; labels: any[] }>({ shapes: [], labels: [] });
 
   // Index of the pose model: depends on whether we loaded a mutant or not.
   // In complex mode the ligand lives INSIDE model 0 (alongside the protein
@@ -729,6 +747,8 @@ function ViewerCanvas({
           throw new Error("3D viewer failed to initialize (WebGL unavailable?)");
         }
         viewerRef.current = viewer;
+        // Snappy hover feedback for measure mode (3Dmol default ~500ms lags).
+        try { viewer.setHoverDuration?.(60); } catch { /* older 3Dmol */ }
 
         // Model 0: wild-type, used for the backbone cartoon
         const wtModel = viewer.addModel(wtPdb, "pdb");
@@ -1043,99 +1063,108 @@ function ViewerCanvas({
   }, [isFullscreen, autoMeasure]);
 
   // ── Measure mode: click two atoms → labeled dashed line with distance ──
-  // Toggling the mode rebinds atom-click handlers. Off = atoms not clickable
-  // (don't interfere with rotate/pan/zoom). On = every atom clickable;
-  // first click highlights, second click draws cylinder + label.
+  // measureMode governs ONLY atom-picking (clickable + hover feedback). The
+  // drawn measurement geometry is owned by the redraw effect below and persists
+  // regardless of mode — so closing fullscreen keeps the measurements visible
+  // in the small view until the user clears them.
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer) return;
+    if (!viewer || !measureMode) return;
+    const container = containerRef.current;
 
-    if (measureMode) {
-      // Refresh the canvas's screen bounds before installing the click
-      // handler. 3Dmol's hit-test ray uses these bounds to map click pixel →
-      // 3D ray; if they're stale (e.g. user scrolled before clicking
-      // Measure), the very first pick will land on the wrong atom.
-      try { viewer.resize(); } catch { /* ignore */ }
+    // Refresh screen bounds so the very first pick maps click-pixel → ray
+    // correctly (stale bounds send the first click to the wrong atom).
+    try { viewer.resize(); } catch { /* ignore */ }
+    if (container) container.style.cursor = "crosshair";
 
-      const onAtomClick = (atom: any) => {
-        if (!atom || typeof atom.x !== "number") return;
-        if (!firstAtomRef.current) {
-          firstAtomRef.current = atom;
-          setFirstAtomPicked(true);  // re-render: button label switches to "pick 2nd atom"
-          const handle = viewer.addSphere({
-            center: { x: atom.x, y: atom.y, z: atom.z },
-            radius: 0.45,
-            color: "#f59e0b",
-            opacity: 0.95,
-          });
-          measureShapesRef.current.shapes.push(handle);
-          viewer.render();
-          return;
-        }
+    const fmtAtom = (x: any) =>
+      `${x.resn ?? "?"}${x.resi ?? ""}${x.chain ? `.${x.chain}` : ""}/${x.atom ?? "?"}`;
 
-        const a = firstAtomRef.current;
-        const b = atom;
-        const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-        const cyl = viewer.addCylinder({
-          start: { x: a.x, y: a.y, z: a.z },
-          end:   { x: b.x, y: b.y, z: b.z },
-          radius: 0.06,
-          color: "#f59e0b",
-          dashed: true,
-        });
-        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
-        const lbl = viewer.addLabel(`${dist.toFixed(2)} Å`, {
-          position: mid,
-          backgroundColor: "#0f172a",
-          backgroundOpacity: 0.85,
-          fontColor: "#fbbf24",
-          fontSize: 12,
-          borderThickness: 0,
-          inFront: true,
-        });
-        const sphereB = viewer.addSphere({
-          center: { x: b.x, y: b.y, z: b.z },
-          radius: 0.45,
-          color: "#f59e0b",
-          opacity: 0.95,
-        });
-
-        measureShapesRef.current.shapes.push(cyl, sphereB);
-        measureShapesRef.current.labels.push(lbl);
-
-        const fmtAtom = (x: any) =>
-          `${x.resn ?? "?"}${x.resi ?? ""}${x.chain ? `.${x.chain}` : ""}/${x.atom ?? "?"}`;
-        setMeasurements((prev) => [
-          ...prev,
-          { id: Date.now() + Math.random(), label: `${fmtAtom(a)} ↔ ${fmtAtom(b)}`, distance: dist },
-        ]);
-
-        firstAtomRef.current = null;
-        setFirstAtomPicked(false);  // back to "pick 1st atom" state
+    const onAtomClick = (atom: any) => {
+      if (!atom || typeof atom.x !== "number") return;
+      const pt: XYZ = { x: atom.x, y: atom.y, z: atom.z };
+      if (!firstAtomRef.current) {
+        firstAtomRef.current = { ...pt, resn: atom.resn, resi: atom.resi, chain: atom.chain, atom: atom.atom };
+        setFirstAtomPicked(true);
+        firstHighlightRef.current = viewer.addSphere({ center: pt, radius: 0.5, color: "#f59e0b", opacity: 0.95 });
         viewer.render();
-      };
-
-      try {
-        viewer.setClickable({}, true, onAtomClick);
-        viewer.render();
-      } catch (e) {
-        console.warn("measure mode: setClickable failed", e);
+        return;
       }
-    } else {
-      try {
-        for (const s of measureShapesRef.current.shapes) viewer.removeShape(s);
-        for (const l of measureShapesRef.current.labels) viewer.removeLabel(l);
-      } catch { /* ignore */ }
-      measureShapesRef.current = { shapes: [], labels: [] };
+      const a = firstAtomRef.current;
+      const dx = a.x - pt.x, dy = a.y - pt.y, dz = a.z - pt.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const label = `${fmtAtom(a)} ↔ ${fmtAtom(atom)}`;
+      // Drop the transient first-pick highlight — the redraw effect draws the
+      // permanent endpoints + dashed line + label for the completed pair.
+      if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } firstHighlightRef.current = null; }
       firstAtomRef.current = null;
       setFirstAtomPicked(false);
-      try { viewer.setClickable({}, false, () => {}); } catch { /* ignore */ }
+      setMeasurements((prev) => [
+        ...prev,
+        { id: Date.now() + Math.random(), label, distance: dist, a: { x: a.x, y: a.y, z: a.z }, b: pt },
+      ]);
+    };
+
+    // Hover feedback: highlight the atom under the cursor so the user can see
+    // exactly what they'll pick — the single biggest "measuring feels
+    // unresponsive" fix.
+    const onHover = (atom: any) => {
+      if (!atom || typeof atom.x !== "number") return;
+      if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } }
+      hoverHighlightRef.current = viewer.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.38, color: "#fde68a", opacity: 0.55 });
       viewer.render();
-      setMeasurements([]);
+    };
+    const onUnhover = () => {
+      if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; viewer.render(); }
+    };
+
+    try {
+      viewer.setClickable({}, true, onAtomClick);
+      viewer.setHoverable?.({}, true, onHover, onUnhover);
+      viewer.render();
+    } catch (e) {
+      console.warn("measure mode: setClickable/hover failed", e);
     }
-  }, [measureMode, loading, error]);   // re-run when the viewer finishes loading too
+
+    return () => {
+      try { viewer.setClickable({}, false, () => {}); } catch { /* ignore */ }
+      try { viewer.setHoverable?.({}, false, () => {}, () => {}); } catch { /* ignore */ }
+      if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; }
+      if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } firstHighlightRef.current = null; }
+      firstAtomRef.current = null;
+      setFirstAtomPicked(false);
+      if (container) container.style.cursor = "";
+      try { viewer.render(); } catch { /* ignore */ }
+    };
+  }, [measureMode, loading, error]);
+
+  // Redraw the PERSISTENT measurement geometry whenever the list changes or the
+  // viewer (re)loads. Independent of measureMode, so measurements survive the
+  // inline<->fullscreen swap and stay drawn until cleared.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || loading || error) return;
+    const drawn = drawnMeasureRef.current;
+    try {
+      for (const sh of drawn.shapes) viewer.removeShape(sh);
+      for (const lb of drawn.labels) viewer.removeLabel(lb);
+    } catch { /* ignore */ }
+    drawn.shapes = [];
+    drawn.labels = [];
+    for (const m of measurements) {
+      try {
+        drawn.shapes.push(viewer.addSphere({ center: m.a, radius: 0.45, color: "#f59e0b", opacity: 0.95 }));
+        drawn.shapes.push(viewer.addSphere({ center: m.b, radius: 0.45, color: "#f59e0b", opacity: 0.95 }));
+        drawn.shapes.push(viewer.addCylinder({ start: m.a, end: m.b, radius: 0.06, color: "#f59e0b", dashed: true }));
+        const mid = { x: (m.a.x + m.b.x) / 2, y: (m.a.y + m.b.y) / 2, z: (m.a.z + m.b.z) / 2 };
+        drawn.labels.push(viewer.addLabel(`${m.distance.toFixed(2)} Å`, {
+          position: mid, backgroundColor: "#0f172a", backgroundOpacity: 0.85,
+          fontColor: "#fbbf24", fontSize: 12, borderThickness: 0, inFront: true,
+        }));
+      } catch { /* ignore */ }
+    }
+    try { viewer.render(); } catch { /* ignore */ }
+  }, [measurements, loading, error]);
 
   // Human-readable label for the current blend zone
   const blendLabel =
@@ -1218,10 +1247,28 @@ function ViewerCanvas({
         {/* Measurements readout — stacks the most recent 5 distances above
             the Measure button. Hidden when off. (The mid-measurement hint
             now lives inside the button label itself.) */}
-        {measureMode && measurements.length > 0 && (
+        {measurements.length > 0 && (
           <div
-            className="absolute bottom-12 left-2 z-10 max-w-[60%] text-[10px] font-mono bg-slate-900/90 text-amber-200 rounded px-2 py-1.5 shadow ring-1 ring-amber-500/40 pointer-events-none"
+            className="absolute bottom-12 left-2 z-10 max-w-[70%] text-[10px] font-mono bg-slate-900/90 text-amber-200 rounded px-2 py-1.5 shadow ring-1 ring-amber-500/40"
           >
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <span className="text-[9px] uppercase tracking-wider text-slate-400 font-sans font-semibold">
+                {measurements.length} measurement{measurements.length === 1 ? "" : "s"}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  firstAtomRef.current = null;
+                  setFirstAtomPicked(false);
+                  setMeasurements([]);
+                }}
+                className="text-[9px] uppercase tracking-wider font-sans font-semibold text-slate-300 hover:text-rose-300 transition-colors"
+                title="Clear all measurements"
+              >
+                ✕ Clear
+              </button>
+            </div>
             {measurements.slice(-5).map((m) => (
               <div key={m.id} className="truncate">
                 <span className="text-amber-400 font-semibold">{m.distance.toFixed(2)} Å</span>
