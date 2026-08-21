@@ -381,6 +381,82 @@ def update_my_profile(
             import logging
             logging.getLogger(__name__).exception("notify_admin_new_signup failed")
 
+        # If this brand-new row already carried affiliation, the ping above
+        # was the rich one — lock profile_notified_at so a later profile edit
+        # doesn't re-notify via the block below.
+        if payload.organization or payload.role:
+            try:
+                session.execute(text(
+                    "UPDATE public.user_profile SET profile_notified_at = NOW()"
+                    " WHERE user_id = :uid AND profile_notified_at IS NULL"
+                ), {"uid": user.id})
+                session.commit()
+            except Exception:
+                session.rollback()
+
+    # Rich "profile completed" notification (the OAuth fix). Google-OAuth
+    # users get a sparse user_profile row on first sign-in (no org/role), so
+    # the FIRST operator ping — fired from /me/access_status — carries only
+    # their email. They supply organization + role here, on a LATER call that
+    # hits the UPDATE branch (is_first_profile_write is False), which the
+    # block above never covers. So the moment a still-pending user fills in
+    # affiliation, fire a second, richer ping (Approve/Deny + org + role) so
+    # the operator can decide with full context. Claimed once via
+    # profile_notified_at; gated on pending so approved users editing their
+    # profile never re-notify.
+    if not is_first_profile_write and (payload.organization or payload.role):
+        claimed_profile = False
+        try:
+            res = session.execute(text(
+                "UPDATE public.user_profile"
+                "   SET profile_notified_at = NOW()"
+                " WHERE user_id = :uid"
+                "   AND profile_notified_at IS NULL"
+                "   AND COALESCE(access_status, 'pending') = 'pending'"
+            ), {"uid": user.id})
+            session.commit()
+            claimed_profile = (res.rowcount or 0) > 0
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("profile_notified_at claim failed")
+            session.rollback()
+
+        if claimed_profile:
+            # Read the persisted values so the ping reflects the full stored
+            # profile even if the payload only patched one field.
+            prof = session.execute(text(
+                "SELECT full_name, organization, role"
+                " FROM public.user_profile WHERE user_id = :uid"
+            ), {"uid": user.id}).first()
+            fn = (prof[0] if prof else None) or payload.full_name
+            org = (prof[1] if prof else None) or payload.organization
+            rl = (prof[2] if prof else None) or payload.role
+            try:
+                from ..services.notifications import notify_new_user
+                notify_new_user(
+                    user_email=getattr(user, "email", None),
+                    user_id=user.id,
+                    signup_method=getattr(user, "provider", None),
+                    full_name=fn,
+                    organization=org,
+                    role=rl,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("notify_new_user (profile-completed) failed")
+            try:
+                from ..services.email import notify_admin_new_signup
+                notify_admin_new_signup(
+                    user_email=getattr(user, "email", None),
+                    user_id=user.id,
+                    full_name=fn,
+                    organization=org,
+                    role=rl,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("notify_admin_new_signup (profile-completed) failed")
+
     return get_my_profile(user, session)
 
 

@@ -175,7 +175,7 @@ def notify_user_approved(*, user_email: Optional[str]) -> bool:
           <div style="display:inline-block;background:#ecfdf5;color:#047857;font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;">&#10003; Account approved</div>
           <h1 style="color:#0f172a;font-size:24px;margin:16px 0 8px;">You're in &#127881;</h1>
           <p style="color:#475569;font-size:15px;line-height:1.65;margin:0 0 22px;">
-            Your Liganx account is approved. Sign in and start docking right away &mdash; pick a target and mutation, add a molecule, and dock it against the wild-type and mutant pockets in seconds on GPU.
+            Your Liganx account is approved. Sign in and start docking right away &mdash; pick a target and mutation, add a molecule, and dock it against the wild-type and mutant pockets in about a minute.
           </p>
           <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 26px;"><tr><td style="border-radius:10px;background:linear-gradient(135deg,#6d28d9,#2563eb);">
             <a href="https://liganx.com/studio" style="display:inline-block;padding:13px 30px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;">Open Studio &rarr;</a>
@@ -185,13 +185,13 @@ def notify_user_approved(*, user_email: Optional[str]) -> bool:
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr><td style="padding:5px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">1.</b>&nbsp;&nbsp;Pick a target &amp; mutation &mdash; e.g. EGFR T790M</td></tr>
               <tr><td style="padding:5px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">2.</b>&nbsp;&nbsp;Add a molecule by name or SMILES</td></tr>
-              <tr><td style="padding:5px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">3.</b>&nbsp;&nbsp;Run the GPU dock &mdash; compare wild-type vs mutant scores</td></tr>
+              <tr><td style="padding:5px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">3.</b>&nbsp;&nbsp;Run the dock &mdash; compare wild-type vs mutant scores</td></tr>
             </table>
           </div>
         </td></tr>
         <tr><td style="background:#f8fafc;padding:20px 32px;border-top:1px solid #e2e8f0;">
           <p style="color:#94a3b8;font-size:12px;line-height:1.55;margin:0;">
-            Liganx is invite-only while we keep GPU costs sustainable. Questions? Reply to this email or visit <a href="https://liganx.com/contact" style="color:#6d28d9;text-decoration:none;">liganx.com/contact</a>.
+            Liganx is invite-only while we keep compute costs sustainable. Questions? Reply to this email or visit <a href="https://liganx.com/contact" style="color:#6d28d9;text-decoration:none;">liganx.com/contact</a>.
           </p>
         </td></tr>
       </table>
@@ -216,7 +216,7 @@ def notify_user_denied(*, user_email: Optional[str]) -> bool:
       <p style="color: #475569;">
         Thanks for signing up. We're not able to grant your account access
         to the live docking platform right now — Liganx is invite-only
-        while we keep GPU costs sustainable.
+        while we keep compute costs sustainable.
       </p>
       <p style="color: #475569;">
         If you think this was a mistake or you'd like to request access,

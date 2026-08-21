@@ -811,6 +811,9 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("033_bump_free_quota_20.sql", "Migration 033 (free quota 10 -> 20)"),
     # Raises free-tier quota 20 -> 50 (default + bump existing rows at 20).
     ("034_bump_free_quota_50.sql", "Migration 034 (free quota 20 -> 50)"),
+    # Rich sign-up ping flag: fire a second, affiliation-carrying operator
+    # notification once a pending OAuth user completes their profile.
+    ("035_profile_notified_at.sql", "Migration 035 (profile-completed notification flag)"),
 ]
 
 
