@@ -89,6 +89,21 @@ class Settings(BaseSettings):
     # sequential (unchanged behaviour); flip to 1 to instantly revert.
     # Override via the RUNPOD_PARALLEL_CELLS env var / Fly secret.
     runpod_parallel_cells: int = 1
+    # ── Business-hours keep-alive for the RunPod docking endpoint.
+    # Cold starts are the biggest retention risk. When warmup_enabled, a
+    # background loop pings the endpoint every warmup_ping_interval_s during
+    # the business-hours window (warmup_tz, weekdays optional) to keep >=1
+    # worker warm; outside the window it does nothing (endpoint scales to
+    # zero). See services/warmup.py. NOTE: the endpoint's idle-timeout (set
+    # in the RunPod console) must be >= the ping interval for the worker to
+    # stay warm between pings. Env: WARMUP_ENABLED, WARMUP_PING_INTERVAL_S,
+    # WARMUP_HOUR_START, WARMUP_HOUR_END, WARMUP_TZ, WARMUP_WEEKDAYS_ONLY.
+    warmup_enabled: bool = False
+    warmup_ping_interval_s: int = 50
+    warmup_hour_start: int = 9
+    warmup_hour_end: int = 18
+    warmup_tz: str = "America/Los_Angeles"
+    warmup_weekdays_only: bool = True
 
     # Pod-hosted GPU docking — points at a long-running FastAPI service that
     # wraps QuickVina2-GPU on a dedicated GPU Pod. Replaces the serverless

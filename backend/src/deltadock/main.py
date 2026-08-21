@@ -886,12 +886,19 @@ async def lifespan(_app: FastAPI):
     from .services.watchdog import watchdog_task as liganx_watchdog_task
     liganx_watchdog_async_task = asyncio.create_task(liganx_watchdog_task())
 
+    # Business-hours keep-alive — pings the RunPod docking endpoint during
+    # work hours so real jobs land on a warm worker instead of paying the
+    # cold-boot wait. No-op unless WARMUP_ENABLED. See services/warmup.py.
+    from .services.warmup import warmup_keepalive_loop
+    warmup_async_task = asyncio.create_task(warmup_keepalive_loop())
+
     try:
         yield
     finally:
         all_tasks = (
             watchdog_task, reaper_task, failover_task,
             fep_reconciler_async_task, liganx_watchdog_async_task,
+            warmup_async_task,
         )
         for task in all_tasks:
             task.cancel()
@@ -943,6 +950,20 @@ app.include_router(calibrate.router)  # Pro feature: score user's own (drug, mut
 app.include_router(selective.router)  # Mutant-Selective Binder Discovery — standalone /selective feature (docs/mutant_selective_pipeline.md)
 app.include_router(sentry_webhook.router)  # Sentry alerts → Telegram bridge (/internal/sentry-webhook)
 app.include_router(telegram_webhook.router)  # Telegram Approve/Deny callbacks for new-user notifications
+
+
+@app.post("/warmup", tags=["meta"])
+async def warmup() -> dict:
+    """Poke the RunPod docking endpoint so a worker starts warming.
+
+    The Studio page calls this on mount, so the GPU is booting while the
+    user is still picking a target/compounds — turning a cold-start wait
+    into no wait for the common flow. Fire-and-forget + debounced in
+    services.warmup, so it's safe to call on every page load.
+    """
+    from .services.warmup import fire_warmup_ping
+    ok = await fire_warmup_ping()
+    return {"warming": ok}
 
 
 @app.get("/health", tags=["meta"])

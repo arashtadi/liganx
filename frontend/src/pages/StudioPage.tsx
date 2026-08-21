@@ -393,6 +393,15 @@ export default function StudioPage() {
   // opposite default from isPro: Pro features fail closed, ensemble fails
   // open, because ensemble is ungated-by-default by design.
   const [ensembleAllowed, setEnsembleAllowed] = useState(true);
+
+  // Warm the GPU worker the moment Studio opens, so it's booting while the
+  // user picks a target/compounds — turns a cold-start wait into no wait for
+  // the common flow. Fire-and-forget; the backend debounces (services/warmup).
+  useEffect(() => {
+    const base = import.meta.env.VITE_API_URL || "/api";
+    fetch(`${base}/warmup`, { method: "POST" }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     api
