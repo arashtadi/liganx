@@ -95,6 +95,10 @@ function dominantType(types: string[]): string {
 
 export default function MutationOverlayViewer(props: Props) {
   const [fullscreen, setFullscreen] = useState(false);
+  // One-shot flag: set when the user taps Measure on the INLINE viewer. It
+  // opens fullscreen and tells the modal viewer to start in measure mode so
+  // atom-picking happens on the big canvas (imprecise in the small view).
+  const [autoMeasure, setAutoMeasure] = useState(false);
 
   // ── Toolbar state, LIFTED to the parent ─────────────────────────────
   // These were previously local to ViewerCanvas, which meant the inline
@@ -146,6 +150,10 @@ export default function MutationOverlayViewer(props: Props) {
     };
   }, [fullscreen]);
 
+  // Leaving fullscreen clears the jump-to-measure flag so a later manual
+  // expand doesn't silently re-enter measure mode.
+  useEffect(() => { if (!fullscreen) setAutoMeasure(false); }, [fullscreen]);
+
   // Pack the lifted state into a single object we can spread onto both
   // ViewerCanvas instances. Keeping this in one place avoids the two
   // call sites drifting out of sync as we add new toolbar controls.
@@ -166,6 +174,7 @@ export default function MutationOverlayViewer(props: Props) {
         {...props}
         {...sharedToolbar}
         onExpand={() => setFullscreen(true)}
+        onRequestFullscreenMeasure={() => { setAutoMeasure(true); setFullscreen(true); }}
         isFullscreen={false}
         // Inline viewer is the camera authority while fullscreen is closed.
         // When fullscreen opens we hand the role to the modal viewer so the
@@ -220,6 +229,8 @@ export default function MutationOverlayViewer(props: Props) {
                 {...sharedToolbar}
                 isFullscreen
                 onExpand={() => setFullscreen(false)}
+                autoMeasure={autoMeasure}
+                onAutoMeasureConsumed={() => setAutoMeasure(false)}
                 className="h-full"
                 hideExpandButton  // header has its own close X
                 // Modal viewer owns the camera while it's mounted.
@@ -313,6 +324,9 @@ function ViewerCanvas({
   setBlend,
   cameraViewRef,
   cameraSyncActive,
+  onRequestFullscreenMeasure,
+  autoMeasure,
+  onAutoMeasureConsumed,
 }: Props & {
   isFullscreen: boolean;
   onExpand: () => void;
@@ -341,6 +355,14 @@ function ViewerCanvas({
    *  updates. The inline instance is active while fullscreen is closed;
    *  the modal instance is active for its entire lifetime. */
   cameraSyncActive: boolean;
+  /** Inline viewer only: called when the user taps Measure — the parent
+   *  opens fullscreen and flags autoMeasure so measuring starts on the big
+   *  canvas. */
+  onRequestFullscreenMeasure?: () => void;
+  /** Fullscreen viewer only: start in measure mode on mount. */
+  autoMeasure?: boolean;
+  /** Fullscreen viewer only: clears the one-shot autoMeasure flag. */
+  onAutoMeasureConsumed?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
@@ -1010,6 +1032,16 @@ function ViewerCanvas({
     try { viewer.zoom(factor, 200); } catch { /* ignore */ }
   }
 
+  // Auto-start measure mode when this (fullscreen) viewer was opened via the
+  // inline Measure button. One-shot: consumes the flag so it fires only on
+  // the open transition.
+  useEffect(() => {
+    if (isFullscreen && autoMeasure) {
+      setMeasureMode(true);
+      onAutoMeasureConsumed?.();
+    }
+  }, [isFullscreen, autoMeasure]);
+
   // ── Measure mode: click two atoms → labeled dashed line with distance ──
   // Toggling the mode rebinds atom-click handlers. Off = atoms not clickable
   // (don't interfere with rotate/pan/zoom). On = every atom clickable;
@@ -1141,11 +1173,21 @@ function ViewerCanvas({
         {!loading && !error && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); setMeasureMode((m) => !m); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Inline viewer: measuring needs the big canvas, so jump to
+              // fullscreen and auto-start measure there. Fullscreen viewer:
+              // toggle measure mode in place.
+              if (!isFullscreen && onRequestFullscreenMeasure) onRequestFullscreenMeasure();
+              else setMeasureMode((m) => !m);
+            }}
             aria-pressed={measureMode}
-            title={measureMode
-              ? "Measuring: click two atoms for a distance label, or click here to exit."
-              : "Distance measure: click to enable, then click two atoms."
+            title={
+              !isFullscreen && onRequestFullscreenMeasure
+                ? "Measure distances — opens the viewer fullscreen, then click two atoms."
+                : measureMode
+                  ? "Measuring: click two atoms for a distance label, or click here to exit."
+                  : "Distance measure: click to enable, then click two atoms."
             }
             className={`absolute bottom-2 left-2 z-10 text-[11px] font-semibold px-2.5 py-1.5 rounded-md ring-1 transition-colors shadow-sm ${
               measureMode
