@@ -870,6 +870,14 @@ export default function ProductionViewer3D({
       try { v.resize(); v.render(); } catch { /* */ }
     }));
   }, [fullscreen]);
+  // Leaving fullscreen turns OFF active measure (pick) mode so the user
+  // isn't accidentally picking atoms in the tiny viewer. The completed
+  // measurement (distance readout + on-canvas marks) is KEPT until the
+  // user explicitly hits Clear — even back in the small view. The measure
+  // *tool* itself is fullscreen-only (see the MEASURE control group).
+  useEffect(() => {
+    if (!fullscreen) setMeasureMode(false);
+  }, [fullscreen]);
 
   // Camera helpers wired to toolbar buttons.
   const onResetView = () => {
@@ -1074,22 +1082,31 @@ export default function ProductionViewer3D({
               {fullscreen ? "⊠ exit" : "⛶ full"}
             </ViewerSegBtn>
           </ViewerControlGroup>
-          <ViewerControlGroup label="MEASURE">
-            <ViewerSegBtn
-              active={measureMode}
-              onClick={() => setMeasureMode(!measureMode)}
-              title="Click two atoms to measure distance (Å)"
-              tone="amber"
-            >
-              {measureMode ? "click 2 atoms" : "off"}
-            </ViewerSegBtn>
-            {measureDistance !== null && (
-              <span className="px-1.5 text-amber-300 tabular-nums">{measureDistance.toFixed(2)} Å</span>
-            )}
-            {(measureMode || measureDistance !== null) && (
-              <ViewerSegBtn active={false} onClick={onClearMeasure} title="Clear measurement marks">clear</ViewerSegBtn>
-            )}
-          </ViewerControlGroup>
+          {/* Measure TOOL is fullscreen-only (precise atom-picking needs a
+              big canvas). The measurement RESULT — the distance readout +
+              on-canvas marks + a Clear button — stays visible in the small
+              view too, so a measurement taken in fullscreen persists until
+              the user clears it. */}
+          {(fullscreen || measureDistance !== null) && (
+            <ViewerControlGroup label="MEASURE">
+              {fullscreen && (
+                <ViewerSegBtn
+                  active={measureMode}
+                  onClick={() => setMeasureMode(!measureMode)}
+                  title="Click two atoms to measure distance (Å)"
+                  tone="amber"
+                >
+                  {measureMode ? "click 2 atoms" : "off"}
+                </ViewerSegBtn>
+              )}
+              {measureDistance !== null && (
+                <span className="px-1.5 text-amber-300 tabular-nums">{measureDistance.toFixed(2)} Å</span>
+              )}
+              {(measureMode || measureDistance !== null) && (
+                <ViewerSegBtn active={false} onClick={onClearMeasure} title="Clear measurement marks">clear</ViewerSegBtn>
+              )}
+            </ViewerControlGroup>
+          )}
         </div>
       )}
 
