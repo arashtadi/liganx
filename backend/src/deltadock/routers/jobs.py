@@ -1614,14 +1614,20 @@ def rescore_with_mmgbsa(
     # pose. Cache-hits ride the same /var/lib/liganx/.../receptor cache
     # as the runner, so this is fast (~milliseconds) for any cell whose
     # job has finished.
-    settings = get_settings()
+    # Use the runner's ACTUAL on-disk cache paths so the receptor the MM-GBSA
+    # endpoint prepares is bit-for-bit identical to what produced the pose (and
+    # rides the same cache for a millisecond hit). Previously this referenced
+    # settings.pose_cache, which doesn't exist on Settings — the correct field
+    # is cache_root (RECEPTOR_CACHE/PDB_CACHE derive from it), and using the
+    # runner constants keeps the two paths from ever drifting again.
+    from ..services.runner import PDB_CACHE, RECEPTOR_CACHE
     try:
         rprep = prepare_receptor_for_target(
             pdb_id=job.pdb_id,
             chain=job.chain or "A",
             mutation=None if variant == "WT" else variant,
-            pdb_cache=Path(settings.pose_cache) / "pdb",
-            receptor_cache=Path(settings.pose_cache) / "receptors",
+            pdb_cache=PDB_CACHE,
+            receptor_cache=RECEPTOR_CACHE,
         )
     except Exception as e:                                           # noqa: BLE001
         raise HTTPException(

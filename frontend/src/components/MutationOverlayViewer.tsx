@@ -683,18 +683,6 @@ function ViewerCanvas({
       if (isComplex) hSel.chain = COMPLEX_LIGAND_CHAIN;
       safe("hide-H", () => viewer.setStyle(hSel, {}));
     }
-
-    // Step 7: MEASURE MODE — overlay faint, colour-coded spheres on every atom
-    // so each atom becomes a big, obvious click/hover target. Thin sticks are
-    // nearly impossible to pick precisely (the #1 "measuring feels
-    // unresponsive" cause). These vanish automatically when measure mode turns
-    // off, because this function re-runs (measureMode is in the effect deps)
-    // and omits this step. Hydrogens stay excluded to reduce clutter.
-    if (measureMode) {
-      safe("measure-picktargets", () =>
-        viewer.addStyle({ elem: "H", invert: true }, { sphere: { colorscheme: "Jmol", radius: 0.32, opacity: 0.35 } })
-      );
-    }
   }
 
   /** Cheap validity check for PDB text. Catches the failure mode where the
@@ -913,7 +901,7 @@ function ViewerCanvas({
       console.warn("style re-apply failed:", e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blend, backboneStyle, poseStyle, showH, showContacts, surfaceColor, measureMode]);
+  }, [blend, backboneStyle, poseStyle, showH, showContacts, surfaceColor]);
 
   // Spin animation — toggled independently of style state so we can start/stop
   // without re-applying everything.
@@ -1074,42 +1062,94 @@ function ViewerCanvas({
     }
   }, [isFullscreen, autoMeasure]);
 
-  // ── Measure mode: click two atoms → labeled dashed line with distance ──
-  // measureMode governs ONLY atom-picking (clickable + hover feedback). The
-  // drawn measurement geometry is owned by the redraw effect below and persists
-  // regardless of mode — so closing fullscreen keeps the measurements visible
-  // in the small view until the user clears them.
+  // ── Measure mode: pick two atoms → dashed line with the distance ──
+  // We do NOT use 3Dmol's setClickable ray-pick: on thin sticks it either
+  // misses or (with big pick spheres) snaps to whatever atom the ray passes
+  // through FIRST, which reads as "the point doesn't stick to where I click".
+  // Instead we project every atom to screen space with viewer.modelToScreen()
+  // and pick the atom whose 2D screen position is NEAREST the cursor — so the
+  // marker lands on exactly the atom you clicked. Drawn geometry is owned by
+  // the redraw effect below and persists across the inline<->fullscreen swap.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !measureMode) return;
     const container = containerRef.current;
-
-    // Refresh screen bounds so the very first pick maps click-pixel → ray
-    // correctly (stale bounds send the first click to the wrong atom).
     try { viewer.resize(); } catch { /* ignore */ }
-    const canvasEl = container?.querySelector("canvas") as HTMLCanvasElement | null;
+    const canvasEl = (container?.querySelector("canvas") as HTMLCanvasElement | null) || null;
     if (container) container.style.cursor = "crosshair";
     if (canvasEl) canvasEl.style.cursor = "crosshair";
+
+    // All pickable atoms (skip hydrogens — hidden by default). Coords are
+    // static; we re-project them with the live camera on every event.
+    let atoms: any[] = [];
+    try {
+      atoms = (viewer.selectedAtoms({}) || []).filter(
+        (a: any) => a && typeof a.x === "number" && a.elem !== "H"
+      );
+    } catch { atoms = []; }
+
+    const HIT_PX = 28;  // generous screen-space pick radius
+    const nearest = (pageX: number, pageY: number): any | null => {
+      if (!atoms.length) return null;
+      let proj: any;
+      try { proj = viewer.modelToScreen(atoms); } catch { return null; }
+      if (!Array.isArray(proj)) return null;
+      let best: any = null;
+      let bestD = HIT_PX * HIT_PX;
+      for (let k = 0; k < atoms.length; k++) {
+        const pp = proj[k];
+        if (!pp) continue;
+        const dx = pp.x - pageX, dy = pp.y - pageY;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = atoms[k]; }
+      }
+      return best;
+    };
 
     const fmtAtom = (x: any) =>
       `${x.resn ?? "?"}${x.resi ?? ""}${x.chain ? `.${x.chain}` : ""}/${x.atom ?? "?"}`;
 
-    const onAtomClick = (atom: any) => {
-      if (!atom || typeof atom.x !== "number") return;
+    // Drag-vs-click: only a near-stationary press counts as a pick, so
+    // rotating the view never drops a measurement point.
+    let downX = 0, downY = 0, moved = false;
+    let rafPending = false;
+    let lastHover: any = null;
+
+    const onDown = (e: MouseEvent) => { downX = e.pageX; downY = e.pageY; moved = false; };
+
+    const onMove = (e: MouseEvent) => {
+      if (Math.abs(e.pageX - downX) > 4 || Math.abs(e.pageY - downY) > 4) moved = true;
+      if (rafPending) return;
+      rafPending = true;
+      const px = e.pageX, py = e.pageY;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        const a = nearest(px, py);
+        if (a === lastHover) return;  // hovered atom unchanged → no re-render
+        lastHover = a;
+        if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; }
+        if (a) hoverHighlightRef.current = viewer.addSphere({ center: { x: a.x, y: a.y, z: a.z }, radius: 0.5, color: "#fbbf24", opacity: 0.85 });
+        try { viewer.render(); } catch { /* ignore */ }
+      });
+    };
+
+    const onUp = (e: MouseEvent) => {
+      if (moved) return;  // was a rotate/drag, not a pick
+      const atom = nearest(e.pageX, e.pageY);
+      if (!atom) return;
       const pt: XYZ = { x: atom.x, y: atom.y, z: atom.z };
       if (!firstAtomRef.current) {
         firstAtomRef.current = { ...pt, resn: atom.resn, resi: atom.resi, chain: atom.chain, atom: atom.atom };
         setFirstAtomPicked(true);
+        if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } }
         firstHighlightRef.current = viewer.addSphere({ center: pt, radius: 0.5, color: "#f59e0b", opacity: 0.95 });
-        viewer.render();
+        try { viewer.render(); } catch { /* ignore */ }
         return;
       }
       const a = firstAtomRef.current;
       const dx = a.x - pt.x, dy = a.y - pt.y, dz = a.z - pt.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const label = `${fmtAtom(a)} ↔ ${fmtAtom(atom)}`;
-      // Drop the transient first-pick highlight — the redraw effect draws the
-      // permanent endpoints + dashed line + label for the completed pair.
       if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } firstHighlightRef.current = null; }
       firstAtomRef.current = null;
       setFirstAtomPicked(false);
@@ -1119,30 +1159,19 @@ function ViewerCanvas({
       ]);
     };
 
-    // Hover feedback: highlight the atom under the cursor so the user can see
-    // exactly what they'll pick — the single biggest "measuring feels
-    // unresponsive" fix.
-    const onHover = (atom: any) => {
-      if (!atom || typeof atom.x !== "number") return;
-      if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } }
-      hoverHighlightRef.current = viewer.addSphere({ center: { x: atom.x, y: atom.y, z: atom.z }, radius: 0.55, color: "#fbbf24", opacity: 0.85 });
-      viewer.render();
-    };
-    const onUnhover = () => {
-      if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; viewer.render(); }
-    };
-
-    try {
-      viewer.setClickable({}, true, onAtomClick);
-      viewer.setHoverable?.({}, true, onHover, onUnhover);
-      viewer.render();
-    } catch (e) {
-      console.warn("measure mode: setClickable/hover failed", e);
+    const el: HTMLElement | null = canvasEl || container;
+    if (el) {
+      el.addEventListener("mousedown", onDown);
+      el.addEventListener("mousemove", onMove);
+      el.addEventListener("mouseup", onUp);
     }
 
     return () => {
-      try { viewer.setClickable({}, false, () => {}); } catch { /* ignore */ }
-      try { viewer.setHoverable?.({}, false, () => {}, () => {}); } catch { /* ignore */ }
+      if (el) {
+        el.removeEventListener("mousedown", onDown);
+        el.removeEventListener("mousemove", onMove);
+        el.removeEventListener("mouseup", onUp);
+      }
       if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; }
       if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } firstHighlightRef.current = null; }
       firstAtomRef.current = null;
