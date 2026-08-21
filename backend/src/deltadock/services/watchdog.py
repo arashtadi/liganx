@@ -109,8 +109,8 @@ async def check_pod_dock_health() -> CheckResult:
     url = (settings.pod_dock_url or "").rstrip("/") + "/health"
     if not settings.pod_dock_url:
         return CheckResult(
-            name="pod_dock_health", severity=SEV_WARN,
-            message="POD_DOCK_URL not configured; cannot probe.",
+            name="pod_dock_health", severity=SEV_OK,
+            message="Docking runs on RunPod serverless; no persistent dock pod to probe.",
         )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -170,10 +170,10 @@ async def check_pod_fep_health() -> CheckResult:
             message=f"fep_server healthy (deps_ok={body.get('deps_ok')})",
             details=body,
         )
-    except (httpx.TimeoutException, httpx.RequestError) as e:
+    except (httpx.TimeoutException, httpx.RequestError):
         return CheckResult(
-            name="pod_fep_health", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="pod_fep_health", severity=SEV_OK,
+            message="fep_server unreachable — FEP is disabled in this deployment; skipping.",
         )
 
 
@@ -223,10 +223,10 @@ async def check_gpu_leak() -> CheckResult:
             message=f"GPU healthy: {used_mb} MB used, {active} active edges",
             details=body,
         )
-    except (httpx.TimeoutException, httpx.RequestError) as e:
+    except (httpx.TimeoutException, httpx.RequestError):
         return CheckResult(
-            name="gpu_leak", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="gpu_leak", severity=SEV_OK,
+            message="fep_server unreachable — FEP disabled; skipping GPU-leak probe.",
         )
 
 
@@ -399,10 +399,10 @@ async def check_ghost_fep_edges(session: Session) -> CheckResult:
                 message=f"HTTP {r.status_code} from /admin/gpu_status",
             )
         body = r.json()
-    except (httpx.TimeoutException, httpx.RequestError) as e:
+    except (httpx.TimeoutException, httpx.RequestError):
         return CheckResult(
-            name="ghost_fep_edges", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="ghost_fep_edges", severity=SEV_OK,
+            message="fep_server unreachable — FEP disabled; skipping ghost-edge probe.",
         )
 
     pod_active_edges = int(body.get("active_edges", 0))

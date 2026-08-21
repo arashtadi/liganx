@@ -139,6 +139,17 @@ function AdminDashboard() {
     },
   });
 
+  // Approve / deny / re-pend a user's account gate. Pending & denied
+  // users see the lock screen and can't submit jobs. The backend also
+  // emails the user about the decision (fail-soft).
+  const setAccessMut = useMutation({
+    mutationFn: ({ userId, status }: { userId: string; status: "pending" | "approved" | "denied" }) =>
+      api.adminSetAccess(userId, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
   const deleteMut = useMutation({
     mutationFn: (userId: string) => api.adminDeleteUser(userId),
     onSuccess: () => {
@@ -276,6 +287,33 @@ function AdminDashboard() {
                         {u.is_admin && (
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-delta-100 text-delta-800 dark:bg-delta-900/40 dark:text-delta-200">
                             admin
+                          </span>
+                        )}
+                        {/* Approval-gate status — pending/denied users see the
+                            lock screen and can't submit jobs. Admins are
+                            implicitly approved, so we skip the badge for them. */}
+                        {!u.is_admin && (
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider ${
+                              u.access_status === "approved"
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+                                : u.access_status === "denied"
+                                ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                                : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                            }`}
+                            title={
+                              u.access_status === "approved"
+                                ? "Approved — full access."
+                                : u.access_status === "denied"
+                                ? "Denied — sees the lock screen, can't submit jobs."
+                                : "Pending — awaiting approval; sees the lock screen."
+                            }
+                          >
+                            {u.access_status === "approved"
+                              ? "✓ approved"
+                              : u.access_status === "denied"
+                              ? "✕ denied"
+                              : "⧖ pending"}
                           </span>
                         )}
                         {/* v1.24 — Pro toggle. Click to flip free⇆Pro.
@@ -424,14 +462,38 @@ function AdminDashboard() {
                     </td>
                     <td className="px-3 py-3 align-top text-right">
                       {!u.is_admin && (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDelete(u)}
-                          className="text-[11px] px-2 py-1 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 font-semibold"
-                          title="Delete this user"
-                        >
-                          Delete
-                        </button>
+                        <div className="inline-flex items-center gap-1 justify-end flex-wrap">
+                          {u.access_status !== "approved" && (
+                            <button
+                              type="button"
+                              onClick={() => setAccessMut.mutate({ userId: u.user_id, status: "approved" })}
+                              disabled={setAccessMut.isPending}
+                              className="text-[11px] px-2 py-1 rounded text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 font-semibold disabled:opacity-50"
+                              title="Approve — grants access and emails the user"
+                            >
+                              Approve
+                            </button>
+                          )}
+                          {u.access_status !== "denied" && (
+                            <button
+                              type="button"
+                              onClick={() => setAccessMut.mutate({ userId: u.user_id, status: "denied" })}
+                              disabled={setAccessMut.isPending}
+                              className="text-[11px] px-2 py-1 rounded text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold disabled:opacity-50"
+                              title="Deny access — user sees the lock screen (emails the user)"
+                            >
+                              Deny
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDelete(u)}
+                            className="text-[11px] px-2 py-1 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 font-semibold"
+                            title="Delete this user"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>

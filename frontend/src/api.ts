@@ -636,6 +636,10 @@ export interface AdminUserRow {
    *  not be able to click Run without an admin having reviewed
    *  their need. Toggle via PATCH /admin/users/:id/fep. */
   fep_enabled: boolean;
+  /** Per-user approval gate (migration 029): 'pending' | 'approved' |
+   *  'denied'. Pending/denied users see the lock screen and can't submit
+   *  jobs. Flip via PATCH /admin/users/:id/access (also emails the user). */
+  access_status: "pending" | "approved" | "denied";
 }
 
 /** (H3) Lightweight FEP study summary for the History page tab. */
@@ -1063,6 +1067,14 @@ export const api = {
     request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/fep`, {
       method: "PATCH",
       body: JSON.stringify({ fep_enabled: fepEnabled }),
+    }),
+  /** Admin-only: approve / deny / re-pend a user's account access.
+   *  Pending & denied users can't submit jobs. Approving (or denying)
+   *  also emails the user about the decision (backend, fail-soft). */
+  adminSetAccess: (userId: string, status: "pending" | "approved" | "denied") =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/access`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     }),
   /** (G7) FEP+ study endpoints — relative free-energy perturbation
    *  against a hit + ≤10 analogs. Gated per-user; the /estimate
