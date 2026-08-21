@@ -567,10 +567,26 @@ def _watched_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+def _watch_all() -> bool:
+    """Watch EVERY user (login + dock start/finish) rather than a hand-picked
+    list. Enabled by setting WATCH_USER_EMAILS='*' (or WATCH_ALL_USERS truthy)
+    — the operator flips one secret and gets a live feed for all users,
+    including future sign-ups, with no redeploy. The admin/operator is always
+    excluded so they don't get pinged about their own activity."""
+    flag = os.environ.get("WATCH_ALL_USERS", "").strip().lower() in {"1", "true", "yes", "on"}
+    return flag or ("*" in _watched_emails())
+
+
 def is_watched_user(email: Optional[str]) -> bool:
     if not email:
         return False
-    return email.strip().lower() in _watched_emails()
+    e = email.strip().lower()
+    if _watch_all():
+        admin = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+        if admin and e == admin:
+            return False  # never ping the operator about their own activity
+        return True
+    return e in _watched_emails()
 
 
 def notify_watch_login(

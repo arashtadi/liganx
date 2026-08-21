@@ -214,6 +214,9 @@ export default function CsvExportButton({ rows, variants, mutations, figureTitle
         <div className="font-semibold text-ink text-xs uppercase tracking-wider dark:text-slate-100">
           Export options
         </div>
+        <div className="text-[11px] text-slate-500 mt-0.5 dark:text-slate-400">
+          A <b>CSV</b> data table, or a clean <b>PNG</b> figure — pick below.
+        </div>
       </div>
 
       {/* Format radio */}
@@ -279,9 +282,10 @@ export default function CsvExportButton({ rows, variants, mutations, figureTitle
       <button
         onClick={() => setOpen((o) => !o)}
         className="btn-secondary btn-sm"
-        title="Export to CSV with column picker"
+        title="Export — CSV data table or a clean PNG figure"
       >
-        <Download size={14} /> CSV
+        <Download size={14} /> Export
+        <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">CSV · PNG</span>
         <svg width="10" height="10" viewBox="0 0 12 12" className="opacity-60">
           <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
