@@ -683,6 +683,18 @@ function ViewerCanvas({
       if (isComplex) hSel.chain = COMPLEX_LIGAND_CHAIN;
       safe("hide-H", () => viewer.setStyle(hSel, {}));
     }
+
+    // Step 7: MEASURE MODE — overlay faint, colour-coded spheres on every atom
+    // so each atom becomes a big, obvious click/hover target. Thin sticks are
+    // nearly impossible to pick precisely (the #1 "measuring feels
+    // unresponsive" cause). These vanish automatically when measure mode turns
+    // off, because this function re-runs (measureMode is in the effect deps)
+    // and omits this step. Hydrogens stay excluded to reduce clutter.
+    if (measureMode) {
+      safe("measure-picktargets", () =>
+        viewer.addStyle({ elem: "H", invert: true }, { sphere: { colorscheme: "Jmol", radius: 0.32, opacity: 0.35 } })
+      );
+    }
   }
 
   /** Cheap validity check for PDB text. Catches the failure mode where the
@@ -901,7 +913,7 @@ function ViewerCanvas({
       console.warn("style re-apply failed:", e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blend, backboneStyle, poseStyle, showH, showContacts, surfaceColor]);
+  }, [blend, backboneStyle, poseStyle, showH, showContacts, surfaceColor, measureMode]);
 
   // Spin animation — toggled independently of style state so we can start/stop
   // without re-applying everything.
