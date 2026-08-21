@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Compound } from "../api";
 import { Download } from "./Icons";
 import { parseExtra } from "../lib/parseExtra";
+import { buildMatrixSvg, downloadMatrixPng } from "../lib/matrixFigure";
 
 /**
  * CSV export with column picker. Two output shapes:
@@ -30,6 +31,10 @@ interface Props {
   rows: MatrixRow[];
   variants: string[];   // ["WT", "T790M", ...]
   mutations: string[];  // ["T790M", ...]  (variants minus WT)
+  /** Optional heading/subheading for the PNG figure export (e.g. the target
+   *  name). Falls back to a generic "Selectivity matrix" heading. */
+  figureTitle?: string;
+  figureSubtitle?: string;
 }
 
 type Format = "wide" | "long";
@@ -64,7 +69,7 @@ const PER_CELL_KEYS: (keyof ColumnState)[] = [
   "confidence", "contacts", "foldxDDG", "posebusters", "summary",
 ];
 
-export default function CsvExportButton({ rows, variants, mutations }: Props) {
+export default function CsvExportButton({ rows, variants, mutations, figureTitle, figureSubtitle }: Props) {
   const [open, setOpen] = useState(false);
   const [format, setFormat] = useState<Format>("wide");
   const [cols, setCols] = useState<ColumnState>(DEFAULT_COLUMNS);
@@ -172,6 +177,21 @@ export default function CsvExportButton({ rows, variants, mutations }: Props) {
     setOpen(false);
   }
 
+  // Clean, shareable PNG of the selectivity matrix — the "figure" version of
+  // the export for slides/papers/Slack. Best-effort; never breaks the panel.
+  async function exportFigure() {
+    try {
+      const fig = buildMatrixSvg(rows, variants, mutations, {
+        title: figureTitle,
+        subtitle: figureSubtitle,
+      });
+      await downloadMatrixPng(fig, "liganx-selectivity-matrix.png", 2);
+    } catch {
+      /* swallow — a failed figure export must not take down the results panel */
+    }
+    setOpen(false);
+  }
+
   // Popover content extracted so we can portal it into <body> and escape any
   // ancestor's overflow-hidden / clip context (the matrix panel has both).
   // Layout: header • format radios • scrollable column list (takes remaining
@@ -233,14 +253,23 @@ export default function CsvExportButton({ rows, variants, mutations }: Props) {
       </div>
 
       {/* Footer: export */}
-      <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-2 bg-slate-50/50 shrink-0 dark:border-slate-700 dark:bg-slate-800/40">
-        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+      <div className="px-4 py-3 border-t border-slate-100 shrink-0 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-800/40 space-y-2">
+        <div className="text-[10px] text-slate-400 dark:text-slate-500">
           {rows.length} compound{rows.length === 1 ? "" : "s"} ·
           {format === "wide" ? ` ${variants.length} variants` : ` ${rows.length * variants.length} rows`}
-        </span>
-        <button onClick={exportCsv} className="btn-primary btn-sm">
-          <Download size={12} /> Export
-        </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exportFigure}
+            className="btn-secondary btn-sm flex-1 justify-center"
+            title="Download a clean, shareable PNG figure of the selectivity matrix — drops straight into slides or a paper"
+          >
+            <Download size={12} /> Figure (PNG)
+          </button>
+          <button onClick={exportCsv} className="btn-primary btn-sm flex-1 justify-center">
+            <Download size={12} /> CSV
+          </button>
+        </div>
       </div>
     </div>
   ) : null;
