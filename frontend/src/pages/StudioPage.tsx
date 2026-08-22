@@ -1529,6 +1529,17 @@ export default function StudioPage() {
   // exhaustiveness controls. Studio's role here is just "compose the
   // payload and hand off"; the heavy lifting lives in JobPage.
   const [submittingFull, setSubmittingFull] = useState(false);
+  // (2026-08) Styled in-app run-confirm modal (replaces window.confirm).
+  // Promise-based so runFullJob can `await` the user's choice inline.
+  const [runConfirm, setRunConfirm] = useState<
+    | { targets: { label: string; mutations: string[] }[]; resolve: (ok: boolean) => void }
+    | null
+  >(null);
+  function showRunConfirm(
+    targets: { label: string; mutations: string[] }[],
+  ): Promise<boolean> {
+    return new Promise((resolve) => setRunConfirm({ targets, resolve }));
+  }
   // (v0.47) Full Job state — kept in Studio so the user can stay in
   // the cockpit instead of being thrown to /jobs/{id}. Once submitted,
   // we poll /jobs/{key} every 3s, surface the runner stage in the
@@ -1776,39 +1787,24 @@ export default function StudioPage() {
     if (compoundList.length === 0) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (selectedTargets.length === 0) { setDockError("Pick a target."); return; }
 
-    // (2026-08) Pre-submit guards — both mistakes are easy to make:
-    //   1. A multi-target run fans out into ONE dock per target (one
-    //      quota slot each), which surprises users who think it's one run.
-    //   2. A selected target whose picked mutations don't apply to it
-    //      (e.g. KIT mutations on a MET target) silently docks WT-only.
-    // Confirm before running when either applies; the common single-target
-    // -with-mutations case adds no friction (no dialog).
+    // (2026-08) Pre-submit guards via a styled in-app modal (replaces the
+    // native window.confirm). Fires when >1 target (fan-out = N dockings)
+    // or a target has no matching mutations for the ones picked (docks
+    // WT-only). Single-target-with-mutations shows no dialog.
     {
       const perTarget = selectedTargets.map((tid) => {
         const meta = mergedCatalog.find((t: any) => t.id === tid) as any;
         const label = meta?.name || meta?.pdb_id || tid.toUpperCase();
         const applies = mutationsForJob(tid).filter((m) => m && m !== "WT");
-        return { label, mutCount: applies.length };
+        return { label, mutations: applies };
       });
       const anyMutationsSelected = selectedMutations.some((m) => m && m !== "WT");
-      const wtOnly = perTarget.filter((t) => t.mutCount === 0);
-      const n = selectedTargets.length;
-      const warnLines: string[] = [];
-      if (n > 1) {
-        const perLabels = perTarget.map((t) => `one for ${t.label}`).join(", ");
-        warnLines.push(
-          `This runs ${n} separate dockings — ${perLabels} — using ${n} of your dockings.\n\nYou'll see them together in one results view — switch between targets with the tabs at the top (no need to open History).`,
-        );
-      }
-      if (anyMutationsSelected && wtOnly.length > 0) {
-        const names = wtOnly.map((t) => t.label).join(", ");
-        warnLines.push(
-          `${names} ${wtOnly.length === 1 ? "has" : "have"} no matching mutations for the ones you picked, so ${wtOnly.length === 1 ? "it" : "they"} will dock wild-type only.`,
-        );
-      }
-      if (warnLines.length > 0) {
-        warnLines.push("Continue?");
-        if (!window.confirm(warnLines.join("\n\n"))) return;
+      const wtOnly = perTarget.filter((t) => t.mutations.length === 0);
+      const needConfirm =
+        selectedTargets.length > 1 || (anyMutationsSelected && wtOnly.length > 0);
+      if (needConfirm) {
+        const ok = await showRunConfirm(perTarget);
+        if (!ok) return;
       }
     }
 
@@ -2275,6 +2271,73 @@ export default function StudioPage() {
 
   return (
     <div className="min-h-screen bg-[#070b15] text-slate-200 select-none">
+      {runConfirm && (() => {
+        const targets = runConfirm.targets;
+        const n = targets.length;
+        const done = (ok: boolean) => { runConfirm.resolve(ok); setRunConfirm(null); };
+        return (
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center px-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => done(false)}
+          >
+            <div
+              className="w-full max-w-md bg-[#0d1422] border border-slate-800/80 rounded-lg shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-slate-800/70">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-cyan-400">Confirm run</div>
+                <div className="text-base font-semibold text-slate-100 mt-0.5">
+                  {n > 1 ? `Run ${n} separate dockings?` : "Confirm this dock"}
+                </div>
+              </div>
+              <div className="px-4 py-3 space-y-2">
+                <p className="text-xs text-slate-400">
+                  {n > 1
+                    ? `One dock per target \u2014 ${n} of your dockings. They open together in one results view; switch between them with the tabs at the top (no History needed).`
+                    : "Here's exactly what this run will dock:"}
+                </p>
+                {targets.map((t) => (
+                  <div
+                    key={t.label}
+                    className={`rounded-md border px-3 py-2 ${
+                      t.mutations.length === 0
+                        ? "border-amber-500/40 bg-amber-500/5"
+                        : "border-slate-800/70 bg-slate-800/30"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-cyan-300">{t.label}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      {t.mutations.length > 0 ? (
+                        <>WT + {t.mutations.join(", ")}</>
+                      ) : (
+                        <span className="text-amber-300">
+                          wild-type only \u2014 no matching mutations for the ones you picked
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-4 py-3 border-t border-slate-800/70 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => done(false)}
+                  className="px-3 py-1.5 rounded text-xs font-medium text-slate-300 hover:bg-slate-800/70"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => done(true)}
+                  className="px-3 py-1.5 rounded text-xs font-semibold bg-cyan-500 text-[#04121f] hover:bg-cyan-400"
+                >
+                  {n > 1 ? `Run ${n} dockings` : "Run dock"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       <MobileDesktopOnlyBanner pageName="Studio" />
       {/* ═══ STATUS BAR ═══ */}
       <header className="sticky top-0 z-30 bg-[#0d1422] border-b border-slate-800/70 px-4 py-2">
