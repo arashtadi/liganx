@@ -1,0 +1,11 @@
+sequences:
+  - protein:
+      id: A
+      sequence: MLEICLKLVGCKSKKGLSSSSSCYLEEALQRPVASDFEPQGLSEAARWNSKENLLAGPSENDPNLFVALYDFVASGDNTLSITKGEKLRVLGYNHNGEWCEAQTKNGQGWVPSNYITPVNS
+      msa: empty
+  - ligand:
+      id: B
+      smiles: 'C1=CC=CC=C1'
+properties:
+  - affinity:
+      binder: B
