@@ -15,6 +15,7 @@ import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import ValidationPage from "./pages/ValidationPage";
@@ -117,6 +118,7 @@ export default function App() {
             <Route path="/signup" element={withBoundary(<SignupPage />, "Sign up")} />
             <Route path="/verify-email" element={withBoundary(<VerifyEmailPage />, "Verify email")} />
             <Route path="/forgot-password" element={withBoundary(<ForgotPasswordPage />, "Forgot password")} />
+            <Route path="/reset-password" element={withBoundary(<ResetPasswordPage />, "Reset password")} />
             <Route path="/privacy" element={withBoundary(<PrivacyPage />, "Privacy")} />
             <Route path="/terms" element={withBoundary(<TermsPage />, "Terms")} />
             <Route path="/validation" element={withBoundary(<ValidationPage />, "Validation")} />
@@ -247,6 +249,7 @@ const REDIRECT_SKIP_PATHS = [
   "/signup",
   "/verify-email",
   "/forgot-password",
+  "/reset-password",
   "/privacy",
   "/terms",
   "/contact",
