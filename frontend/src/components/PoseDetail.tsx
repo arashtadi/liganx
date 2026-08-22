@@ -39,6 +39,13 @@ function residueOf(code: string): number | null {
  *
  * Phase 3: real Mol* viewer + ProLIF interaction list.
  */
+/** MM-GBSA second-pass rescoring is gated OFF: it needs a persistent GPU pod
+ *  (pod_dock_url → /mmgbsa/rescore) that this serverless deployment doesn't
+ *  run, so the button would always error. Flip to true once MM-GBSA is wired
+ *  to the RunPod serverless docking endpoint (OpenMM is already in that image).
+ *  Existing (already-computed) results still render regardless of this flag. */
+const MMGBSA_ENABLED = false;
+
 export default function PoseDetail({ pick, jobId, onClose }: Props) {
   const { compound, variant, score, deltaWt, extra } = pick;
   const mutationResidue = residueOf(variant);
@@ -393,7 +400,7 @@ export default function PoseDetail({ pick, jobId, onClose }: Props) {
               )}
             </div>
           </details>
-        ) : (
+        ) : MMGBSA_ENABLED ? (
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex-1 min-w-[200px]">
@@ -428,7 +435,7 @@ export default function PoseDetail({ pick, jobId, onClose }: Props) {
               <div className="text-[11px] text-rose-700 dark:text-rose-400 mt-2">{mmgbsaErr}</div>
             )}
           </div>
-        )}
+        ) : null}
 
         {/* Score breakdown is still being computed by the background pass.
             Mirror the collapsed accordion's chrome with a muted "computing…"
