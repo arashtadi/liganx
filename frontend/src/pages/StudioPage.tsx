@@ -509,7 +509,7 @@ export default function StudioPage() {
   const setSelectedTarget = (t: string) => setSelectedTargets(t ? [t] : []);
   const setSelectedMutation = (m: string) => setSelectedMutations(m ? [m] : []);
   const MAX_TARGETS = 2;
-  const MAX_MUTATIONS = 2;
+  const MAX_MUTATIONS = 5;  // matches curated mutation depth (KRAS/EGFR carry 5)
   const MAX_COMPOUNDS = 50;
   // (v0.64) Compound list — up to 10 compounds per job. Each entry is
   // a SMILES + optional name + a stable id. activeCompoundIdx is the

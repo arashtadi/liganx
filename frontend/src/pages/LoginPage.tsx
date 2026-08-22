@@ -141,7 +141,7 @@ export default function LoginPage() {
           new visitors immediately see the alternative without scanning. */}
       <div className="mt-8 rounded-xl border border-delta-200 bg-delta-50/40 p-4 text-center dark:border-delta-800/60 dark:bg-delta-900/15">
         <p className="text-sm text-slate-700 dark:text-slate-200 mb-3">
-          New to Liganx? <span className="text-slate-500 dark:text-slate-400">Free tier — 50 free dockings: up to 2 targets, 2 mutations &amp; 50 compounds per run.</span>
+          New to Liganx? <span className="text-slate-500 dark:text-slate-400">Free tier — 50 free dockings: up to 2 targets, 5 mutations &amp; 50 compounds per run.</span>
         </p>
         <Link
           to={signupHref}
