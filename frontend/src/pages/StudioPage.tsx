@@ -4719,19 +4719,25 @@ function MutationDropdown({
       <div className="overflow-auto divide-y divide-slate-800/60 flex-1 min-h-0">
         <button
           onClick={() => setIncludeWt(!includeWt)}
-          className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
-            includeWt ? "bg-slate-800/40 hover:bg-slate-800/60" : "hover:bg-slate-800/30"
+          className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors border-l-2 ${
+            includeWt
+              ? "border-amber-400 bg-amber-500/10 hover:bg-amber-500/15"
+              : "border-rose-500/70 bg-rose-500/5 hover:bg-rose-500/10"
           }`}
-          title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
+          title={includeWt ? "WT reference is ON — click to remove it (not recommended)" : "WT is OFF — the Δ-vs-WT matrix needs it. Click to include."}
         >
-          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
-            includeWt ? "border-slate-300 bg-slate-300 text-slate-900" : "border-slate-600"
+          <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center text-[9px] font-bold shrink-0 ${
+            includeWt ? "border-amber-400 bg-amber-400 text-slate-900" : "border-rose-400 text-rose-400"
           }`}>
-            {includeWt ? "✓" : ""}
+            {includeWt ? "✓" : "!"}
           </span>
           <span className="font-mono text-[11px] font-bold text-slate-100">WT</span>
-          <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/60">baseline</span>
-          <span className="text-[10px] font-mono text-slate-500 italic truncate">wild-type — always recommended</span>
+          <span className={`text-[9px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded ${
+            includeWt ? "text-amber-300 bg-amber-500/15" : "text-rose-300 bg-rose-500/15"
+          }`}>baseline</span>
+          <span className={`text-[10px] font-mono italic truncate ${includeWt ? "text-amber-300/90" : "text-rose-300 not-italic font-semibold"}`}>
+            {includeWt ? "wild-type — always docked as the Δ reference" : "OFF — no Δ-vs-WT comparison!"}
+          </span>
         </button>
         {filtered.map((m) => {
           // (v0.62) Multi-select up to MAX_MUTATIONS. Active = currently
