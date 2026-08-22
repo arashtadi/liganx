@@ -10,6 +10,8 @@ import ReproFooter from "../components/ReproFooter";
 import KetcherModal from "../components/KetcherModal";
 import RenamePrompt from "../components/RenamePrompt";
 import LiganxAIPanel from "../components/LiganxAIPanel";
+import FeedbackModal from "../components/FeedbackModal";
+import { recordDockAndShouldPrompt } from "../lib/feedbackTrigger";
 import { DockingHoloLoader } from "../components/DockingHoloLoader";
 import { ArrowRight, Beaker, Spinner, Target } from "../components/Icons";
 import { parseExtra } from "../lib/parseExtra";
@@ -47,6 +49,7 @@ export default function JobPage() {
   // string through so we don't coerce a token like "VXrA3kF9zY1" into NaN.
   const jobKey = id ?? "";
   const [pick, setPick] = useState<Pick | null>(null);
+  const [showFeedback, setShowFeedback] = useState(false);
   // Track whether the current pick was auto-selected on page load or
   // explicitly clicked by the user. Used to surface a "best mutant Δ"
   // badge in the hero banner when the page just opened — clicked
@@ -210,6 +213,13 @@ export default function JobPage() {
 
   // Pull catalog so we can find the pocket box for known targets
   const { data: catalog } = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+
+  // After the user's 5th completed dock, surface a one-time feedback prompt.
+  useEffect(() => {
+    if (job?.status === "completed" && job.share_id) {
+      if (recordDockAndShouldPrompt(job.share_id)) setShowFeedback(true);
+    }
+  }, [job?.status, job?.share_id]);
   const target: CatalogTarget | undefined = useMemo(
     () => catalog?.find((t) => t.pdb_id === job?.pdb_id),
     [catalog, job?.pdb_id],
@@ -424,6 +434,12 @@ export default function JobPage() {
   return (
     <div className="space-y-6 animate-fade-in">
       <MobileDesktopOnlyBanner pageName="Job results" />
+      {showFeedback && (
+        <FeedbackModal
+          context={job ? `${job.pdb_id ?? "target"} · job ${job.share_id}` : undefined}
+          onClose={() => setShowFeedback(false)}
+        />
+      )}
       <Header
         job={job}
         selected={selected}
@@ -471,7 +487,7 @@ export default function JobPage() {
           screen. Below the lg breakpoint we drop back to a single column
           stacked top-to-bottom, with the banner below the matrix and the
           smooth-scroll fallback handling visibility. */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_400px] gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
         {/* LEFT column — matrix, drill-down, insights. Stays in normal flow
             so vertical scrolling reads the way it always did. */}
         <div className="space-y-6 min-w-0">

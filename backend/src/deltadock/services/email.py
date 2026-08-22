@@ -229,3 +229,63 @@ def notify_user_denied(*, user_email: Optional[str]) -> bool:
         subject="About your Liganx account",
         html=html,
     )
+
+
+def notify_admin_feedback(
+    *,
+    user_email,
+    full_name=None,
+    organization=None,
+    role=None,
+    rating=None,
+    message=None,
+    context=None,
+    when=None,
+) -> bool:
+    """Email the admin the full contents of an in-app feedback submission
+    (fired after the user's 5th dock). reply_to is set to the user so the
+    operator can respond to them directly from their inbox."""
+    admin = _admin_email()
+    if not admin:
+        log.info("feedback email skipped — ADMIN_EMAIL not set")
+        return False
+    import html as _html
+    def esc(v):
+        return _html.escape(str(v)) if v is not None else "—"
+    r = int(rating) if rating else 0
+    stars = ("★" * r) + ("☆" * (5 - r)) if r else "—"
+    msg_html = esc(message).replace("\n", "<br>") if message else "<span style='color:#94a3b8'>(no written comment)</span>"
+    rows = [
+        ("Rating", f"<span style='font-size:18px;color:#f59e0b'>{stars}</span> &nbsp;{r}/5" if r else "—"),
+        ("From", esc(user_email)),
+        ("Name", esc(full_name)),
+        ("Organization", esc(organization)),
+        ("Role", esc(role)),
+        ("Where", esc(context)),
+        ("When", esc(when)),
+    ]
+    tr = "".join(
+        f"<tr><td style='padding:6px 14px;color:#64748b;font-size:12px;white-space:nowrap;vertical-align:top'>{k}</td>"
+        f"<td style='padding:6px 14px;color:#0f172a;font-size:13px;font-weight:500'>{v}</td></tr>"
+        for k, v in rows
+    )
+    html_body = f"""
+    <div style="background:#0b1020;padding:28px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,0.25);">
+        <tr><td style="background:linear-gradient(135deg,#6d28d9 0%,#2563eb 100%);padding:22px 28px;">
+          <div style="font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:16px;font-weight:700;letter-spacing:3px;color:#fff;">LIGANX</div>
+          <div style="color:rgba(255,255,255,0.9);font-size:14px;margin-top:6px;">💬 New user feedback</div>
+        </td></tr>
+        <tr><td style="padding:20px 14px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">{tr}</table>
+          <div style="margin:14px;padding:14px 16px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;color:#0f172a;font-size:14px;line-height:1.6;">{msg_html}</div>
+        </td></tr>
+        <tr><td style="background:#f8fafc;padding:14px 28px;border-top:1px solid #e2e8f0;">
+          <p style="color:#94a3b8;font-size:12px;margin:0;">Reply to this email to respond to the user directly.</p>
+        </td></tr>
+      </table>
+    </div>
+    """
+    subj_who = user_email or "a user"
+    subject = f"Liganx feedback · {r}/5 · {subj_who}" if r else f"Liganx feedback · {subj_who}"
+    return _send(to=admin, subject=subject, html=html_body, reply_to=(user_email or None))

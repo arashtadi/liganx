@@ -1206,6 +1206,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  /** In-app feedback (rating 1-5 + optional comment + context). Relayed to
+   *  the operator via Telegram + email server-side. Fire-and-forget from the
+   *  UI's perspective — a 202 means "received". */
+  submitFeedback: (payload: { rating?: number; message?: string; context?: string }) =>
+    request<{ ok: boolean }>("/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   // `key` is the share_id (preferred) or legacy integer ID; backend resolves
   // either form. Typed as `string | number` so callers can pass whichever
   // they have on hand without a manual coerce.

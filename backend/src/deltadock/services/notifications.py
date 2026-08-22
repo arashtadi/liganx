@@ -220,6 +220,43 @@ def notify_new_user(
     return _send("\n".join(parts), reply_markup=reply_markup)
 
 
+def notify_feedback(
+    *,
+    user_email: Optional[str],
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+    role: Optional[str] = None,
+    rating: Optional[int] = None,
+    message: Optional[str] = None,
+    context: Optional[str] = None,
+    when: Optional[str] = None,
+) -> bool:
+    """Operator ping when a user submits the in-app feedback form (fired
+    after their 5th dock). Carries the full sender identity + timestamp so
+    the operator knows exactly who said what, and when."""
+    stars = ("⭐" * int(rating)) if rating else ""
+    parts = [
+        "💬 <b>New user feedback</b>",
+        "",
+        (f"⭐ Rating: <b>{int(rating)}/5</b> {stars}" if rating else "⭐ Rating: —"),
+        f"📧 <code>{_escape_html(user_email or '—')}</code>",
+    ]
+    if full_name:
+        parts.append(f"👤 {_escape_html(full_name)}")
+    if organization:
+        parts.append(f"🏢 {_escape_html(organization)}")
+    if role:
+        parts.append(f"💼 {_escape_html(role)}")
+    if message:
+        parts.append("")
+        parts.append(f"📝 {_escape_html(_truncate(message, 1500))}")
+    if context:
+        parts.append(f"📍 {_escape_html(context)}")
+    if when:
+        parts.append(f"🕒 {_escape_html(when)}")
+    return _send("\n".join(parts))
+
+
 def notify_first_dock(
     *,
     job_id: int,
