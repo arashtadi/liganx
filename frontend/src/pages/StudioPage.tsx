@@ -1013,7 +1013,41 @@ export default function StudioPage() {
     () => mergedCatalog.find((t: any) => t.id === selectedTarget),
     [mergedCatalog, selectedTarget]
   );
-  const availableMutations = (targetMeta?.mutations ?? []) as { code: string; label: string; significance: string }[];
+  // (multi-target) Union curated mutations across EVERY selected target,
+  // tagging each row with the target it belongs to. Previously this read
+  // only the first target's mutations, so ALK+KRAS showed ALK mutations
+  // only. The targetId lets the picker label each row by gene and lets
+  // Run Dock route each mutation back to its owning target.
+  const availableMutations = useMemo(() => {
+    const out: { code: string; label: string; significance: string; targetId: string }[] = [];
+    const seen = new Set<string>();
+    for (const tid of selectedTargets) {
+      const meta = mergedCatalog.find((t: any) => t.id === tid) as any;
+      for (const m of (meta?.mutations ?? [])) {
+        const key = `${tid}:${m.code}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ code: m.code, label: m.label, significance: m.significance, targetId: tid });
+      }
+    }
+    return out;
+  }, [mergedCatalog, selectedTargets]);
+
+  // (multi-target) Route each selected mutation to the target it belongs to.
+  // A curated code goes only to the target whose catalog lists it; a custom
+  // typed code (not curated on ANY selected target) applies to every target
+  // as best-effort (the backend mutant-build gate flags any it can't build).
+  // For a single target this returns selectedMutations unchanged.
+  const mutationsForJob = (tid: string): string[] => {
+    const meta = mergedCatalog.find((t: any) => t.id === tid) as any;
+    const thisCurated = new Set<string>((meta?.mutations ?? []).map((m: any) => m.code));
+    const anyCurated = new Set<string>();
+    for (const t of selectedTargets) {
+      const tm = mergedCatalog.find((x: any) => x.id === t) as any;
+      for (const m of (tm?.mutations ?? [])) anyCurated.add(m.code);
+    }
+    return selectedMutations.filter((code) => thisCurated.has(code) || !anyCurated.has(code));
+  };
 
   // (v0.83) Debounced RCSB full-text search. Only fires when the
   // current targetQuery has no catalog hit (curated + ad-hoc); we
@@ -1717,11 +1751,12 @@ export default function StudioPage() {
         const fallbackPdb = /^[a-z0-9]{4}$/i.test(tid) ? tid.toUpperCase() : "";
         const tPdb = (tMeta?.pdb_id || fallbackPdb).trim();
         if (!tPdb) throw new Error(`Couldn't resolve a PDB id for target "${tid}".`);
+        const jobMutations = mutationsForJob(tid);
         const job = await api.createJob({
           pdb_id: tPdb,
           chain: tMeta?.chain || "A",
           uniprot_id: tMeta?.uniprot,
-          mutations: selectedMutations,
+          mutations: jobMutations,
           compounds: compoundList,
           include_wt: includeWt,
           // Ensemble docking v1 runs on the QuickVina batch path — it does
@@ -1735,7 +1770,7 @@ export default function StudioPage() {
           // can't slip an ensemble=true past the backend's 402 gate.
           ensemble: engine === "gnina" || !ensembleAllowed ? false : ensemble,
           engine,
-          title: `Studio · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}${engine === "gnina" ? " · GNINA" : ""}${engine !== "gnina" && ensembleAllowed && ensemble ? " · Ensemble" : ""}`,
+          title: `Studio · ${tid.toUpperCase()}${jobMutations.length > 0 ? ` · ${jobMutations.join("+")}` : ""}${compoundList.length > 1 ? ` · ${compoundList.length} compounds` : ""}${engine === "gnina" ? " · GNINA" : ""}${engine !== "gnina" && ensembleAllowed && ensemble ? " · Ensemble" : ""}`,
         });
         return { tid, job, pdbId: tPdb };
       });
@@ -1888,6 +1923,7 @@ export default function StudioPage() {
       const tPdb = (tMeta?.pdb_id || fallbackPdb).trim();
       if (!tPdb) { setDockError(`Couldn't resolve a PDB id for target "${tid}".`); return; }
 
+      const screenMutations = mutationsForJob(tid).slice(0, 2);
       const screening = await api.createScreening({
         pdb_id: tPdb,
         chain: tMeta?.chain || "A",
@@ -1896,12 +1932,12 @@ export default function StudioPage() {
         // multi-mutation picker). Slice as a defensive guard against
         // future picker bumps so the server validation stays the
         // contract.
-        mutations: selectedMutations.slice(0, 2),
+        mutations: screenMutations,
         compounds: compoundList,
         include_wt: includeWt,
         engine: "quickvina2_gpu",
         exhaustiveness: 4,
-        title: `Studio screen · ${tid.toUpperCase()}${selectedMutations.length > 0 ? ` · ${selectedMutations.slice(0, 2).join("+")}` : ""} · ${compoundList.length} cmpd`,
+        title: `Studio screen · ${tid.toUpperCase()}${screenMutations.length > 0 ? ` · ${screenMutations.join("+")}` : ""} · ${compoundList.length} cmpd`,
       });
       const screeningKey = (screening as any).share_id ?? String((screening as any).id ?? "");
       if (!screeningKey) {
@@ -4480,7 +4516,7 @@ function MutationDropdown({
   availableMutations, mutationQuery, selectedMutations, includeWt,
   setIncludeWt, toggleMutation, setMutationQuery, setOpen, targetId, maxMutations,
 }: {
-  availableMutations: { code: string; label: string; significance: string }[];
+  availableMutations: { code: string; label: string; significance: string; targetId?: string }[];
   mutationQuery: string;
   selectedMutations: string[];
   includeWt: boolean;
@@ -4548,9 +4584,9 @@ function MutationDropdown({
               <span className={`font-mono text-[11px] font-bold shrink-0 ${active ? "text-amber-200" : "text-slate-100"}`}>
                 {m.code}
               </span>
-              {targetId && (
+              {(m.targetId || targetId) && (
                 <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 shrink-0">
-                  {targetId}
+                  {m.targetId || targetId}
                 </span>
               )}
               <span className="text-[10px] font-mono text-slate-400 truncate min-w-0 flex-1" title={m.significance}>
