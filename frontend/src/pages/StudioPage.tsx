@@ -510,7 +510,7 @@ export default function StudioPage() {
   const setSelectedMutation = (m: string) => setSelectedMutations(m ? [m] : []);
   const MAX_TARGETS = 2;
   const MAX_MUTATIONS = 5;  // matches curated mutation depth (KRAS/EGFR carry 5)
-  const MAX_COMPOUNDS = 50;
+  const MAX_COMPOUNDS = 10;  // free-tier interactive cap; bulk screening (100s) is the Pro path
   // (v0.64) Compound list — up to 10 compounds per job. Each entry is
   // a SMILES + optional name + a stable id. activeCompoundIdx is the
   // one currently loaded into the 2D Ketcher canvas. The legacy
