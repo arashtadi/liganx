@@ -78,6 +78,17 @@ MERGE_INTO = os.environ.get("LIGANX_VALIDATE_MERGE_INTO", "").strip()
 # to bisect a noise-vs-method-limitation question on a specific case.
 EXHAUSTIVENESS = int(os.environ.get("LIGANX_VALIDATE_EXHAUSTIVENESS", "16"))
 
+# Docking engine for the suite. Defaults to the production Vina engine so
+# existing behaviour is unchanged; override with LIGANX_VALIDATE_ENGINE=boltz2
+# (or gnina) to validate an alternate engine end-to-end through the live
+# pipeline. Non-Vina engines are admin-gated on /jobs and boltz2 also requires
+# BOLTZ2_ENABLED=1 on the API, so this run needs an ADMIN bearer token.
+# Added 2026-08 for the Boltz-2 validation (see runpod/BOLTZ2_VALIDATE.md).
+# Note: NOISE_FLOOR_KCAL below is Vina-kcal-calibrated; Boltz-2 returns
+# log10(IC50 uM), so treat the direction verdict as primary and the
+# magnitude/noise-floor as engine-specific when engine != quickvina2_gpu.
+VALIDATE_ENGINE = (os.environ.get("LIGANX_VALIDATE_ENGINE", "").strip() or "quickvina2_gpu")
+
 # Vina/QuickVina2 noise floor at default exhaustiveness. Δs below this
 # magnitude are within scoring noise and shouldn't be claimed as a direction.
 # Source: AutoDock Vina docs + our own reproducibility tests at task #228.
@@ -283,7 +294,7 @@ def _submit(case: Case) -> str:
         "mutations": [case.mutation],
         "include_wt": True,
         "exhaustiveness": EXHAUSTIVENESS,
-        "engine": "quickvina2_gpu",
+        "engine": VALIDATE_ENGINE,
         "compounds": [{"name": case.drug_name, "smiles": case.drug_smiles}],
         "title": f"PC-validation: {case.name}",
         "tags": ["positive-control", "validation"],
