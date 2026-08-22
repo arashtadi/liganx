@@ -431,6 +431,18 @@ export default function JobPage() {
     setSearchParams(next, { replace: true });
   };
 
+  // (2026-08) Multi-target run: a `run` query param (JSON [{l,k}]) turns the
+  // fanned-out per-target jobs into one tabbed view. Present only when Studio
+  // submitted 2+ targets; absent for a normal single-target job.
+  const runParamRaw = searchParams.get("run");
+  let runTabs: { l: string; k: string }[] = [];
+  if (runParamRaw) {
+    try {
+      const parsed = JSON.parse(runParamRaw);
+      if (Array.isArray(parsed)) runTabs = parsed.filter((x: any) => x && x.k && x.l);
+    } catch { /* ignore a malformed run param */ }
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       <MobileDesktopOnlyBanner pageName="Job results" />
@@ -446,6 +458,30 @@ export default function JobPage() {
         inSubsetView={inSubsetView}
         subsetCount={subsetKeys.size}
       />
+      {runTabs.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1.5 -mt-2">
+          <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mr-1">
+            Run · {runTabs.length} targets
+          </span>
+          {runTabs.map((t) => {
+            const active = t.k === jobKey;
+            return (
+              <Link
+                key={t.k}
+                to={`/jobs/${t.k}?from=studio&run=${encodeURIComponent(runParamRaw || "")}`}
+                className={`px-3 py-1 rounded-full text-xs ring-1 ring-inset transition-colors ${
+                  active
+                    ? "bg-delta-500/15 text-delta-700 dark:text-delta-300 ring-delta-400/50 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 ring-slate-200 dark:ring-slate-700 hover:text-ink dark:hover:text-slate-200"
+                }`}
+                title={active ? "Current target" : `View ${t.l} results`}
+              >
+                {t.l}
+              </Link>
+            );
+          })}
+        </div>
+      )}
       {inSubsetView && (
         <div className="card flex items-center justify-between gap-3 bg-delta-50/60 ring-1 ring-delta-200/70 dark:bg-delta-900/15 dark:ring-delta-700/40">
           <div className="text-sm text-slate-700 dark:text-slate-200">

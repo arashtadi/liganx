@@ -1954,13 +1954,22 @@ export default function StudioPage() {
         loadedCompound,
       };
       writeStudioSession(snap);
-      // Multi-target submissions: redirect to the first job's page;
-      // the others are submitted and visible in /history. The
-      // in-Studio promoteToast about "polling first; check /history
-      // for the rest" no longer makes sense post-redirect, so we
-      // drop it — the History page is one click from JobPage's
-      // header and lists everything.
-      navigate(`/jobs/${jobKey}?from=studio`);
+      // (2026-08) Multi-target run -> ONE tabbed view. Pass every
+      // target's job (label + share_id) to JobPage as a `run` param so the
+      // fan-out reads as a single run with target tabs, instead of the user
+      // landing on the first job and hunting /history for the rest.
+      const runJobs = results
+        .flatMap((r) => (r.status === "fulfilled" ? [r.value] : []))
+        .map((v) => {
+          const meta = mergedCatalog.find((t: any) => t.id === v.tid) as any;
+          const label = meta?.name || meta?.pdb_id || v.tid.toUpperCase();
+          const key = (v.job as any).share_id ?? String((v.job as any).id ?? "");
+          return { l: String(label), k: String(key) };
+        })
+        .filter((x) => x.k);
+      const runParam =
+        runJobs.length > 1 ? `&run=${encodeURIComponent(JSON.stringify(runJobs))}` : "";
+      navigate(`/jobs/${jobKey}?from=studio${runParam}`);
       return;
     } catch (e: any) {
       setDockError(e?.message || "Full Job submission failed.");
