@@ -1159,18 +1159,22 @@ function ViewerCanvas({
       ]);
     };
 
-    const el: HTMLElement | null = canvasEl || container;
+    // Capture phase on the CONTAINER: our handlers run BEFORE 3Dmol's own
+    // canvas listeners (3Dmol stops propagation on its mouse events, which
+    // was swallowing bubble-phase listeners on the canvas). We never
+    // preventDefault/stopPropagation, so rotate/pan/zoom still work.
+    const el: HTMLElement | null = container;
     if (el) {
-      el.addEventListener("mousedown", onDown);
-      el.addEventListener("mousemove", onMove);
-      el.addEventListener("mouseup", onUp);
+      el.addEventListener("mousedown", onDown, true);
+      el.addEventListener("mousemove", onMove, true);
+      el.addEventListener("mouseup", onUp, true);
     }
 
     return () => {
       if (el) {
-        el.removeEventListener("mousedown", onDown);
-        el.removeEventListener("mousemove", onMove);
-        el.removeEventListener("mouseup", onUp);
+        el.removeEventListener("mousedown", onDown, true);
+        el.removeEventListener("mousemove", onMove, true);
+        el.removeEventListener("mouseup", onUp, true);
       }
       if (hoverHighlightRef.current) { try { viewer.removeShape(hoverHighlightRef.current); } catch { /* ignore */ } hoverHighlightRef.current = null; }
       if (firstHighlightRef.current) { try { viewer.removeShape(firstHighlightRef.current); } catch { /* ignore */ } firstHighlightRef.current = null; }
