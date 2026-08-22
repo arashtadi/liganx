@@ -1,0 +1,10 @@
+ef83fdf AI sidebar: tabbed layout (Props · 3D · Dock · Chat) — Option A redesign
+10db593 AI sidebar: auto-scroll ResultPanel into view when new suggestion lands
+f2d0291 Quick dock: resolve catalog id (kras) → real PDB id (4OBE) before fetch
+8ef1e89 Quick dock: fix AttributeError on settings.liganx_cache_root → cache_root
+46769a4 Feature-request CTAs open Contact in new tab (preserve in-progress work)
+6fdaa91 AI editor: Improve buttons clickable with empty chat (default open-ended prompt)
+26f27d3 AI editor: docking-aware mode (score+hits+misses passed to /assist/compound)
+c998cee AI sidebar: single scroll region so 3D toggle stops squashing chat
+0c6676d Compound editor: optional live 3D preview (gas-phase, opt-in)
+cd33479 AI editor: handle vague prompts ('make this better') without asking questions

@@ -1,0 +1,23 @@
+ESM2 pod fixes from prod deploy: CPU-forced (Blackwell sm_120), _init_db before _cache_get, doc'd actual /workspace layout
+
+The Path B deploy uncovered two bugs in esm2_pod.py and a stack of
+deploy-doc errors:
+
+- _DEVICE was 'cuda if available else cpu' but the production pod is
+  Blackwell sm_120 with torch 2.4.1 — kernels SIGABRT with 'no kernel
+  image is available for execution on the device'. Same constraint as
+  admet_pod.py. Hardcoded _DEVICE = 'cpu'. Cold call ~5s, sqlite hit ~60ms.
+
+- _cache_get() ran before _init_db() so the very first call on a fresh
+  pod raised 'no such table: fitness_cache'. Moved _init_db() up — it's
+  idempotent (CREATE TABLE IF NOT EXISTS).
+
+- DEPLOY_ESM2.md said /workspace/dock_pod/ — actual layout is flat at
+  /workspace/. Also documented that transformers must be 4.46.x (5.x is
+  incompatible with torch 2.4.1's torch.library.infer_schema), and that
+  this pod has no supervisord (restart by pkill + nohup uvicorn).
+
+Verified end-to-end via api.liganx.com /calibrate/score with BRAF V600K
+(not in 49-event cache): score_source='cached_esm2_local' returned with
+pod-payload fields (log_p_wt, log_p_mut, uniprot_id, windowed,
+pod_cache_hit), proving the backend->pod->ESM2 path works.

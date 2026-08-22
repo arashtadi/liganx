@@ -39,6 +39,8 @@ _FEEDBACK_LIMIT = rate_limit("feedback", RateLimit(max_requests=10, window_secon
 class FeedbackIn(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     message: Optional[str] = Field(default=None, max_length=4000)
+    # Would-recommend (NPS-lite): "yes" | "maybe" | "no". Set by the frontend.
+    recommend: Optional[str] = Field(default=None, max_length=10)
     # e.g. "job _08z63a3M40 · KRAS 4OBE" or the page URL — set by the frontend.
     context: Optional[str] = Field(default=None, max_length=500)
 
@@ -85,7 +87,7 @@ def submit_feedback(
         notify_feedback(
             user_email=email, full_name=full_name, organization=organization,
             role=role, rating=payload.rating, message=payload.message,
-            context=payload.context, when=when,
+            recommend=payload.recommend, context=payload.context, when=when,
         )
     except Exception:  # noqa: BLE001
         log.exception("feedback: telegram notify failed")
@@ -96,7 +98,7 @@ def submit_feedback(
         notify_admin_feedback(
             user_email=email, full_name=full_name, organization=organization,
             role=role, rating=payload.rating, message=payload.message,
-            context=payload.context, when=when,
+            recommend=payload.recommend, context=payload.context, when=when,
         )
     except Exception:  # noqa: BLE001
         log.exception("feedback: email notify failed")

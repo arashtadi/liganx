@@ -228,6 +228,7 @@ def notify_feedback(
     role: Optional[str] = None,
     rating: Optional[int] = None,
     message: Optional[str] = None,
+    recommend: Optional[str] = None,
     context: Optional[str] = None,
     when: Optional[str] = None,
 ) -> bool:
@@ -235,6 +236,9 @@ def notify_feedback(
     after their 5th dock). Carries the full sender identity + timestamp so
     the operator knows exactly who said what, and when."""
     stars = ("⭐" * int(rating)) if rating else ""
+    _rec_label = {"yes": "👍 Yes", "maybe": "🤔 Maybe", "no": "👎 No"}.get(
+        (recommend or "").strip().lower()
+    )
     parts = [
         "💬 <b>New user feedback</b>",
         "",
@@ -247,6 +251,8 @@ def notify_feedback(
         parts.append(f"🏢 {_escape_html(organization)}")
     if role:
         parts.append(f"💼 {_escape_html(role)}")
+    if _rec_label:
+        parts.append(f"📣 Would recommend: <b>{_rec_label}</b>")
     if message:
         parts.append("")
         parts.append(f"📝 {_escape_html(_truncate(message, 1500))}")

@@ -239,6 +239,7 @@ def notify_admin_feedback(
     role=None,
     rating=None,
     message=None,
+    recommend=None,
     context=None,
     when=None,
 ) -> bool:
@@ -255,8 +256,15 @@ def notify_admin_feedback(
     r = int(rating) if rating else 0
     stars = ("★" * r) + ("☆" * (5 - r)) if r else "—"
     msg_html = esc(message).replace("\n", "<br>") if message else "<span style='color:#94a3b8'>(no written comment)</span>"
+    _rec_map = {
+        "yes": "<span style='color:#16a34a;font-weight:600'>👍 Yes</span>",
+        "maybe": "<span style='color:#d97706;font-weight:600'>🤔 Maybe</span>",
+        "no": "<span style='color:#dc2626;font-weight:600'>👎 No</span>",
+    }
+    rec_html = _rec_map.get((recommend or "").strip().lower(), "—")
     rows = [
         ("Rating", f"<span style='font-size:18px;color:#f59e0b'>{stars}</span> &nbsp;{r}/5" if r else "—"),
+        ("Would recommend", rec_html),
         ("From", esc(user_email)),
         ("Name", esc(full_name)),
         ("Organization", esc(organization)),

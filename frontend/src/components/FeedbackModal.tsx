@@ -20,6 +20,7 @@ export default function FeedbackModal({
   const [rating, setRating] = useState(0);
   const [hover, setHover] = useState(0);
   const [message, setMessage] = useState("");
+  const [recommend, setRecommend] = useState<"yes" | "maybe" | "no" | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
 
@@ -35,6 +36,7 @@ export default function FeedbackModal({
       await api.submitFeedback({
         rating: rating || undefined,
         message: message.trim() || undefined,
+        recommend: recommend || undefined,
         context,
       });
     } catch {
@@ -46,7 +48,7 @@ export default function FeedbackModal({
     window.setTimeout(onClose, 1400);
   }
 
-  const canSend = rating > 0 || message.trim().length > 0;
+  const canSend = rating > 0 || message.trim().length > 0 || recommend !== null;
 
   const node = (
     <div
@@ -108,6 +110,38 @@ export default function FeedbackModal({
                 placeholder="What would make Liganx better? Bugs, missing features, anything at all…"
                 className="w-full resize-y rounded-lg bg-slate-950/60 border border-slate-700 text-slate-100 placeholder:text-slate-600 text-sm px-3 py-2 focus:outline-none focus:border-violet-500"
               />
+
+              {/* Would-recommend (NPS-lite) */}
+              <div className="mt-4">
+                <div className="text-sm text-slate-300 mb-2">
+                  Would you recommend Liganx to others?
+                </div>
+                <div className="flex items-center gap-2">
+                  {([
+                    { key: "yes", label: "👍 Yes" },
+                    { key: "maybe", label: "🤔 Maybe" },
+                    { key: "no", label: "👎 No" },
+                  ] as const).map((opt) => {
+                    const active = recommend === opt.key;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => setRecommend(active ? null : opt.key)}
+                        aria-pressed={active}
+                        className={
+                          "flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors " +
+                          (active
+                            ? "bg-violet-600 border-violet-500 text-white"
+                            : "bg-slate-950/60 border-slate-700 text-slate-300 hover:border-slate-500")
+                        }
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             <div className="px-6 pb-6 pt-1 flex items-center justify-between gap-3">

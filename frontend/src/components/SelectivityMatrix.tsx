@@ -291,7 +291,7 @@ export default function SelectivityMatrix({
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800">
-              <th className="text-left py-2.5 px-4 font-semibold text-slate-600 dark:text-slate-300 sticky left-0 bg-white dark:bg-slate-900 z-10 min-w-[220px]">
+              <th className="text-left py-2.5 px-3 font-semibold text-slate-600 dark:text-slate-300 sticky left-0 bg-white dark:bg-slate-900 z-10 min-w-[150px]">
                 Compound
               </th>
               {variants.map((v) => {
@@ -310,7 +310,7 @@ export default function SelectivityMatrix({
                 return (
                   <th
                     key={v}
-                    className={`text-right py-2.5 px-4 font-semibold min-w-[110px] transition-colors align-top ${
+                    className={`text-right py-2.5 px-2.5 font-semibold min-w-[84px] transition-colors align-top ${
                       hoverCol === v
                         ? "bg-delta-50/60 text-delta-700 dark:bg-delta-900/30 dark:text-delta-300"
                         : "text-slate-600 dark:text-slate-300"
@@ -347,11 +347,11 @@ export default function SelectivityMatrix({
                 onMouseEnter={() => setHoverRow(rowIdx)}
                 onMouseLeave={() => setHoverRow(null)}
               >
-                <td className="py-2.5 px-4 sticky left-0 bg-white dark:bg-slate-900 z-[5]">
-                  <div className="font-medium text-ink dark:text-slate-100 truncate max-w-[260px]">
+                <td className="py-2.5 px-3 sticky left-0 bg-white dark:bg-slate-900 z-[5]">
+                  <div className="font-medium text-ink dark:text-slate-100 truncate max-w-[188px]">
                     {compound.name ?? <span className="text-slate-400 dark:text-slate-500 italic">unnamed</span>}
                   </div>
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[260px]">
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[188px]">
                     {compound.smiles}
                   </div>
                   {bestDelta != null && (
@@ -711,7 +711,7 @@ function ScoreCell({
   // whole WT cell into a selection target.
   return (
     <td
-      className={`relative text-right py-2.5 ${selectable ? "pl-6 pr-4" : "px-4"} font-mono tabular-nums transition-all align-top
+      className={`relative text-right py-2.5 ${selectable ? "pl-5 pr-2.5" : "px-3"} font-mono tabular-nums transition-all align-top
         ${isWT ? `border-r border-slate-200 dark:border-slate-800 ${wtSurface}` : ""}
         ${highlighted && !isWT && !isSelected && !isCurrentPick ? "ring-1 ring-inset ring-slate-200/60 dark:ring-slate-700/60" : ""}
         ${selectionRing}

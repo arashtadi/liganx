@@ -1,0 +1,20 @@
+c998cee AI sidebar: single scroll region so 3D toggle stops squashing chat
+0c6676d Compound editor: optional live 3D preview (gas-phase, opt-in)
+cd33479 AI editor: handle vague prompts ('make this better') without asking questions
+9d3e10c AI suggestion history: persist conversation per saved compound
+a9a22ee AI editor: tighten rationale rules — hard-cap one sentence, commit to edit, no false-ambiguity hedging
+84406c9 AI editor: inline distilled medchem-phd knowledge in system prompts (Path A)
+99f000a AI compound editor: bump max_tokens to 4096 with skill, parse final JSON block
+43185d6 Fix Anthropic skills request: code_execution tool needs name field
+d6d1a22 AI compound editor: wire to medchem-phd workspace skill via container.skills
+cacc2a0 medchem-phd v2 audit follow-ups: H1047R allosteric caveat + AI prompt warnings
+6479f76 medchem-phd: integrate Boltz-2 paper + Drug Design textbook + Mol Modification review
+609773b medchem-phd + liganx-site-monitor skills
+0499120 Validation page: honest update for v6 numbers + v5 postmortem note
+39e961a Refresh validation snapshot via GH Actions (refresh-validation.yml)
+c82ea93 v5 postmortem + bump PREP_VERSION to v6 to flush polluted WT caches
+015161c Revert "Symmetric WT/mutant minimisation (v5)"
+41e6ad4 Refresh validation snapshot via GH Actions (refresh-validation.yml)
+23fd315 Symmetric WT/mutant minimisation (v5)
+8437661 PhD audit pass 1 fixes: mutation hints, dockability allowlist, prompt guards
+31db7cf QA fixes: reaper catches PENDING orphans + Quick-dock empty-canvas feedback

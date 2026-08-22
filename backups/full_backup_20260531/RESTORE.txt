@@ -1,0 +1,13 @@
+Liganx / DockingOnline full backup - 2026-05-31 22:51
+Source: entire DockingOnline folder, NO exclusions (.git, node_modules, venvs, all included).
+Split into 3 gzip archives (each kept under the per-step time limit). All verified: gzip CRC OK, entry counts match source.
+
+  backend.tar.gz    212M  -> backend/        (17370 entries)
+  frontend.tar.gz    70M  -> frontend/       (15607 entries)
+  rest.tar.gz       147M  -> everything else (7486 entries: .git, skills, docs, root files, etc.)
+
+To restore into an empty folder:
+  mkdir restored && cd restored
+  tar xzf backend.tar.gz
+  tar xzf frontend.tar.gz
+  tar xzf rest.tar.gz      # rest expands into ./  (contains .git and all root files)

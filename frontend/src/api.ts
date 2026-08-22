@@ -1209,7 +1209,7 @@ export const api = {
   /** In-app feedback (rating 1-5 + optional comment + context). Relayed to
    *  the operator via Telegram + email server-side. Fire-and-forget from the
    *  UI's perspective — a 202 means "received". */
-  submitFeedback: (payload: { rating?: number; message?: string; context?: string }) =>
+  submitFeedback: (payload: { rating?: number; message?: string; recommend?: string; context?: string }) =>
     request<{ ok: boolean }>("/feedback", {
       method: "POST",
       body: JSON.stringify(payload),
