@@ -190,6 +190,64 @@ def _reap_orphan_jobs() -> None:
         log.exception("Orphan-job reaper failed (non-fatal): %s", e)
 
 
+def _resume_recent_jobs() -> None:
+    """(2026-08) Docking-job counterpart to _resume_recent_fep_studies.
+
+    When the API restarts (Fly redeploy, crash, OOM), any docking Job that
+    was mid-run had its BackgroundTasks/daemon runner killed — it is now
+    stuck RUNNING/PENDING and, left alone, would spin until the 20-minute
+    orphan reaper marks it FAILED and the user has to re-submit (this is
+    exactly what stranded job #433 on 2026-08-22). Instead we re-spawn the
+    runner so the job finishes automatically after the restart.
+
+    Scope: RUNNING or PENDING jobs touched in the last 24h (older ones fall
+    to the reaper). Only ever called at STARTUP, where this fresh process
+    is running none of them — so every such job is genuinely orphaned and
+    safe to resume. Re-running is safe: the runner re-docks cells and the
+    UI dedupes on (compound, variant), so the grid converges to complete;
+    run_job_in_background has its own try/except that marks a genuinely
+    broken job FAILED, so a poison job can't loop forever."""
+    try:
+        from sqlmodel import Session, select
+        from sqlalchemy import text
+        from .db import engine
+        from .models import Job, JobStatus
+        from .services.runner import run_job_in_background
+        import threading, datetime
+
+        with Session(engine) as session:
+            recent = session.exec(
+                select(Job)
+                .where(Job.status.in_((JobStatus.RUNNING, JobStatus.PENDING)))   # type: ignore[attr-defined]
+                .where(Job.updated_at >= text("now() - make_interval(hours => 24)"))
+            ).all()
+            ids = [j.id for j in recent if j.id is not None]
+            # Bump updated_at so the orphan reaper (which runs right after)
+            # doesn't fail a job we are about to resume.
+            now = datetime.datetime.utcnow()
+            for j in recent:
+                j.updated_at = now
+                session.add(j)
+            session.commit()
+
+        if not ids:
+            log.info("Job resume sweep: no recent in-flight docking jobs to re-spawn")
+            return
+        log.warning(
+            "Job resume sweep: re-spawning runner for %d docking job(s) %s",
+            len(ids), ids,
+        )
+        for jid in ids:
+            threading.Thread(
+                target=run_job_in_background,
+                args=(jid,),
+                daemon=True,
+                name=f"job_resume_{jid}",
+            ).start()
+    except Exception as e:  # noqa: BLE001
+        log.exception("Job resume sweep failed (non-fatal): %s", e)
+
+
 def _bump_inflight_fep_timestamps() -> None:
     """(N4.0a) Reset updated_at on every in-flight FEP study at boot.
 
@@ -849,6 +907,11 @@ async def lifespan(_app: FastAPI):
     # drift class (model column with no applied migration) before we
     # serve a single request. Also fails loud.
     _verify_schema_matches_models()
+    # (2026-08) Resume docking jobs orphaned by THIS restart BEFORE the
+    # reaper runs, so a job caught mid-dock by a redeploy continues
+    # automatically instead of spinning 20 min then failing. Resume
+    # bumps updated_at so the reaper below leaves resumed jobs alone.
+    _resume_recent_jobs()
     _reap_orphan_jobs()
     # (N4.0a) Bump updated_at on every in-flight FEP study FIRST, so
     # the reaper below sees a fresh 90/360-minute window starting now
