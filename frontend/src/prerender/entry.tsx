@@ -25,6 +25,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomePage from "../pages/HomePage";
 import AboutPage from "../pages/AboutPage";
 import MutationDockingGuidePage from "../pages/MutationDockingGuidePage";
+import MolecularDockingPage from "../pages/MolecularDockingPage";
 import PrivacyPage from "../pages/PrivacyPage";
 import TermsPage from "../pages/TermsPage";
 import AtlasPage from "../pages/AtlasPage";
@@ -261,6 +262,20 @@ export const marketingRoutes: MarketingRoute[] = [
       }),
   },
   {
+    dir: "molecular-docking",
+    render: () =>
+      renderMarketing("/molecular-docking", <MolecularDockingPage />, {
+        title:
+          "Free Molecular Docking Online — AutoDock Vina + Boltz-2 · Liganx",
+        description:
+          "Run molecular docking online for free — no install. Dock small " +
+          "molecules against protein targets with GPU AutoDock Vina and " +
+          "Boltz-2 ML, compare wild-type vs. mutant binding, and validate " +
+          "every pose.",
+        canonical: `${SITE}/molecular-docking`,
+      }),
+  },
+  {
     dir: "mutation-docking-guide",
     render: () =>
       renderMarketing("/mutation-docking-guide", <MutationDockingGuidePage />, {
@@ -353,6 +368,7 @@ export function renderSitemap(): string {
     { path: "/atlas", priority: "0.9", changefreq: "weekly" },
     { path: "/library", priority: "0.8", changefreq: "weekly" },
     { path: "/validation", priority: "0.8", changefreq: "monthly" },
+    { path: "/molecular-docking", priority: "0.9", changefreq: "monthly" },
     { path: "/mutation-docking-guide", priority: "0.7", changefreq: "monthly" },
     { path: "/blog", priority: "0.8", changefreq: "weekly" },
     { path: "/about", priority: "0.5", changefreq: "monthly" },

@@ -22,6 +22,7 @@ import CompleteProfilePage from "./pages/CompleteProfilePage";
 import CompoundsPage from "./pages/CompoundsPage";
 import PendingApprovalPage from "./pages/PendingApprovalPage";
 import MutationDockingGuidePage from "./pages/MutationDockingGuidePage";
+import MolecularDockingPage from "./pages/MolecularDockingPage";
 import ContactPage from "./pages/ContactPage";
 import AboutPage from "./pages/AboutPage";
 import AdminPage from "./pages/AdminPage";
@@ -78,6 +79,7 @@ export default function App() {
                 unmounting the whole React tree (blank white page). Route
                 name is plumbed for the support-email subject. */}
             <Route path="/" element={withBoundary(<HomePage />, "Home")} />
+            <Route path="/molecular-docking" element={withBoundary(<MolecularDockingPage />, "Molecular docking")} />
             {/* Legacy /new — NewJobPage retired 2026-05-08, all flows
                 consolidated into Studio. Permanent redirect so old
                 bookmarks, email links, and any caller still calling

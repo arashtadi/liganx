@@ -13,6 +13,7 @@ User-agent: *
 Allow: /
 Allow: /library
 Allow: /validation
+Allow: /molecular-docking
 Allow: /mutation-docking-guide
 Allow: /contact
 Allow: /about
