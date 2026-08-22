@@ -121,3 +121,54 @@ being used as a hard pass/fail on magnitude.
 - **Failed / not ready:** `fly secrets set BOLTZ2_ENABLED=0 -a liganx-api`
   to put it back to dark.
 - **Always:** `runpodctl pod stop <id>` when done so the 4090 stops billing.
+
+---
+
+## Field notes — first attempt 2026-08-22 (what worked, what bit)
+
+**On-demand GPU works and bypasses the capacity block.** When the existing
+pods can't start ("not enough free GPUs on the host machine"), create a fresh
+one — it schedules onto any free host:
+
+```bash
+runpodctl pod create --name liganx-boltz2-test \
+  --gpu-id "NVIDIA GeForce RTX 4090" --cloud-type SECURE \
+  --image runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04 \
+  --container-disk-in-gb 45 --ports "22/tcp,7862/http" --ssh
+```
+
+- **Use `--cloud-type SECURE`**, and **expose `22/tcp`** (a community-cloud pod
+  got stuck at `uptimeSeconds: 0`; and without a TCP port, `runpodctl ssh info`
+  never leaves "pod not ready"). Secure cloud provisioned + SSH-ready in ~90 s.
+  Connect: `runpodctl ssh info <podId>` prints the `ssh -i ... root@IP -p PORT`.
+- `pip install boltz` (installs boltz 2.2.1) works, and the weights
+  (~6 GB: CCD `mols.tar` + `boltz2_conf.ckpt`) download to `--cache` in ~4 min.
+
+**The dependency trap (unresolved — do this differently next time).** Installing
+into the image's base env fails at predict time:
+
+1. Bare boltz → `ModuleNotFoundError: No module named 'cuequivariance_torch'`.
+2. `pip install cuequivariance-torch cuequivariance-ops-torch-cu12` fixes the
+   import but the **ops** wheel drags in `torch 2.13.0+cu130`, which breaks the
+   image's torchvision → `RuntimeError: operator torchvision::nms does not exist`.
+3. Forcing torch back to 2.4.0+cu124 conflicts because `cuequivariance-torch`
+   pins a newer torch. Circular.
+
+**Fix for the next run** (either):
+- **Isolated env with pinned versions** (as this runbook's Step 2 always said —
+  do NOT install into the base env): a mamba/conda env with a torch that
+  satisfies *both* boltz 2.2.1 and `cuequivariance-torch`, the *matching*
+  torchvision, and **do not install `cuequivariance-ops-torch-cu12`** (the
+  kernel accelerator that pulled the bad torch) — boltz runs on pure
+  `cuequivariance-torch`. Verify with
+  `python -c "import torch, torchvision, cuequivariance_torch"` before predicting.
+- **Bake a serverless worker image** (mirror `runpod/gnina_worker/`) so the deps
+  are pinned once and this never recurs; also gives the scale-to-zero backing
+  for the user-facing engine button.
+
+**Also:** weights re-download on every fresh pod. Attach a **network volume**
+(`--network-volume-id`) mounted at the cache path so `boltz2_conf.ckpt` persists.
+
+The validation driver `runpod/bz_validate_direct.py` is ready — it self-fetches
+each case PDB, builds the pocket + mutant sequence, and runs WT/mutant Boltz-2
+with no API/token. It just needs a pod where `boltz predict` actually runs.
