@@ -68,7 +68,12 @@ export default function SettingsPage() {
 
       <ProfilePictureCard userEmail={user.email ?? ""} initialAvatarUrl={initialAvatar} />
       <ProfileFieldsCard />
-      <EmailCard currentEmail={user.email ?? ""} />
+      <EmailCard
+        currentEmail={user.email ?? ""}
+        signedInWithGoogle={
+          !!user.app_metadata?.providers?.some((p: string) => p !== "email")
+        }
+      />
       <PasswordCard
         signedInWithPasswordOnly={!user.app_metadata?.providers?.some(
           (p: string) => p !== "email",
@@ -220,7 +225,7 @@ async function resizeImage(file: File, size: number, quality: number): Promise<s
 /* Email                                                                      */
 /* -------------------------------------------------------------------------- */
 
-function EmailCard({ currentEmail }: { currentEmail: string }) {
+function EmailCard({ currentEmail, signedInWithGoogle }: { currentEmail: string; signedInWithGoogle: boolean }) {
   const [newEmail, setNewEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -251,6 +256,23 @@ function EmailCard({ currentEmail }: { currentEmail: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Google/OAuth users: their login is bound to their Google account, so
+  // changing the app email here would not change how they sign in and could
+  // desync on the next Google login. Show an informational note instead.
+  if (signedInWithGoogle) {
+    return (
+      <section className="card">
+        <h2 className="text-lg font-semibold text-ink dark:text-white">Email address</h2>
+        <p className="muted mt-1 text-sm">
+          You sign in with Google, so your email{" "}
+          <span className="font-medium text-ink dark:text-slate-200">{currentEmail}</span>{" "}
+          comes from your Google account. To use a different address, sign in
+          with that Google account instead.
+        </p>
+      </section>
+    );
   }
 
   return (
