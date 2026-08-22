@@ -96,7 +96,9 @@ export default function SignupPage() {
           Click it to activate your account, then sign in.
         </p>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-          Didn't get an email? Check spam, or wait 60s and try signing up again from this address.
+          Didn't get an email?{" "}
+          <span className="font-bold text-ink dark:text-slate-100">Check your spam / junk folder</span>{" "}
+          — new senders sometimes land there. Or wait 60s and try signing up again from this address.
         </p>
         <Link to="/login" className="btn btn-primary">
           Back to sign in
