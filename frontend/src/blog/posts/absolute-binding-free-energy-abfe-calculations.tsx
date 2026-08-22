@@ -6,7 +6,7 @@ export const meta: PostMeta = {
   title: "Absolute binding free energy: scoring one ligand at a time",
   description:
     "ABFE calculations predict a ligand's standard binding free energy without needing a reference compound, filling the gap between fast docking and reference-anchored FEP.",
-  date: "2026-07-08",
+  date: "2026-08-22",
   author: "Liganx team",
   tags: ["methodology", "free-energy", "abfe", "fep", "scoring"],
   readingMin: 7,
