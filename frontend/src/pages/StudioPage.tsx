@@ -861,7 +861,13 @@ export default function StudioPage() {
       try {
         const r = await fetch("https://api.liganx.com/health/full");
         const j = await r.json();
-        if (!cancelled) setHealthOk(j?.pod_dock_status === "ok");
+        if (!cancelled) setHealthOk(
+          // Prod docks on RunPod serverless, not the legacy dedicated
+          // POD_DOCK_URL pod — so a configured RunPod key also means the
+          // dock engine is live. Without this the "Pod" dot was always red
+          // even though docking worked.
+          j?.pod_dock_status === "ok" || j?.runpod_api_key === "configured"
+        );
       } catch {
         if (!cancelled) setHealthOk(false);
       }
