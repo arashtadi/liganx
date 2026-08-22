@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Close, Spinner } from "./Icons";
 import { tryReloadOnChunkError } from "../lib/chunkReload";
@@ -96,6 +96,11 @@ function dominantType(types: string[]): string {
 type XYZ = { x: number; y: number; z: number };
 interface Measurement { id: number; label: string; distance: number; a: XYZ; b: XYZ }
 
+// Stable empty-array identity so a pose with no measurements never produces a
+// fresh reference on every render (which would spuriously re-fire the redraw
+// effect). Module-level = one shared frozen-in-practice constant.
+const EMPTY_MEASUREMENTS: Measurement[] = [];
+
 export default function MutationOverlayViewer(props: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   // One-shot flag: set when the user taps Measure on the INLINE viewer. It
@@ -106,7 +111,35 @@ export default function MutationOverlayViewer(props: Props) {
   // (both ViewerCanvas instances share the same molecule coords and redraw the
   // list). Stored as endpoint coords + distance, NOT 3Dmol shape handles
   // (those are per-viewer-instance and can't be shared).
-  const [measurements, setMeasurements] = useState<Measurement[]>([]);
+  //
+  // PER-POSE: keyed by the pose identity (contextLabel = "compound × variant")
+  // so each compound keeps its OWN measurements. This viewer instance is NOT
+  // remounted when the parent swaps the selected cell (HeroBanner reuses it and
+  // only changes props), so without keying, switching compounds would carry a
+  // stale molecule's measurements onto a different molecule — or drop them.
+  // With keying: click a different compound → see that compound's measurements
+  // (usually none); click back → the originals are still there, at the right
+  // atoms. Single-pose callers (no contextLabel) share one "__default__" bucket
+  // — identical to the old single-list behavior.
+  const [measurementsByPose, setMeasurementsByPose] = useState<
+    Record<string, Measurement[]>
+  >({});
+  const poseKey = props.contextLabel ?? "__default__";
+  const measurements = measurementsByPose[poseKey] ?? EMPTY_MEASUREMENTS;
+  const setMeasurements = useCallback(
+    (u: Measurement[] | ((prev: Measurement[]) => Measurement[])) => {
+      setMeasurementsByPose((prev) => {
+        const cur = prev[poseKey] ?? EMPTY_MEASUREMENTS;
+        const next =
+          typeof u === "function"
+            ? (u as (p: Measurement[]) => Measurement[])(cur)
+            : u;
+        if (next === cur) return prev;
+        return { ...prev, [poseKey]: next };
+      });
+    },
+    [poseKey],
+  );
 
   // ── Toolbar state, LIFTED to the parent ─────────────────────────────
   // These were previously local to ViewerCanvas, which meant the inline

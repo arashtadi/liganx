@@ -19,8 +19,26 @@ import { StaticRouter } from "react-router-dom/server";
 import BlogArticleBody from "../blog/BlogArticleBody";
 import { posts, getPost, allSlugs } from "../blog/registry";
 import type { PostMeta } from "../blog/types";
+import { AuthCtx } from "../lib/auth";
+import type { AuthState } from "../lib/auth";
+import HomePage from "../pages/HomePage";
+import AboutPage from "../pages/AboutPage";
+import MutationDockingGuidePage from "../pages/MutationDockingGuidePage";
+import PrivacyPage from "../pages/PrivacyPage";
+import TermsPage from "../pages/TermsPage";
 
 const SITE = "https://liganx.com";
+
+// Static, logged-out auth context for prerendering. The real AuthProvider runs
+// window/localStorage effects that don't exist in Node; marketing pages only
+// read `user` (to toggle a sign-in CTA), so a null-session stub renders the
+// exact logged-out view a crawler should index.
+const PRERENDER_AUTH = {
+  session: null,
+  user: null,
+  loading: false,
+  emailVerified: false,
+} as unknown as AuthState;
 
 export const slugs: string[] = allSlugs();
 
@@ -156,3 +174,111 @@ export function renderIndex(): Rendered {
     jsonLd: [itemList],
   };
 }
+
+// ── Marketing-page prerendering ─────────────────────────────────────────────
+// Renders fully-static, SSR-safe marketing pages to HTML at build time so
+// non-JS crawlers (GPTBot / ClaudeBot / PerplexityBot, plus Google's raw
+// fetch) get real content instead of an empty <div id="root">. Pages that
+// fetch data at runtime (Atlas / Library / Validation) are intentionally
+// excluded — they'd only prerender a loading shell.
+
+interface MarketingMeta {
+  title: string;
+  description: string;
+  canonical: string;
+  jsonLd?: string[];
+}
+
+function renderMarketing(
+  location: string,
+  node: React.ReactElement,
+  meta: MarketingMeta,
+): Rendered {
+  const html = renderToStaticMarkup(
+    <StaticRouter location={location}>
+      <AuthCtx.Provider value={PRERENDER_AUTH}>{node}</AuthCtx.Provider>
+    </StaticRouter>,
+  );
+  return {
+    html,
+    title: meta.title,
+    description: meta.description,
+    canonical: meta.canonical,
+    jsonLd: meta.jsonLd ?? [],
+  };
+}
+
+export interface MarketingRoute {
+  /** Output directory under dist/ ("" = dist/index.html, the site root). */
+  dir: string;
+  render: () => Rendered;
+}
+
+const HOME_DESCRIPTION =
+  "Free, mutation-aware molecular docking in your browser. Dock small " +
+  "molecules against wild-type and mutant protein pockets, rank by " +
+  "selectivity, and get pose validation plus ADMET — no install. Powered by " +
+  "AutoDock Vina / QuickVina2 and Boltz-2.";
+
+export const marketingRoutes: MarketingRoute[] = [
+  {
+    dir: "",
+    render: () =>
+      renderMarketing("/", <HomePage />, {
+        title:
+          "Liganx — Free molecular docking online · Vina + Boltz-2 · Mutation-aware",
+        description: HOME_DESCRIPTION,
+        canonical: `${SITE}/`,
+        // Home JSON-LD already ships in index.html — don't duplicate it.
+        jsonLd: [],
+      }),
+  },
+  {
+    dir: "about",
+    render: () =>
+      renderMarketing("/about", <AboutPage />, {
+        title: "About Liganx — the team behind the docking platform",
+        description:
+          "Who builds Liganx: a team working on mutation-aware molecular " +
+          "docking and structure-based drug discovery, and how our blog " +
+          "content is researched and reviewed.",
+        canonical: `${SITE}/about`,
+      }),
+  },
+  {
+    dir: "mutation-docking-guide",
+    render: () =>
+      renderMarketing("/mutation-docking-guide", <MutationDockingGuidePage />, {
+        title:
+          "How to dock against a kinase mutation — practical guide · Liganx",
+        description:
+          "Plain-English guide to molecular docking against clinically " +
+          "relevant kinase mutations: EGFR T790M, BCR-ABL T315I, BRAF V600E, " +
+          "KRAS G12C. Which PDB to use, how to read Δ scores, common pitfalls.",
+        canonical: `${SITE}/mutation-docking-guide`,
+      }),
+  },
+  {
+    dir: "privacy",
+    render: () =>
+      renderMarketing("/privacy", <PrivacyPage />, {
+        title: "Privacy Policy · Liganx",
+        description:
+          "How Liganx handles your account, structures, SMILES, and docking " +
+          "job data. Plain-English research-preview privacy policy.",
+        canonical: `${SITE}/privacy`,
+      }),
+  },
+  {
+    dir: "terms",
+    render: () =>
+      renderMarketing("/terms", <TermsPage />, {
+        title: "Terms of Service · Liganx",
+        description:
+          "Terms of service for Liganx — research-preview free molecular " +
+          "docking. What we offer, what we don't promise, and how docking " +
+          "scores should be interpreted.",
+        canonical: `${SITE}/terms`,
+      }),
+  },
+];

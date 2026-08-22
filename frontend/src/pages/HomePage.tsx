@@ -464,7 +464,10 @@ function Comparison() {
               ["Pre-computed FDA-drug screenings",              false,     true,      false],
               ["Bulk virtual screening, selectivity-ranked",    false,     true,      "partial"],
               ["Inline ADMET (hERG / DILI / CYP / BBB)",        false,     true,      "partial"],
-              ["Ensemble / flexible-receptor docking",          false,     true,      true],
+              // "coming" (not ✓): the ensemble/flexible-receptor pipeline is
+              // built, but it runs on the GPU dock pod, which isn't live on the
+              // public deployment yet — so we don't claim it as a shipped ✓.
+              ["Ensemble / flexible-receptor docking",          false,     "coming", true],
               ["Runs in the browser, no install",               true,      true,      false],
               ["Published, reproducible validation report",     false,     true,      false],
             ].map((row, i) => (
@@ -511,13 +514,13 @@ function Comparison() {
           </div>
           <ul className="list-disc pl-5 space-y-1.5">
             <li>
-              <strong>Eleven literature-anchored controls, public verdict.</strong> ABL T315I, EGFR T790M, BRAF V600E, KIT D816V, BTK C481S, KRAS G12C, EGFR C797S, EGFR L858R — five of eleven PASS at above-noise magnitude in the published direction. Five NOISE results sit in documented method-limit territory (covalent acrylamides, active-conformation selectivity, conformational activation). One FAIL (EGFR L858R + Gefitinib) is explained candidly with the structural reason — rigid-receptor docking can't capture L858R's conformational activation. The full per-case verdict and the open-source script that re-derives it are public.
+              <strong>Eleven literature-anchored controls, public verdict.</strong> ABL T315I, EGFR T790M, BRAF V600E, KIT D816V, BTK C481S, KRAS G12C, EGFR C797S, EGFR L858R — five of eleven PASS in the published direction (four at above-noise magnitude, plus one correctly-retained within-noise case). Five NOISE results sit in documented method-limit territory (covalent acrylamides, active-conformation selectivity, conformational activation). One FAIL (EGFR L858R + Gefitinib) is explained candidly with the structural reason — rigid-receptor docking can't capture L858R's conformational activation. The full per-case verdict and the open-source script that re-derives it are public.
             </li>
             <li>
               <strong>Vina noise floor.</strong> Vina/QuickVina2 scoring has roughly ±1 kcal/mol noise at default exhaustiveness. We surface a "within-noise" badge for any Δ inside that band so a reader doesn't over-interpret 0.3 kcal/mol shifts.
             </li>
             <li>
-              <strong>Mutant-receptor build path.</strong> Our default mutant builder is FoldX BuildModel where an academic licence permits it; on environments without FoldX we fall back to PDBFixer's residue substitution, which applies the new identity but does <em>not</em> energy-minimise the structure. Drastic side-chain changes (e.g. small→large) can introduce clash signal in the Δ that isn't pure binding affinity. Submitting the same mutation in both modes and comparing flags this when it matters.
+              <strong>Mutant-receptor build path.</strong> Our default mutant builder is FoldX BuildModel where an academic licence permits it; on environments without FoldX we fall back to PDBFixer's residue substitution, which applies the new identity but does <em>not</em> energy-minimise the structure. Drastic side-chain changes (e.g. small→large) can introduce clash signal in the Δ that isn't pure binding affinity. Submitting the same mutation in both modes and comparing flags this when it matters. <em>On liganx.com today FoldX is not deployed, so every public mutant is built with the PDBFixer path described here — the FoldX build path is available in the code for self-hosted or licensed deployments.</em>
             </li>
             <li>
               <strong>FoldX academic licensing.</strong> FoldX is free for academic use under its own EULA but requires a commercial licence for industry workflows. Liganx ships the FoldX call path; users running commercial work should verify their licence with the FoldX team at the Centre for Genomic Regulation directly.

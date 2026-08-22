@@ -487,6 +487,13 @@ export default function StudioPage() {
   // pose per cell. Full Job only — never wired into Quick Dock. Restored
   // from the session snapshot; defaults off.
   const [ensemble, setEnsemble] = useState<boolean>(initialSession?.ensemble ?? false);
+  // Ensemble docking needs the GPU dock pod (POD_DOCK_URL). While that pod is
+  // not configured in production the runner silently ignores an ensemble
+  // request and runs a single rigid snapshot — so offering the toggle would
+  // promise something the backend can't deliver. Hide the UI until the pod is
+  // live; flip this to `true` (and confirm POD_DOCK_URL is set) to re-enable.
+  // The `ensemble`/`setEnsemble` state stays wired so re-enabling is one line.
+  const ENSEMBLE_UI_ENABLED = false;
   const [selectedMutations, setSelectedMutations] = useState<string[]>(
     initialSession?.selectedMutations && initialSession.selectedMutations.length > 0
       ? initialSession.selectedMutations
@@ -4057,7 +4064,10 @@ export default function StudioPage() {
                   choice. Sky-blue when on so it's distinct from the
                   emerald/violet RUN DOCK buttons below. Applies to the Vina
                   path; the GNINA half ignores it (ensemble v1 is
-                  QuickVina-only — runFullJob sends ensemble=false for GNINA). */}
+                  QuickVina-only — runFullJob sends ensemble=false for GNINA).
+                  HIDDEN while the GPU dock pod is offline (ENSEMBLE_UI_ENABLED)
+                  so users aren't offered a toggle the backend would ignore. */}
+              {ENSEMBLE_UI_ENABLED && (
               <button
                 type="button"
                 disabled={!ensembleAllowed}
@@ -4106,6 +4116,7 @@ export default function StudioPage() {
                   {!ensembleAllowed ? "n/a" : ensemble ? "on" : "off"}
                 </span>
               </button>
+              )}
 
               {(() => {
                 const hasCompound = !!currentSmiles || compounds.length > 0;

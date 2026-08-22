@@ -119,6 +119,26 @@ async function main() {
       count++;
     }
     console.log(`[prerender] wrote /blog + ${count} post pages to dist/blog/`);
+
+    // Marketing pages (home + static pages) so non-JS AI crawlers see real
+    // content, not an empty SPA shell. Each render is wrapped so one failing
+    // page can never block the others or the blog output — the whole step is
+    // already non-fatal, this just keeps a single bad page from taking the
+    // rest down with it. dir "" writes dist/index.html (the site root).
+    let mCount = 0;
+    for (const route of entry.marketingRoutes || []) {
+      try {
+        const r = route.render();
+        writePage(route.dir, applyHead(template, r));
+        mCount++;
+      } catch (e) {
+        console.warn(
+          `[prerender] marketing route "${route.dir || "/"}" failed (skipped):`,
+          e?.message || e,
+        );
+      }
+    }
+    console.log(`[prerender] wrote ${mCount} marketing pages`);
   } finally {
     await vite.close();
   }

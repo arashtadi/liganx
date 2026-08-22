@@ -35,7 +35,7 @@ export const SIGNUP_ROLES: { value: string; label: string }[] = [
   { value: "other",          label: "Other" },
 ];
 
-interface AuthState {
+export interface AuthState {
   /** Full Supabase Session. Null when signed out. Includes the access_token
    *  the backend will validate against JWKS — read it via session.access_token
    *  in api.ts to attach Authorization headers. */
@@ -81,7 +81,11 @@ interface AuthState {
   resendVerification: (email: string) => Promise<{ error: string | null }>;
 }
 
-const AuthCtx = createContext<AuthState | null>(null);
+// Exported so the build-time prerender (src/prerender/entry.tsx) can wrap
+// marketing pages in a static, logged-out auth context WITHOUT booting the
+// real AuthProvider (which runs window/localStorage-touching effects). Runtime
+// app code should keep using <AuthProvider> + useAuth(), not this directly.
+export const AuthCtx = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);

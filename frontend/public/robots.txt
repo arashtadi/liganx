@@ -34,4 +34,39 @@ Disallow: /signup
 Disallow: /verify-email
 Disallow: /forgot-password
 
+# ── AI / LLM crawlers ───────────────────────────────────────────────────────
+# Explicitly welcome the major AI answer-engine and training crawlers on the
+# public marketing + blog surface (they already match "*" above, but naming
+# them removes any ambiguity that we permit AI indexing). Same app-surface
+# disallows apply — user-generated / behind-auth pages have no public value.
+# Multiple User-agent lines share one ruleset per the robots.txt spec.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: anthropic-ai
+User-agent: Claude-Web
+User-agent: Claude-SearchBot
+User-agent: PerplexityBot
+User-agent: Perplexity-User
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: Amazonbot
+User-agent: CCBot
+User-agent: Bingbot
+Allow: /
+Disallow: /history
+Disallow: /settings
+Disallow: /compounds
+Disallow: /welcome
+Disallow: /admin
+Disallow: /Admin
+Disallow: /new
+Disallow: /suite
+Disallow: /jobs/
+Disallow: /login
+Disallow: /signup
+Disallow: /verify-email
+Disallow: /forgot-password
+
 Sitemap: https://liganx.com/sitemap.xml

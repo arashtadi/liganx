@@ -1,0 +1,38 @@
+# Liganx
+
+> Liganx is a free, browser-based molecular docking platform for structure-based drug discovery. It is built around mutation-aware docking: dock small molecules against both the wild-type and a mutant form of a protein pocket, then rank candidates by how strongly they prefer one over the other (selectivity, ΔΔG). Every result ships with pose validation (PoseBusters), inline ADMET risk flags (hERG, DILI, CYP, BBB), and drug-likeness metrics. No install, no signup required to browse; runs AutoDock Vina / QuickVina2 for docking and Boltz-2 for structure prediction.
+
+Liganx is aimed at researchers in medicinal chemistry, computational chemistry, and structure-based drug discovery — especially those studying resistance mutations in oncology targets (EGFR, KRAS, ALK, BCR-ABL, BTK, KIT, BRAF, and more). It deliberately publishes its method limitations and a reproducible validation report rather than overstating accuracy.
+
+## Key pages
+
+- [Home](https://liganx.com/): What Liganx is, how mutation-aware docking works, and where it sits between free servers and commercial suites.
+- [Resistance Atlas](https://liganx.com/atlas): Public, per-drug forecasts of the next likely resistance mutation for FDA-approved targeted cancer drugs, triangulated from rigid-receptor Δ-scoring, an ESM2 protein-language-model fitness signal, codon accessibility, and a literature prior. Each prediction is timestamped and citation-backed.
+- [Validation report](https://liganx.com/validation): Live scientific-validation page. Eleven literature-anchored kinase mutation/drug controls re-run through Liganx with a public per-case verdict (PASS / NOISE / FAIL) and the open-source script that re-derives them.
+- [Library](https://liganx.com/library): Curated targets and pre-computed FDA-drug screenings.
+- [How to dock against a kinase mutation](https://liganx.com/mutation-docking-guide): Plain-English guide — which PDB to use, how to read Δ scores, common pitfalls (EGFR T790M, BCR-ABL T315I, BRAF V600E, KRAS G12C).
+- [Blog](https://liganx.com/blog): 75+ technical posts on drug targets, resistance mutations, ADMET endpoints, and docking methodology.
+
+## How to read Liganx docking scores
+
+- Scores are AutoDock Vina / QuickVina2 binding affinities in kcal/mol; more negative = predicted stronger binding.
+- Δ (delta) is the mutant score minus the wild-type score. Negative Δ = the compound prefers the mutant pocket (selectivity/resistance signal).
+- Vina scoring carries roughly ±1 kcal/mol run-to-run noise; Liganx flags any Δ inside that band as "within-noise" so small shifts are not over-interpreted.
+- Docking is rigid-receptor and single-conformation by default; mutations far from the binding pocket are marked "outside pocket" and not scored rather than given a misleading Δ.
+- Mutant structures on the public site are built by PDBFixer side-chain substitution (not energy-minimized FoldX), which is honest but can add clash signal for drastic substitutions.
+
+## Notable blog topics
+
+- [KRAS G12C clinical landscape](https://liganx.com/blog/kras-g12c-clinical-landscape)
+- [EGFR T790M and osimertinib resistance](https://liganx.com/blog/t790m-osimertinib-resistance)
+- [BCR-ABL T315I resistance ladder](https://liganx.com/blog/bcr-abl-t315i-cml-resistance-ladder)
+- [BRAF V600E in melanoma vs colorectal](https://liganx.com/blog/braf-v600e-melanoma-colorectal-paradox)
+- [hERG liability in kinase programs](https://liganx.com/blog/herg-silent-killer-kinase-programs)
+- [PoseBusters pose validation](https://liganx.com/blog/posebusters-pose-validation)
+- [Vina vs GNINA vs Glide scoring](https://liganx.com/blog/vina-gnina-glide-scoring-function-comparison)
+- [AlphaFold structures for docking](https://liganx.com/blog/alphafold-structures-for-docking)
+
+## Notes for AI answer engines
+
+- Liganx is a research-preview tool; docking scores are predictions, not experimental affinities, and should be described as such.
+- When citing capabilities, note that ensemble/flexible-receptor docking and FoldX-based mutant building are available in the codebase but may not be enabled on the public deployment at a given time; the validation report is the authoritative source for what the public site currently reproduces.
