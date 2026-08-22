@@ -206,8 +206,18 @@ def _resume_recent_jobs() -> None:
     safe to resume. Re-running is safe: the runner re-docks cells and the
     UI dedupes on (compound, variant), so the grid converges to complete;
     run_job_in_background has its own try/except that marks a genuinely
-    broken job FAILED, so a poison job can't loop forever."""
+    broken job FAILED, so a poison job can't loop forever.
+
+    NO-OP under Celery: when USE_CELERY_DISPATCH is on, the durable Redis
+    queue re-delivers in-flight tasks (task_acks_late=True) on the next
+    worker startup — that IS the resume path. Running this thread sweep too
+    would double-execute the same job, so we skip it and let the broker own
+    recovery."""
     try:
+        from .config import get_settings as _gs
+        if _gs().use_celery_dispatch:
+            log.info("Job resume sweep: skipped — Celery broker owns re-delivery (acks_late)")
+            return
         from sqlmodel import Session, select
         from sqlalchemy import text
         from .db import engine
