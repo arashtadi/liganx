@@ -32,14 +32,14 @@ class JobCreate(BaseModel):
     # Frontend hard-blocks adding past 5 and shows a popup; this is the
     # server-side guard so direct API callers (curl, scripts) can't exceed
     # it either.
-    mutations: list[str] = Field(default_factory=list, max_length=5)
+    mutations: list[str] = Field(default_factory=list, max_length=200)  # per-run cap lifted (crash rail only)
     # Per-submission cap. 2026-05-11: bumped 5 → 50 to make room for the
     # CSV/SDF library-upload UI that's landing next in the frontend. The
     # 4090 cutover gives us enough headroom that 50 compounds × 2 variants
     # = 100 cells fits in a single Full Job's reasonable runtime budget
     # (~5-10 min at 1-3 s/dock). Library-scale screening (1000+) lives
     # in the separate /screening endpoint, capped at 1000 there.
-    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=50)
+    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=10000)  # per-run cap lifted (crash rail only)
     # Search depth — Vina-style: 8 fast / 16 balanced / 32 thorough. We cap at
     # 64 because anything higher gives diminishing returns and risks tying up
     # the GPU. Anything below 4 is useless.
@@ -257,13 +257,13 @@ class ScreeningCreate(BaseModel):
     # already allows up to 2 mutations; this schema mirrors that cap.
     # Higher caps later, once we know real screenings on the 4090 pod
     # don't drag too long with M variants × N compounds.
-    mutations: list[str] = Field(default_factory=list, max_length=2)
+    mutations: list[str] = Field(default_factory=list, max_length=200)  # per-run cap lifted (crash rail only)
     # Library compounds. Router applies the 1000-cap after validation; the
     # schema upper-bound here is a defensive 2000 so a typo doesn't OOM
     # the validator. Pre-loaded libraries (Enamine REAL subset, ChEMBL
     # approved, etc.) get expanded to a CompoundIn list before this schema
     # is hit — they're not a server-side magic value.
-    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=2000)
+    compounds: list[CompoundIn] = Field(..., min_length=1, max_length=10000)  # per-run cap lifted (crash rail only)
     # Lower default than JobCreate.exhaustiveness. Screening cares about
     # the ranking, not absolute scores. Re-dock the top 20-50 survivors
     # at higher exhaustiveness via the existing /jobs flow.

@@ -55,7 +55,7 @@ router = APIRouter(prefix="/screening", tags=["screening"])
 # Hard cap. The schema accepts up to 2000 to leave headroom, but the
 # router enforces 1000 to keep a single screening inside one pod's
 # reasonable runtime budget (~30-60 min at 1-3 s/dock on the 4090).
-MAX_COMPOUNDS_PER_SCREEN = 1000
+MAX_COMPOUNDS_PER_SCREEN = 10000  # per-run cap lifted (crash rail only; owner decision 2026-08)
 
 
 def _resolve_screening(
