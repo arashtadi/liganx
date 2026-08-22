@@ -343,13 +343,27 @@ function PasswordCard({ signedInWithPasswordOnly }: { signedInWithPasswordOnly: 
     }
   }
 
+  // Google/OAuth users log in through Google — there is no separate password
+  // to manage here. (If they ever needed an email/password login they could
+  // still create one via the "Forgot password" flow.)
+  if (!signedInWithPasswordOnly) {
+    return (
+      <section className="card">
+        <h2 className="text-lg font-semibold text-ink dark:text-white">Password</h2>
+        <p className="muted mt-1 text-sm">
+          You sign in with Google, so there is no password to manage here —
+          your Google account is your login.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className="card">
       <h2 className="text-lg font-semibold text-ink dark:text-white">Password</h2>
       <p className="muted mt-1 text-sm">
-        {signedInWithPasswordOnly
-          ? "Set a new password for sign-in. You'll be signed out of other devices on the next page load."
-          : "You sign in with Google. You can also set a password here as a backup login method — Google sign-in keeps working either way."}
+        Set a new password for sign-in. You'll be signed out of other devices on
+        the next page load.
       </p>
       <form onSubmit={submit} className="mt-4 grid sm:grid-cols-2 gap-3">
         <div>
