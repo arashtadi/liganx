@@ -850,6 +850,16 @@ export default function StudioPage() {
     setMutationOutsidePocketA(null);
   }, [selectedTarget, selectedMutation, includeWt]);
 
+  // (2026-08) WT is the reference the whole selectivity matrix compares
+  // against (Δ-vs-WT). It must never be off while mutations are selected —
+  // a stale session or an accidental un-check otherwise ships a run with an
+  // empty WT column ("WT comparison unavailable"). Force it on whenever any
+  // real mutation is staged, so WT is effectively selected by default.
+  useEffect(() => {
+    const hasMutation = selectedMutations.some((m) => m && m !== "WT");
+    if (hasMutation && !includeWt) setIncludeWt(true);
+  }, [selectedMutations, includeWt]);
+
 
   // Tick clock every second; probe pod health every 30s
   useEffect(() => {
@@ -1841,7 +1851,10 @@ export default function StudioPage() {
           uniprot_id: tMeta?.uniprot,
           mutations: jobMutations,
           compounds: compoundList,
-          include_wt: includeWt,
+          // Force WT whenever this target has mutations — the matrix is
+          // meaningless without the WT reference (belt-and-suspenders for
+          // the includeWt effect above).
+          include_wt: jobMutations.length > 0 ? true : includeWt,
           // Ensemble docking v1 runs on the QuickVina batch path — it does
           // NOT combine with GNINA. Send false for GNINA jobs so the job
           // row honestly reflects what runs (the runner ignores ensemble
