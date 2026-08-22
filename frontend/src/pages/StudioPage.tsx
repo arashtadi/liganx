@@ -42,6 +42,7 @@ import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
 import { appendDockHistory, listDockHistory, deleteDockHistoryEntry, clearDockHistory, type DockHistoryEntry } from "../lib/dockHistory";
+import { validateSmiles } from "../lib/smilesValidate";
 import ProductionViewer3D from "../components/studio/ProductionViewer3D";
 import type { QuickDockResult } from "../types/studio";
 
@@ -3489,6 +3490,7 @@ export default function StudioPage() {
                     const staged: { smiles: string; name?: string }[] = [];
                     let totalCandidates = 0;
                     let skippedDup = 0;
+                    let skippedInvalid = 0;
                     if (source === "sdf") {
                       // Split SDF into records on $$$$ and pull out the
                       // <SMILES> data tag value. Falls back to looking
@@ -3505,6 +3507,10 @@ export default function StudioPage() {
                         if (!smiMatch) continue;
                         const smiles = smiMatch[1].trim();
                         if (!smiles) continue;
+                        // Lightweight validity gate — reject obvious non-SMILES
+                        // (unbalanced brackets, truncated rings, stray text) up
+                        // front instead of failing at dock time.
+                        if (!validateSmiles(smiles).ok) { skippedInvalid++; continue; }
                         // Optional name from <NAME> tag, or the first
                         // non-blank line of the record (the title line).
                         let name: string | undefined;
@@ -3541,6 +3547,8 @@ export default function StudioPage() {
                         // non-letter char (digit, parens, =, # etc).
                         if (i === 0 && /^[A-Za-z_ ]+$/.test(smiles)) continue;
                         totalCandidates++;
+                        // Lightweight validity gate (see lib/smilesValidate).
+                        if (!validateSmiles(smiles).ok) { skippedInvalid++; continue; }
                         if (dups.has(smiles)) { skippedDup++; continue; }
                         dups.add(smiles);
                         staged.push({ smiles, name: parts[1] || undefined });
@@ -3548,8 +3556,10 @@ export default function StudioPage() {
                       }
                     }
                     if (staged.length === 0) {
-                      const msg = source === "sdf"
-                        ? "⚠ No SMILES found in the SDF. Records need a <SMILES> data tag — export from RDKit/ChemDraw with that tag enabled."
+                      const msg = skippedInvalid > 0 && source !== "sdf"
+                        ? `⚠ ${skippedInvalid} line${skippedInvalid === 1 ? "" : "s"} weren't valid SMILES — check for typos, spaces, or unbalanced brackets.`
+                        : source === "sdf"
+                        ? "⚠ No usable SMILES in the SDF. Records need a <SMILES> data tag — export from RDKit/ChemDraw with that tag enabled."
                         : skippedDup > 0
                         ? `⚠ All ${skippedDup} pasted SMILES were already staged.`
                         : "⚠ No valid SMILES found.";
@@ -3568,6 +3578,7 @@ export default function StudioPage() {
                     const overflow = totalCandidates - staged.length - skippedDup;
                     let msg = `✓ Staged ${staged.length} compound${staged.length === 1 ? "" : "s"}`;
                     if (skippedDup > 0) msg += ` (skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"})`;
+                    if (skippedInvalid > 0) msg += ` · ${skippedInvalid} invalid skipped`;
                     if (overflow > 0) msg += ` — ${overflow} dropped (suite cap ${MAX_COMPOUNDS})`;
                     setPromoteToast(msg);
                     window.setTimeout(() => setPromoteToast(null), 6000);
