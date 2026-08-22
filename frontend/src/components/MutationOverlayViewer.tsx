@@ -1172,74 +1172,50 @@ function ViewerCanvas({
     if (container) container.style.cursor = "crosshair";
     if (canvasEl) canvasEl.style.cursor = "crosshair";
 
-    // Candidate atoms (skip hydrogens — hidden by default). Coords are static;
-    // we re-project them with the live camera on every event.
-    //
-    // SMOOTHNESS + ACCURACY: restrict candidates to the binding-pocket
-    // neighbourhood when we know the pocket centre. A measurement is always
-    // ligand↔residue inside the site, so projecting the whole ~8k-atom protein
-    // on every mouse-move was doing two bad things at once: (1) ~8k matrix
-    // projections per frame = the jank the user feels, and (2) a distant
-    // backbone atom could win the nearest-in-2D race and steal the pick from
-    // the pocket atom the user aimed at. An 18 Å sphere keeps every plausible
-    // target while cutting the candidate set ~10×. Falls back to all heavy
-    // atoms if we have no pocket centre or the sphere is too sparse.
+    // Snap targets: EVERY heavy atom, so a click lands on whatever structure is
+    // under the cursor — the docked ligand, ANY residue side chain, backbone,
+    // and the WT/mutant overlay alike (no pocket/mutation restriction). The
+    // reason we used to filter was that projecting ~8k atoms on every mouse
+    // move was the jank — that's now solved by the camera-cached projection
+    // below (re-projected only when the view actually changes) plus skipping
+    // the hover search entirely while the user is dragging to rotate.
     let atoms: any[] = [];
     try {
-      const heavy = (viewer.selectedAtoms({}) || []).filter(
+      atoms = (viewer.selectedAtoms({}) || []).filter(
         (a: any) => a && typeof a.x === "number" && a.elem !== "H"
       );
-      const R2 = 18 * 18;
-      const pc = pocketCenter;
-      const havePocket = !!(pc && pc.length === 3 && typeof pc[0] === "number");
-
-      // CRITICAL: the mutated-residue side chains (WT green + mutant blue, both
-      // models, at resi === mutationResidue) are a PRIMARY measurement target —
-      // the user measures WT-vs-mutant displacement. But the mutation can sit
-      // far from the binding pocket (e.g. E542K is ~42 Å from the box), so a
-      // pocket-only filter would exclude exactly those atoms and nothing would
-      // snap to them. So the candidate set is: pocket neighbourhood UNION the
-      // mutated residue UNION a sphere around the mutation site.
-      const mutAtoms = mutationResidue != null
-        ? heavy.filter((a: any) => a.resi === mutationResidue)
-        : [];
-      const nearPocket = (a: any) => {
-        if (!havePocket) return false;
-        const dx = a.x - pc![0]!, dy = a.y - pc![1]!, dz = a.z - pc![2]!;
-        return dx * dx + dy * dy + dz * dz <= R2;
-      };
-      // Tighter radius around the mutation site than the pocket: the mutated
-      // side chains (WT + mutant) and their immediate neighbours are enough
-      // for WT-vs-mutant measurements, and keeping this small preserves the
-      // pick smoothness (fewer atoms projected per frame).
-      const MUT_R2 = 12 * 12;
-      const nearMut = (a: any) => {
-        for (let m = 0; m < mutAtoms.length; m++) {
-          const b = mutAtoms[m];
-          const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-          if (dx * dx + dy * dy + dz * dz <= MUT_R2) return true;
-        }
-        return false;
-      };
-
-      if (havePocket || mutAtoms.length) {
-        const near = heavy.filter((a: any) => nearPocket(a) || nearMut(a));
-        atoms = near.length >= 4 ? near : heavy;
-      } else {
-        atoms = heavy; // no anchors → everything is fair game
-      }
     } catch { atoms = []; }
 
-    // Tighter pick radius (was 28) so the marker sticks to the atom under the
-    // cursor instead of grabbing a neighbour ~a bond-length away. We re-project
-    // on every call (never cache) so a rotate can't leave a stale projection —
-    // the pocket filter above already makes each projection cheap.
+    // Tight pick radius so the marker sticks to the atom under the cursor
+    // rather than grabbing a neighbour ~a bond-length away.
     const HIT_PX = 20;
+    // Camera-cached projection. modelToScreen only changes when the camera
+    // moves, so we re-project the whole atom set at most once per distinct
+    // camera view (compared via getView()) and reuse the cached screen coords
+    // otherwise. Each hover is then a cheap 2D nearest-search even over ~8k
+    // atoms — smooth AND every atom is a valid snap target.
+    let projView: number[] | null = null;
+    let projScreen: any[] | null = null;
+    const sameView = (a: number[] | null, b: number[] | null) => {
+      if (!a || !b || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 1e-6) return false;
+      return true;
+    };
+    const project = (): any[] | null => {
+      let view: number[] | null = null;
+      try { view = viewer.getView(); } catch { view = null; }
+      if (projScreen && sameView(view, projView)) return projScreen;
+      try {
+        const p = viewer.modelToScreen(atoms);
+        projScreen = Array.isArray(p) ? p : null;
+        projView = view ? view.slice() : null;
+      } catch { projScreen = null; }
+      return projScreen;
+    };
     const nearest = (pageX: number, pageY: number): any | null => {
       if (!atoms.length) return null;
-      let proj: any;
-      try { proj = viewer.modelToScreen(atoms); } catch { return null; }
-      if (!Array.isArray(proj)) return null;
+      const proj = project();
+      if (!proj) return null;
       let best: any = null;
       let bestD = HIT_PX * HIT_PX;
       for (let k = 0; k < atoms.length; k++) {
@@ -1257,14 +1233,18 @@ function ViewerCanvas({
 
     // Drag-vs-click: only a near-stationary press counts as a pick, so
     // rotating the view never drops a measurement point.
-    let downX = 0, downY = 0, moved = false;
+    let downX = 0, downY = 0, moved = false, isDown = false;
     let rafPending = false;
     let lastHover: any = null;
 
-    const onDown = (e: MouseEvent) => { downX = e.pageX; downY = e.pageY; moved = false; };
+    const onDown = (e: MouseEvent) => { downX = e.pageX; downY = e.pageY; moved = false; isDown = true; };
 
     const onMove = (e: MouseEvent) => {
       if (Math.abs(e.pageX - downX) > 4 || Math.abs(e.pageY - downY) > 4) moved = true;
+      // While the button is held (rotating/panning) skip the hover snap entirely
+      // — no projection work during a drag, and the highlight won't chase the
+      // cursor across the spinning scene.
+      if (isDown) return;
       if (rafPending) return;
       rafPending = true;
       const px = e.pageX, py = e.pageY;
@@ -1280,6 +1260,7 @@ function ViewerCanvas({
     };
 
     const onUp = (e: MouseEvent) => {
+      isDown = false;
       if (moved) return;  // was a rotate/drag, not a pick
       const atom = nearest(e.pageX, e.pageY);
       if (!atom) return;
@@ -1330,8 +1311,7 @@ function ViewerCanvas({
       if (canvasEl) canvasEl.style.cursor = "";
       try { viewer.render(); } catch { /* ignore */ }
     };
-    // pocketCenter + mutationResidue drive the candidate-atom filter — re-run if either changes.
-  }, [measureMode, loading, error, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2], mutationResidue]);
+  }, [measureMode, loading, error]);
 
   // Redraw the PERSISTENT measurement geometry whenever the list changes or the
   // viewer (re)loads. Independent of measureMode, so measurements survive the
@@ -1464,15 +1444,26 @@ function ViewerCanvas({
                 ✕ Clear
               </button>
             </div>
-            {measurements.slice(-5).map((m) => (
-              <div key={m.id} className="truncate">
-                <span className="text-amber-400 font-semibold">{m.distance.toFixed(2)} Å</span>
-                <span className="text-slate-300 ml-2">{m.label}</span>
-              </div>
-            ))}
-            {measurements.length > 5 && (
-              <div className="text-slate-400 italic">…{measurements.length - 5} earlier</div>
-            )}
+            <div className="max-h-32 overflow-y-auto pr-0.5 space-y-0.5">
+              {measurements.map((m) => (
+                <div key={m.id} className="flex items-center gap-2">
+                  <span className="text-amber-400 font-semibold shrink-0">{m.distance.toFixed(2)} Å</span>
+                  <span className="text-slate-300 truncate flex-1">{m.label}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMeasurements((prev) => prev.filter((x) => x.id !== m.id));
+                    }}
+                    className="shrink-0 text-slate-500 hover:text-rose-300 transition-colors px-1 leading-none"
+                    title="Remove this measurement"
+                    aria-label="Remove this measurement"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
