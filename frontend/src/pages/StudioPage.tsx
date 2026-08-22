@@ -1775,6 +1775,40 @@ export default function StudioPage() {
       : [];
     if (compoundList.length === 0) { setDockError("Canvas is empty — sketch a structure first."); return; }
     if (selectedTargets.length === 0) { setDockError("Pick a target."); return; }
+
+    // (2026-08) Pre-submit guards — both mistakes are easy to make:
+    //   1. A multi-target run fans out into ONE dock per target (one
+    //      quota slot each), which surprises users who think it's one run.
+    //   2. A selected target whose picked mutations don't apply to it
+    //      (e.g. KIT mutations on a MET target) silently docks WT-only.
+    // Confirm before running when either applies; the common single-target
+    // -with-mutations case adds no friction (no dialog).
+    {
+      const perTarget = selectedTargets.map((tid) => {
+        const meta = mergedCatalog.find((t: any) => t.id === tid) as any;
+        const label = meta?.name || meta?.pdb_id || tid.toUpperCase();
+        const applies = mutationsForJob(tid).filter((m) => m && m !== "WT");
+        return { label, mutCount: applies.length };
+      });
+      const anyMutationsSelected = selectedMutations.some((m) => m && m !== "WT");
+      const wtOnly = perTarget.filter((t) => t.mutCount === 0);
+      const n = selectedTargets.length;
+      const warnLines: string[] = [];
+      if (n > 1) {
+        warnLines.push(`This runs ${n} separate docks — one per target — using ${n} of your dockings.`);
+      }
+      if (anyMutationsSelected && wtOnly.length > 0) {
+        const names = wtOnly.map((t) => t.label).join(", ");
+        warnLines.push(
+          `${names} ${wtOnly.length === 1 ? "has" : "have"} no matching mutations for the ones you picked, so ${wtOnly.length === 1 ? "it" : "they"} will dock wild-type only.`,
+        );
+      }
+      if (warnLines.length > 0) {
+        warnLines.push("Continue?");
+        if (!window.confirm(warnLines.join("\n\n"))) return;
+      }
+    }
+
     setDockError(null);
     setInvalidCompounds(new Map());  // fresh validation each submit
     setSubmittingFull(true);
