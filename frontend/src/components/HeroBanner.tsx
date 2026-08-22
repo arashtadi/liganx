@@ -307,6 +307,9 @@ export default function HeroBanner({
               variantLabel={variant}
               contextLabel={`${compound.name ?? `Compound #${compound.id}`} × ${variant}`}
               contextSubtitle={`${pdbId} chain ${chain}`}
+              // Persist distance measurements per job (share_id) so they
+              // survive closing the job and reopening it from History.
+              persistKey={jobId != null ? String(jobId) : undefined}
               className="rounded-lg overflow-hidden h-full"
             />
           )}

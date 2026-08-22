@@ -62,6 +62,12 @@ interface Props {
   /** Optional context shown in the fullscreen header (compound × variant, job #). */
   contextLabel?: string;
   contextSubtitle?: string;
+  /** Stable per-job identifier (e.g. the job share_id). When set, distance
+   *  measurements are persisted to localStorage keyed by this + the pose
+   *  (contextLabel), so they survive closing the job and reopening it from
+   *  History — until the user clears them. Omit to keep measurements in-memory
+   *  only (single-pose viewers that have no durable identity). */
+  persistKey?: string;
 }
 
 /** Map ProLIF interaction-type codes → readable colors. */
@@ -101,6 +107,41 @@ interface Measurement { id: number; label: string; distance: number; a: XYZ; b: 
 // effect). Module-level = one shared frozen-in-practice constant.
 const EMPTY_MEASUREMENTS: Measurement[] = [];
 
+// ── Measurement persistence (localStorage) ──────────────────────────────────
+// Distance measurements are user annotations on a specific docking result, so
+// they should survive closing the job and reopening it from History. We store
+// them per job (persistKey = job share_id) as a { poseKey: Measurement[] } map,
+// so every compound×variant in that job keeps its own set. Kept client-side in
+// localStorage: it's per-user, per-device, needs no backend, and clears when
+// the user clears them. All access is wrapped — private mode / quota / disabled
+// storage must never break the viewer.
+type PoseMeasurements = Record<string, Measurement[]>;
+const MSMT_STORAGE_PREFIX = "liganx.msmt.";
+
+function loadStoredMeasurements(persistKey?: string): PoseMeasurements {
+  if (!persistKey || typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(MSMT_STORAGE_PREFIX + persistKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as PoseMeasurements) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredMeasurements(persistKey: string, map: PoseMeasurements): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const key = MSMT_STORAGE_PREFIX + persistKey;
+    const hasAny = Object.values(map).some((a) => Array.isArray(a) && a.length > 0);
+    if (hasAny) localStorage.setItem(key, JSON.stringify(map));
+    else localStorage.removeItem(key); // don't leave empty buckets around
+  } catch {
+    /* private mode / quota / disabled — persistence is best-effort */
+  }
+}
+
 export default function MutationOverlayViewer(props: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   // One-shot flag: set when the user taps Measure on the INLINE viewer. It
@@ -123,7 +164,26 @@ export default function MutationOverlayViewer(props: Props) {
   // — identical to the old single-list behavior.
   const [measurementsByPose, setMeasurementsByPose] = useState<
     Record<string, Measurement[]>
-  >({});
+  >(() => loadStoredMeasurements(props.persistKey));
+
+  // Persist to localStorage whenever the per-pose map changes (keyed by job).
+  useEffect(() => {
+    if (props.persistKey) saveStoredMeasurements(props.persistKey, measurementsByPose);
+  }, [measurementsByPose, props.persistKey]);
+
+  // If persistKey arrives AFTER mount (job data loaded async) and we haven't
+  // collected anything yet, hydrate from storage so a reopened job shows its
+  // saved measurements. Guarded on "empty" so it never clobbers in-progress work.
+  const hydratedKeyRef = useRef<string | undefined>(props.persistKey);
+  useEffect(() => {
+    if (!props.persistKey || props.persistKey === hydratedKeyRef.current) return;
+    hydratedKeyRef.current = props.persistKey;
+    setMeasurementsByPose((cur) => {
+      const hasAny = Object.values(cur).some((a) => a && a.length > 0);
+      return hasAny ? cur : loadStoredMeasurements(props.persistKey);
+    });
+  }, [props.persistKey]);
+
   const poseKey = props.contextLabel ?? "__default__";
   const measurements = measurementsByPose[poseKey] ?? EMPTY_MEASUREMENTS;
   const setMeasurements = useCallback(
