@@ -548,7 +548,7 @@ export default function JobPage() {
             scroll-mt-24 is kept so smooth-scrolls into this anchor
             (cell click → scroll to viewer) clear the page's sticky
             top header. */}
-        <div ref={bannerRef} className="scroll-mt-24">
+        <div ref={bannerRef} className="scroll-mt-24 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
           <HeroBanner
             pick={pick}
             pdbId={job.pdb_id}
