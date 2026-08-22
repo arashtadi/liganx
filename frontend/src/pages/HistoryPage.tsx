@@ -1094,21 +1094,41 @@ function ScreeningsTab() {
   const screenings = useMemo(() => data?.pages.flat() ?? [], [data]);
 
   const [q, setQ] = useState("");
+  // Tag filter — same behaviour as the Jobs tab (OR semantics across
+  // selected tags; only shows chips for tags actually applied to a run).
+  const [filterTags, setFilterTags] = useState<string[]>([]);
+  function toggleFilterTag(value: string) {
+    setFilterTags((prev) =>
+      prev.includes(value) ? prev.filter((t) => t !== value) : [...prev, value],
+    );
+  }
+  const tagsInUse = useMemo(() => {
+    const seen = new Set<string>();
+    for (const s of screenings) for (const t of s.tags) seen.add(t);
+    return sortTags([...seen]);
+  }, [screenings]);
   const filtered = useMemo(() => {
-    if (!q.trim()) return screenings;
+    let out = screenings;
+    if (filterTags.length > 0) {
+      const wanted = new Set(filterTags);
+      out = out.filter((s) => s.tags.some((t) => wanted.has(t)));
+    }
     const needle = q.trim().toLowerCase();
-    return screenings.filter((s) => {
-      const hay = [
-        s.title || "",
-        s.pdb_id,
-        s.chain,
-        ...s.mutations,
-        ...s.tags,
-        s.engine || "",
-      ].join(" ").toLowerCase();
-      return hay.includes(needle);
-    });
-  }, [screenings, q]);
+    if (needle) {
+      out = out.filter((s) => {
+        const hay = [
+          s.title || "",
+          s.pdb_id,
+          s.chain,
+          ...s.mutations,
+          ...s.tags,
+          s.engine || "",
+        ].join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }
+    return out;
+  }, [screenings, q, filterTags]);
 
   if (isLoading) {
     return (
@@ -1147,6 +1167,15 @@ function ScreeningsTab() {
         Showing {screenings.length} screening{screenings.length === 1 ? "" : "s"}
         {hasNextPage ? "" : " · end of list"} · click any to open the ranked hit list
       </p>
+
+      {tagsInUse.length > 0 && (
+        <FilterBar
+          tagsInUse={tagsInUse}
+          selected={filterTags}
+          onToggle={toggleFilterTag}
+          onClear={() => setFilterTags([])}
+        />
+      )}
 
       <input
         type="search"
