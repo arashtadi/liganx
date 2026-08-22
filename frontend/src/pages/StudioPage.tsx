@@ -1012,7 +1012,7 @@ export default function StudioPage() {
   // / a chip count, instead of leaving the user staring at "0 curated"
   // with no feedback while the UniProt call is in flight or a request
   // returned an empty/failed result.
-  type EnrichStatus = "pending" | "done-empty" | "done" | "failed";
+  type EnrichStatus = "pending" | "done-empty" | "done" | "failed" | "non-human" | "curated";
   const [enrichmentStatus, setEnrichmentStatus] = useState<Record<string, EnrichStatus>>({});
 
   const targetMeta = useMemo(
@@ -1286,6 +1286,27 @@ export default function StudioPage() {
       return;
     }
 
+    // (2026-08) Curated-gene reuse. If this searched structure is the SAME
+    // protein (same UniProt accession) as one of our curated catalog
+    // targets, reuse that gene's hand-picked mutation set instead of the
+    // thin UniProt variant list — this is what makes "pick a different
+    // EGFR / KRAS / ... structure" auto-populate the good mutations like the
+    // built-in 13. Numbering is canonical for these so it usually maps; the
+    // backend validates buildability on submit regardless.
+    const curatedHit = (catalog || []).find(
+      (c: any) => (c?.uniprot || "").toUpperCase() === (uniprotAcc as string).toUpperCase()
+    );
+    if (curatedHit && Array.isArray(curatedHit.mutations) && curatedHit.mutations.length > 0) {
+      const curatedChips = curatedHit.mutations.map((m: any) => ({
+        code: m.code, label: m.label, significance: m.significance,
+      }));
+      setAdHocTargets((prev) =>
+        prev.map((t) => (t.id === targetId ? { ...t, mutations: curatedChips } : t)),
+      );
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "curated" }));
+      return;
+    }
+
     // Step 2: fetch UniProt entry, extract Natural variant features.
     // We filter to variants that have any disease/cancer/clinical
     // significance annotation in the description so the user gets
@@ -1350,7 +1371,13 @@ export default function StudioPage() {
       if (chips.length >= 30) break; // hard cap on chip count
     }
     if (chips.length === 0) {
-      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "done-empty" }));
+      // Distinguish a human protein with no annotated variants from a
+      // non-human structure (a fish/mouse ortholog has no HUMAN clinical
+      // mutations by definition — e.g. the rainbowfish ESR1 structures),
+      // so the empty state tells the user why and what to do.
+      const taxon = (upData as any)?.organism?.taxonId;
+      const nonHuman = typeof taxon === "number" && taxon !== 9606;
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: nonHuman ? "non-human" : "done-empty" }));
       return;
     }
     setAdHocTargets((prev) =>
@@ -3287,9 +3314,13 @@ export default function StudioPage() {
                       return <span className="text-amber-400/70">no UniProt match · type a code</span>;
                     }
                     if (status === "done-empty") {
-                      return <span className="text-slate-500">no clinical variants · type a code</span>;
+                      return <span className="text-slate-500">no annotated variants · type a code</span>;
                     }
-                    return all > 0 ? `${all} ${isAdHoc ? "from UniProt" : "curated"}` : "0 — type a code below";
+                    if (status === "non-human") {
+                      return <span className="text-amber-400/70">non-human structure · human mutations may not apply · type a code</span>;
+                    }
+                    const srcLabel = status === "curated" ? "curated" : (isAdHoc ? "from UniProt" : "curated");
+                    return all > 0 ? `${all} ${srcLabel}` : "0 — type a code below";
                   })()}
                 </span>
               </div>
