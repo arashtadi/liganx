@@ -523,12 +523,15 @@ function FilterBar({
             key={value}
             type="button"
             onClick={() => onToggle(value)}
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-all ${chipClass} ${
-              active ? "ring-2 shadow-sm scale-[1.02]" : "opacity-80 hover:opacity-100"
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ring-inset transition-all ${chipClass} ${
+              active
+                ? "ring-2 shadow-sm opacity-100 font-semibold"
+                : "ring-1 opacity-55 font-normal grayscale-[40%] hover:opacity-90 hover:grayscale-0"
             }`}
-            title={active ? "Click to remove from filter" : "Filter by this tag"}
+            title={active ? "Active filter — click to turn off" : "Click to filter by this tag"}
+            aria-pressed={active}
           >
-            {preset && <span aria-hidden="true">{preset.icon}</span>}
+            <span aria-hidden="true" className={active ? "font-bold" : ""}>{active ? "\u2713" : (preset?.icon ?? "\u2022")}</span>
             <span>{preset?.label ?? value}</span>
           </button>
         );
