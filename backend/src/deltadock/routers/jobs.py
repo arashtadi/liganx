@@ -747,9 +747,18 @@ def create_job_from_screening(
     # the May 2026 audit, #251). hashtext(uuid::text) collapses the
     # UUID to a bigint key — collisions across users only cost a
     # negligible amount of serialisation, never correctness.
+    # NB: compute the lock key in Python, NOT via SQL hashtext(:uid::text) —
+    # the inline `:uid::text` cast trips a SQLAlchemy text() parser bug
+    # (psycopg2 "syntax error at or near :"). This mirrors the fix already in
+    # create_job (Sentry 2026-05-13); the screening-promote path had been
+    # missed, which 500'd every "Full Job" click from a screening.
+    import hashlib as _hashlib
+    _lock_key = int.from_bytes(
+        _hashlib.md5(str(user.id).encode()).digest()[:8], "big", signed=True,
+    )
     session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:uid::text)::bigint)"),
-        {"uid": user.id},
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _lock_key},
     )
     quota_row = session.execute(
         text(
