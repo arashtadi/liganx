@@ -14,15 +14,24 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!url || !key) {
-  // Throw at import time so misconfigured deploys fail loud instead of
-  // showing a broken login form.
+// Fail loud IN THE BROWSER on a misconfigured deploy (a broken login form is
+// worse than a hard error). But do NOT throw during Node SSR — the build-time
+// prerender (scripts/prerender.mjs) evaluates these modules to render the
+// static marketing HTML, and Supabase env vars may be absent in that SSR
+// context. The prerender only renders the logged-out view and never calls
+// Supabase, so a placeholder client is safe there. The real client bundle is
+// built with the real env, so runtime is unaffected.
+const isBrowser = typeof window !== "undefined";
+if (isBrowser && (!url || !key)) {
   throw new Error(
     "Supabase config missing: set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY",
   );
 }
 
-export const supabase = createClient(url, key, {
+export const supabase = createClient(
+  url || "https://placeholder.supabase.co",
+  key || "placeholder-anon-key",
+  {
   auth: {
     // Persist the session in localStorage so users stay logged in across
     // tabs and reloads.
