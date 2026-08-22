@@ -1189,16 +1189,44 @@ function ViewerCanvas({
       const heavy = (viewer.selectedAtoms({}) || []).filter(
         (a: any) => a && typeof a.x === "number" && a.elem !== "H"
       );
+      const R2 = 18 * 18;
       const pc = pocketCenter;
-      if (pc && pc.length === 3 && typeof pc[0] === "number") {
-        const R2 = 18 * 18;
-        const near = heavy.filter((a: any) => {
-          const dx = a.x - pc[0]!, dy = a.y - pc[1]!, dz = a.z - pc[2]!;
-          return dx * dx + dy * dy + dz * dz <= R2;
-        });
+      const havePocket = !!(pc && pc.length === 3 && typeof pc[0] === "number");
+
+      // CRITICAL: the mutated-residue side chains (WT green + mutant blue, both
+      // models, at resi === mutationResidue) are a PRIMARY measurement target —
+      // the user measures WT-vs-mutant displacement. But the mutation can sit
+      // far from the binding pocket (e.g. E542K is ~42 Å from the box), so a
+      // pocket-only filter would exclude exactly those atoms and nothing would
+      // snap to them. So the candidate set is: pocket neighbourhood UNION the
+      // mutated residue UNION a sphere around the mutation site.
+      const mutAtoms = mutationResidue != null
+        ? heavy.filter((a: any) => a.resi === mutationResidue)
+        : [];
+      const nearPocket = (a: any) => {
+        if (!havePocket) return false;
+        const dx = a.x - pc![0]!, dy = a.y - pc![1]!, dz = a.z - pc![2]!;
+        return dx * dx + dy * dy + dz * dz <= R2;
+      };
+      // Tighter radius around the mutation site than the pocket: the mutated
+      // side chains (WT + mutant) and their immediate neighbours are enough
+      // for WT-vs-mutant measurements, and keeping this small preserves the
+      // pick smoothness (fewer atoms projected per frame).
+      const MUT_R2 = 12 * 12;
+      const nearMut = (a: any) => {
+        for (let m = 0; m < mutAtoms.length; m++) {
+          const b = mutAtoms[m];
+          const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          if (dx * dx + dy * dy + dz * dz <= MUT_R2) return true;
+        }
+        return false;
+      };
+
+      if (havePocket || mutAtoms.length) {
+        const near = heavy.filter((a: any) => nearPocket(a) || nearMut(a));
         atoms = near.length >= 4 ? near : heavy;
       } else {
-        atoms = heavy;
+        atoms = heavy; // no anchors → everything is fair game
       }
     } catch { atoms = []; }
 
@@ -1302,8 +1330,8 @@ function ViewerCanvas({
       if (canvasEl) canvasEl.style.cursor = "";
       try { viewer.render(); } catch { /* ignore */ }
     };
-    // pocketCenter drives the candidate-atom filter — re-run if it changes.
-  }, [measureMode, loading, error, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2]]);
+    // pocketCenter + mutationResidue drive the candidate-atom filter — re-run if either changes.
+  }, [measureMode, loading, error, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2], mutationResidue]);
 
   // Redraw the PERSISTENT measurement geometry whenever the list changes or the
   // viewer (re)loads. Independent of measureMode, so measurements survive the
