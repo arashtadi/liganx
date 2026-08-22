@@ -203,7 +203,8 @@ def notify_new_user(
     parts.append(f"🔐 Method: <code>{method_e}</code>")
     parts.append(f"🆔 <code>{user_id_e}</code>")
 
-    # Inline Approve / Deny buttons. callback_data is parsed by the
+    # Inline Deny button only — new users are auto-approved (self-serve),
+    # so the operator just needs a one-tap Deny to revoke a bad actor. callback_data is parsed by the
     # /telegram/webhook handler (see routers/telegram_webhook.py) which
     # flips user_profile.access_status. Telegram caps callback_data at
     # 64 bytes; a UUID is 36 chars so "approve:<uuid>" fits comfortably.
@@ -213,8 +214,7 @@ def notify_new_user(
     if user_id:
         reply_markup = {
             "inline_keyboard": [[
-                {"text": "✅ Approve", "callback_data": f"approve:{user_id}"},
-                {"text": "❌ Deny",    "callback_data": f"deny:{user_id}"},
+                {"text": "❌ Deny", "callback_data": f"deny:{user_id}"},
             ]],
         }
     return _send("\n".join(parts), reply_markup=reply_markup)

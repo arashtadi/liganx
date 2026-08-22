@@ -455,6 +455,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ) {
       window.location.href = "/welcome";
     }
+    // Defense-in-depth: the operator revoked this account (access_status =
+    // denied). Sign the user out and bounce home — the backend already 403s
+    // the action itself; this also closes the session so a denied user can't
+    // linger authenticated. X-Access-Status is exposed via CORS (backend
+    // main.py) so the browser can read it here.
+    if (
+      r.status === 403 &&
+      r.headers.get("X-Access-Status") === "denied" &&
+      typeof window !== "undefined"
+    ) {
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        /* ignore — the redirect below still drops them out of the app */
+      }
+      window.location.href = "/";
+    }
     throw new ApiError(r.status, detail || `${r.status} ${r.statusText}`, detailObj);
   }
   // Guard the success-path JSON parse. A 200 with a non-JSON body — an

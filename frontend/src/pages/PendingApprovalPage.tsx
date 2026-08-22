@@ -69,6 +69,18 @@ export default function PendingApprovalPage() {
     };
   }, [navigate]);
 
+  // Denied -> the operator revoked access. Sign the user out automatically
+  // (after a brief beat so the reason is visible) rather than leaving an
+  // authenticated session parked on this screen.
+  useEffect(() => {
+    if (status !== "denied") return;
+    const t = window.setTimeout(async () => {
+      await signOut();
+      navigate("/", { replace: true });
+    }, 3000);
+    return () => window.clearTimeout(t);
+  }, [status, signOut, navigate]);
+
   const denied = status === "denied";
 
   return (
@@ -90,9 +102,9 @@ export default function PendingApprovalPage() {
 
         {denied ? (
           <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-            Your Liganx account isn't approved for the live docking platform.
-            If you think this is a mistake or you'd like to request access,
-            please reach out via the{" "}
+            Your Liganx account isn't approved for the live docking platform,
+            and you're being signed out now. If you think this is a mistake or
+            you'd like to request access, please reach out via the{" "}
             <a href="/contact" className="text-delta-600 hover:underline">contact page</a>.
           </p>
         ) : (

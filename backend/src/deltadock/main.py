@@ -1001,6 +1001,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Expose the access-status header so the browser can read it on a 403 and
+    # sign a denied user out (see frontend api.ts). Custom response headers are
+    # invisible to fetch() unless explicitly exposed.
+    expose_headers=["X-Access-Status"],
 )
 
 app.include_router(jobs.router)
