@@ -21,11 +21,24 @@ import { posts, getPost, allSlugs } from "../blog/registry";
 import type { PostMeta } from "../blog/types";
 import { AuthCtx } from "../lib/auth";
 import type { AuthState } from "../lib/auth";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomePage from "../pages/HomePage";
 import AboutPage from "../pages/AboutPage";
 import MutationDockingGuidePage from "../pages/MutationDockingGuidePage";
 import PrivacyPage from "../pages/PrivacyPage";
 import TermsPage from "../pages/TermsPage";
+import AtlasPage from "../pages/AtlasPage";
+import LibraryPage from "../pages/LibraryPage";
+import ValidationPage from "../pages/ValidationPage";
+
+// A no-retry QueryClient for prerender. Data-fetching pages (Atlas / Library /
+// Validation) render their static shell — hero, headings, intro copy — in the
+// loading state (useEffect/useQuery don't resolve during renderToStaticMarkup),
+// which is exactly the crawlable SEO content we want. The live SPA fills in the
+// dynamic cards/rows on hydration.
+const PRERENDER_QUERY_CLIENT = new QueryClient({
+  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+});
 
 const SITE = "https://liganx.com";
 
@@ -196,7 +209,9 @@ function renderMarketing(
 ): Rendered {
   const html = renderToStaticMarkup(
     <StaticRouter location={location}>
-      <AuthCtx.Provider value={PRERENDER_AUTH}>{node}</AuthCtx.Provider>
+      <QueryClientProvider client={PRERENDER_QUERY_CLIENT}>
+        <AuthCtx.Provider value={PRERENDER_AUTH}>{node}</AuthCtx.Provider>
+      </QueryClientProvider>
     </StaticRouter>,
   );
   return {
@@ -281,4 +296,86 @@ export const marketingRoutes: MarketingRoute[] = [
         canonical: `${SITE}/terms`,
       }),
   },
+  // Data-fetching pages: prerender the static shell (hero + intro) so crawlers
+  // get real, page-specific content + correct canonicals instead of the SPA
+  // home fallback. The dynamic cards/rows fill in when the live SPA hydrates.
+  {
+    dir: "atlas",
+    render: () =>
+      renderMarketing("/atlas", <AtlasPage />, {
+        title:
+          "Resistance Atlas — predict which mutation breaks each cancer drug · Liganx",
+        description:
+          "Calibrated forecasts of clinical resistance mutations for every " +
+          "FDA-approved targeted cancer drug. Δ-from-docking + ESM2 fitness + " +
+          "codon accessibility, triangulated. Every prediction is timestamped, " +
+          "citation-backed, and publicly re-derivable.",
+        canonical: `${SITE}/atlas`,
+      }),
+  },
+  {
+    dir: "library",
+    render: () =>
+      renderMarketing("/library", <LibraryPage />, {
+        title: "Mutation library — EGFR, BCR-ABL, BRAF, KRAS · Liganx",
+        description:
+          "Curated library of clinically actionable kinase mutations (EGFR " +
+          "T790M, BCR-ABL T315I, BRAF V600E, KRAS G12C, ALK G1202R) with " +
+          "one-click molecular docking. Free for academic use.",
+        canonical: `${SITE}/library`,
+      }),
+  },
+  {
+    dir: "validation",
+    render: () =>
+      renderMarketing("/validation", <ValidationPage />, {
+        title:
+          "Scientific validation — 11 literature-anchored docking benchmarks · Liganx",
+        description:
+          "Eleven published kinase-mutation cases (Imatinib·ABL T315I, " +
+          "Vemurafenib·BRAF V600E, Gefitinib·EGFR T790M, Sotorasib·KRAS G12C, " +
+          "Osimertinib·EGFR C797S, more) re-run live through Liganx with " +
+          "verdicts. Verify our docking accuracy.",
+        canonical: `${SITE}/validation`,
+      }),
+  },
 ];
+
+// ── Sitemap generation ──────────────────────────────────────────────────────
+// Generated at build time from the live post registry so every deploy (incl.
+// the 2×/week blog auto-publish) ships a fresh, complete sitemap with correct
+// lastmod dates. Replaces the previously hand-maintained public/sitemap.xml,
+// which had gone stale (last updated 2026-06-29, missing newer posts).
+export function renderSitemap(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const staticRoutes: { path: string; priority: string; changefreq: string }[] = [
+    { path: "/", priority: "1.0", changefreq: "weekly" },
+    { path: "/atlas", priority: "0.9", changefreq: "weekly" },
+    { path: "/library", priority: "0.8", changefreq: "weekly" },
+    { path: "/validation", priority: "0.8", changefreq: "monthly" },
+    { path: "/mutation-docking-guide", priority: "0.7", changefreq: "monthly" },
+    { path: "/blog", priority: "0.8", changefreq: "weekly" },
+    { path: "/about", priority: "0.5", changefreq: "monthly" },
+    { path: "/contact", priority: "0.4", changefreq: "yearly" },
+    { path: "/privacy", priority: "0.3", changefreq: "yearly" },
+    { path: "/terms", priority: "0.3", changefreq: "yearly" },
+  ];
+  const rows: string[] = [];
+  for (const r of staticRoutes) {
+    rows.push(
+      `  <url>\n    <loc>${SITE}${r.path}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${r.changefreq}</changefreq>\n    <priority>${r.priority}</priority>\n  </url>`,
+    );
+  }
+  for (const p of posts) {
+    const lastmod = (p.meta.updated ?? p.meta.date) || today;
+    rows.push(
+      `  <url>\n    <loc>${SITE}/blog/${p.meta.slug}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.6</priority>\n  </url>`,
+    );
+  }
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    rows.join("\n") +
+    `\n</urlset>\n`
+  );
+}

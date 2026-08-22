@@ -135,34 +135,46 @@ function AtlasListView() {
       </div>
     );
   }
+  // Static hero — rendered in BOTH the loading state and the loaded state so
+  // the build-time prerender captures this crawlable prose (it's the page's
+  // high-intent SEO content) even though the drug cards load client-side.
+  const heroHeader = (
+    <header>
+      <div className="eyebrow">Resistance Atlas</div>
+      <h1 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white">
+        Predict the next mutation, before patients hit it.
+      </h1>
+      <p className="mt-3 text-slate-600 dark:text-slate-300 max-w-3xl leading-relaxed">
+        Every FDA-approved targeted cancer drug has a resistance landscape — the
+        set of single-residue mutations that, under selection pressure, will
+        break it. The atlas surfaces the top predicted resistance events per drug,
+        triangulated from rigid-receptor Δ-scoring, ESM2 protein-language-model
+        fitness, codon-mutational accessibility, and a literature prior. Every
+        prediction is timestamped, citation-backed, and publicly re-derivable
+        from open code. Pre-registered forecasts compound the credibility ledger
+        with every clinical confirmation that follows.
+      </p>
+      <p className="mt-3 text-xs text-slate-500 dark:text-slate-400 max-w-3xl">
+        Atlas v1 (May 2026) backfills published clinical resistance events as
+        a calibration anchor. v2 onward will surface NOVEL predictions — residues
+        the model flags that have NOT yet appeared in clinical literature —
+        with the date stamped at first publication.
+      </p>
+    </header>
+  );
+
   if (!rows) {
-    return <div className="muted text-center py-32">Loading the atlas…</div>;
+    return (
+      <div className="space-y-8">
+        {heroHeader}
+        <div className="muted text-center py-16">Loading the atlas…</div>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-8 animate-fade-in">
-      <header>
-        <div className="eyebrow">Resistance Atlas</div>
-        <h1 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white">
-          Predict the next mutation, before patients hit it.
-        </h1>
-        <p className="mt-3 text-slate-600 dark:text-slate-300 max-w-3xl leading-relaxed">
-          Every FDA-approved targeted cancer drug has a resistance landscape — the
-          set of single-residue mutations that, under selection pressure, will
-          break it. The atlas surfaces the top predicted resistance events per drug,
-          triangulated from rigid-receptor Δ-scoring, ESM2 protein-language-model
-          fitness, codon-mutational accessibility, and a literature prior. Every
-          prediction is timestamped, citation-backed, and publicly re-derivable
-          from open code. Pre-registered forecasts compound the credibility ledger
-          with every clinical confirmation that follows.
-        </p>
-        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400 max-w-3xl">
-          Atlas v1 (May 2026) backfills published clinical resistance events as
-          a calibration anchor. v2 onward will surface NOVEL predictions — residues
-          the model flags that have NOT yet appeared in clinical literature —
-          with the date stamped at first publication.
-        </p>
-      </header>
+      {heroHeader}
 
       {/* "Test your own data" CTA — Pro feature entry point. Free tier
           lets a chemist score 10 of their own (drug, mutation) cases

@@ -139,6 +139,18 @@ async function main() {
       }
     }
     console.log(`[prerender] wrote ${mCount} marketing pages`);
+
+    // Fresh sitemap.xml from the live post registry (overwrites the static one
+    // vite copied from public/). Keeps it complete + current on every deploy,
+    // including the scheduled blog auto-publish.
+    try {
+      if (typeof entry.renderSitemap === "function") {
+        fs.writeFileSync(path.join(DIST, "sitemap.xml"), entry.renderSitemap(), "utf8");
+        console.log("[prerender] wrote sitemap.xml");
+      }
+    } catch (e) {
+      console.warn("[prerender] sitemap generation failed (kept static):", e?.message || e);
+    }
   } finally {
     await vite.close();
   }

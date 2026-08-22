@@ -1,0 +1,16 @@
+{
+  "name": "Liganx — Mutation-aware molecular docking",
+  "short_name": "Liganx",
+  "description": "Free, mutation-aware molecular docking in your browser. Dock small molecules against wild-type and mutant protein pockets, rank by selectivity, and get pose validation plus ADMET — no install.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0f1e",
+  "theme_color": "#0f766e",
+  "categories": ["science", "education", "productivity", "medical"],
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
