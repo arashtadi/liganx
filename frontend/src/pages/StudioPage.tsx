@@ -1795,7 +1795,10 @@ export default function StudioPage() {
       const n = selectedTargets.length;
       const warnLines: string[] = [];
       if (n > 1) {
-        warnLines.push(`This runs ${n} separate docks — one per target — using ${n} of your dockings.`);
+        const perLabels = perTarget.map((t) => `one for ${t.label}`).join(", ");
+        warnLines.push(
+          `This runs ${n} separate dockings — ${perLabels} — using ${n} of your dockings.\n\nYou'll see them together in one results view — switch between targets with the tabs at the top (no need to open History).`,
+        );
       }
       if (anyMutationsSelected && wtOnly.length > 0) {
         const names = wtOnly.map((t) => t.label).join(", ");

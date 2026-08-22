@@ -461,7 +461,7 @@ export default function JobPage() {
       {runTabs.length > 1 && (
         <div className="flex flex-wrap items-center gap-1.5 -mt-2">
           <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mr-1">
-            Run · {runTabs.length} targets
+            {runTabs.length} targets in this run · click to switch
           </span>
           {runTabs.map((t) => {
             const active = t.k === jobKey;
