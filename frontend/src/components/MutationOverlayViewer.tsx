@@ -1112,16 +1112,41 @@ function ViewerCanvas({
     if (container) container.style.cursor = "crosshair";
     if (canvasEl) canvasEl.style.cursor = "crosshair";
 
-    // All pickable atoms (skip hydrogens — hidden by default). Coords are
-    // static; we re-project them with the live camera on every event.
+    // Candidate atoms (skip hydrogens — hidden by default). Coords are static;
+    // we re-project them with the live camera on every event.
+    //
+    // SMOOTHNESS + ACCURACY: restrict candidates to the binding-pocket
+    // neighbourhood when we know the pocket centre. A measurement is always
+    // ligand↔residue inside the site, so projecting the whole ~8k-atom protein
+    // on every mouse-move was doing two bad things at once: (1) ~8k matrix
+    // projections per frame = the jank the user feels, and (2) a distant
+    // backbone atom could win the nearest-in-2D race and steal the pick from
+    // the pocket atom the user aimed at. An 18 Å sphere keeps every plausible
+    // target while cutting the candidate set ~10×. Falls back to all heavy
+    // atoms if we have no pocket centre or the sphere is too sparse.
     let atoms: any[] = [];
     try {
-      atoms = (viewer.selectedAtoms({}) || []).filter(
+      const heavy = (viewer.selectedAtoms({}) || []).filter(
         (a: any) => a && typeof a.x === "number" && a.elem !== "H"
       );
+      const pc = pocketCenter;
+      if (pc && pc.length === 3 && typeof pc[0] === "number") {
+        const R2 = 18 * 18;
+        const near = heavy.filter((a: any) => {
+          const dx = a.x - pc[0]!, dy = a.y - pc[1]!, dz = a.z - pc[2]!;
+          return dx * dx + dy * dy + dz * dz <= R2;
+        });
+        atoms = near.length >= 4 ? near : heavy;
+      } else {
+        atoms = heavy;
+      }
     } catch { atoms = []; }
 
-    const HIT_PX = 28;  // generous screen-space pick radius
+    // Tighter pick radius (was 28) so the marker sticks to the atom under the
+    // cursor instead of grabbing a neighbour ~a bond-length away. We re-project
+    // on every call (never cache) so a rotate can't leave a stale projection —
+    // the pocket filter above already makes each projection cheap.
+    const HIT_PX = 20;
     const nearest = (pageX: number, pageY: number): any | null => {
       if (!atoms.length) return null;
       let proj: any;
@@ -1217,7 +1242,8 @@ function ViewerCanvas({
       if (canvasEl) canvasEl.style.cursor = "";
       try { viewer.render(); } catch { /* ignore */ }
     };
-  }, [measureMode, loading, error]);
+    // pocketCenter drives the candidate-atom filter — re-run if it changes.
+  }, [measureMode, loading, error, pocketCenter?.[0], pocketCenter?.[1], pocketCenter?.[2]]);
 
   // Redraw the PERSISTENT measurement geometry whenever the list changes or the
   // viewer (re)loads. Independent of measureMode, so measurements survive the
