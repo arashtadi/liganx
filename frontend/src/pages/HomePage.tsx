@@ -25,6 +25,7 @@ export default function HomePage() {
       <WhatsNew />
       <FeatureGrid />
       <Comparison />
+      <FAQSection />
       <CTAStrip />
     </div>
   );
@@ -540,6 +541,56 @@ function CompCell({ value }: { value: boolean | "partial" | "coming" | string })
   if (value === "partial") return <span className="text-amber-600 dark:text-amber-400 text-xs font-semibold">partial</span>;
   if (value === "coming")  return <span className="text-delta-600 dark:text-delta-400 text-xs font-semibold">coming soon</span>;
   return <span className="text-slate-700 dark:text-slate-300 text-xs font-medium">{value}</span>;
+}
+
+/* ─── FAQ (SEO: visible Q&A + FAQPage rich-snippet schema in index.html) ─ */
+
+const HOME_FAQS: { q: string; a: string }[] = [
+  {
+    q: "What is molecular docking?",
+    a: "Molecular docking predicts how a small molecule binds to a protein target and estimates the binding affinity (in kcal/mol). Liganx runs docking online in your browser using GPU-accelerated AutoDock Vina (QuickVina2) and the Boltz-2 machine-learning model, with no software to install.",
+  },
+  {
+    q: "Is Liganx molecular docking free?",
+    a: "Yes. Liganx gives you free online molecular docking runs with no install and no credit card. You dock wild-type and mutant targets, view 3D poses, and export results. Paid tiers add bulk virtual screening of hundreds of compounds.",
+  },
+  {
+    q: "Do I need to install any software?",
+    a: "No, Liganx is fully web-based. Pick a protein target (curated catalog, RCSB PDB search, or your own upload) and compounds (sketch, paste SMILES, or upload a CSV/SDF), and everything runs on cloud GPUs. Nothing to download or configure.",
+  },
+  {
+    q: "Which docking engine does Liganx use?",
+    a: "Liganx docks with AutoDock Vina (QuickVina2-GPU), re-scores with Vinardo for sharper close-analog ranking, and also supports the Boltz-2 co-folding model. Every pose is checked with PoseBusters physics validation so you can trust the geometry.",
+  },
+  {
+    q: "What is mutation-aware docking?",
+    a: "Mutation-aware docking compares how a compound binds the wild-type protein versus clinically relevant mutants, such as EGFR T790M, BCR-ABL T315I, BRAF V600E, or KRAS G12C, in a single run, so you can see which compounds keep or gain selectivity against drug-resistance mutations.",
+  },
+  {
+    q: "What do I need to run a docking?",
+    a: "A protein structure (a 4-character PDB ID like 4OBE, an RCSB search, or an uploaded PDB) and one or more compounds as SMILES, a 2D sketch, or an uploaded file. Liganx handles receptor preparation, mutation building, docking, and pose scoring automatically.",
+  },
+];
+
+function FAQSection() {
+  return (
+    <section id="faq" className="bg-slate-50 dark:bg-slate-900/40 border-t border-slate-200/80 dark:border-slate-800/60">
+      <Container className="py-14 sm:py-20">
+        <SectionHead eyebrow="FAQ" title="Molecular docking, answered" />
+        <div className="max-w-3xl mx-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 divide-y divide-slate-200 dark:divide-slate-800 overflow-hidden">
+          {HOME_FAQS.map((f) => (
+            <details key={f.q} className="group px-5 py-4">
+              <summary className="flex items-center justify-between gap-4 cursor-pointer list-none text-base font-semibold text-ink dark:text-slate-100">
+                <span>{f.q}</span>
+                <span className="text-slate-400 text-2xl leading-none transition-transform group-open:rotate-45 shrink-0">+</span>
+              </summary>
+              <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{f.a}</p>
+            </details>
+          ))}
+        </div>
+      </Container>
+    </section>
+  );
 }
 
 /* ─── CTA strip ─────────────────────────────────────────────────────── */
