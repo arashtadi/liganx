@@ -599,8 +599,17 @@ def get_access_status(
     claimed = False
     try:
         res = session.execute(text(
+            # (2026-08) Self-serve onboarding: auto-approve a brand-new user
+            # in the same atomic claim that fires their signup notification,
+            # instead of leaving them 'pending' for manual approval. A
+            # 'denied' user is never flipped back. The operator still gets
+            # the Telegram signup ping (with a Deny button) so a bad actor
+            # can be revoked after the fact.
             "UPDATE public.user_profile "
-            "   SET signup_notified_at = NOW() "
+            "   SET signup_notified_at = NOW(), "
+            "       access_status = CASE WHEN access_status = 'denied' THEN access_status ELSE 'approved' END, "
+            "       access_decided_at = CASE WHEN access_status = 'denied' THEN access_decided_at ELSE NOW() END, "
+            "       access_decided_by = CASE WHEN access_status = 'denied' THEN access_decided_by ELSE 'self_serve_auto' END "
             " WHERE user_id = :uid "
             "   AND signup_notified_at IS NULL"
         ), {"uid": user.id})

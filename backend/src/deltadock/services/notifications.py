@@ -190,7 +190,7 @@ def notify_new_user(
     user_id_e = _escape_html(user_id or "—")
 
     parts = [
-        "🎉 <b>New user signed up — awaiting approval</b>",
+        "🎉 <b>New user signed up — auto-approved (self-serve)</b>",
         "",
         f"📧 Email: <code>{email_e}</code>",
     ]

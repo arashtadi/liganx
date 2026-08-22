@@ -269,6 +269,30 @@ def create_job(
     # USR_ tokens since the lookup-router stores files with lowercase hex —
     # any extra .upper() breaks the runner's file lookup.
 
+    # ── Input guard: reject obvious non-PDB-IDs early ──────────────────
+    # A gene/protein name typed into the structure field (e.g. "KRAS")
+    # otherwise sails through and dies deep in receptor prep with a cryptic
+    # "FetchError: Downloaded KRAS from RCSB but ...". Catch it here with an
+    # actionable 422 instead. Classic PDB IDs are 4 chars starting with a
+    # digit (4OBE, 9N0C); extended IDs look like pdb_00001abc; USR_ tokens
+    # are user uploads. Anything else is almost certainly a name.
+    import re as _re
+    _pid = (payload.pdb_id or "").strip()
+    if not _pid.startswith("USR_"):
+        _ok = bool(_re.fullmatch(r"[1-9][A-Za-z0-9]{3}", _pid)) or bool(
+            _re.fullmatch(r"pdb_[A-Za-z0-9]{8}", _pid)
+        )
+        if not _ok:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"\"{_pid}\" isn't a valid PDB ID. PDB IDs are 4 characters "
+                    "starting with a number (e.g. 4OBE). If that's a gene or "
+                    "protein name, search for it in the target picker to find "
+                    "its structures."
+                ),
+            )
+
     # ── Per-user lifetime job quota ─────────────────────────────────────
     # Each user starts with a default quota of 10 (column DEFAULT in
     # migration 007); admin can raise it per user via PATCH /admin/users/{id}.
