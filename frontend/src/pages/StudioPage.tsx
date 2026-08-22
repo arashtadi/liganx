@@ -38,6 +38,7 @@ import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
 import ProGateModal, { type ProFeature } from "../components/ProGateModal";
 import { useQuery } from "@tanstack/react-query";
+import { KNOWN_MUTATIONS_BY_UNIPROT } from "../lib/knownMutations";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
@@ -1302,6 +1303,22 @@ export default function StudioPage() {
       }));
       setAdHocTargets((prev) =>
         prev.map((t) => (t.id === targetId ? { ...t, mutations: curatedChips } : t)),
+      );
+      setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "curated" }));
+      return;
+    }
+
+    // (Phase 2) Known-mutations table for high-value oncology genes not in
+    // the curated catalog (ESR1, AR, JAK2, RET, FGFR2/3, IDH2, NRAS, AKT1,
+    // SMO, NTRK1). Same treatment as a catalog match — auto-fill the picker
+    // so ANY human structure of these genes behaves like the built-in 13.
+    const knownList = KNOWN_MUTATIONS_BY_UNIPROT[(uniprotAcc as string).toUpperCase()];
+    if (knownList && knownList.length > 0) {
+      const knownChips = knownList.map((m) => ({
+        code: m.code, label: m.label, significance: m.significance,
+      }));
+      setAdHocTargets((prev) =>
+        prev.map((t) => (t.id === targetId ? { ...t, mutations: knownChips } : t)),
       );
       setEnrichmentStatus((prev) => ({ ...prev, [targetId]: "curated" }));
       return;

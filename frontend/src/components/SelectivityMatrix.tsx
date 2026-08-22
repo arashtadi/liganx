@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import type { CatalogMutation, Compound, DockingResult } from "../api";
 import { Spinner } from "./Icons";
 import ConfidenceRibbon from "./ConfidenceRibbon";
@@ -68,6 +68,22 @@ export default function SelectivityMatrix({
   const [sortKey, setSortKey] = useState<SortKey>("best-delta");
   const [hoverCol, setHoverCol] = useState<string | null>(null);
   const [hoverRow, setHoverRow] = useState<number | null>(null);
+  // (2026-08) Horizontal-scroll affordance: a right-edge fade that appears
+  // when there are more mutation columns off-screen, so the overflow is
+  // discoverable (the compound column is already frozen via sticky).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showRightShadow, setShowRightShadow] = useState(false);
+  const updateShadow = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setShowRightShadow(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  };
+  useEffect(() => {
+    updateShadow();
+    window.addEventListener("resize", updateShadow);
+    return () => window.removeEventListener("resize", updateShadow);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variants.length]);
   // Selection UI is engaged when a parent passes both `selected` AND a
   // toggle handler. If either is missing the matrix renders without
   // checkboxes (used for share-link landing pages where the URL pre-pins
@@ -287,7 +303,8 @@ export default function SelectivityMatrix({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="relative">
+      <div ref={scrollRef} onScroll={updateShadow} className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800">
@@ -507,6 +524,11 @@ export default function SelectivityMatrix({
             ))}
           </tbody>
         </table>
+      </div>
+      <div
+        aria-hidden
+        className={`pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-white to-transparent dark:from-slate-900 transition-opacity duration-200 ${showRightShadow ? "opacity-100" : "opacity-0"}`}
+      />
       </div>
 
       {/* Legend */}
