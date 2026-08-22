@@ -81,12 +81,6 @@ function Hero() {
               <Link to="/studio" className="btn-primary btn-lg justify-center">
                 Start a docking run <ArrowRight size={16} />
               </Link>
-              {/* Secondary CTA reframed as a zero-risk proof point: a skeptic
-                  sees a real ranked result in seconds (public, no login)
-                  before they hit the method-limitations section lower down. */}
-              <Link to="/library" className="btn-secondary btn-lg justify-center">
-                See it work in 1 second →
-              </Link>
             </div>
             {/* First-time-visitor escape hatch: land in Studio with a
                 working selectivity example pre-staged. Cheaper first
@@ -96,6 +90,12 @@ function Hero() {
               First time?{" "}
               <Link to="/studio?demo=braf-v600e" className="text-delta-700 dark:text-delta-300 font-semibold hover:underline">
                 Open a worked example: BRAF V600E + Vemurafenib →
+              </Link>
+              <span className="mx-1.5 text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+              {/* Quiet proof-point link (was a second loud button): a skeptic
+                  can see a real ranked result in seconds, public, no login. */}
+              <Link to="/library" className="text-delta-700 dark:text-delta-300 font-semibold hover:underline">
+                See it work in 1 second →
               </Link>
             </div>
             {/* Trimmed from 6 chips to 4 — the deeper capabilities (Atlas,
@@ -214,7 +214,7 @@ function LogoStrip() {
         <div className="mt-5 flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-slate-400 dark:text-slate-500">
           <Pill>AutoDock Vina</Pill>
           <Pill>RDKit</Pill>
-          <Pill>FoldX</Pill>
+          <Pill>PDBFixer</Pill>
           <Pill>Mol*</Pill>
           <Pill>ProLIF</Pill>
           <Pill>RunPod</Pill>

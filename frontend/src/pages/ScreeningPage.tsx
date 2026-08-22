@@ -289,12 +289,12 @@ export default function ScreeningPage() {
       {isPrecomputed && (
         <div className="rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800/60 px-4 py-3 text-[12px] text-amber-800 dark:text-amber-200 leading-relaxed">
           <strong className="font-semibold">Method note:</strong>{" "}
-          Scores are real QuickVina2 docks against FoldX-built mutants —
+          Scores are real QuickVina2 docks against built mutant structures —
           but Vina uses rigid-receptor scoring and cannot model covalent
           binding. Read the ranking as triage (which compounds might be
           worth a deeper look), not as a clinical prediction. Cross-
           target promiscuity in the top rows is a known artifact, not
-          a discovery. Failed rows are real FoldX rejects or
+          a discovery. Failed rows are real structure-prep rejects or
           outside-pocket flags — not bugs.
         </div>
       )}
