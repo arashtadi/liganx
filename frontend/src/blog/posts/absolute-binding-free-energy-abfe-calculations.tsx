@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import type { PostMeta } from "../../types";
+import type { PostMeta } from "../types";
 
 export const meta: PostMeta = {
   slug: "absolute-binding-free-energy-abfe-calculations",
