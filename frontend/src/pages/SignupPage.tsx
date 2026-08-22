@@ -109,7 +109,7 @@ export default function SignupPage() {
     <div className="mx-auto max-w-md py-12 animate-fade-in">
       <h1 className="text-3xl font-bold tracking-tight mb-1">Create an account</h1>
       <p className="muted mb-6">
-        Free tier: 50 free dockings — up to 2 targets, 5 mutations, and 10 compounds per run.
+        Free tier: 50 free dockings — up to 2 targets, 5 mutations, and 5 compounds per run.
       </p>
 
       {/* Google sign-up gets top billing — same reasoning as LoginPage:
