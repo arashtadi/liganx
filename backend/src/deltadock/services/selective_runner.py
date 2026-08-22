@@ -536,6 +536,10 @@ def _dock_candidate_impl(
             "score": best_score,
             "pose_in_pocket": bool(in_pocket) and best_offset <= _POSE_DRIFT_THRESHOLD_A,
             "mutation_caveat": mutation_caveat,
+            # Path-agnostic honesty signal (quick_dock returns the same key):
+            # "mutant" only when the mutant structure genuinely built; "wt"
+            # when a mutation was requested but the build fell back to WT.
+            "receptor_variant": "mutant" if getattr(rec, "is_mutant", False) else "wt",
             "n_conformers": len(conformers),
         }
 
@@ -644,6 +648,21 @@ def run_differential_pipeline(job_share_id: str) -> None:
             ranked.append(row)
             continue
 
+        # ── Honesty gate ─────────────────────────────────────────────────
+        # If a mutation was requested but the mutant structure could NOT be
+        # built (residue-numbering mismatch, missing residue, etc.), the
+        # "mutant" dock actually ran against the WT fallback — so score_mut ≈
+        # score_wt and any ΔΔG_sel would be a WT-vs-WT artefact, not biology.
+        # Never surface a selectivity number in that case: mark the row
+        # not-scored with the concrete reason so it can't masquerade as a real
+        # hit and can't push the run to a misleading "completed".
+        if mutation and mut.get("receptor_variant") != "mutant":
+            reason = mut.get("mutation_caveat") or "mutant structure could not be built"
+            row["error"] = f"Mutant not built — {reason}"
+            row["mutant_build_failed"] = True
+            ranked.append(row)
+            continue
+
         score_wt = float(wt["score"])
         score_mut = float(mut["score"])
         row.update({
@@ -668,9 +687,25 @@ def run_differential_pipeline(job_share_id: str) -> None:
 
     n_scored = sum(1 for r in ranked if "ddg_sel" in r)
     if n_scored == 0:
+        # Prefer an actionable message when the failure was the mutant build
+        # (numbering mismatch) rather than a generic docking miss — otherwise
+        # the user just sees "nothing docked" and can't tell it's fixable by
+        # picking a structure whose numbering matches the mutation.
+        n_build_failed = sum(1 for r in ranked if r.get("mutant_build_failed"))
+        if n_build_failed:
+            detail = next((r.get("error") for r in ranked if r.get("mutant_build_failed")), "")
+            msg = (
+                f"Could not build the {mutation} mutant on {target_pdb} (chain {chain}): "
+                f"the residue numbering in this structure doesn't match the mutation, "
+                f"so no genuine mutant pocket exists to score against. Pick a PDB whose "
+                f"chain-{chain} numbering matches the mutation (or double-check the "
+                f"mutation), then re-run. No WT-vs-WT selectivity number was reported. "
+                f"Detail: {detail}"
+            )
+        else:
+            msg = "No candidate docked successfully against both pockets."
         _set_progress(job_share_id, status=SelectivityJobStatus.FAILED,
-                      ranked_hits=ranked,
-                      error_message="No candidate docked successfully against both pockets.")
+                      ranked_hits=ranked, error_message=msg)
         return
 
     _set_progress(job_share_id, status=SelectivityJobStatus.COMPLETED,

@@ -87,8 +87,12 @@ export default function App() {
             <Route path="/history" element={withBoundary(<RequireAuth><HistoryPage /></RequireAuth>, "History")} />
             {/* Mutant-Selective Binder Discovery — standalone page. Self-contained;
                 does not touch Studio. See docs/mutant_selective_pipeline.md */}
-            <Route path="/selective" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective")} />
-            <Route path="/selective/:shareId" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective run")} />
+            {/* Selective is now open to any approved user (not admin-only):
+                RequireAuth gates sign-in, the global PendingRedirect bounces
+                non-approved users to /pending, and the backend approved_user
+                dependency is the real authority. */}
+            <Route path="/selective" element={withBoundary(<RequireAuth><SelectivePage /></RequireAuth>, "Mutant-Selective")} />
+            <Route path="/selective/:shareId" element={withBoundary(<RequireAuth><SelectivePage /></RequireAuth>, "Mutant-Selective run")} />
             <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
             <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
             <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />
@@ -408,29 +412,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// Admin-only gate. Same as RequireAuth but additionally redirects non-admins
-// home. Used for the standalone /selective feature (admin-only). The backend
-// also enforces this (admin_user dependency), so this is the UX layer.
-function RequireAdmin({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-32 text-slate-500 dark:text-slate-400">
-        <Spinner size={20} className="mr-2" /> Loading…
-      </div>
-    );
-  }
-  if (!user) {
-    const next = encodeURIComponent(location.pathname + location.search);
-    return <Navigate to={`/login?next=${next}`} replace />;
-  }
-  if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) {
-    return <Navigate to="/" replace />;
-  }
-  return <>{children}</>;
-}
-
 function Header() {
   // Header typography matches Studio's control-center aesthetic: monospace,
   // small caps, and a touch of letter-tracking. This was bolted on after
@@ -515,7 +496,7 @@ function Header() {
           <NavLink to="/blog" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2`}>
             Blog
           </NavLink>
-          {user && (user.email || "").toLowerCase() === ADMIN_EMAIL && (
+          {user && (
             <NavLink to="/selective" className={({ isActive }) => `${linkCls({ isActive })} px-3 py-2 relative`}>
               <span>Selective</span>
               <span className="ml-1 inline-flex items-center rounded-full bg-violet-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white align-middle">
@@ -627,7 +608,7 @@ function Header() {
                   </span>
                 </NavLink>
                 <NavLink to="/blog" className={mobileLinkCls}>Blog</NavLink>
-                {user && (user.email || "").toLowerCase() === ADMIN_EMAIL && <NavLink to="/selective" className={mobileLinkCls}>Selective</NavLink>}
+                {user && <NavLink to="/selective" className={mobileLinkCls}>Selective</NavLink>}
                 {/* (L4) FEP+ link hidden until CUDA crash is fixed — see desktop comment above. */}
                 {false && (
                   <NavLink to="/fep/new" className={mobileLinkCls}>
