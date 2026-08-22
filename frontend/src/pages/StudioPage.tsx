@@ -508,14 +508,9 @@ export default function StudioPage() {
   const selectedMutation = selectedMutations[0] || "";
   const setSelectedTarget = (t: string) => setSelectedTargets(t ? [t] : []);
   const setSelectedMutation = (m: string) => setSelectedMutations(m ? [m] : []);
-  // (unlimited per-run — 2026-08, owner decision) Per-run caps lifted to
-  // effectively unlimited. Cost is now bounded only by the 50 lifetime-
-  // docking quota + the admin approval gate, NOT by per-run size. These
-  // high numbers are crash-safety rails against a runaway paste, not
-  // product limits.
-  const MAX_TARGETS = 50;
-  const MAX_MUTATIONS = 200;
-  const MAX_COMPOUNDS = 10000;
+  const MAX_TARGETS = 2;
+  const MAX_MUTATIONS = 2;
+  const MAX_COMPOUNDS = 50;
   // (v0.64) Compound list — up to 10 compounds per job. Each entry is
   // a SMILES + optional name + a stable id. activeCompoundIdx is the
   // one currently loaded into the 2D Ketcher canvas. The legacy
