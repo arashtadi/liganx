@@ -1573,6 +1573,13 @@ export default function StudioPage() {
   const [setupCollapsed, setSetupCollapsed] = useState(
     reseed ? false : (initialSession?.setupCollapsed ?? false),
   );
+  // (v1.30) Collapsible 2D editor. Sketching wants the wide canvas, but
+  // most sessions pick compounds via search and then live in the right-
+  // hand setup/results column — which is cramped at col-span-5 and does
+  // all the scrolling. Collapsing the editor to a thin rail hands that
+  // width back to the working column so setup + results stop scrolling.
+  // Off by default (editor visible).
+  const [editorCollapsed, setEditorCollapsed] = useState(false);
   // (v0.93) v0.73's auto-collapse-on-completion was removed — it kept
   // re-collapsing after every Run Dock, forcing the user to click
   // 'edit ↗' just to tweak a compound and re-run. The manual ▾ setup
@@ -2334,7 +2341,22 @@ export default function StudioPage() {
       {/* ═══ MAIN GRID ═══ */}
       <main className="grid grid-cols-12 gap-3 p-3" style={{ height: "calc(100vh - 88px)" }}>
         {/* LEFT — 2D Canvas */}
-        <section className="col-span-7 bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative">
+        <section className={`${editorCollapsed ? "col-span-1" : "col-span-6"} bg-[#0d1422] border border-slate-800/70 rounded flex flex-col overflow-hidden relative transition-all`}>
+          {editorCollapsed ? (
+            // (v1.30) Collapsed rail — a thin vertical strip that hands the
+            // editor's width to the working column. Click anywhere to reopen.
+            <button
+              type="button"
+              onClick={() => setEditorCollapsed(false)}
+              className="flex-1 w-full flex flex-col items-center gap-3 pt-3 text-slate-400 hover:text-cyan-200 hover:bg-slate-800/30 transition-colors"
+              title="Show the 2D structure editor"
+            >
+              <span className="text-[13px] leading-none">⟩</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em]" style={{ writingMode: "vertical-rl" }}>
+                2D · Ketcher
+              </span>
+            </button>
+          ) : (<>
           {/* (v0.64) Compound rail above the 2D editor was removed —
               the staged compound list now lives in the right-rail
               COMPOUND section below the search trigger, matching the
@@ -2390,6 +2412,15 @@ export default function StudioPage() {
                 </button>
               )}
               <span className="font-mono text-slate-500">{currentSmiles ? `${currentSmiles.length} chars` : "—"}</span>
+              {/* (v1.30) Collapse the editor to reclaim width for setup + results. */}
+              <button
+                type="button"
+                onClick={() => setEditorCollapsed(true)}
+                className="px-1.5 py-1 rounded border border-slate-700 bg-slate-900/40 text-slate-400 hover:bg-slate-800/60 hover:text-cyan-200 font-mono text-[10px] leading-none shrink-0"
+                title="Collapse the 2D editor to give the setup + results panel more room"
+              >
+                ⟨ hide
+              </button>
             </div>
           </div>
           {/* (v0.28.1) CompoundLoader was rendered here — INSIDE the 2D
@@ -2450,10 +2481,11 @@ export default function StudioPage() {
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             />
           </div>
+          </>)}
         </section>
 
         {/* RIGHT — 3D + KPI */}
-        <section className="col-span-5 flex flex-col gap-3 min-h-0">
+        <section className={`${editorCollapsed ? "col-span-11" : "col-span-6"} flex flex-col gap-3 min-h-0 transition-all`}>
           {/* 3D viewer — live conformer until dock result, then docked pose */}
           <ProductionViewer3D
             smiles={currentSmiles}
@@ -3065,7 +3097,7 @@ export default function StudioPage() {
             ) : (<>
 
             {/* ─── TARGET (dropdown + search on right) ─── */}
-            <div className="px-4 py-3 border-b border-slate-800/70">
+            <div className="px-3 py-2.5 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className="flex items-center gap-2">
                   <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${selectedTarget ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>1</span>
@@ -3265,7 +3297,7 @@ export default function StudioPage() {
             </div>
 
             {/* ─── MUTATIONS (dropdown + search on right) ─── */}
-            <div className="px-4 py-3 border-b border-slate-800/70">
+            <div className="px-3 py-2.5 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className="flex items-center gap-2">
                   <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${(includeWt || selectedMutations.length > 0) ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>2</span>
@@ -3417,7 +3449,7 @@ export default function StudioPage() {
             </div>
 
             {/* ─── COMPOUND (v0.64: multi-add list, click-to-search) ─── */}
-            <div className="px-4 py-3 border-b border-slate-800/70">
+            <div className="px-3 py-2.5 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
                 <span className="flex items-center gap-2">
                   <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${(compounds.length > 0 || !!currentSmiles) ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>3</span>
