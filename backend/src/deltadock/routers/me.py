@@ -418,6 +418,11 @@ class AccessStatusOut(BaseModel):
     UI shouldn't show Run Dock when it'll be rejected."""
     status: str = Field(..., description="pending | approved | denied")
     decided_at: Optional[str] = None
+    # Per-feature access for AI Resistance Prediction (Boltz-2). One of:
+    # None/"none" (never requested), "requested", "approved", "denied".
+    # Admins always read "approved". The Studio uses this to render the
+    # button vs the "Request access" CTA vs a "Pending" state.
+    boltz2_access: Optional[str] = None
 
 
 @router.get("/access_status", response_model=AccessStatusOut)
@@ -477,7 +482,8 @@ def get_access_status(
             """
         ), {"uid": user.id})
         session.commit()
-        return AccessStatusOut(status="approved", decided_at=None)
+        # Admin always has Boltz-2 (mirrors the engine gate in routers/jobs.py).
+        return AccessStatusOut(status="approved", decided_at=None, boltz2_access="approved")
 
     # Watched-user live monitor: ping the operator on Telegram when a
     # watched user's app is active (this endpoint is polled on app load /
@@ -540,7 +546,8 @@ def get_access_status(
 
     row = session.execute(
         text(
-            "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at "
+            "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at, "
+            "       boltz2_access "
             "FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},
@@ -555,4 +562,89 @@ def get_access_status(
     return AccessStatusOut(
         status=(row["status"] or "pending").lower(),
         decided_at=decided_at.isoformat() if decided_at else None,
+        boltz2_access=(row["boltz2_access"] or None),
     )
+
+
+class Boltz2RequestOut(BaseModel):
+    """Result of POST /me/request-boltz2-access. boltz2_access is the new
+    state: 'approved' (admins), 'requested' (ping sent to operator), or the
+    existing value if already decided."""
+    boltz2_access: str = Field(..., description="approved | requested")
+
+
+@router.post("/request-boltz2-access", response_model=Boltz2RequestOut)
+def request_boltz2_access(
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> Boltz2RequestOut:
+    """User taps 'Request access' on AI Resistance Prediction (Boltz-2).
+
+    Mirrors the signup approval loop, scoped to the per-feature
+    user_profile.boltz2_access flag:
+
+      - Admins (ADMIN_EMAIL) already have the engine — return 'approved'
+        without touching the row (parity with the jobs.py gate).
+      - Already 'approved' or 'requested' → idempotent no-op (never
+        re-spams the operator on a double-tap or page reload).
+      - Otherwise (NULL or previously 'denied') → set 'requested' and fire
+        the operator's Telegram Approve/Deny ping + backup admin email.
+    """
+    import logging
+    import os
+    admin_email_env = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    user_email = getattr(user, "email", None)
+    if admin_email_env and (user_email or "").strip().lower() == admin_email_env:
+        return Boltz2RequestOut(boltz2_access="approved")
+
+    cur = session.execute(
+        text("SELECT boltz2_access FROM public.user_profile WHERE user_id = :uid"),
+        {"uid": user.id},
+    ).first()
+    current = (cur[0] if cur else None) or ""
+    if current in ("approved", "requested"):
+        # Idempotent — already at a terminal-or-pending state, don't re-notify.
+        return Boltz2RequestOut(boltz2_access=current)
+
+    # Flip to 'requested'. UPDATE first (the row exists for any signed-in
+    # user via the profile-bootstrap trigger); INSERT-on-conflict is a
+    # belt-and-braces fallback for the rare missing-row case.
+    try:
+        res = session.execute(
+            text(
+                "UPDATE public.user_profile "
+                "   SET boltz2_access = 'requested', boltz2_requested_at = NOW() "
+                " WHERE user_id = :uid"
+            ),
+            {"uid": user.id},
+        )
+        if (res.rowcount or 0) == 0:
+            session.execute(
+                text(
+                    "INSERT INTO public.user_profile (user_id, boltz2_access, boltz2_requested_at) "
+                    "VALUES (:uid, 'requested', NOW()) "
+                    "ON CONFLICT (user_id) DO UPDATE SET "
+                    "    boltz2_access = 'requested', boltz2_requested_at = NOW()"
+                ),
+                {"uid": user.id},
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        logging.getLogger(__name__).exception("boltz2 request flip failed for %s", user.id)
+        raise HTTPException(status_code=500, detail="Could not record your request. Please try again.")
+
+    # Fire the operator ping + admin email. Fail-soft — a notification
+    # hiccup must not fail the request the user just made.
+    try:
+        from ..services.notifications import notify_boltz2_request
+        notify_boltz2_request(user_email=user_email, user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_boltz2_request failed (non-fatal)")
+    try:
+        from ..services.email import notify_admin_boltz2_request
+        notify_admin_boltz2_request(user_email=user_email, user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_admin_boltz2_request failed (non-fatal)")
+
+    return Boltz2RequestOut(boltz2_access="requested")

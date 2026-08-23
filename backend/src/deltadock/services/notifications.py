@@ -38,6 +38,25 @@ log = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_TIMEOUT_S = 6.0
 
+# --- Channel routing (Telegram Topics, and future Discord/Slack) ---------
+# Each logical "channel" (signup, docking, boltz2, …) can be routed to its own
+# Telegram forum *topic* by setting TELEGRAM_TOPIC_<CHANNEL> to that topic's
+# message_thread_id. Until those env vars are set every message lands in the
+# single default chat exactly as before — so turning on per-type channels is a
+# config change, not a code change. The same `channel` arg is the seam a
+# Discord/Slack transport would key off later.
+def _topic_id(channel: Optional[str]) -> Optional[int]:
+    if not channel:
+        return None
+    raw = os.environ.get(f"TELEGRAM_TOPIC_{channel.strip().upper()}", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("TELEGRAM_TOPIC_%s is not an integer: %r", channel.upper(), raw)
+        return None
+
 
 def _escape_html(s: str) -> str:
     """Same four-character HTML escape as routers/contact.py. We use
@@ -62,7 +81,8 @@ def _truncate(s: str, n: int) -> str:
     return s[: n - 1] + "…"
 
 
-def _send(text: str, reply_markup: Optional[dict] = None) -> bool:
+def _send(text: str, reply_markup: Optional[dict] = None,
+          channel: Optional[str] = None) -> bool:
     """Send one HTML-formatted message. Returns True on success, False
     on any failure (missing creds, malformed token, HTTP error, network
     timeout). Logs at WARNING for misconfig, ERROR for delivery
@@ -93,6 +113,9 @@ def _send(text: str, reply_markup: Optional[dict] = None) -> bool:
     }
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    _tid = _topic_id(channel)
+    if _tid is not None:
+        payload["message_thread_id"] = _tid
     try:
         with httpx.Client(timeout=TELEGRAM_TIMEOUT_S) as client:
             r = client.post(url, json=payload)
@@ -218,6 +241,46 @@ def notify_new_user(
             ]],
         }
     return _send("\n".join(parts), reply_markup=reply_markup)
+
+
+def notify_boltz2_request(
+    *,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Fire when a user taps 'Request access' on the AI Resistance
+    Prediction (Boltz-2) feature. Same one-tap Approve/Deny loop as a new
+    signup, but scoped to the per-feature boltz2_access flag — the
+    /telegram/webhook handler parses the approve_bz2/deny_bz2 callback_data
+    and flips user_profile.boltz2_access. Routed to the 'boltz2' channel so
+    it lands in its own Telegram topic once TELEGRAM_TOPIC_BOLTZ2 is set."""
+    email_e = _escape_html(user_email or "—")
+    name_e = _escape_html(full_name or "—") if full_name else None
+    org_e = _escape_html(organization) if organization else None
+    user_id_e = _escape_html(user_id or "—")
+
+    parts = [
+        "🧬 <b>Boltz-2 access requested</b>",
+        "",
+        f"📧 Email: <code>{email_e}</code>",
+    ]
+    if name_e and name_e != "—":
+        parts.append(f"👤 Name: {name_e}")
+    if org_e:
+        parts.append(f"🏢 Org: {org_e}")
+    parts.append(f"🆔 <code>{user_id_e}</code>")
+
+    reply_markup: Optional[dict] = None
+    if user_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"approve_bz2:{user_id}"},
+                {"text": "❌ Deny",    "callback_data": f"deny_bz2:{user_id}"},
+            ]],
+        }
+    return _send("\n".join(parts), reply_markup=reply_markup, channel="boltz2")
 
 
 def notify_first_dock(

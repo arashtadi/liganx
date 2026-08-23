@@ -38,6 +38,7 @@ import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
 import ProGateModal, { type ProFeature } from "../components/ProGateModal";
+import Boltz2RequestModal from "../components/Boltz2RequestModal";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -388,6 +389,26 @@ export default function StudioPage() {
   const { user: _authUser } = useAuth();
   const isAdmin = isAdminEmail(_authUser?.email);
   const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
+  // AI Resistance Prediction (Boltz-2) per-feature access. null = not yet
+  // known / never requested; then 'requested' | 'approved' | 'denied'.
+  // Admins read 'approved' from the backend. Drives the Boltz-2 run button's
+  // three states (run / pending / request).
+  const [boltz2Access, setBoltz2Access] = useState<string | null>(null);
+  const [boltz2ModalOpen, setBoltz2ModalOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyAccessStatus()
+      .then((a) => {
+        if (!cancelled) setBoltz2Access((a as any)?.boltz2_access ?? null);
+      })
+      .catch(() => {
+        /* anonymous / signed-out — leave null, button shows Request */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // Ensemble-docking access. UNGATED BY DEFAULT — initialised true so the
   // toggle is usable during the profile-fetch window and for anonymous
   // users. Flipped to false only if the profile fetch comes back with an
@@ -1630,7 +1651,7 @@ export default function StudioPage() {
   // on the dead-but-retained function. void operator returns
   // undefined, so this is zero-cost at runtime.
   void runQuickDock;
-  async function runFullJob(engine: "quickvina2_gpu" | "gnina" = "quickvina2_gpu") {
+  async function runFullJob(engine: "quickvina2_gpu" | "gnina" | "boltz2" = "quickvina2_gpu") {
     // (v1.04) Engine is now an explicit parameter passed from the
     // split RUN DOCK button (Vina | GNINA). Default stays Vina so
     // any existing call sites that don't pass engine still get the
@@ -4234,6 +4255,61 @@ export default function StudioPage() {
                   </button>
                 );
               })()}
+
+              {/* AI Resistance Prediction (Boltz-2) — gated peer to VS.
+                  Admins + approved users run it (engine=boltz2); everyone
+                  else requests access, which pings the operator on Telegram
+                  (Approve/Deny). Teal identity, distinct from the dock/VS
+                  buttons. Three states: run / pending / request. */}
+              {(() => {
+                const hasCompound = !!currentSmiles || compounds.length > 0;
+                const isDisabled = docking || submittingFull
+                  || !ketcherReady || !hasCompound || !selectedTarget;
+                const canRun = isAdmin || boltz2Access === "approved";
+                const isPending = boltz2Access === "requested";
+                const label = canRun
+                  ? "⇢ AI Resistance Prediction"
+                  : isPending
+                  ? "AI Resistance Prediction · pending approval"
+                  : "🔒 AI Resistance Prediction · request access";
+                return (
+                  <button
+                    onClick={() => {
+                      if (canRun) {
+                        if (isDisabled) return;
+                        runFullJob("boltz2");
+                      } else if (!isPending) {
+                        setBoltz2ModalOpen(true);
+                      }
+                    }}
+                    disabled={canRun && isDisabled}
+                    className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
+                      !canRun
+                        ? isPending
+                          ? "border-teal-800/40 bg-teal-950/10 text-teal-400/50 cursor-default"
+                          : "border-teal-700/40 bg-teal-950/15 text-teal-300/60 hover:bg-teal-950/30 hover:border-teal-600/60 cursor-pointer"
+                        : submittingFull
+                        ? "border-teal-500/40 bg-teal-950/30 text-teal-300/70 cursor-wait animate-pulse"
+                        : !ketcherReady || !hasCompound || !selectedTarget
+                        ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                        : "border-teal-600/60 bg-teal-950/30 text-teal-200 hover:bg-teal-900/40 hover:border-teal-500"
+                    }`}
+                    title={
+                      !canRun
+                        ? isPending
+                          ? "Your access request is pending — you'll be emailed when it's approved."
+                          : "AI Resistance Prediction (Boltz-2) — click to request access."
+                        : !selectedTarget
+                        ? "Pick a target first."
+                        : !hasCompound
+                        ? "Stage at least one compound first."
+                        : "Run Boltz-2: deep-learning co-folding + binding-affinity prediction, wild-type vs mutant."
+                    }
+                  >
+                    <span>{label}</span>
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </section>
@@ -4463,6 +4539,11 @@ export default function StudioPage() {
       <ProGateModal
         feature={proGateFeature}
         onClose={() => setProGateFeature(null)}
+      />
+      <Boltz2RequestModal
+        open={boltz2ModalOpen}
+        onClose={() => setBoltz2ModalOpen(false)}
+        onRequested={(s) => setBoltz2Access(s)}
       />
     </div>
   );
