@@ -240,7 +240,7 @@ def notify_new_user(
                 {"text": "❌ Deny",    "callback_data": f"deny:{user_id}"},
             ]],
         }
-    return _send("\n".join(parts), reply_markup=reply_markup)
+    return _send("\n".join(parts), reply_markup=reply_markup, channel="signup")
 
 
 def notify_boltz2_request(
@@ -312,7 +312,7 @@ def notify_first_dock(
         f"🧪 Compounds: {compound_e}",
         f"🔗 Job: <code>{job_id}</code>  ·  share: <code>{_escape_html(share_id or '—')}</code>",
     ]
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="docking")
 
 
 def notify_rate_limit_abuse(
@@ -407,7 +407,7 @@ def notify_job_failed(
         parts.append("📜 <b>Stack tail:</b>")
         parts.append(f"<pre>{tb_e}</pre>")
 
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="docking")
 
 
 def notify_fep_failed(
@@ -602,7 +602,7 @@ def notify_user_report(
         f"💥 Error: <code>{err_e}</code>",
     ]
 
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="docking")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -691,7 +691,7 @@ def notify_watch_dock_started(
     ]
     if share_id:
         parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="docking")
 
 
 def notify_watch_dock_completed(
@@ -720,4 +720,4 @@ def notify_watch_dock_completed(
     ]
     if share_id:
         parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="docking")
