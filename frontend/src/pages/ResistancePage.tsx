@@ -24,6 +24,9 @@ import {
   fmt,
   fmtSigned,
   fmtWhen,
+  fmtPct,
+  probTier,
+  parseMutationCode,
   DDG_BAR_MAX,
   RESISTANCE_AT_RISK,
 } from "../lib/resistanceScoring";
@@ -53,6 +56,8 @@ export default function ResistancePage() {
     scanRef.current = s;
     setScan(s);
     if (s.status === "running") resume();
+    else if (s.rows.some((r) => r.mutScore != null && r.prob == null && parseMutationCode(r.code)))
+      scoreProbabilities();
     return () => {
       cancelled.current = true;
     };
@@ -90,6 +95,7 @@ export default function ResistancePage() {
     const keys = Object.keys(byJob);
     if (keys.length === 0) {
       update((sc) => ({ ...sc, status: "done", updatedAt: new Date().toISOString() }));
+      await scoreProbabilities();
       return;
     }
     await Promise.all(
@@ -133,6 +139,63 @@ export default function ResistancePage() {
     );
     if (cancelled.current) return;
     update((sc) => ({ ...sc, status: "done", updatedAt: new Date().toISOString() }));
+    await scoreProbabilities();
+  }
+
+  // Phase 2 — enrich each resolved variant with the calibrated 2-signal
+  // (Δ-docking + ESM2) resistance probability via /calibrate/score. Best
+  // effort: on failure the page keeps the Δ-docking-only view.
+  async function scoreProbabilities() {
+    const s = scanRef.current;
+    if (!s) return;
+    const gene = (s.targetId || "").toUpperCase();
+    const inputs = s.rows
+      .map((r) => {
+        const p = parseMutationCode(r.code);
+        if (!p || r.mutScore == null || r.wtScore == null) return null;
+        return {
+          code: `${p.wt}${p.pos}${p.mut}`,
+          gene,
+          position: p.pos,
+          wt_residue: p.wt,
+          mutant: p.mut,
+          delta_kcal: r.mutScore - r.wtScore,
+        };
+      })
+      .filter(Boolean) as {
+      code: string;
+      gene: string;
+      position: number;
+      wt_residue: string;
+      mutant: string;
+      delta_kcal: number;
+    }[];
+    if (inputs.length === 0) return;
+    try {
+      const resp = await api.scoreResistance(inputs.map(({ code, ...rest }) => rest));
+      if (cancelled.current) return;
+      const byCode: Record<string, (typeof resp.rows)[number]> = {};
+      for (const rr of resp.rows) byCode[rr.mutation_code.toUpperCase()] = rr;
+      update((sc) => ({
+        ...sc,
+        updatedAt: new Date().toISOString(),
+        rows: sc.rows.map((row) => {
+          const p = parseMutationCode(row.code);
+          if (!p) return row;
+          const hit = byCode[`${p.wt}${p.pos}${p.mut}`];
+          return hit
+            ? {
+                ...row,
+                prob: hit.joint_probability,
+                probSource: hit.score_source,
+                probVerdict: hit.verdict,
+              }
+            : row;
+        }),
+      }));
+    } catch {
+      // Best-effort enrichment — keep the docking-only view on failure.
+    }
   }
 
   // ── Loading / not-found ──
@@ -166,12 +229,27 @@ export default function ResistancePage() {
     ...r,
     ddg: r.mutScore != null && r.wtScore != null ? r.mutScore - r.wtScore : null,
   }));
-  const ranked = [...scored].sort((a, b) => (b.ddg ?? -Infinity) - (a.ddg ?? -Infinity));
   const resolved = scored.filter((r) => r.ddg != null);
+  // Phase 2: once probabilities land, rank + judge by calibrated probability;
+  // until then, fall back to the raw Δ-docking shift.
+  const anyProb = scored.some((r) => r.prob != null);
+  const ranked = [...scored].sort((a, b) =>
+    anyProb ? (b.prob ?? -1) - (a.prob ?? -1) : (b.ddg ?? -Infinity) - (a.ddg ?? -Infinity)
+  );
   const worst = resolved.reduce<null | (typeof scored)[number]>(
     (acc, r) => (acc == null || (r.ddg ?? -Infinity) > (acc.ddg ?? -Infinity) ? r : acc),
     null
   );
+  const worstProb = resolved
+    .filter((r) => r.prob != null)
+    .reduce<null | (typeof scored)[number]>(
+      (acc, r) => (acc == null || (r.prob ?? -1) > (acc.prob ?? -1) ? r : acc),
+      null
+    );
+  const nProb = resolved.filter((r) => r.prob != null).length;
+  const nLikely = resolved.filter((r) => (r.prob ?? 0) >= 0.7).length;
+  const nBorderline = resolved.filter((r) => (r.prob ?? 0) >= 0.45 && (r.prob ?? 0) < 0.7).length;
+  const nProxy = resolved.filter((r) => r.probSource && r.probSource !== "cached_esm2" && !String(r.probSource).includes("esm2_pod") && !String(r.probSource).includes("live_esm2")).length;
   const nRetained = resolved.filter((r) => (r.ddg ?? 0) < RESISTANCE_AT_RISK).length;
   const nCliff = resolved.filter((r) => (r.ddg ?? 0) >= 2.0).length;
   const pending = scan.rows.filter((r) => r.mutScore == null && !r.error).length;
@@ -228,6 +306,12 @@ export default function ResistancePage() {
         className={`rounded-lg border px-4 py-3 ${
           running
             ? "border-slate-700/60 bg-slate-900/40"
+            : anyProb
+            ? nLikely > 0
+              ? "border-rose-700/50 bg-rose-950/30"
+              : nBorderline > 0
+              ? "border-amber-700/50 bg-amber-950/25"
+              : "border-emerald-700/50 bg-emerald-950/25"
             : nCliff > 0
             ? "border-rose-700/50 bg-rose-950/30"
             : resolved.length > 0
@@ -240,6 +324,32 @@ export default function ResistancePage() {
             <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
             Docking {doneCount}/{scan.rows.length} variants (each with its own WT)…
           </div>
+        ) : anyProb && worstProb ? (
+          nLikely > 0 ? (
+            <div className="text-[13px] text-rose-100 leading-snug">
+              <span className="font-semibold">⚠ Resistance likely.</span> Highest risk at{" "}
+              <span className="font-mono text-rose-300">{worstProb.code}</span> —{" "}
+              <span className="font-semibold">{fmtPct(worstProb.prob)}</span> calibrated probability
+              of resistance.{" "}
+              <span className="text-rose-200/80">
+                {nLikely} of {nProb} variants score likely.
+              </span>
+            </div>
+          ) : nBorderline > 0 ? (
+            <div className="text-[13px] text-amber-100 leading-snug">
+              <span className="font-semibold">Borderline resistance risk.</span> Highest at{" "}
+              <span className="font-mono text-amber-300">{worstProb.code}</span> (
+              {fmtPct(worstProb.prob)}).{" "}
+              <span className="text-amber-200/80">No variant crosses the high-confidence line.</span>
+            </div>
+          ) : (
+            <div className="text-[13px] text-emerald-100 leading-snug">
+              <span className="font-semibold">✓ Resistance unlikely.</span> Every scanned variant
+              scores below borderline — highest is{" "}
+              <span className="font-mono text-emerald-300">{worstProb.code}</span> at{" "}
+              {fmtPct(worstProb.prob)}.
+            </div>
+          )
         ) : nCliff > 0 && worst ? (
           <div className="text-[13px] text-rose-100 leading-snug">
             <span className="font-semibold">⚠ Resistance predicted.</span> Binding falls off hardest
@@ -265,13 +375,19 @@ export default function ResistancePage() {
             WT baseline: {fmt(wtShown)} kcal/mol{wtScores.length > 1 ? " (mean of co-docked WTs)" : ""}
           </div>
         )}
+        {anyProb && (
+          <div className="mt-1 text-[10px] font-mono text-slate-500">
+            Calibrated 2-signal forecast (Δ-docking + ESM2) · out-of-fold AUC 0.81
+            {nProxy > 0 ? ` · ${nProxy}/${nProb} via BLOSUM proxy (ESM2 pod asleep)` : ""}
+          </div>
+        )}
       </div>
 
       {/* Liability map */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-wider text-slate-500 px-1">
           <span>mutation</span>
-          <span>ΔΔ binding vs WT →</span>
+          <span>Δ vs WT · resistance probability →</span>
         </div>
         {ranked.map((r) => {
           const t = ddgTier(r.ddg);
@@ -299,12 +415,32 @@ export default function ResistancePage() {
                     <div className={`absolute inset-y-0 left-0 ${t.bar}`} style={{ width: `${Math.max(4, pct)}%` }} />
                   )}
                 </div>
-                <span className={`font-mono text-[12px] tabular-nums w-16 text-right shrink-0 ${t.text}`}>
+                <span
+                  className="font-mono text-[11px] tabular-nums w-14 text-right shrink-0 text-slate-400"
+                  title="Δ-docking shift vs WT (kcal/mol)"
+                >
                   {r.mutScore != null ? fmtSigned(r.ddg) : ""}
                 </span>
-                <span className={`text-[9px] font-mono uppercase tracking-wider w-16 text-right shrink-0 ${t.text}`}>
-                  {r.mutScore != null ? t.label : ""}
-                </span>
+                {r.prob != null ? (
+                  <span
+                    className="shrink-0 w-28 text-right"
+                    title={`Calibrated resistance probability · ESM2 ${
+                      r.probSource === "cached_esm2" || String(r.probSource).includes("esm2_pod") || String(r.probSource).includes("live_esm2")
+                        ? "model"
+                        : "via BLOSUM proxy (pod asleep)"
+                    }`}
+                  >
+                    <span
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono ${probTier(r.prob).chip}`}
+                    >
+                      P {fmtPct(r.prob)} · {probTier(r.prob).label}
+                    </span>
+                  </span>
+                ) : (
+                  <span className={`text-[9px] font-mono uppercase tracking-wider w-28 text-right shrink-0 ${t.text}`}>
+                    {r.mutScore != null ? t.label : ""}
+                  </span>
+                )}
                 {r.jobKey ? (
                   <a
                     href={`/jobs/${r.jobKey}?from=resistance`}
@@ -325,10 +461,13 @@ export default function ResistancePage() {
       </div>
 
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        Phase 1 signal: Δ-docking only (score shift vs a WT co-docked in the same job). A positive ΔΔ
-        means the mutant binds your compound more weakly — a resistance liability. Click ↗ on any row
-        to open that variant's docked pose. The full Atlas-grade forecast (ESM2 fold-stability +
-        calibrated probability) comes next.
+        Two signals per variant: the <span className="text-slate-400">Δ-docking</span> shift vs a WT
+        co-docked in the same job (positive = weaker mutant binding), and{" "}
+        <span className="text-slate-400">P</span>, the calibrated resistance probability from the
+        Liganx 2-signal model (Δ-docking + ESM2 fold-stability → logistic regression, out-of-fold AUC
+        0.81) — the same model behind the public Resistance Atlas, applied here to your own compound.
+        Where a variant isn't in the ESM2 cache and the GPU pod is asleep, ESM2 falls back to a
+        BLOSUM62 proxy (shown per row on hover). Click ↗ to open that variant's docked pose.
       </p>
 
       <div className="flex items-center gap-2 pt-1">

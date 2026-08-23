@@ -28,6 +28,14 @@ export interface SavedScanRow {
   /** Job that docked this mutant — for the pose link and for resume. */
   jobKey?: string | null;
   error?: string | null;
+  // ── Phase 2: calibrated 2-signal (Δ + ESM2) forecast, filled once the
+  // dock's Δ is scored via /calibrate/score. Absent on phase-1 records. ──
+  /** Calibrated probability that this mutation confers resistance (0–1). */
+  prob?: number | null;
+  /** Where ESM2 came from: cached_esm2 | live_esm2_pod | blosum_proxy | … */
+  probSource?: string | null;
+  /** Model verdict: high_confidence_resistance | borderline_resistance | low_probability_resistance */
+  probVerdict?: string | null;
 }
 
 export interface SavedResistanceScan {

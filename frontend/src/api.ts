@@ -850,8 +850,48 @@ export interface SelectivityJob {
   ranked_hits: SelectivityHit[] | null;
 }
 
+// ── Resistance Radar phase 2 — calibrated 2-signal (Δ + ESM2) scoring ──
+// Reuses the free-tier /calibrate/score engine; we supply the live docking Δ
+// per mutation so each variant gets a real joint resistance probability.
+export interface ResistanceScoreRowIn {
+  gene: string;
+  position: number;
+  wt_residue: string;
+  mutant: string;
+  delta_kcal?: number | null;
+}
+export interface ResistanceScoreRowOut {
+  gene: string;
+  position: number;
+  wt_residue: string;
+  mutant: string;
+  mutation_code: string;
+  /** cached_esm2 | live_esm2_pod | cached_esm2_local | blosum_proxy */
+  score_source: string;
+  esm2_fitness?: number | null;
+  delta_kcal_input?: number | null;
+  joint_logit: number;
+  joint_probability: number;
+  /** high_confidence_resistance | borderline_resistance | low_probability_resistance */
+  verdict: string;
+}
+export interface ResistanceScoreResponse {
+  n_rows: number;
+  n_cached_esm2: number;
+  n_blosum_proxy: number;
+  rows: ResistanceScoreRowOut[];
+  liganx_published_auc_oof: number;
+  model: string;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
+  /** Phase 2 resistance scoring — see ResistanceScoreRowIn above. */
+  scoreResistance: (rows: ResistanceScoreRowIn[]) =>
+    request<ResistanceScoreResponse>("/calibrate/score", {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    }),
   /**
    * /health → boolean. Used by PodStatusBanner to poll pod liveness
    * cheaply. Returns true when the backend AND its GPU pod proxy are
