@@ -78,11 +78,20 @@ export default function FeatureRequestModal({ feature, onClose, onRequested }: P
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Reset transient state ONLY when the feature (which modal) changes —
+  // NOT on every parent re-render. onClose is an inline arrow in the
+  // parent, so a naive [feature, onClose] dep re-ran this on the very
+  // re-render that onRequested() triggers, wiping `done` back to false
+  // and hiding the "Request sent" confirmation. Keyed on [feature] only.
   useEffect(() => {
-    if (!feature) return;
     setSubmitting(false);
     setDone(false);
     setError(null);
+  }, [feature]);
+
+  // Escape-to-close, rebound if the feature or onClose identity changes.
+  useEffect(() => {
+    if (!feature) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
