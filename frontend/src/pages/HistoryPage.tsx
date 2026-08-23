@@ -143,12 +143,29 @@ function defaultTitle(j: Job): string {
  *  the initial render slow. Mirrored on the API call. */
 const PAGE_SIZE = 25;
 
-/** Two tabs at the top of /history — Jobs (the original docking results
- *  matrix) and Screenings (mutation-aware virtual-screening runs). The
- *  Screenings tab was added in v1.17 because the previous "you have to
- *  remember the share URL" approach was broken UX (no discovery surface
- *  for completed screening runs). Both tabs share the same outer page
- *  chrome; only the body switches. */
+/** Canonicalise a job's engine for filtering/grouping. Null and legacy rows
+ *  (predating the engine column) map to quickvina2_gpu, the historical default
+ *  — matches how JobPage's EnginePill treats a missing engine. */
+function normalizeEngine(engine?: string | null): string {
+  return engine && engine.length ? engine : "quickvina2_gpu";
+}
+
+/** Short human label for an engine, for the filter chips. Kept compact
+ *  (vs EnginePill's fuller "QuickVina2-GPU" / "GNINA (CNN)") since these
+ *  sit in a dense chip row. */
+function engineLabel(engine: string): string {
+  if (engine === "quickvina2_gpu") return "QuickVina2-GPU";
+  if (engine === "gnina") return "GNINA";
+  if (engine.startsWith("boltz2")) return "Boltz-2";
+  return engine;
+}
+
+/** Tabs at the top of /history — Docking jobs, Virtual screening, Resistance
+ *  Radar (gated), and FEP+ studies (admin). The Screenings tab was added in
+ *  v1.17 because the previous "you have to remember the share URL" approach
+ *  was broken UX; the Resistance Radar tab was added for the same reason
+ *  (scans were only reachable from the Studio modal). All tabs share the same
+ *  outer page chrome; only the body switches. */
 type HistoryTab = "jobs" | "screenings" | "fep" | "resistance";
 
 export default function HistoryPage() {
@@ -521,6 +538,10 @@ function JobsTab() {
   // Selected filter tags. OR semantics across selected tags. Starts empty
   // (= show everything). Cleared when the user clicks the active chip again.
   const [filterTags, setFilterTags] = useState<string[]>([]);
+  // Selected engine filters (OR semantics), same UX as tags. Vina and GNINA
+  // are two engines of the same single-dock workflow — one unified list with
+  // an engine filter beats splitting the history into per-engine tabs.
+  const [filterEngines, setFilterEngines] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
   // (U10) Multi-select cancel. `selected` holds job_keys (share_id or
@@ -566,6 +587,20 @@ function JobsTab() {
     return sortTags([...seen]);
   }, [jobs]);
 
+  // Distinct engines across the loaded jobs, canonical order (Vina, GNINA,
+  // Boltz-2, then anything else). Null/legacy rows normalise to quickvina2_gpu
+  // (the historical default). Only surfaced as a filter when ≥2 engines are
+  // actually present — a single-engine history needs no engine filter.
+  const enginesInUse = useMemo(() => {
+    const seen = new Set<string>();
+    for (const j of jobs) seen.add(normalizeEngine(j.engine));
+    const order = ["quickvina2_gpu", "gnina", "boltz2"];
+    return [...seen].sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+    });
+  }, [jobs]);
+
   const filtered = useMemo(() => {
     if (!jobs) return [];
     let out = jobs;
@@ -573,6 +608,10 @@ function JobsTab() {
       // OR semantics: a job passes if it has ANY of the selected tags.
       const wanted = new Set(filterTags);
       out = out.filter((j) => j.tags.some((t) => wanted.has(t)));
+    }
+    if (filterEngines.length > 0) {
+      const wantedEngines = new Set(filterEngines);
+      out = out.filter((j) => wantedEngines.has(normalizeEngine(j.engine)));
     }
     const needle = q.trim().toLowerCase();
     if (needle) {
@@ -594,11 +633,16 @@ function JobsTab() {
       });
     }
     return out;
-  }, [jobs, q, filterTags]);
+  }, [jobs, q, filterTags, filterEngines]);
 
   function toggleFilterTag(value: string) {
     setFilterTags((prev) =>
       prev.includes(value) ? prev.filter((t) => t !== value) : [...prev, value],
+    );
+  }
+  function toggleFilterEngine(value: string) {
+    setFilterEngines((prev) =>
+      prev.includes(value) ? prev.filter((e) => e !== value) : [...prev, value],
     );
   }
 
@@ -644,6 +688,15 @@ function JobsTab() {
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
+
+      {enginesInUse.length > 1 && (
+        <EngineFilterBar
+          engines={enginesInUse}
+          selected={filterEngines}
+          onToggle={toggleFilterEngine}
+          onClear={() => setFilterEngines([])}
+        />
+      )}
 
       {tagsInUse.length > 0 && (
         <FilterBar
@@ -794,6 +847,54 @@ function FilterBar({
           >
             {preset && <span aria-hidden="true">{preset.icon}</span>}
             <span>{preset?.label ?? value}</span>
+          </button>
+        );
+      })}
+      {selected.length > 0 && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-xs text-slate-500 dark:text-slate-400 hover:text-ink dark:hover:text-slate-200 underline-offset-2 hover:underline ml-1"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Engine filter chips (Vina / GNINA / Boltz-2). Rendered above the tag
+ *  FilterBar only when the loaded jobs span more than one engine — so a
+ *  single-engine history stays clean. OR semantics, matching the tag bar:
+ *  selecting GNINA + Boltz-2 shows jobs run with either. Neutral slate chips
+ *  (distinct from the semantic tag colours) since engine is a facet, not a
+ *  judgement. */
+function EngineFilterBar({
+  engines, selected, onToggle, onClear,
+}: {
+  engines: string[];
+  selected: string[];
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mr-1">
+        Engine
+      </span>
+      {engines.map((e) => {
+        const active = selected.includes(e);
+        return (
+          <button
+            key={e}
+            type="button"
+            onClick={() => onToggle(e)}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-all bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-600 ${
+              active ? "ring-2 shadow-sm scale-[1.02]" : "opacity-80 hover:opacity-100"
+            }`}
+            title={active ? "Click to remove from filter" : `Show only ${engineLabel(e)} runs`}
+          >
+            <span>{engineLabel(e)}</span>
           </button>
         );
       })}
