@@ -1,12 +1,17 @@
 /**
  * Resistance Radar scan history — localStorage-backed log of every
- * resistance scan run in Studio. Lets the user reopen a past scan's
- * liability map without re-docking.
+ * resistance scan run in Studio.
  *
- * Intentionally separate from the Supabase job archive (like the Studio
- * dock-history module): a scan is an assembled view over several docks,
- * and phase 1 keeps it browser-local. Phase 2 can promote these to a
- * durable, shareable backend record. Bounded to MAX_RECENT entries.
+ * Scans are persisted the moment docking is SUBMITTED (status "running"),
+ * carrying each mutation's job id, so a scan survives the user closing the
+ * window mid-run: reopening it resumes polling the same jobs (which keep
+ * running server-side) and fills the map in. Finished scans reopen instantly
+ * with no re-docking.
+ *
+ * Intentionally separate from the Supabase job archive: a scan is an
+ * assembled view over several docks, and phase 1 keeps it browser-local.
+ * Phase 2 can promote these to a durable, shareable backend record. Bounded
+ * to MAX_RECENT entries.
  */
 
 const STORAGE_KEY = "liganx-resistance-scans-v1";
@@ -16,23 +21,29 @@ export interface SavedScanRow {
   code: string;
   label: string;
   significance: string;
-  /** Docking score of the mutant, kcal/mol. Null = failed / no pose. */
+  /** Docking score of the mutant, kcal/mol. Null = not yet done / failed. */
   mutScore: number | null;
   /** WT score co-docked in the SAME job as this mutant, kcal/mol. */
   wtScore: number | null;
+  /** Job that docked this mutant — for the pose link and for resume. */
+  jobKey?: string | null;
   error?: string | null;
 }
 
 export interface SavedResistanceScan {
-  /** UUID-ish — for keying React rows. */
+  /** UUID-ish — for keying React rows and upserting in place. */
   id: string;
-  /** ISO timestamp when the scan finished. */
+  /** ISO timestamp when the scan was first created (docking submitted). */
   savedAt: string;
+  /** ISO timestamp of the last update. */
+  updatedAt: string;
+  /** "running" = docks still in flight (resume on reopen); "done" = final. */
+  status: "running" | "done";
   targetId: string;
   targetLabel: string;
   compoundName: string;
   smiles: string;
-  /** WT baseline score, kcal/mol. Null if the WT dock failed. */
+  /** Representative (mean) WT baseline across batches, kcal/mol. */
   wtScore: number | null;
   rows: SavedScanRow[];
 }
@@ -63,7 +74,7 @@ function write(b: Bucket): void {
   }
 }
 
-function newId(): string {
+export function newScanId(): string {
   return `rr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
@@ -71,27 +82,26 @@ export function listResistanceScans(): SavedResistanceScan[] {
   return read().scans.slice().sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 
-export function saveResistanceScan(
-  scan: Omit<SavedResistanceScan, "id" | "savedAt"> & { savedAt?: string }
-): SavedResistanceScan {
+export function getResistanceScan(id: string): SavedResistanceScan | null {
+  return read().scans.find((s) => s.id === id) ?? null;
+}
+
+/** Create the scan if new, or replace it in place when the id already exists.
+ *  Used both to save a fresh submit and to update a running scan as docks
+ *  land. Backward-compatible with older records that lack status/jobKey. */
+export function upsertResistanceScan(scan: SavedResistanceScan): void {
   const bucket = read();
-  if (bucket.scans.length >= MAX_RECENT) {
-    bucket.scans.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
-    bucket.scans.splice(0, bucket.scans.length - MAX_RECENT + 1);
+  const idx = bucket.scans.findIndex((s) => s.id === scan.id);
+  if (idx >= 0) {
+    bucket.scans[idx] = scan;
+  } else {
+    if (bucket.scans.length >= MAX_RECENT) {
+      bucket.scans.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
+      bucket.scans.splice(0, bucket.scans.length - MAX_RECENT + 1);
+    }
+    bucket.scans.push(scan);
   }
-  const e: SavedResistanceScan = {
-    id: newId(),
-    savedAt: scan.savedAt ?? new Date().toISOString(),
-    targetId: scan.targetId,
-    targetLabel: scan.targetLabel,
-    compoundName: scan.compoundName,
-    smiles: scan.smiles,
-    wtScore: scan.wtScore,
-    rows: scan.rows,
-  };
-  bucket.scans.push(e);
   write(bucket);
-  return e;
 }
 
 export function deleteResistanceScan(id: string): void {

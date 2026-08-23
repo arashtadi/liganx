@@ -33,6 +33,7 @@ import CalibratePage from "./pages/CalibratePage";
 import NewFepStudyPage from "./pages/NewFepStudyPage";
 import FepStudyPage from "./pages/FepStudyPage";
 import SelectivePage from "./pages/SelectivePage";
+import ResistancePage from "./pages/ResistancePage";
 
 // Admin email — must match the ADMIN_EMAIL env var on the backend
 // (Fly secret). Used only to show/hide the user-menu entry; the real
@@ -89,6 +90,9 @@ export default function App() {
                 does not touch Studio. See docs/mutant_selective_pipeline.md */}
             <Route path="/selective" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective")} />
             <Route path="/selective/:shareId" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective run")} />
+            {/* Resistance Radar — full results page for an in-Studio resistance
+                scan (feature/resistance-radar). Admin-gated while in beta. */}
+            <Route path="/resistance/:id" element={withBoundary(<RequireAdmin><ResistancePage /></RequireAdmin>, "Resistance Radar")} />
             <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
             <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
             <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />
