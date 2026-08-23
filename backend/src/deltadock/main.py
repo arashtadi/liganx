@@ -809,6 +809,7 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("032_selectivity_tables.sql", "Migration 032 (mutant-selective binder discovery table)"),
     # Raises free-tier quota 10 -> 20 (default + bump existing rows at 10).
     ("033_bump_free_quota_20.sql", "Migration 033 (free quota 10 -> 20)"),
+    ("036_boltz2_access.sql", "Migration 036 (Boltz-2 per-feature access flag)"),
 ]
 
 
