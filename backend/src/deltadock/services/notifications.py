@@ -389,7 +389,7 @@ def notify_rate_limit_abuse(
         "",
         "<i>Notifications for this IP+scope are silenced for the next hour.</i>",
     ]
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="limit")
 
 
 def notify_pod_down(
@@ -411,7 +411,7 @@ def notify_pod_down(
         "User-facing Run Dock buttons are currently broken.",
         "Check RunPod console / Fly logs.",
     ]
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_job_failed(
@@ -459,7 +459,7 @@ def notify_job_failed(
         parts.append("📜 <b>Stack tail:</b>")
         parts.append(f"<pre>{tb_e}</pre>")
 
-    return _send("\n".join(parts), channel="dockruns")
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_fep_failed(
@@ -512,7 +512,7 @@ def notify_fep_failed(
         f"<code>{err_e}</code>",
     ])
 
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_fep_pod_unhealthy(
@@ -533,7 +533,7 @@ def notify_fep_pod_unhealthy(
         "",
         "🧰 Operator: SSH/web-terminal in, check fep_server process + /workspace/fep_server_boot.log",
     ]
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_sentry_alert(
@@ -578,7 +578,7 @@ def notify_sentry_alert(
     if url_e:
         parts.append(f'<a href="{url_e}">Open in Sentry</a>')
 
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_auto_repair(
@@ -611,7 +611,7 @@ def notify_auto_repair(
         parts = [f"🔧 <b>Auto-repair fired</b>: <code>{fp_e}</code>", f"↳ {out_e}"]
     if tb_e:
         parts.append(f"<i>in response to:</i> {tb_e}")
-    return _send("\n".join(parts))
+    return _send("\n".join(parts), channel="errors")
 
 
 def notify_user_report(
