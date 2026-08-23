@@ -1859,13 +1859,20 @@ export default function StudioPage() {
       navigate(`/jobs/${jobKey}?from=studio`);
       return;
     } catch (e: any) {
-      // A free-run-quota 402 opens the out-of-runs modal (with a one-click
+      // A free-run-quota block opens the out-of-runs modal (with a one-click
       // "request more runs"); every other error shows the inline dock error.
-      if (e instanceof ApiError && e.status === 402 && /free docking/i.test(e?.message || "")) {
-        setQuotaModalMessage(e?.message || null);
+      // Detect by the backend's distinctive quota message (robust even if the
+      // ApiError got re-wrapped on the way here) or an explicit 402 status.
+      const _msg = e?.message || "";
+      const _isQuota =
+        /free docking/i.test(_msg) ||
+        ((e?.status === 402 || (e instanceof ApiError && e.status === 402)) &&
+          /free docking/i.test(_msg));
+      if (_isQuota) {
+        setQuotaModalMessage(_msg || null);
         setQuotaModalOpen(true);
       } else {
-        setDockError(e?.message || "Full Job submission failed.");
+        setDockError(_msg || "Full Job submission failed.");
       }
     } finally {
       setSubmittingFull(false);
