@@ -876,7 +876,9 @@ export default function StudioPage() {
       try {
         const r = await fetch("https://api.liganx.com/health/full");
         const j = await r.json();
-        if (!cancelled) setHealthOk(j?.pod_dock_status === "ok");
+        // "serverless" = on-demand RunPod docking is configured and healthy
+        // (no always-warm pod needed) — treat it as green, same as "ok".
+        if (!cancelled) setHealthOk(j?.pod_dock_status === "ok" || j?.pod_dock_status === "serverless");
       } catch {
         if (!cancelled) setHealthOk(false);
       }

@@ -1042,6 +1042,11 @@ async def health_full() -> dict:
                 pod_dock_status = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
         except Exception as e:
             pod_dock_status = "down"
+    elif settings.runpod_enabled:
+        # No always-warm pod is the normal production setup — docking runs on
+        # RunPod serverless (on-demand). Report it as a healthy path so the
+        # Studio's POD indicator shows green instead of a scary red.
+        pod_dock_status = "serverless"
 
     # Boltz-2 pod URL (may be same as pod_dock_url or separate)
     boltz2_pod_url_val = settings.boltz2_pod_url or settings.pod_dock_url

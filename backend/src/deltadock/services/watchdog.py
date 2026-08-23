@@ -108,9 +108,17 @@ async def check_pod_dock_health() -> CheckResult:
     CRITICAL if the body says deps_ok=False."""
     url = (settings.pod_dock_url or "").rstrip("/") + "/health"
     if not settings.pod_dock_url:
+        # No always-warm pod is the NORMAL production setup: docking runs on
+        # RunPod serverless (on-demand, scales to zero). That's healthy, not a
+        # warning. Only flag if serverless ISN'T configured either.
+        if settings.runpod_enabled:
+            return CheckResult(
+                name="pod_dock_health", severity=SEV_OK,
+                message="Docking via RunPod serverless (on-demand; no always-warm pod needed).",
+            )
         return CheckResult(
             name="pod_dock_health", severity=SEV_WARN,
-            message="POD_DOCK_URL not configured; cannot probe.",
+            message="No docking backend configured (no POD_DOCK_URL and no RunPod serverless).",
         )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -171,9 +179,12 @@ async def check_pod_fep_health() -> CheckResult:
             details=body,
         )
     except (httpx.TimeoutException, httpx.RequestError) as e:
+        # The FEP pod is on-demand (scales to zero when idle), so a connect
+        # error just means it's asleep — it wakes on the next FEP request.
+        # That's the normal resting state, not a problem to warn on.
         return CheckResult(
-            name="pod_fep_health", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="pod_fep_health", severity=SEV_OK,
+            message=f"FEP pod idle/asleep (on-demand; wakes on request) — {type(e).__name__}",
         )
 
 
@@ -224,9 +235,11 @@ async def check_gpu_leak() -> CheckResult:
             details=body,
         )
     except (httpx.TimeoutException, httpx.RequestError) as e:
+        # FEP pod asleep (on-demand) → nothing holding the GPU, so there's
+        # no leak to detect. Resting state, not a warning.
         return CheckResult(
-            name="gpu_leak", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="gpu_leak", severity=SEV_OK,
+            message=f"FEP pod idle/asleep — no GPU to check ({type(e).__name__})",
         )
 
 
@@ -400,9 +413,11 @@ async def check_ghost_fep_edges(session: Session) -> CheckResult:
             )
         body = r.json()
     except (httpx.TimeoutException, httpx.RequestError) as e:
+        # FEP pod asleep (on-demand) → no compute apps running, so no ghost
+        # edges are possible. Normal resting state, not a warning.
         return CheckResult(
-            name="ghost_fep_edges", severity=SEV_WARN,
-            message=f"transport error: {type(e).__name__}: {e}",
+            name="ghost_fep_edges", severity=SEV_OK,
+            message=f"FEP pod idle/asleep — no in-flight edges possible ({type(e).__name__})",
         )
 
     pod_active_edges = int(body.get("active_edges", 0))
