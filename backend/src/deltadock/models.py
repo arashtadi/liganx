@@ -787,3 +787,49 @@ class SelectivityJob(SQLModel, table=True):
     stage: Optional[str] = Field(default=None, max_length=120)
     error_message: Optional[str] = None
     title: Optional[str] = Field(default=None, max_length=240)
+
+
+class ResistanceScan(SQLModel, table=True):
+    """One Resistance Radar scan — a compound docked across a target's variant
+    panel, with per-variant Δ-docking + calibrated resistance probability.
+
+    Shareable: the public GET /resistance/{share_id} lets anyone with the link
+    view the assembled map (read-only), while create/update are owner-scoped.
+    The whole per-variant table is stored as one TEXT-encoded JSON payload —
+    this row is a document, not a normalized matrix. Standalone; never touches
+    the docking Job schema (it references the underlying dock jobs only by
+    their share_id inside the JSON payload)."""
+
+    __tablename__ = "resistance_scan"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    share_id: str = Field(default_factory=_new_share_id, index=True, unique=True, max_length=32)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Owner uuid stored as a string (portable); the API scopes by it in Python.
+    user_id: Optional[str] = Field(default=None, max_length=64, index=True)
+
+    # ── Target + compound ─────────────────────────────────────────────
+    target_id: str = Field(default="", max_length=64)
+    target_label: str = Field(default="", max_length=240)
+    # Gene symbol used for the ESM2 / calibrated scoring lookup (catalog id
+    # uppercased, e.g. "KRAS").
+    gene: str = Field(default="", max_length=32)
+    pdb_id: str = Field(default="", max_length=8)
+    chain: str = Field(default="A", max_length=4)
+    uniprot_id: Optional[str] = Field(default=None, max_length=20)
+    compound_name: str = Field(default="", max_length=240)
+    smiles: str = Field(default="", max_length=2000)
+
+    # ── State ─────────────────────────────────────────────────────────
+    # "running" while docks are in flight; "done" once every variant resolved.
+    status: str = Field(default="running", max_length=16)
+
+    # ── Payload ───────────────────────────────────────────────────────
+    # The full per-variant rows as TEXT-encoded JSON: a list of
+    # {code, label, significance, mutScore, wtScore, jobKey, error, prob,
+    #  probSource, probVerdict}. The results page renders straight from this.
+    rows_json: Optional[str] = None
+    # WT baseline (mean of the co-docked WTs), kcal/mol.
+    wt_score: Optional[float] = Field(default=None)
+    title: Optional[str] = Field(default=None, max_length=240)

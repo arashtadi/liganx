@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, screening, selective, sentry_webhook, structures, suggest, telegram_webhook
+from .routers import admin, ask, assist, atlas, calibrate, catalog, contact, fep, jobs, library, lookup, me, me_compounds, resistance, screening, selective, sentry_webhook, structures, suggest, telegram_webhook
 
 # Git SHA of the deployed image — injected by the GH Actions workflow as a
 # build arg / env var. Lets us verify which commit is actually live without
@@ -811,6 +811,10 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     ("033_bump_free_quota_20.sql", "Migration 033 (free quota 10 -> 20)"),
     ("036_boltz2_access.sql", "Migration 036 (Boltz-2 per-feature access flag)"),
     ("037_feature_access.sql", "Migration 037 (GNINA + Virtual Screening access flags)"),
+    # Resistance Radar — shareable/durable scan records. Creates ONLY the new
+    # resistance_scan table; every other schema is untouched. Idempotent
+    # CREATE TABLE IF NOT EXISTS. See routers/resistance.py.
+    ("038_resistance_scans.sql", "Migration 038 (Resistance Radar shareable scans table)"),
 ]
 
 
@@ -943,6 +947,7 @@ app.include_router(atlas.router)  # Resistance Atlas — per-drug forecast landi
 app.include_router(fep.router)  # Phase B scaffold — endpoints return 501 until the FEP pod is wired up (docs/fep_plus_design.md)
 app.include_router(calibrate.router)  # Pro feature: score user's own (drug, mutation) data against Liganx model
 app.include_router(selective.router)  # Mutant-Selective Binder Discovery — standalone /selective feature (docs/mutant_selective_pipeline.md)
+app.include_router(resistance.router)  # Resistance Radar — shareable/durable scan records (public GET by share_id)
 app.include_router(sentry_webhook.router)  # Sentry alerts → Telegram bridge (/internal/sentry-webhook)
 app.include_router(telegram_webhook.router)  # Telegram Approve/Deny callbacks for new-user notifications
 
