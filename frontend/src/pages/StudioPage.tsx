@@ -4111,7 +4111,7 @@ export default function StudioPage() {
                 type="button"
                 disabled={!ensembleAllowed}
                 onClick={() => { if (ensembleAllowed) setEnsemble((v) => !v); }}
-                className={`mb-2 w-full flex items-center gap-2.5 px-3 py-2 rounded border text-left transition-all ${
+                className={`mb-1.5 w-full flex items-center gap-2 px-3 py-1.5 rounded border text-left transition-all ${
                   !ensembleAllowed
                     ? "border-slate-800 bg-slate-900/20 cursor-not-allowed opacity-60"
                     : ensemble
@@ -4133,18 +4133,18 @@ export default function StudioPage() {
                 >
                   {ensembleAllowed && ensemble ? "✓" : ""}
                 </span>
-                <span className="flex-1 min-w-0">
+                <span className="flex-1 min-w-0 flex items-baseline gap-2 truncate">
                   <span
-                    className={`block font-mono text-[11px] uppercase tracking-wider ${
+                    className={`font-mono text-[11px] uppercase tracking-wider shrink-0 ${
                       ensembleAllowed && ensemble ? "text-sky-200" : "text-slate-400"
                     }`}
                   >
-                    {!ensembleAllowed ? "Ensemble docking 🔒" : "Ensemble docking"}
+                    {!ensembleAllowed ? "Ensemble 🔒" : "Ensemble"}
                   </span>
-                  <span className="block text-[9px] text-slate-500 leading-tight mt-0.5">
+                  <span className="text-[9px] text-slate-500 truncate">
                     {!ensembleAllowed
-                      ? "Disabled for your account by an administrator — contact us to restore."
-                      : "Dock against an MD-relaxed receptor ensemble, not one rigid snapshot. +~30-60 s/variant."}
+                      ? "disabled by admin"
+                      : "flexed-receptor docking · slower, more realistic · hover for details"}
                   </span>
                 </span>
                 <span
