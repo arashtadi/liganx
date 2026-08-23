@@ -35,6 +35,7 @@ import { useAuth } from "../lib/auth";
 import { isAdminEmail } from "../lib/admin";
 import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
+import ResistanceRadar from "../components/ResistanceRadar";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
 import FeatureRequestModal, { type GatedFeature } from "../components/FeatureRequestModal";
@@ -1580,6 +1581,8 @@ export default function StudioPage() {
   // width back to the working column so setup + results stop scrolling.
   // Off by default (editor visible).
   const [editorCollapsed, setEditorCollapsed] = useState(false);
+  // (feature/resistance-radar) Live resistance-forecast modal — admin-gated.
+  const [resistanceRadarOpen, setResistanceRadarOpen] = useState(false);
   // (v0.93) v0.73's auto-collapse-on-completion was removed — it kept
   // re-collapsing after every Run Dock, forcing the user to click
   // 'edit ↗' just to tweak a compound and re-run. The manual ▾ setup
@@ -4375,6 +4378,36 @@ export default function StudioPage() {
                 );
               })()}
 
+              {/* (feature/resistance-radar) Resistance Radar — admin-only
+                  while in beta. Docks the current compound across the
+                  target's known resistance panel and draws a live liability
+                  map. Distinct amber identity so it reads as its own class
+                  of action, not another dock button. */}
+              {isAdmin && (() => {
+                const hasCompound = !!currentSmiles || compounds.length > 0;
+                const isDisabled = docking || submittingFull || !ketcherReady || !hasCompound || !selectedTarget;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => { if (!isDisabled) setResistanceRadarOpen(true); }}
+                    disabled={isDisabled}
+                    className={`mt-1.5 w-full px-4 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${
+                      isDisabled
+                        ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
+                        : "border-amber-600/60 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40 hover:border-amber-500"
+                    }`}
+                    title={
+                      !selectedTarget ? "Pick a target first."
+                      : !hasCompound ? "Stage at least one compound first."
+                      : "Resistance Radar — dock this compound across the target's resistance panel and forecast which mutations break binding. Admin beta."
+                    }
+                  >
+                    <span>🎯 Resistance Radar</span>
+                    <span className="opacity-60 ml-1.5">· beta</span>
+                  </button>
+                );
+              })()}
+
               {/* AI Resistance Prediction (Boltz-2) — gated peer to VS.
                   Admins + approved users run it (engine=boltz2); everyone
                   else requests access, which pings the operator on Telegram
@@ -4677,6 +4710,31 @@ export default function StudioPage() {
         message={quotaModalMessage}
         onClose={() => setQuotaModalOpen(false)}
       />
+      {/* (feature/resistance-radar) Live resistance-forecast modal. Resolves
+          the target the same way runFullJob does (catalog first, then a bare
+          4-char PDB id) and docks the current compound across the target's
+          resistance panel. Admin-gated at the button; guarded here too. */}
+      {resistanceRadarOpen && (() => {
+        const tMeta = targetMeta as any;
+        const fallbackPdb = /^[a-z0-9]{4}$/i.test(selectedTarget) ? selectedTarget.toUpperCase() : "";
+        const pdbId = (tMeta?.pdb_id || fallbackPdb || "").trim();
+        const radarSmiles = currentSmiles || compounds.find((c) => c.smiles)?.smiles || "";
+        const radarName = loadedCompound?.name || activeDraft?.name || compounds.find((c) => c.smiles)?.name || "Studio compound";
+        return (
+          <ResistanceRadar
+            open={resistanceRadarOpen}
+            onClose={() => setResistanceRadarOpen(false)}
+            smiles={radarSmiles}
+            compoundName={radarName}
+            targetId={selectedTarget}
+            targetLabel={tMeta?.name || selectedTarget || "target"}
+            pdbId={pdbId}
+            chain={tMeta?.chain || "A"}
+            uniprotId={tMeta?.uniprot || null}
+            mutations={availableMutations}
+          />
+        );
+      })()}
     </div>
   );
 }
