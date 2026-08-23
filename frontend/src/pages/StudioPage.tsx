@@ -3124,7 +3124,11 @@ export default function StudioPage() {
                   title={targetMeta?.name || ""}
                 >
                   <span className={`text-[8px] transition-transform ${targetDropdownOpen ? "rotate-90" : ""}`}>▸</span>
-                  <span>{selectedTargets.length > 0 ? selectedTargets.map(s => s.toUpperCase()).join(" + ") : "—"}</span>
+                  {/* (v1.31) No longer repeats the selected names — the
+                      selected-chips row (closed) and the grid ✓ chips (open)
+                      each show them exactly once. This button is just the
+                      open/close control for the catalog. */}
+                  <span>{targetDropdownOpen ? "close list" : "browse targets"}</span>
                 </button>
                 <input
                   type="text"
@@ -3144,10 +3148,22 @@ export default function StudioPage() {
                   adHocTargets, so a bare reseed pdb_id has no chip
                   to toggle). The X here drops the target from
                   selectedTargets directly, no dropdown roundtrip. */}
-              {selectedTargets.length > 0 && (
+              {(() => {
+                // (v1.31) Show the removable selected-chips row only where it
+                // isn't redundant: when the catalog grid is closed, show all
+                // selected targets (the only place they appear). When the grid
+                // is open, the grid's ✓ chips already show catalog picks, so
+                // only surface selected targets that have NO chip in the grid
+                // (e.g. a bare reseeded PDB id) so nothing becomes unremovable.
+                const gridOpen = targetDropdownOpen || !!targetQuery;
+                const chipsToShow = gridOpen
+                  ? selectedTargets.filter((tid) => !mergedCatalog.some((t: any) => t.id === tid))
+                  : selectedTargets;
+                if (chipsToShow.length === 0) return null;
+                return (
                 <div className="mb-2 flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
                   <span className="text-slate-600">selected</span>
-                  {selectedTargets.map((tid) => {
+                  {chipsToShow.map((tid) => {
                     const meta = mergedCatalog.find((t: any) => t.id === tid);
                     const isAdHoc = !!(meta as any)?.isAdHoc || !meta;
                     return (
@@ -3178,7 +3194,8 @@ export default function StudioPage() {
                     );
                   })}
                 </div>
-              )}
+                );
+              })()}
               {/* Expanded chip list — visible when dropdown is open OR
                   when there's a search query (forces visibility so the
                   user sees what their typing matches). */}
