@@ -3035,7 +3035,10 @@ export default function StudioPage() {
             {/* ─── TARGET (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
-                <span className={TOK.label}>Target</span>
+                <span className="flex items-center gap-2">
+                  <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${selectedTarget ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>1</span>
+                  <span className={TOK.label}>Target</span>
+                </span>
                 <span className="font-mono text-[9px] text-slate-600">
                   {(() => {
                     const all = mergedCatalog.length;
@@ -3232,7 +3235,10 @@ export default function StudioPage() {
             {/* ─── MUTATIONS (dropdown + search on right) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
-                <span className={TOK.label}>Mutations</span>
+                <span className="flex items-center gap-2">
+                  <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${(includeWt || selectedMutations.length > 0) ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>2</span>
+                  <span className={TOK.label}>Mutations</span>
+                </span>
                 <span className="font-mono text-[9px] text-slate-600">
                   {(() => {
                     const all = availableMutations.length;
@@ -3381,7 +3387,10 @@ export default function StudioPage() {
             {/* ─── COMPOUND (v0.64: multi-add list, click-to-search) ─── */}
             <div className="px-4 py-3 border-b border-slate-800/70">
               <div className="flex items-center justify-between mb-2">
-                <span className={TOK.label}>Compounds</span>
+                <span className="flex items-center gap-2">
+                  <span className={`inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border text-[9px] font-mono leading-none ${(compounds.length > 0 || !!currentSmiles) ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-sky-500/50 bg-sky-500/10 text-sky-300"}`} aria-hidden>3</span>
+                  <span className={TOK.label}>Compounds</span>
+                </span>
                 <span className="font-mono text-[9px] text-slate-600">
                   {compounds.length}/{MAX_COMPOUNDS}{compounds.length === MAX_COMPOUNDS && <span className="text-amber-400 ml-1">· full</span>}
                 </span>
@@ -4154,7 +4163,7 @@ export default function StudioPage() {
                     <button
                       onClick={() => runFullJob("quickvina2_gpu")}
                       disabled={isDisabled}
-                      className={`flex-[1.8] px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
+                      className={`flex-[1.8] px-4 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${sharedBusyClasses} ${
                         submittingFull
                           ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-300"
                           : isCoolingOff
@@ -4190,7 +4199,7 @@ export default function StudioPage() {
                         }
                       }}
                       disabled={gninaCanRun && isDisabled}
-                      className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
+                      className={`flex-1 px-3 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${sharedBusyClasses} ${
                         !gninaCanRun
                           ? gninaPending
                             ? "border-violet-800/40 bg-violet-950/10 text-violet-400/50 cursor-default"
@@ -4254,7 +4263,7 @@ export default function StudioPage() {
                       }
                     }}
                     disabled={vsCanRun && isDisabled}
-                    className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
+                    className={`mt-1.5 w-full px-4 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${
                       !vsCanRun
                         ? vsPending
                           ? "border-cyan-800/40 bg-cyan-950/10 text-cyan-400/50 cursor-default"
@@ -4312,7 +4321,7 @@ export default function StudioPage() {
                       }
                     }}
                     disabled={canRun && isDisabled}
-                    className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
+                    className={`mt-1.5 w-full px-4 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${
                       !canRun
                         ? isPending
                           ? "border-teal-800/40 bg-teal-950/10 text-teal-400/50 cursor-default"
