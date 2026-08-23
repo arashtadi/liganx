@@ -902,6 +902,10 @@ export const api = {
       `/me/request-access/${feature}`,
       { method: "POST" },
     ),
+  /** Ask the operator for more free docking runs after hitting the cap.
+   *  Pings the Limit topic with one-tap Grant/Deny; returns {ok:true}. */
+  requestMoreRuns: () =>
+    request<{ ok: boolean }>("/me/request-more-runs", { method: "POST" }),
   /** @deprecated use requestFeatureAccess('boltz2'). Kept for compatibility. */
   requestBoltz2Access: () =>
     request<{ boltz2_access: string }>("/me/request-boltz2-access", {

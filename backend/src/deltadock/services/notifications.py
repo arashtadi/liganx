@@ -475,6 +475,33 @@ def notify_quota_reached(
     return _send("\n".join(parts), channel="limit")
 
 
+def notify_more_runs_request(
+    *,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    used: int,
+    quota: int,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Fire when a user explicitly clicks 'Request more free runs' from the
+    out-of-runs modal. Lands in the Limit topic with one-tap Approve/Deny —
+    Approve (grn:<uid>) grants +N free runs via the webhook. Not deduped:
+    it's a deliberate user action, and the operator wants to see each ask."""
+    parts = ["🙋 <b>User is requesting more free runs</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [f"📊 Used <b>{used}/{quota}</b> free dockings"]
+    reply_markup: Optional[dict] = None
+    if user_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Grant +20", "callback_data": f"grn:{user_id}"},
+                {"text": "❌ Deny",      "callback_data": f"drn:{user_id}"},
+            ]],
+        }
+    return _send("\n".join(parts), reply_markup=reply_markup, channel="limit")
+
+
 def notify_pod_down(
     *,
     reason: str,

@@ -38,8 +38,9 @@ import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
 import FeatureRequestModal, { type GatedFeature } from "../components/FeatureRequestModal";
+import QuotaLimitModal from "../components/QuotaLimitModal";
 import { useQuery } from "@tanstack/react-query";
-import { api, type Job } from "../api";
+import { api, ApiError, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
 import { appendDockHistory, listDockHistory, deleteDockHistoryEntry, clearDockHistory, type DockHistoryEntry } from "../lib/dockHistory";
@@ -397,6 +398,9 @@ export default function StudioPage() {
   const [gninaAccess, setGninaAccess] = useState<string | null>(null);
   const [screeningAccess, setScreeningAccess] = useState<string | null>(null);
   const [requestFeature, setRequestFeature] = useState<GatedFeature | null>(null);
+  // Out-of-free-runs modal (opens when a dock submit returns 402 quota).
+  const [quotaModalOpen, setQuotaModalOpen] = useState(false);
+  const [quotaModalMessage, setQuotaModalMessage] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
@@ -1855,7 +1859,14 @@ export default function StudioPage() {
       navigate(`/jobs/${jobKey}?from=studio`);
       return;
     } catch (e: any) {
-      setDockError(e?.message || "Full Job submission failed.");
+      // A free-run-quota 402 opens the out-of-runs modal (with a one-click
+      // "request more runs"); every other error shows the inline dock error.
+      if (e instanceof ApiError && e.status === 402 && /free docking/i.test(e?.message || "")) {
+        setQuotaModalMessage(e?.message || null);
+        setQuotaModalOpen(true);
+      } else {
+        setDockError(e?.message || "Full Job submission failed.");
+      }
     } finally {
       setSubmittingFull(false);
     }
@@ -4586,6 +4597,15 @@ export default function StudioPage() {
           else if (feature === "gnina") setGninaAccess(s);
           else if (feature === "screening") setScreeningAccess(s);
         }}
+      />
+      {/* (2026-08) Out-of-free-runs modal. Opens when a Run Dock submit is
+          blocked by the free-run cap (402). One click sends the operator a
+          Grant/Deny ping in the Limit topic; on success it shows a "request
+          sent" confirmation the user closes to return to the Studio. */}
+      <QuotaLimitModal
+        open={quotaModalOpen}
+        message={quotaModalMessage}
+        onClose={() => setQuotaModalOpen(false)}
       />
     </div>
   );

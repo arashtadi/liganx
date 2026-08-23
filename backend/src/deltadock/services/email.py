@@ -397,3 +397,20 @@ def notify_user_feature_denied(*, feature: str, user_email: Optional[str]) -> bo
     </div>
     """
     return _send(to=user_email, subject=f"About your {label} request", html=html)
+
+
+def notify_user_more_runs_granted(*, user_email: Optional[str], granted: int) -> bool:
+    """Email the user when the operator grants them more free docking runs."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">➕ You've got {granted} more free runs</h2>
+      <p style="color: #475569; line-height:1.6;">
+        Good news — we've added <b>{granted} more free docking runs</b> to your Liganx account.
+        Head back to the Studio and pick up where you left off.
+      </p>
+      <p><a href="https://liganx.com/studio" style="background: #0d8f85; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight:600;">Open Studio →</a></p>
+    </div>
+    """
+    return _send(to=user_email, subject=f"You've got {granted} more free runs on Liganx ➕", html=html)

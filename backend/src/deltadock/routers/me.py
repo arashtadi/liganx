@@ -742,3 +742,47 @@ def request_feature_access(
         logging.getLogger(__name__).exception("notify_admin_feature_request failed (non-fatal)")
 
     return FeatureRequestOut(feature=feature, access="requested")
+
+
+class MoreRunsRequestOut(BaseModel):
+    ok: bool
+
+
+@router.post("/request-more-runs", response_model=MoreRunsRequestOut)
+def request_more_runs(
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> MoreRunsRequestOut:
+    """User clicked 'Request more free runs' after hitting their cap. Pings
+    the operator in the Limit topic with one-tap Grant/Deny (Grant adds
+    +20 free runs). Best-effort — a Telegram hiccup still returns ok so the
+    modal can show its 'request sent' confirmation."""
+    import logging
+    try:
+        row = session.execute(
+            text(
+                "SELECT COALESCE(p.job_quota, 20) AS quota,"
+                " (SELECT COUNT(*) FROM job j WHERE j.user_id = :uid"
+                "  AND j.status::text IN ('pending','running','completed')) AS used"
+                " FROM (SELECT 1) _ LEFT JOIN public.user_profile p ON p.user_id = :uid"
+            ),
+            {"uid": user.id},
+        ).mappings().first()
+        used = int(row["used"]) if row else 0
+        quota = int(row["quota"]) if row else 20
+    except Exception:  # noqa: BLE001
+        used, quota = 0, 20
+    try:
+        from ..services.notifications import notify_more_runs_request, user_identity
+        _, _fn, _org = user_identity(session, user.id)
+        notify_more_runs_request(
+            user_email=getattr(user, "email", None),
+            user_id=str(user.id),
+            used=used,
+            quota=quota,
+            full_name=_fn,
+            organization=_org,
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_more_runs_request failed (non-fatal)")
+    return MoreRunsRequestOut(ok=True)

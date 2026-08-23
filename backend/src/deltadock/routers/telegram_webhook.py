@@ -173,6 +173,53 @@ def _flip_feature(feature: str, user_id: str, target: str, actor: str) -> tuple[
         return False, ""
 
 
+# How many extra free dockings a single "Grant" tap adds (out-of-runs flow).
+_RUNS_GRANT = 20
+
+
+def _grant_runs(user_id: str, amount: int) -> tuple[bool, str, Optional[int]]:
+    """Bump a user's job_quota by `amount`, granting more free dockings.
+    Returns (changed, user_email, new_quota). NB not idempotent across taps
+    by design — each Grant adds another `amount`; the confirmation edit
+    removes the buttons after the first tap so accidental double-grants need
+    a deliberate re-tap. A Telegram re-delivery could double-grant, but we
+    200 fast so that's rare and harmless (operator can adjust in /admin)."""
+    try:
+        with Session(engine) as s:
+            row = s.execute(
+                text("SELECT email FROM auth.users WHERE id = :uid"),
+                {"uid": user_id},
+            ).first()
+            user_email = (row[0] if row else "") or ""
+            res = s.execute(
+                text(
+                    "UPDATE public.user_profile "
+                    "   SET job_quota = COALESCE(job_quota, 20) + :amt "
+                    " WHERE user_id = :uid "
+                    " RETURNING job_quota"
+                ),
+                {"amt": amount, "uid": user_id},
+            ).first()
+            if res is None:
+                # No profile row yet — seed default (20) + the grant.
+                s.execute(
+                    text(
+                        "INSERT INTO public.user_profile (user_id, job_quota) "
+                        "VALUES (:uid, :q) "
+                        "ON CONFLICT (user_id) DO UPDATE SET job_quota = EXCLUDED.job_quota"
+                    ),
+                    {"uid": user_id, "q": 20 + amount},
+                )
+                new_quota: Optional[int] = 20 + amount
+            else:
+                new_quota = int(res[0]) if res[0] is not None else None
+            s.commit()
+            return True, user_email, new_quota
+    except Exception as e:  # noqa: BLE001
+        log.exception("grant_runs DB error for user %s: %s", user_id, e)
+        return False, "", None
+
+
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def telegram_webhook(
     req: Request,
@@ -218,6 +265,54 @@ async def telegram_webhook(
 
     action, _, rest = data.partition(":")
     action = action.strip().lower()
+
+    # More-free-runs grant/deny (out-of-runs modal). Distinct from access
+    # approve/deny: Grant bumps job_quota instead of flipping a status.
+    #   grn:<uid>  → grant +_RUNS_GRANT free dockings
+    #   drn:<uid>  → deny (no state change, just record + acknowledge)
+    if action in ("grn", "drn"):
+        runs_uid = rest.strip()
+        if not runs_uid:
+            _notif.answer_callback(cbq_id, "Unknown action.")
+            return {"ok": True, "ignored": "bad_runs_uid"}
+        if action == "grn":
+            granted, user_email, new_quota = _grant_runs(runs_uid, _RUNS_GRANT)
+            if granted and user_email:
+                try:
+                    from ..services import email as _email
+                    _email.notify_user_more_runs_granted(user_email=user_email, granted=_RUNS_GRANT)
+                except Exception:  # noqa: BLE001
+                    log.exception("more-runs granted email failed (non-fatal)")
+            pretty = (f"➕ GRANTED +{_RUNS_GRANT} runs ✅" if granted
+                      else "GRANT failed — check /admin ⚠️")
+            ack = f"Granted +{_RUNS_GRANT} runs." if granted else "Grant failed."
+            quota_line = (f"\n📊 New quota: <b>{new_quota}</b>"
+                          if granted and new_quota is not None else "")
+        else:
+            try:
+                with Session(engine) as _s:
+                    _r = _s.execute(
+                        text("SELECT email FROM auth.users WHERE id = :uid"),
+                        {"uid": runs_uid},
+                    ).first()
+                user_email = (_r[0] if _r else "") or ""
+            except Exception:  # noqa: BLE001
+                user_email = ""
+            pretty = "MORE RUNS DENIED ❌"
+            ack = "Denied."
+            quota_line = ""
+        email_line = f"\n📧 {user_email}" if user_email else ""
+        new_text = (
+            f"<b>{pretty}</b> by <code>{actor}</code>"
+            f"{email_line}"
+            f"\n🆔 <code>{runs_uid}</code>"
+            f"{quota_line}"
+        )
+        if chat_id is not None and message_id is not None:
+            _notif.edit_message_after_action(chat_id, message_id, new_text)
+        _notif.answer_callback(cbq_id, ack)
+        log.info("Telegram more-runs: user=%s action=%s by=%s", runs_uid, action, actor)
+        return {"ok": True, "user_id": runs_uid, "runs_action": action}
 
     # Resolve (feature, is_approve, user_id) from the callback_data:
     #   account:        approve|deny : <uid>          (feature=None → access_status)
