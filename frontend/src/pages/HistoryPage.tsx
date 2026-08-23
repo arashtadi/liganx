@@ -143,6 +143,13 @@ function defaultTitle(j: Job): string {
  *  the initial render slow. Mirrored on the API call. */
 const PAGE_SIZE = 25;
 
+/** Auto-applied tag we suppress from the Docking-jobs filter bar. Resistance
+ *  Radar stamps every batch job it submits with this; those scans now have
+ *  their own History tab, so the chip here would be a redundant, misleading
+ *  discovery affordance (filtering by it shows scattered batch jobs, not the
+ *  scan). Still shown on individual row pills, where it explains job origin. */
+const HIDDEN_FILTER_TAG = "resistance-radar";
+
 /** Canonicalise a job's engine for filtering/grouping. Null and legacy rows
  *  (predating the engine column) map to quickvina2_gpu, the historical default
  *  — matches how JobPage's EnginePill treats a missing engine. */
@@ -584,6 +591,11 @@ function JobsTab() {
     for (const j of jobs) {
       for (const t of j.tags) seen.add(t);
     }
+    // "resistance-radar" is auto-applied to the per-batch jobs a Resistance
+    // Radar scan submits. Its own History tab is the proper discovery surface
+    // for those scans, so the filter chip here is redundant — drop it from the
+    // bar. (Left on the row pills, where it still explains a job's origin.)
+    seen.delete(HIDDEN_FILTER_TAG);
     return sortTags([...seen]);
   }, [jobs]);
 
