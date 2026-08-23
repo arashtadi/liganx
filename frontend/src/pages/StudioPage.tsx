@@ -1806,7 +1806,19 @@ export default function StudioPage() {
         }
         setInvalidCompounds(m);
       }
-      if (!primary) { setDockError(firstError || "All Full Job submissions failed."); return; }
+      if (!primary) {
+        // A free-run-cap block (402) comes back as a rejected task whose
+        // message carries the backend's distinctive "free dockings" text.
+        // Open the out-of-runs modal (one-click "request more runs") instead
+        // of the dead-end inline error.
+        if (firstError && /free docking/i.test(firstError)) {
+          setQuotaModalMessage(firstError);
+          setQuotaModalOpen(true);
+        } else {
+          setDockError(firstError || "All Full Job submissions failed.");
+        }
+        return;
+      }
       const jobKey = (primary.job as any).share_id ?? String((primary.job as any).id ?? "");
       if (!jobKey) {
         setDockError("Job created but no id returned — refresh /history to find it.");
