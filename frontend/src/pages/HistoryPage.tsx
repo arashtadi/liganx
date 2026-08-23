@@ -29,6 +29,13 @@ import {
   type JobTag,
 } from "../lib/jobTags";
 import { usePageMeta } from "../lib/usePageMeta";
+import {
+  listResistanceScans,
+  serverScanToSaved,
+  deleteResistanceScan,
+  type SavedResistanceScan,
+} from "../lib/resistanceHistory";
+import { probTier, ddgTier, fmtWhen, RESISTANCE_AT_RISK } from "../lib/resistanceScoring";
 import { parseUtcDate } from "../lib/parseUtcDate";
 
 function statusPill(s: Job["status"]) {
@@ -142,7 +149,7 @@ const PAGE_SIZE = 25;
  *  remember the share URL" approach was broken UX (no discovery surface
  *  for completed screening runs). Both tabs share the same outer page
  *  chrome; only the body switches. */
-type HistoryTab = "jobs" | "screenings" | "fep";
+type HistoryTab = "jobs" | "screenings" | "fep" | "resistance";
 
 export default function HistoryPage() {
   usePageMeta({
@@ -158,6 +165,7 @@ export default function HistoryPage() {
       const stored = sessionStorage.getItem("liganx.history.tab");
       if (stored === "screenings") return "screenings";
       if (stored === "fep") return "fep";
+      if (stored === "resistance") return "resistance";
       return "jobs";
     } catch {
       return "jobs";
@@ -171,11 +179,32 @@ export default function HistoryPage() {
   // the tab; if one had it stored from before, bounce them back to Jobs.
   const { user } = useAuth();
   const isAdmin = isAdminEmail(user?.email);
+
+  // Resistance Radar tab visibility mirrors the Studio gate: admins + accounts
+  // whose resistance_access is 'approved' see it. Fetched once on mount; null
+  // until it resolves (tab hidden in the meantime, same as a denied user).
+  const [resistanceAccess, setResistanceAccess] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyAccessStatus()
+      .then((a) => { if (!cancelled) setResistanceAccess((a as any)?.resistance_access ?? null); })
+      .catch(() => { /* anon / signed-out — leave null, tab stays hidden */ });
+    return () => { cancelled = true; };
+  }, []);
+  const canSeeResistance = isAdmin || resistanceAccess === "approved";
+
   useEffect(() => {
     if (!isAdmin && activeTab === "fep") setActiveTab("jobs");
-  }, [isAdmin, activeTab]);
+    if (!canSeeResistance && activeTab === "resistance") setActiveTab("jobs");
+  }, [isAdmin, canSeeResistance, activeTab]);
 
-  const visibleTabs: HistoryTab[] = isAdmin ? ["jobs", "screenings", "fep"] : ["jobs", "screenings"];
+  const visibleTabs: HistoryTab[] = [
+    "jobs",
+    "screenings",
+    ...(canSeeResistance ? (["resistance"] as HistoryTab[]) : []),
+    ...(isAdmin ? (["fep"] as HistoryTab[]) : []),
+  ];
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -186,6 +215,8 @@ export default function HistoryPage() {
             ? "Your past docking runs — searchable, taggable, one-click re-runnable."
             : activeTab === "screenings"
             ? "Your virtual-screening runs ranked by selectivity index."
+            : activeTab === "resistance"
+            ? "Your Resistance Radar scans — reopen the full liability map for any compound."
             : "Your FEP+ relative free-energy perturbation studies."}
         </p>
       </div>
@@ -210,13 +241,246 @@ export default function HistoryPage() {
                 : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
             }`}
           >
-            {tab === "jobs" ? "Docking jobs" : tab === "screenings" ? "Virtual screening" : "FEP+ studies"}
+            {tab === "jobs" ? "Docking jobs" : tab === "screenings" ? "Virtual screening" : tab === "resistance" ? "Resistance Radar" : "FEP+ studies"}
           </button>
         ))}
       </div>
 
-      {activeTab === "jobs" ? <JobsTab /> : activeTab === "screenings" ? <ScreeningsTab /> : <FepStudiesTab />}
+      {activeTab === "jobs" ? <JobsTab /> : activeTab === "screenings" ? <ScreeningsTab /> : activeTab === "resistance" ? <ResistanceScansTab /> : <FepStudiesTab />}
     </div>
+  );
+}
+
+
+/** Reduce a scan's rows to a one-line risk summary: how many mutations are
+ *  flagged at-risk/resistant, and the single worst one. Prefers the calibrated
+ *  probability (phase-2 records); falls back to ΔΔ docking (phase-1 records
+ *  scored before ESM2 lands). Returns null when nothing is scored yet. */
+function scanRiskSummary(scan: SavedResistanceScan): {
+  atRisk: number;
+  total: number;
+  worst: { code: string; label: string } | null;
+  worstChip: string | null;
+} {
+  const rows = scan.rows || [];
+  let atRisk = 0;
+  let worst: SavedResistanceScan["rows"][number] | null = null;
+  let worstScore = -Infinity;
+  let worstChip: string | null = null;
+  for (const r of rows) {
+    const ddg = r.mutScore != null && r.wtScore != null ? r.mutScore - r.wtScore : null;
+    const hasProb = r.prob != null;
+    const flagged = hasProb ? (r.prob as number) >= 0.45 : ddg != null && ddg >= RESISTANCE_AT_RISK;
+    if (flagged) atRisk += 1;
+    // Rank worst by prob when available, else by ΔΔ. Keep them on separate
+    // scales but comparable within one scan (a scan is all-prob or all-ddg).
+    const score = hasProb ? (r.prob as number) : ddg ?? -Infinity;
+    if (score > worstScore) {
+      worstScore = score;
+      worst = r;
+      if (hasProb) {
+        worstChip = probTier(r.prob).chip;
+      } else if (ddg != null) {
+        // DdgTier exposes text/bar/ring (no .chip); compose a chip from them.
+        const t = ddgTier(ddg);
+        worstChip = `${t.text} bg-slate-100 border ${t.ring} dark:bg-slate-800/60`;
+      } else {
+        worstChip = null;
+      }
+    }
+  }
+  return {
+    atRisk,
+    total: rows.length,
+    worst: worst ? { code: worst.code, label: worst.label } : null,
+    worstChip,
+  };
+}
+
+
+/** Resistance Radar tab. Lists one row per SCAN (not per batch-job), pulled
+ *  from the server list merged with any local-only scans — the same source the
+ *  Radar modal's "recent scans" uses. Each row opens the full /resistance/:id
+ *  liability map. This is the discovery surface the raw docking-job rows can't
+ *  be: a scan is several batch jobs, and only this record reassembles them. */
+function ResistanceScansTab() {
+  const [scans, setScans] = useState<SavedResistanceScan[]>(() => listResistanceScans());
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .resistanceList()
+      .then((list) => {
+        if (!alive) return;
+        const mapped = list.map(serverScanToSaved);
+        const ids = new Set(mapped.map((s) => s.id));
+        const localOnly = listResistanceScans().filter((s) => !ids.has(s.id));
+        setScans([...mapped, ...localOnly].sort((a, b) => b.savedAt.localeCompare(a.savedAt)));
+      })
+      .catch(() => { /* offline / not authed — keep the local list */ })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!q.trim()) return scans;
+    const needle = q.trim().toLowerCase();
+    return scans.filter((s) => {
+      const hay = [
+        s.targetLabel,
+        s.targetId,
+        s.compoundName,
+        ...s.rows.map((r) => r.code),
+      ].join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [scans, q]);
+
+  function removeScan(id: string) {
+    deleteResistanceScan(id);
+    setScans((prev) => prev.filter((s) => s.id !== id));
+  }
+
+  if (loading && scans.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-24 text-slate-500 dark:text-slate-400">
+        <Spinner size={18} className="mr-2" /> Loading your scans…
+      </div>
+    );
+  }
+
+  if (scans.length === 0) {
+    return (
+      <div className="card max-w-xl mx-auto text-center py-16">
+        <h2 className="text-2xl font-bold text-ink dark:text-white mb-2">No scans yet</h2>
+        <p className="muted mb-5">
+          Run Resistance Radar on a compound in the Studio and each scan will
+          appear here to reopen.
+        </p>
+        <Link to="/studio" className="btn btn-primary">Open Studio</Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Showing {scans.length} scan{scans.length === 1 ? "" : "s"} · click any to reopen its liability map
+      </p>
+
+      <input
+        type="search"
+        className="input"
+        placeholder="Search by target, compound, or mutation…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden dark:border-slate-700 dark:bg-slate-900">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
+            No scans match the current search.
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+            {filtered.map((s) => (
+              <ResistanceScanRow key={s.id} scan={s} onDelete={removeScan} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function ResistanceScanRow({
+  scan,
+  onDelete,
+}: {
+  scan: SavedResistanceScan;
+  onDelete: (id: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const risk = scanRiskSummary(scan);
+  const running = scan.status === "running";
+
+  function onDeleteClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirming) {
+      setConfirming(true);
+      window.setTimeout(() => setConfirming(false), 5000);
+      return;
+    }
+    onDelete(scan.id);
+  }
+
+  return (
+    <li className="relative">
+      <Link
+        to={`/resistance/${scan.id}`}
+        className="block px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
+      >
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex-1 min-w-0 pr-16">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="badge bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 text-[10px]">
+                🎯 Resistance Radar
+              </span>
+              <span className="font-semibold text-ink dark:text-white truncate">
+                {scan.targetLabel} · {scan.compoundName}
+              </span>
+              {running ? (
+                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:ring-amber-800/40">
+                  <Spinner size={10} /> running
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-800 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-800/40">
+                  done
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 flex items-center gap-2 flex-wrap">
+              <span>{fmtWhen(scan.savedAt)}</span>
+              <span aria-hidden>·</span>
+              <span>{risk.total} variant{risk.total === 1 ? "" : "s"}</span>
+              {risk.total > 0 && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className={risk.atRisk > 0 ? "text-amber-600 dark:text-amber-300 font-medium" : ""}>
+                    {risk.atRisk} at-risk
+                  </span>
+                </>
+              )}
+              {risk.worst && risk.worstChip && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="text-slate-500 dark:text-slate-400">worst</span>
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${risk.worstChip}`}>
+                    {risk.worst.code}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </Link>
+      <button
+        type="button"
+        onClick={onDeleteClick}
+        title={confirming ? "Click again to remove this scan from your history" : "Remove from history"}
+        className={`absolute top-3 right-3 rounded p-1 text-xs transition-colors ${
+          confirming
+            ? "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-200"
+            : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+        }`}
+      >
+        {confirming ? "Remove?" : <Close size={14} />}
+      </button>
+    </li>
   );
 }
 
