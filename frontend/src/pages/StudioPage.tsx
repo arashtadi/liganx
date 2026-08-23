@@ -4719,7 +4719,16 @@ export default function StudioPage() {
         const fallbackPdb = /^[a-z0-9]{4}$/i.test(selectedTarget) ? selectedTarget.toUpperCase() : "";
         const pdbId = (tMeta?.pdb_id || fallbackPdb || "").trim();
         const radarSmiles = currentSmiles || compounds.find((c) => c.smiles)?.smiles || "";
-        const radarName = loadedCompound?.name || activeDraft?.name || compounds.find((c) => c.smiles)?.name || "Studio compound";
+        // Prefer a real compound name over the autosave draft label (which is
+        // "untitled · <time>"): loaded library compound → the active staged
+        // compound → any named staged compound → a non-"untitled" draft name.
+        const radarActive = compounds[activeCompoundIdx];
+        const radarDraftName = activeDraft?.name && !/^untitled/i.test(activeDraft.name) ? activeDraft.name : null;
+        const radarName = loadedCompound?.name
+          || radarActive?.name
+          || compounds.find((c) => c.name && c.smiles)?.name
+          || radarDraftName
+          || "Studio compound";
         return (
           <ResistanceRadar
             open={resistanceRadarOpen}
