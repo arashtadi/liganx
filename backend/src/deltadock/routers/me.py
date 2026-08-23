@@ -427,6 +427,9 @@ class AccessStatusOut(BaseModel):
     # Same values as boltz2_access. Admins read "approved".
     gnina_access: Optional[str] = None
     screening_access: Optional[str] = None
+    # Per-feature access for Resistance Radar (migration 039).
+    # Same values as boltz2_access. Admins read "approved".
+    resistance_access: Optional[str] = None
 
 
 @router.get("/access_status", response_model=AccessStatusOut)
@@ -490,7 +493,8 @@ def get_access_status(
         # screening.py).
         return AccessStatusOut(status="approved", decided_at=None,
                                boltz2_access="approved", gnina_access="approved",
-                               screening_access="approved")
+                               screening_access="approved",
+                               resistance_access="approved")
 
     # Watched-user live monitor: ping the operator on Telegram when a
     # watched user's app is active (this endpoint is polled on app load /
@@ -554,7 +558,7 @@ def get_access_status(
     row = session.execute(
         text(
             "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at, "
-            "       boltz2_access, gnina_access, screening_access "
+            "       boltz2_access, gnina_access, screening_access, resistance_access "
             "FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},
@@ -572,6 +576,7 @@ def get_access_status(
         boltz2_access=(row["boltz2_access"] or None),
         gnina_access=(row["gnina_access"] or None),
         screening_access=(row["screening_access"] or None),
+        resistance_access=(row["resistance_access"] or None),
     )
 
 
@@ -666,6 +671,7 @@ _FEATURE_COLUMNS = {
     "boltz2": "boltz2_access",
     "gnina": "gnina_access",
     "screening": "screening_access",
+    "resistance": "resistance_access",
 }
 
 

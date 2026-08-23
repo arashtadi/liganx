@@ -991,13 +991,15 @@ export const api = {
       boltz2_access?: "requested" | "approved" | "denied" | null;
       gnina_access?: "requested" | "approved" | "denied" | null;
       screening_access?: "requested" | "approved" | "denied" | null;
+      resistance_access?: "requested" | "approved" | "denied" | null;
     }>(
       "/me/access_status",
     ),
-  /** Request access to a gated feature (boltz2 | gnina | screening). Fires the
-   *  operator's Telegram Approve/Deny ping + admin email. Returns the new
-   *  access state ('requested', or 'approved' for admins). */
-  requestFeatureAccess: (feature: "boltz2" | "gnina" | "screening") =>
+  /** Request access to a gated feature (boltz2 | gnina | screening |
+   *  resistance). Fires the operator's Telegram Approve/Deny ping + admin
+   *  email. Returns the new access state ('requested', or 'approved' for
+   *  admins). */
+  requestFeatureAccess: (feature: "boltz2" | "gnina" | "screening" | "resistance") =>
     request<{ feature: string; access: string }>(
       `/me/request-access/${feature}`,
       { method: "POST" },

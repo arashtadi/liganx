@@ -137,11 +137,13 @@ _FEATURE_COLUMNS = {
     "boltz2": "boltz2_access",
     "gnina": "gnina_access",
     "screening": "screening_access",
+    "resistance": "resistance_access",
 }
 _FEATURE_LABELS = {
     "boltz2": "Boltz-2",
     "gnina": "GNINA",
     "screening": "Virtual Screening",
+    "resistance": "Resistance Radar",
 }
 
 

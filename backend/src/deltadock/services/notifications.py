@@ -329,6 +329,7 @@ _FEATURE_META = {
     "boltz2":    ("🧬", "AI Resistance Prediction (Boltz-2)", "access"),
     "gnina":     ("🧪", "GNINA docking", "access"),
     "screening": ("🔬", "Virtual Screening", "access"),
+    "resistance": ("🎯", "Resistance Radar", "access"),
 }
 
 

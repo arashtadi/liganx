@@ -10,7 +10,7 @@ import { api } from "../api";
  * open flag and is told the new state via onRequested so it can flip the
  * button to "pending".
  */
-export type GatedFeature = "boltz2" | "gnina" | "screening";
+export type GatedFeature = "boltz2" | "gnina" | "screening" | "resistance";
 
 interface Props {
   feature: GatedFeature | null;
@@ -35,6 +35,11 @@ const ACCENT: Record<string, {
     border: "border-cyan-700/50", h2: "text-cyan-200",
     chip: "bg-cyan-500/10 text-cyan-300", check: "text-cyan-400",
     label: "text-cyan-300/70", btn: "bg-cyan-600 hover:bg-cyan-500",
+  },
+  amber: {
+    border: "border-amber-700/50", h2: "text-amber-200",
+    chip: "bg-amber-500/10 text-amber-300", check: "text-amber-400",
+    label: "text-amber-300/70", btn: "bg-amber-600 hover:bg-amber-500",
   },
 };
 
@@ -69,6 +74,16 @@ const COPY: Record<GatedFeature, {
       "Up to 1000 compounds per screen (CSV / SDF upload)",
       "Δ-vs-WT selectivity ranking",
       "Promote any hit to a full deep-dock with one click",
+    ],
+  },
+  resistance: {
+    emoji: "🎯", title: "Resistance Radar", accent: "amber",
+    lede:
+      "Resistance Radar docks your compound across a target's entire known resistance panel in one pass, then forecasts which mutations break binding — turning the resistance question into a calibrated liability map for your molecule. It's in limited beta while we broaden target coverage.",
+    bullets: [
+      "One-click scan across the target's full variant panel",
+      "Per-mutation Δ-docking vs. wild-type, ranked by risk",
+      "A calibrated resistance probability, shareable by link",
     ],
   },
 };

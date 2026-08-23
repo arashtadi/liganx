@@ -91,8 +91,11 @@ export default function App() {
             <Route path="/selective" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective")} />
             <Route path="/selective/:shareId" element={withBoundary(<RequireAdmin><SelectivePage /></RequireAdmin>, "Mutant-Selective run")} />
             {/* Resistance Radar — full results page for an in-Studio resistance
-                scan (feature/resistance-radar). Admin-gated while in beta. */}
-            <Route path="/resistance/:id" element={withBoundary(<RequireAdmin><ResistancePage /></RequireAdmin>, "Resistance Radar")} />
+                scan (feature/resistance-radar). Public like /screening/:shareId
+                — the backend GET is public and returns read-only for non-owners,
+                so shared scan links open for anyone; running a new scan is gated
+                separately in the Studio (admin OR resistance_access approved). */}
+            <Route path="/resistance/:id" element={withBoundary(<ResistancePage />, "Resistance Radar")} />
             <Route path="/settings" element={withBoundary(<RequireAuth><SettingsPage /></RequireAuth>, "Settings")} />
             <Route path="/welcome" element={withBoundary(<RequireAuth><CompleteProfilePage /></RequireAuth>, "Welcome / Profile")} />
             <Route path="/compounds" element={withBoundary(<RequireAuth><CompoundsPage /></RequireAuth>, "My Compounds")} />

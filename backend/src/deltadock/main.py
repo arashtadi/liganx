@@ -815,6 +815,9 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # resistance_scan table; every other schema is untouched. Idempotent
     # CREATE TABLE IF NOT EXISTS. See routers/resistance.py.
     ("038_resistance_scans.sql", "Migration 038 (Resistance Radar shareable scans table)"),
+    # Resistance Radar — per-feature request/approve access flag. Adds ONLY
+    # the resistance_access column to user_profile; additive + idempotent.
+    ("039_resistance_access.sql", "Migration 039 (Resistance Radar per-feature access flag)"),
 ]
 
 

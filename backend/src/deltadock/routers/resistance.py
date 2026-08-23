@@ -24,7 +24,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from ..auth import CurrentUser, admin_user, current_user_or_none
+from sqlalchemy import text
+
+from ..auth import CurrentUser, current_user, current_user_or_none
 from ..db import get_session
 from ..models import ResistanceScan
 
@@ -112,12 +114,40 @@ def _rows_json(rows: list[ScanRow]) -> str:
     return json.dumps([r.model_dump() for r in rows])
 
 
+def _require_resistance_access(user: CurrentUser, session: Session) -> None:
+    """Gate for the write/list endpoints. Passes for admins (ADMIN_EMAIL) and
+    for accounts whose user_profile.resistance_access == 'approved' (granted via
+    the in-app request -> operator Approve flow, migration 039). Everyone else
+    gets 403. Additive: mirrors the screening.py access pattern. The public
+    GET /{share_id} is intentionally NOT gated — shared links stay viewable."""
+    import os as _os
+    _admin_email = _os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    if _admin_email and (getattr(user, "email", "") or "").strip().lower() == _admin_email:
+        return
+    row = session.execute(text(
+        "SELECT COALESCE(resistance_access, '') FROM public.user_profile WHERE user_id = :uid"
+    ), {"uid": user.id}).first()
+    if row and (row[0] or "").strip().lower() == "approved":
+        return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "message": (
+                "Resistance Radar isn't enabled on your account yet. "
+                "Request access from the Studio and we'll approve it."
+            ),
+            "feature": "resistance",
+        },
+    )
+
+
 @router.post("", response_model=ScanOut, status_code=201)
 def create_scan(
     payload: ScanCreate,
-    user: CurrentUser = Depends(admin_user),
+    user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> ScanOut:
+    _require_resistance_access(user, session)
     scan = ResistanceScan(
         user_id=str(user.id),
         target_id=payload.targetId[:64],
@@ -141,10 +171,11 @@ def create_scan(
 
 @router.get("", response_model=list[ScanOut])
 def list_scans(
-    user: CurrentUser = Depends(admin_user),
+    user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[ScanOut]:
+    _require_resistance_access(user, session)
     rows = session.exec(
         select(ResistanceScan)
         .where(ResistanceScan.user_id == str(user.id))
@@ -172,9 +203,10 @@ def get_scan(
 def update_scan(
     share_id: str,
     payload: ScanUpdate,
-    user: CurrentUser = Depends(admin_user),
+    user: CurrentUser = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> ScanOut:
+    _require_resistance_access(user, session)
     scan = session.exec(
         select(ResistanceScan).where(ResistanceScan.share_id == share_id)
     ).first()

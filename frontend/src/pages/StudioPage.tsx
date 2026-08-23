@@ -398,6 +398,7 @@ export default function StudioPage() {
   const [boltz2Access, setBoltz2Access] = useState<string | null>(null);
   const [gninaAccess, setGninaAccess] = useState<string | null>(null);
   const [screeningAccess, setScreeningAccess] = useState<string | null>(null);
+  const [resistanceAccess, setResistanceAccess] = useState<string | null>(null);
   const [requestFeature, setRequestFeature] = useState<GatedFeature | null>(null);
   // Out-of-free-runs modal (opens when a dock submit returns 402 quota).
   const [quotaModalOpen, setQuotaModalOpen] = useState(false);
@@ -411,6 +412,7 @@ export default function StudioPage() {
         setBoltz2Access((a as any)?.boltz2_access ?? null);
         setGninaAccess((a as any)?.gnina_access ?? null);
         setScreeningAccess((a as any)?.screening_access ?? null);
+        setResistanceAccess((a as any)?.resistance_access ?? null);
       })
       .catch(() => {
         /* anonymous / signed-out — leave null, buttons show Request */
@@ -4378,32 +4380,64 @@ export default function StudioPage() {
                 );
               })()}
 
-              {/* (feature/resistance-radar) Resistance Radar — admin-only
-                  while in beta. Docks the current compound across the
-                  target's known resistance panel and draws a live liability
-                  map. Distinct amber identity so it reads as its own class
-                  of action, not another dock button. */}
-              {isAdmin && (() => {
+              {/* (feature/resistance-radar) Resistance Radar — gated beta.
+                  Admins + approved accounts run it; everyone else requests
+                  access via the shared FeatureRequestModal (operator
+                  Approve/Deny on Telegram). Docks the current compound across
+                  the target's known resistance panel and draws a live
+                  liability map. Distinct amber identity so it reads as its own
+                  class of action, not another dock button. */}
+              {(() => {
                 const hasCompound = !!currentSmiles || compounds.length > 0;
                 const isDisabled = docking || submittingFull || !ketcherReady || !hasCompound || !selectedTarget;
+                // Three states, same request/approve flow as VS + Boltz-2:
+                // admins + approved accounts run it; everyone else requests
+                // access (operator Approve/Deny on Telegram), then sees pending.
+                const canRun = isAdmin || resistanceAccess === "approved";
+                const isPending = resistanceAccess === "requested";
                 return (
                   <button
                     type="button"
-                    onClick={() => { if (!isDisabled) setResistanceRadarOpen(true); }}
-                    disabled={isDisabled}
+                    onClick={() => {
+                      if (canRun) {
+                        if (isDisabled) return;
+                        setResistanceRadarOpen(true);
+                      } else if (!isPending) {
+                        setRequestFeature("resistance");
+                      }
+                    }}
+                    disabled={canRun && isDisabled}
                     className={`mt-1.5 w-full px-4 py-1.5 rounded border font-mono text-xs uppercase tracking-[0.1em] transition-all ${
-                      isDisabled
+                      !canRun
+                        ? isPending
+                          ? "border-amber-800/40 bg-amber-950/10 text-amber-400/50 cursor-default"
+                          : "border-amber-700/40 bg-amber-950/15 text-amber-300/60 hover:bg-amber-950/30 hover:border-amber-600/60 cursor-pointer"
+                        : isDisabled
                         ? "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
                         : "border-amber-600/60 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40 hover:border-amber-500"
                     }`}
                     title={
-                      !selectedTarget ? "Pick a target first."
-                      : !hasCompound ? "Stage at least one compound first."
-                      : "Resistance Radar — dock this compound across the target's resistance panel and forecast which mutations break binding. Admin beta."
+                      !canRun
+                        ? isPending
+                          ? "Your access request is pending — you'll be emailed when it's approved."
+                          : "Resistance Radar — click to request access."
+                        : !selectedTarget ? "Pick a target first."
+                        : !hasCompound ? "Stage at least one compound first."
+                        : "Resistance Radar — dock this compound across the target's resistance panel and forecast which mutations break binding."
                     }
                   >
-                    <span>🎯 Resistance Radar</span>
-                    <span className="opacity-60 ml-1.5">· beta</span>
+                    {canRun ? (
+                      <>
+                        <span>🎯 Resistance Radar</span>
+                        <span className="opacity-60 ml-1.5">· beta</span>
+                      </>
+                    ) : (
+                      <span>
+                        {isPending
+                          ? "Resistance Radar · pending approval"
+                          : "🔒 Resistance Radar · request access"}
+                      </span>
+                    )}
                   </button>
                 );
               })()}
@@ -4699,6 +4733,7 @@ export default function StudioPage() {
           if (feature === "boltz2") setBoltz2Access(s);
           else if (feature === "gnina") setGninaAccess(s);
           else if (feature === "screening") setScreeningAccess(s);
+          else if (feature === "resistance") setResistanceAccess(s);
         }}
       />
       {/* (2026-08) Out-of-free-runs modal. Opens when a Run Dock submit is
