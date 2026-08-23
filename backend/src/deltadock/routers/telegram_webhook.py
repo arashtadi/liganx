@@ -100,6 +100,37 @@ def _flip_status(user_id: str, target: str, actor: str) -> tuple[bool, str]:
         return False, ""
 
 
+def _flip_boltz2(user_id: str, target: str, actor: str) -> tuple[bool, str]:
+    """Per-feature twin of _flip_status: set user_profile.boltz2_access for
+    `user_id` (approved/denied). Returns (changed, user_email). Idempotent —
+    the WHERE clause makes a re-delivered tap a no-op."""
+    target = target.lower()
+    if target not in ("approved", "denied"):
+        return False, ""
+    try:
+        with Session(engine) as s:
+            row = s.execute(
+                text("SELECT email FROM auth.users WHERE id = :uid"),
+                {"uid": user_id},
+            ).first()
+            user_email = (row[0] if row else "") or ""
+            res = s.execute(
+                text(
+                    "UPDATE public.user_profile "
+                    "   SET boltz2_access = :target, "
+                    "       boltz2_decided_at = now(), "
+                    "       boltz2_decided_by = :actor "
+                    " WHERE user_id = :uid AND boltz2_access IS DISTINCT FROM :target"
+                ),
+                {"target": target, "actor": actor[:80], "uid": user_id},
+            )
+            s.commit()
+            return (res.rowcount or 0) > 0, user_email
+    except Exception as e:  # noqa: BLE001
+        log.exception("Telegram boltz2 approve/deny DB error for user %s: %s", user_id, e)
+        return False, ""
+
+
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def telegram_webhook(
     req: Request,
@@ -146,30 +177,46 @@ async def telegram_webhook(
     action, _, user_id = data.partition(":")
     action = action.strip().lower()
     user_id = user_id.strip()
-    if action not in ("approve", "deny") or not user_id:
+    # callback_data is "<action>:<user_id>". Account approval uses
+    # approve/deny (flips access_status); the Boltz-2 feature uses
+    # approve_bz2/deny_bz2 (flips boltz2_access). Same one-tap loop.
+    _ACTIONS = {
+        "approve":     ("account", True),
+        "deny":        ("account", False),
+        "approve_bz2": ("boltz2",  True),
+        "deny_bz2":    ("boltz2",  False),
+    }
+    if action not in _ACTIONS or not user_id:
         _notif.answer_callback(cbq_id, "Unknown action.")
         return {"ok": True, "ignored": "bad_action"}
 
-    target_status = "approved" if action == "approve" else "denied"
-    changed, user_email = _flip_status(user_id, target_status, actor)
+    feature, is_approve = _ACTIONS[action]
+    target_status = "approved" if is_approve else "denied"
+    if feature == "boltz2":
+        changed, user_email = _flip_boltz2(user_id, target_status, actor)
+    else:
+        changed, user_email = _flip_status(user_id, target_status, actor)
 
     # Email the user so they know — they may have closed the tab between
-    # sign-up and your tap. Fail-soft inside services/email; never
+    # the request and your tap. Fail-soft inside services/email; never
     # interferes with the Telegram acknowledgement below. Only fire when
     # we actually changed state (re-deliveries shouldn't re-spam).
     if changed and user_email:
         try:
             from ..services import email as _email
-            if target_status == "approved":
-                _email.notify_user_approved(user_email=user_email)
+            if feature == "boltz2":
+                (_email.notify_user_boltz2_approved if is_approve
+                 else _email.notify_user_boltz2_denied)(user_email=user_email)
             else:
-                _email.notify_user_denied(user_email=user_email)
+                (_email.notify_user_approved if is_approve
+                 else _email.notify_user_denied)(user_email=user_email)
         except Exception:  # noqa: BLE001
             log.exception("user-approval email failed (non-fatal)")
 
     # Build the confirmation text that REPLACES the original notification.
     # Keep the user_id visible so the message remains a useful audit row.
-    pretty = "APPROVED ✅" if action == "approve" else "DENIED ❌"
+    _flabel = "Boltz-2 " if feature == "boltz2" else ""
+    pretty = (f"{_flabel}APPROVED ✅" if is_approve else f"{_flabel}DENIED ❌")
     email_line = f"\n📧 {user_email}" if user_email else ""
     note = "" if changed else "\n<i>(already in that state — no change)</i>"
     new_text = (
@@ -185,7 +232,7 @@ async def telegram_webhook(
         _notif.edit_message_after_action(chat_id, message_id, new_text)
     _notif.answer_callback(
         cbq_id,
-        "Approved." if action == "approve" else "Denied.",
+        "Approved." if is_approve else "Denied.",
     )
 
     log.info("Telegram approve/deny: user=%s -> %s (changed=%s, by=%s)",

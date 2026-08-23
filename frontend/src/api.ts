@@ -883,9 +883,23 @@ export const api = {
    *  /assist/quick_dock + /assist/optimize + /jobs/.../mmgbsa — this
    *  fetch only decides which UI to render. */
   getMyAccessStatus: () =>
-    request<{ status: "pending" | "approved" | "denied"; decided_at: string | null }>(
+    request<{
+      status: "pending" | "approved" | "denied";
+      decided_at: string | null;
+      /** Per-feature access for AI Resistance Prediction (Boltz-2):
+       *  null = never requested, then 'requested' | 'approved' | 'denied'.
+       *  Admins always read 'approved'. */
+      boltz2_access?: "requested" | "approved" | "denied" | null;
+    }>(
       "/me/access_status",
     ),
+  /** Request access to AI Resistance Prediction (Boltz-2). Fires the
+   *  operator's Telegram Approve/Deny ping + admin email. Returns the new
+   *  boltz2_access state ('requested', or 'approved' for admins). */
+  requestBoltz2Access: () =>
+    request<{ boltz2_access: string }>("/me/request-boltz2-access", {
+      method: "POST",
+    }),
   updateMyProfile: (patch: UserProfileUpdate) =>
     request<UserProfile>("/me/profile", {
       method: "PUT",

@@ -497,7 +497,18 @@ def create_job(
     # hides/locks the non-Vina buttons, so this is defense-in-depth for a
     # direct API call. `_is_admin` is computed in the access-gate block above.
     _engine = payload.engine or "quickvina2_gpu"
-    if _engine != "quickvina2_gpu" and not _is_admin:
+    # Boltz-2 has a per-feature request/approve flow (POST
+    # /me/request-boltz2-access -> operator Approve/Deny ->
+    # user_profile.boltz2_access='approved'). Admins always pass; an
+    # approved user passes for engine=boltz2 specifically. Every OTHER
+    # non-Vina engine (e.g. GNINA) stays admin-only.
+    _boltz2_ok = False
+    if _engine == "boltz2" and not _is_admin:
+        _b2row = session.execute(text(
+            "SELECT COALESCE(boltz2_access, '') FROM public.user_profile WHERE user_id = :uid"
+        ), {"uid": user.id}).first()
+        _boltz2_ok = bool(_b2row) and (_b2row[0] or "").strip().lower() == "approved"
+    if _engine != "quickvina2_gpu" and not _is_admin and not _boltz2_ok:
         raise HTTPException(
             status_code=402,
             detail={

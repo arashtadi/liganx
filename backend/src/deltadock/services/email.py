@@ -229,3 +229,91 @@ def notify_user_denied(*, user_email: Optional[str]) -> bool:
         subject="About your Liganx account",
         html=html,
     )
+
+
+def notify_admin_boltz2_request(
+    *,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Email the admin when a user requests access to AI Resistance
+    Prediction (Boltz-2). Backup to the Telegram Approve/Deny ping —
+    same heads-up + admin-page link pattern as notify_admin_new_signup."""
+    admin_to = _admin_email()
+    if not admin_to or not _is_configured():
+        return False
+    rows = [f"<tr><td><b>Email</b></td><td><code>{user_email or '—'}</code></td></tr>"]
+    if full_name:
+        rows.append(f"<tr><td><b>Name</b></td><td>{full_name}</td></tr>")
+    if organization:
+        rows.append(f"<tr><td><b>Org</b></td><td>{organization}</td></tr>")
+    if user_id:
+        rows.append(f"<tr><td><b>User ID</b></td><td><code>{user_id}</code></td></tr>")
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">🧬 Boltz-2 access requested</h2>
+      <p style="color: #475569;">A user requested access to AI Resistance Prediction (Boltz-2). Tap Approve in Telegram for one-tap action, or open the admin page:</p>
+      <p><a href="https://liganx.com/admin" style="background: #0d8f85; color: #fff; padding: 8px 14px; border-radius: 6px; text-decoration: none;">Open admin page</a></p>
+      <table cellpadding="6" style="border-collapse: collapse; margin-top: 16px; font-size: 14px; color: #1e293b;">
+        {''.join(rows)}
+      </table>
+      <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">
+        You're getting this because you're the Liganx admin (ADMIN_EMAIL).
+      </p>
+    </div>
+    """
+    return _send(
+        to=admin_to,
+        subject=f"[Liganx] Boltz-2 access requested · {user_email or 'unknown'}",
+        html=html,
+    )
+
+
+def notify_user_boltz2_approved(*, user_email: Optional[str]) -> bool:
+    """Email the user when their Boltz-2 access is approved."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    html = """
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">🧬 AI Resistance Prediction is unlocked</h2>
+      <p style="color: #475569; line-height:1.6;">
+        Your access to AI Resistance Prediction (powered by Boltz-2) is approved.
+        Open the Studio, pick a target and mutation, and run a deep-learning
+        prediction of how the mutation changes drug binding.
+      </p>
+      <p><a href="https://liganx.com/studio" style="background: #0d8f85; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight:600;">Open Studio →</a></p>
+    </div>
+    """
+    return _send(
+        to=user_email,
+        subject="Your AI Resistance Prediction access is approved 🧬",
+        html=html,
+    )
+
+
+def notify_user_boltz2_denied(*, user_email: Optional[str]) -> bool:
+    """Email the user when their Boltz-2 access request is declined."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    html = """
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">About your AI Resistance Prediction request</h2>
+      <p style="color: #475569; line-height:1.6;">
+        Thanks for your interest. We're not able to enable AI Resistance
+        Prediction (Boltz-2) on your account right now — it's in limited
+        early access while we validate and scale it.
+      </p>
+      <p style="color: #475569;">
+        You can keep using AutoDock Vina docking in the meantime. If you'd
+        like to discuss access, reach out via
+        <a href="https://liganx.com/contact">the contact page</a>.
+      </p>
+    </div>
+    """
+    return _send(
+        to=user_email,
+        subject="About your AI Resistance Prediction request",
+        html=html,
+    )
