@@ -392,6 +392,42 @@ def notify_rate_limit_abuse(
     return _send("\n".join(parts), channel="limit")
 
 
+# Per-user dedup for the free-run-limit ping. A blocked user can click
+# "Run Dock" many times — each is a fresh 402 — so without this we'd spam
+# the Limit topic. In-memory (single Fly machine); a restart may emit one
+# extra ping, which is acceptable.
+_QUOTA_PING_GAP_S = 3600  # re-announce a user's limit at most once / hour
+_last_quota_ping: dict[str, float] = {}
+
+
+def notify_quota_reached(
+    *,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    used: int,
+    quota: int,
+) -> bool:
+    """Fire when a user hits their free-run cap and is blocked from
+    submitting a new dock. Lands in the Limit topic so the operator can
+    reach out to offer more runs or a plan. Deduped per-user to once/hour
+    so repeated blocked clicks don't spam. Side-effect only — never raises."""
+    import time as _t
+    key = user_id or user_email or "?"
+    now = _t.time()
+    if now - _last_quota_ping.get(key, 0.0) < _QUOTA_PING_GAP_S:
+        return False
+    _last_quota_ping[key] = now
+    parts = [
+        "🚦 <b>User hit their free-run limit</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or user_id or '—')}</code>",
+        f"📊 Used <b>{used}/{quota}</b> free dockings",
+        "",
+        "<i>A good moment to reach out — offer more runs or a plan.</i>",
+    ]
+    return _send("\n".join(parts), channel="limit")
+
+
 def notify_pod_down(
     *,
     reason: str,

@@ -345,6 +345,20 @@ def create_job(
             headers={"X-Access-Status": access_status},
         )
     if used >= quota and not _is_admin:
+        # Ping the operator (Limit topic) the moment a user is blocked by
+        # their free-run cap, so we can proactively offer more runs or a
+        # plan. Deduped per-user to once/hour inside notify_quota_reached.
+        # Side-effect only — must never turn a clean 402 into a 500.
+        try:
+            from ..services.notifications import notify_quota_reached
+            notify_quota_reached(
+                user_email=getattr(user, "email", None),
+                user_id=str(user.id),
+                used=used,
+                quota=quota,
+            )
+        except Exception:
+            log.exception("quota-reached ping failed (non-fatal)")
         # 402 Payment Required is the closest semantic match in HTTP for
         # "you've used your free allocation". The frontend special-cases
         # 402 to render a friendlier "you've used your N free dockings —
