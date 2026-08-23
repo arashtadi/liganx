@@ -56,7 +56,11 @@ export default function ResistancePage() {
     scanRef.current = s;
     setScan(s);
     if (s.status === "running") resume();
-    else if (s.rows.some((r) => r.mutScore != null && r.prob == null && parseMutationCode(r.code)))
+    // Always re-score a finished scan on open (one cheap /calibrate/score
+    // call) so it reflects the current model + ESM2 cache — e.g. a scan whose
+    // probabilities were first computed via the BLOSUM proxy upgrades to real
+    // ESM2 once the catalog cache covers it.
+    else if (s.rows.some((r) => r.mutScore != null && parseMutationCode(r.code)))
       scoreProbabilities();
     return () => {
       cancelled.current = true;
