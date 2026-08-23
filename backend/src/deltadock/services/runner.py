@@ -379,12 +379,8 @@ def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
         {"jid": job.id},
     ).all()
     comp_names = ", ".join(r[0] for r in comp_rows) if comp_rows else "—"
-    user_row = session.execute(
-        _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
-        {"uid": str(job.user_id)},
-    ).first()
-    user_email = user_row[0] if user_row else None
-    from .notifications import notify_first_dock
+    from .notifications import notify_first_dock, user_identity
+    user_email, _fd_fn, _fd_org = user_identity(session, job.user_id)
     notify_first_dock(
         job_id=job.id,
         share_id=job.share_id,
@@ -394,6 +390,8 @@ def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
         mutations=job.mutations or "",
         engine=job.engine or "",
         compound_summary=comp_names,
+        full_name=_fd_fn,
+        organization=_fd_org,
     )
 
 
@@ -403,14 +401,11 @@ def _notify_dock_completed(session: Session, job: "Job") -> None:
     full live activity feed). A watched demo user gets a 👀 marker via the
     is_watched flag. Side-effect only — never raises into the runner."""
     from sqlalchemy import text as _sql_text
-    user_email = None
+    from .notifications import is_watched_user, notify_dock_completed, user_identity
     if job.user_id:
-        user_row = session.execute(
-            _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
-            {"uid": str(job.user_id)},
-        ).first()
-        user_email = user_row[0] if user_row else None
-    from .notifications import is_watched_user, notify_dock_completed
+        user_email, _dc_fn, _dc_org = user_identity(session, job.user_id)
+    else:
+        user_email, _dc_fn, _dc_org = (None, None, None)
     rows = session.execute(
         _sql_text(
             "SELECT c.name, dr.variant, dr.best_score"
@@ -436,6 +431,9 @@ def _notify_dock_completed(session: Session, job: "Job") -> None:
         share_id=job.share_id,
         results_summary=results_summary,
         is_watched=is_watched_user(user_email),
+        full_name=_dc_fn,
+        organization=_dc_org,
+        user_id=str(job.user_id) if job.user_id else None,
     )
 
 
@@ -620,15 +618,10 @@ def run_job_in_background(job_id: int) -> None:
                     {"jid": job_id},
                 ).all()
                 comp_names = ", ".join(r[0] for r in comp_rows) if comp_rows else "—"
-                # User email lookup — auth.users is Supabase-managed but
-                # readable via SQL with our service role.
-                user_row = session.execute(
-                    _sql_text(
-                        "SELECT email FROM auth.users WHERE id = :uid"
-                    ),
-                    {"uid": str(job.user_id) if job.user_id else None},
-                ).first()
-                user_email = user_row[0] if user_row else None
+                # User identity (email + name + org) so the failure alert
+                # in the Errors topic says exactly who hit it.
+                from .notifications import user_identity as _uid
+                user_email, _jf_fn, _jf_org = _uid(session, job.user_id)
 
                 tb_text = _tb.format_exc()
                 # Last ~12 lines is usually enough to identify the call
@@ -646,6 +639,8 @@ def run_job_in_background(job_id: int) -> None:
                     compound_summary=comp_names,
                     error_message=str(e),
                     traceback_tail=tb_tail,
+                    full_name=_jf_fn,
+                    organization=_jf_org,
                 )
             except Exception:
                 log.exception("Telegram failure-alert failed (non-fatal)")

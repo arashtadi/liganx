@@ -727,8 +727,12 @@ def request_feature_access(
         raise HTTPException(status_code=500, detail="Could not record your request. Please try again.")
 
     try:
-        from ..services.notifications import notify_feature_request
-        notify_feature_request(feature=feature, user_email=user_email, user_id=user.id)
+        from ..services.notifications import notify_feature_request, user_identity
+        _, _fn, _org = user_identity(session, user.id)
+        notify_feature_request(
+            feature=feature, user_email=user_email, user_id=user.id,
+            full_name=_fn, organization=_org,
+        )
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("notify_feature_request failed (non-fatal)")
     try:

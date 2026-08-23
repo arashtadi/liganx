@@ -81,6 +81,44 @@ def _truncate(s: str, n: int) -> str:
     return s[: n - 1] + "…"
 
 
+def user_identity(session, user_id) -> tuple:
+    """Best-effort (email, full_name, organization) for a user_id, used to
+    enrich operator notifications so we always know WHO the user is.
+    Returns (None, None, None) on any miss — never raises."""
+    if not user_id:
+        return (None, None, None)
+    try:
+        from sqlalchemy import text as _t
+        row = session.execute(
+            _t(
+                "SELECT u.email, p.full_name, p.organization"
+                " FROM auth.users u"
+                " LEFT JOIN public.user_profile p ON p.user_id = u.id"
+                " WHERE u.id = :uid"
+            ),
+            {"uid": str(user_id)},
+        ).first()
+        if row:
+            return (row[0], row[1], row[2])
+    except Exception:
+        log.exception("user_identity lookup failed (non-fatal)")
+    return (None, None, None)
+
+
+def _identity_lines(user_email, full_name=None, organization=None, user_id=None) -> list:
+    """Standard 'who is this' block for operator notifications: email,
+    then name + org when known, then the raw id for lookups. Keeps every
+    notification identifiable at a glance."""
+    lines = [f"👤 <code>{_escape_html(user_email or 'anonymous')}</code>"]
+    if full_name:
+        lines.append(f"📛 {_escape_html(full_name)}")
+    if organization:
+        lines.append(f"🏢 {_escape_html(organization)}")
+    if user_id:
+        lines.append(f"🆔 <code>{_escape_html(str(user_id))}</code>")
+    return lines
+
+
 def _send(text: str, reply_markup: Optional[dict] = None,
           channel: Optional[str] = None) -> bool:
     """Send one HTML-formatted message. Returns True on success, False
@@ -345,6 +383,8 @@ def notify_first_dock(
     mutations: str,
     engine: str,
     compound_summary: str,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
 ) -> bool:
     """Fire when a user's first successful dock job lands COMPLETED.
     This is the activation signal — they got real value out of the
@@ -359,6 +399,12 @@ def notify_first_dock(
         "🚀 <b>First successful dock — user activated!</b>",
         "",
         f"👤 User: <code>{email_e}</code>",
+    ]
+    if full_name:
+        parts.append(f"📛 {_escape_html(full_name)}")
+    if organization:
+        parts.append(f"🏢 {_escape_html(organization)}")
+    parts += [
         f"🎯 Target: <b>{pdb_e}</b>  ·  variants: {muts_e}",
         f"⚙️ Engine: {engine_e}",
         f"🧪 Compounds: {compound_e}",
@@ -406,6 +452,8 @@ def notify_quota_reached(
     user_id: Optional[str],
     used: int,
     quota: int,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
 ) -> bool:
     """Fire when a user hits their free-run cap and is blocked from
     submitting a new dock. Lands in the Limit topic so the operator can
@@ -417,10 +465,9 @@ def notify_quota_reached(
     if now - _last_quota_ping.get(key, 0.0) < _QUOTA_PING_GAP_S:
         return False
     _last_quota_ping[key] = now
-    parts = [
-        "🚦 <b>User hit their free-run limit</b>",
-        "",
-        f"👤 <code>{_escape_html(user_email or user_id or '—')}</code>",
+    parts = ["🚦 <b>User hit their free-run limit</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [
         f"📊 Used <b>{used}/{quota}</b> free dockings",
         "",
         "<i>A good moment to reach out — offer more runs or a plan.</i>",
@@ -462,6 +509,8 @@ def notify_job_failed(
     compound_summary: str,
     error_message: str,
     traceback_tail: Optional[str] = None,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
 ) -> bool:
     """Fire-and-forget Telegram alert when a job lands in FAILED.
 
@@ -484,6 +533,12 @@ def notify_job_failed(
         f"⚙️ Engine: {engine_e}",
         f"🧪 Compounds: {compound_e}",
         f"👤 User: <code>{user_e}</code>",
+    ]
+    if full_name:
+        parts.append(f"📛 {_escape_html(full_name)}")
+    if organization:
+        parts.append(f"🏢 {_escape_html(organization)}")
+    parts += [
         "",
         "💥 <b>Error:</b>",
         f"<code>{err_e}</code>",
@@ -829,13 +884,15 @@ def notify_dock_started(
     compound_summary: str,
     share_id: Optional[str] = None,
     is_watched: bool = False,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> bool:
     """Ping when ANY user submits a docking job (every dock, all users)."""
     tag = "👀 " if is_watched else ""
-    parts = [
-        f"{tag}🧬 <b>Dock started</b>",
-        "",
-        f"👤 <code>{_escape_html(user_email or 'anonymous')}</code>",
+    parts = [f"{tag}🧬 <b>Dock started</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [
         f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
         f"⚙️ Engine: {_escape_html(engine or '—')}",
         f"🧪 Compounds: {_escape_html(_truncate(compound_summary or '—', 240))}",
@@ -854,13 +911,15 @@ def notify_dock_completed(
     share_id: Optional[str],
     results_summary: str,
     is_watched: bool = False,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> bool:
     """Ping when ANY user's docking job lands COMPLETED, with best scores."""
     tag = "👀 " if is_watched else ""
-    parts = [
-        f"{tag}✅ <b>Dock finished</b>",
-        "",
-        f"👤 <code>{_escape_html(user_email or 'anonymous')}</code>",
+    parts = [f"{tag}✅ <b>Dock finished</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [
         f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
         f"⚙️ Engine: {_escape_html(engine or '—')}",
         "",

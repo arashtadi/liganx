@@ -350,12 +350,15 @@ def create_job(
         # plan. Deduped per-user to once/hour inside notify_quota_reached.
         # Side-effect only — must never turn a clean 402 into a 500.
         try:
-            from ..services.notifications import notify_quota_reached
+            from ..services.notifications import notify_quota_reached, user_identity
+            _, _qfn, _qorg = user_identity(session, user.id)
             notify_quota_reached(
                 user_email=getattr(user, "email", None),
                 user_id=str(user.id),
                 used=used,
                 quota=quota,
+                full_name=_qfn,
+                organization=_qorg,
             )
         except Exception:
             log.exception("quota-reached ping failed (non-fatal)")
@@ -643,8 +646,9 @@ def create_job(
     # asked for full live visibility). A watched demo user still gets a 👀
     # marker. Side-effect only; a Telegram blip must never fail submission.
     try:
-        from ..services.notifications import is_watched_user, notify_dock_started
+        from ..services.notifications import is_watched_user, notify_dock_started, user_identity
         _dock_email = getattr(user, "email", None)
+        _, _dfn, _dorg = user_identity(session, user.id)
         _csum = ", ".join(
             (c.name or c.smiles or "—")[:24] for c in (payload.compounds or [])
         ) or "—"
@@ -656,6 +660,9 @@ def create_job(
             compound_summary=_csum,
             share_id=job.share_id,
             is_watched=is_watched_user(_dock_email),
+            full_name=_dfn,
+            organization=_dorg,
+            user_id=str(user.id),
         )
     except Exception:
         log.exception("dock-started ping failed (non-fatal)")
