@@ -1106,7 +1106,7 @@ export default function ProductionViewer3D({
             expandable details lets curious users see the full
             walkthrough without forcing it on everyone. */}
         {is3DEmpty && (
-          <details open className="group px-3 py-2.5 text-xs font-mono leading-relaxed text-slate-300">
+          <details className="group px-3 py-2.5 text-xs font-mono leading-relaxed text-slate-300">
             <summary className="flex items-center gap-2 cursor-pointer list-none select-none">
               <span className="text-cyan-400 text-[10px] tracking-[0.2em] uppercase">▸ studio · ready</span>
               <span className="flex-1 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />

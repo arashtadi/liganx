@@ -4598,16 +4598,16 @@ function MutationDropdown({
         <button
           onClick={() => setIncludeWt(!includeWt)}
           className={`w-full px-3 py-1.5 flex items-center gap-2 text-left transition-colors ${
-            includeWt ? "bg-slate-800/40 hover:bg-slate-800/60" : "hover:bg-slate-800/30"
+            includeWt ? "bg-amber-950/30 hover:bg-amber-900/40" : "hover:bg-slate-800/30"
           }`}
           title={includeWt ? "WT selected — click to deselect" : "Click to include WT in the dock"}
         >
           <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] shrink-0 ${
-            includeWt ? "border-slate-300 bg-slate-300 text-slate-900" : "border-slate-600"
+            includeWt ? "border-amber-400 bg-amber-400 text-slate-900" : "border-slate-600"
           }`}>
             {includeWt ? "✓" : ""}
           </span>
-          <span className="font-mono text-[11px] font-bold text-slate-100">WT</span>
+          <span className={`font-mono text-[11px] font-bold ${includeWt ? "text-amber-200" : "text-slate-100"}`}>WT</span>
           <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/60">baseline</span>
           <span className="text-[10px] font-mono text-slate-500 italic truncate">wild-type — always recommended</span>
         </button>
