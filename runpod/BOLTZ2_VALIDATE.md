@@ -172,3 +172,53 @@ into the image's base env fails at predict time:
 The validation driver `runpod/bz_validate_direct.py` is ready — it self-fetches
 each case PDB, builds the pocket + mutant sequence, and runs WT/mutant Boltz-2
 with no API/token. It just needs a pod where `boltz predict` actually runs.
+
+
+---
+
+## Field notes — second attempt 2026-08-23 (RESOLVED — it runs on GPU)
+
+**Root cause of every prior failure: boltz's kernel path wants CUDA 13.**
+`pip install "boltz[cuda]"` (rev3) installs `torch 2.13.0+cu130` plus the
+cuequivariance CUDA-kernel trio. But there is **no cu12 build of torch 2.13**
+(cu128 tops out at 2.11.0, cu124 at 2.6.0), and RunPod's GPUs run **driver 550
+(CUDA 12.4)**, which cannot run a CUDA-13 build → `torch.cuda.is_available()`
+returns **False**. That would have failed on serverless too; a raw pod caught it.
+
+**The fix: don't use the kernels.** boltz's `TriangleMultiplicationOutgoing/
+Incoming.forward(..., use_kernels=False)` has a **pure-PyTorch fallback**; the
+cuequivariance import only happens on the `use_kernels=True` branch. The
+`boltz predict --no_kernels` flag (main.py: `use_kernels = not no_kernels`)
+forces the fallback. So we install **plain `boltz`** (no `[cuda]`) on a **cu12
+torch** and never touch cuequivariance:
+
+```bash
+python3.11 -m venv /workspace/bz2 && source /workspace/bz2/bin/activate
+pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+printf 'torch==2.11.0\n' > con.txt && pip install -c con.txt boltz
+boltz predict in.yaml --accelerator gpu --no_kernels --cache /workspace/boltz_cache
+```
+
+- `torch 2.11.0+cu128` → `cuda_available True` on driver 550 (CUDA 12.x runs via
+  minor-version compat). boltz 2.2.1 installs clean with the `-c` constraint.
+- boltz auto-disables kernels only when CUDA is absent OR GPU compute-cap < 8.0;
+  a 4090 is 8.9 so it does NOT auto-disable — you must pass `--no_kernels`.
+- A 60-aa structure-only predict ran in **~8 s** (warm model). Do NOT `kill` a
+  run mid weight-download — it corrupts `boltz2_conf.ckpt` (miniz "failed
+  finding central directory"); wipe the cache and re-download.
+
+**Accuracy (positive-control suite, --no_kernels, msa=empty, pocket-constrained,
+diffusion_samples=1):**
+
+| Case | WT | MUT | Δ(mut−wt) | dir | expect | |
+|---|---|---|---|---|---|---|
+| ABL T315I / Imatinib | −1.685 | −0.634 | +1.05 | resistance | resistance | PASS |
+
+(Full table lands when the run finishes.) Score = affinity_pred_value =
+log10(IC50 µM); Δ>0 = mutant weaker binder = resistance.
+
+**Production recipe locked into the worker (Dockerfile rev4 + handler.py) and
+the persistent-pod server (boltz2_server_async.py): plain boltz, cu12 torch,
+`--no_kernels`.** Deployment note: RunPod auto-build-on-push does not fire on
+this account, and there is no cu12/cu13 host toggle needed — the image is
+CUDA-12 and runs on the default fleet.

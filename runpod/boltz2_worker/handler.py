@@ -63,10 +63,14 @@ def _run(inp: dict) -> dict:
         ]
     (work / "in.yaml").write_text(yaml.safe_dump(spec))
 
+    # --no_kernels forces boltz's pure-PyTorch triangle path (no cuequivariance
+    # CUDA kernels). The kernel path needs torch 2.13/cu130 (a CUDA-13 driver,
+    # >=580); RunPod's fleet runs driver 550 (CUDA 12), so we pin a cu12 torch
+    # and skip kernels. Validated on RTX 4090/driver-550. See BOLTZ2_VALIDATE.md.
     cmd = ["boltz", "predict", str(work / "in.yaml"),
            "--out_dir", str(work / "out"), "--cache", CACHE,
            "--output_format", "pdb", "--diffusion_samples", str(n_samples),
-           "--override"]
+           "--override", "--no_kernels"]
     if use_msa:
         cmd.append("--use_msa_server")
 

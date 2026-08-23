@@ -127,6 +127,9 @@ def _run_boltz_subprocess(req: PredictReq) -> dict:
         "--output_format", "pdb",
         "--diffusion_samples", str(req.num_samples),
         "--override",
+        # Pure-PyTorch triangle path — no cuequivariance CUDA kernels, so this
+        # runs on a cu12 torch / driver-550 GPU. See BOLTZ2_VALIDATE.md rev4.
+        "--no_kernels",
     ]
     if req.use_msa:
         cmd.append("--use_msa_server")

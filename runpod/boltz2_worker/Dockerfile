@@ -13,12 +13,14 @@
 #   rev3: boltz + ONLY cuequivariance-torch is insufficient — boltz's triangle
 #         layer needs the cuequivariance CUDA KERNELS at runtime
 #         ("ImportError: ... triangle_multiplicative_update from
-#         cuequivariance_ops_torch"). boltz's pyproject puts those in an OPTIONAL
-#         extra: cuequivariance_ops_cu12 / cuequivariance_ops_torch_cu12 /
-#         cuequivariance_torch (all >=0.5.0). The correct install is the OFFICIAL
-#         CUDA extra: `pip install "boltz[cuda]"`, which pulls the matched trio.
-#         NOTE: this failure only shows at GPU RUNTIME (the builder has no GPU),
-#         so it can't be gated at build time — validate with a real prediction.
+#         cuequivariance_ops_torch"). Tried `pip install "boltz[cuda]"`.
+#   rev4: boltz[cuda] pulled torch 2.13.0+cu130 (CUDA 13). RunPod's GPUs run
+#         driver 550 (CUDA 12.4), which can't run a CUDA-13 build ->
+#         torch.cuda.is_available()==False. Root fix: DON'T use kernels. boltz's
+#         TriangleMultiplication has a pure-PyTorch fallback (use_kernels=False,
+#         via the --no_kernels predict flag), so we install PLAIN boltz on a
+#         cu12 torch (2.11.0+cu128) and never touch cuequivariance. Validated on
+#         RTX 4090 / driver 550 end to end (see BOLTZ2_VALIDATE.md field notes).
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -38,15 +40,22 @@ RUN apt-get update \
 
 RUN python3.11 -m pip install --upgrade pip
 
-# OFFICIAL CUDA install: boltz[cuda] pulls boltz + its own consistent torch AND
-# the cuequivariance CUDA-kernel trio (ops_cu12 / ops_torch_cu12 / torch) at
-# mutually compatible versions. runpod = serverless SDK; pyyaml for manifests.
-RUN python3.11 -m pip install "boltz[cuda]" "runpod>=1.6,<2" pyyaml
+# rev4: CUDA-12 torch + PLAIN boltz (NOT boltz[cuda]). boltz[cuda] pulled
+# torch 2.13.0+cu130, which needs a CUDA-13 driver (>=580); RunPod's fleet runs
+# driver 550 (CUDA 12.4) so torch.cuda.is_available() came back False. We pin a
+# cu12 torch (2.11.0+cu128 — CUDA 12.x runs on driver 550 via minor-version
+# compat) and run the handler with --no_kernels (boltz's pure-PyTorch triangle
+# path), so NO cuequivariance kernels are needed at all. Validated on an RTX
+# 4090/driver-550: ABL T315I/imatinib delta +1.05 = resistance (correct dir).
+# The constraint file keeps boltz from upgrading torch back to 2.13.
+RUN python3.11 -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+RUN printf 'torch==2.11.0\n' > /tmp/con.txt \
+ && python3.11 -m pip install -c /tmp/con.txt boltz "runpod>=1.6,<2" pyyaml
 
 # Build-time import gate (no `|| true`): catches interpreter / torch / lightning
-# breakage at BUILD. (The cuequivariance *kernel* only loads on a real GPU, so
-# it can't be checked here — that's what the post-deploy prediction test is for.)
-RUN python3.11 -c "import sys; assert hasattr(sys, 'get_int_max_str_digits'); import torch, cuequivariance_torch; print('OK torch', torch.__version__)"
+# breakage at BUILD. No cuequivariance import here — the --no_kernels path never
+# touches it. (torch.cuda can't be checked: the builder has no GPU.)
+RUN python3.11 -c "import sys; assert hasattr(sys, 'get_int_max_str_digits'); import torch, boltz; print('OK torch', torch.__version__)"
 RUN boltz predict --help > /dev/null
 
 # Pre-download the ~6 GB weights (CCD mols.tar + boltz2_conf.ckpt) into the image
@@ -55,11 +64,11 @@ RUN boltz predict --help > /dev/null
 COPY runpod/boltz2_worker/warm.yaml /tmp/warm.yaml
 RUN mkdir -p /root/boltz2_cache \
  && (boltz predict /tmp/warm.yaml --out_dir /tmp/warmout --cache /root/boltz2_cache \
-       --output_format pdb --diffusion_samples 1 --override || true) \
+       --output_format pdb --diffusion_samples 1 --override --no_kernels || true) \
  && ls -la /root/boltz2_cache
 
 WORKDIR /app
 COPY runpod/boltz2_worker/handler.py /app/handler.py
 
-# build-rev: 3
+# build-rev: 4
 CMD ["python3.11", "-u", "handler.py"]

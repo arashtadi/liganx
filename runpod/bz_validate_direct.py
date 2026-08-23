@@ -123,7 +123,7 @@ def run_boltz(seq, smiles, chain, pocket, tag):
     p = subprocess.run(
         ["boltz", "predict", str(d / "in.yaml"), "--out_dir", str(d / "out"),
          "--cache", CACHE, "--output_format", "pdb", "--diffusion_samples", "1",
-         "--override"], capture_output=True, text=True, timeout=900)
+         "--override", "--no_kernels"], capture_output=True, text=True, timeout=900)
     el = time.time() - t
     if p.returncode != 0:
         return None, el, (p.stderr or p.stdout)[-400:]
