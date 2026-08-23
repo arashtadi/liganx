@@ -772,3 +772,64 @@ def notify_watch_dock_completed(
     if share_id:
         parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
     return _send("\n".join(parts), channel="docking")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Every-dock activity feed (all users)
+# ─────────────────────────────────────────────────────────────────────
+# The operator asked for a Telegram ping on EVERY docking run — start and
+# finish — for every user, not just watched demo users or first-timers.
+# These fire unconditionally from the /jobs submit path and the runner's
+# completion path, routed to the "docking" topic. A watched demo user
+# still gets a 👀 marker so they stand out in the feed. Side-effect only;
+# never raise into the request/runner path.
+def notify_dock_started(
+    *,
+    user_email: Optional[str],
+    pdb_id: str,
+    mutations: str,
+    engine: str,
+    compound_summary: str,
+    share_id: Optional[str] = None,
+    is_watched: bool = False,
+) -> bool:
+    """Ping when ANY user submits a docking job (every dock, all users)."""
+    tag = "👀 " if is_watched else ""
+    parts = [
+        f"{tag}🧬 <b>Dock started</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or 'anonymous')}</code>",
+        f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
+        f"⚙️ Engine: {_escape_html(engine or '—')}",
+        f"🧪 Compounds: {_escape_html(_truncate(compound_summary or '—', 240))}",
+    ]
+    if share_id:
+        parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
+    return _send("\n".join(parts), channel="dockruns")
+
+
+def notify_dock_completed(
+    *,
+    user_email: Optional[str],
+    pdb_id: str,
+    mutations: str,
+    engine: str,
+    share_id: Optional[str],
+    results_summary: str,
+    is_watched: bool = False,
+) -> bool:
+    """Ping when ANY user's docking job lands COMPLETED, with best scores."""
+    tag = "👀 " if is_watched else ""
+    parts = [
+        f"{tag}✅ <b>Dock finished</b>",
+        "",
+        f"👤 <code>{_escape_html(user_email or 'anonymous')}</code>",
+        f"🎯 Target: <b>{_escape_html(pdb_id or '—')}</b>  ·  variants: {_escape_html(mutations or 'WT only')}",
+        f"⚙️ Engine: {_escape_html(engine or '—')}",
+        "",
+        "📊 <b>Best scores</b> (kcal/mol):",
+        f"<code>{_escape_html(_truncate(results_summary or '(no results)', 1400))}</code>",
+    ]
+    if share_id:
+        parts.append(f"🔗 https://liganx.com/jobs/{_escape_html(share_id)}")
+    return _send("\n".join(parts), channel="dockruns")

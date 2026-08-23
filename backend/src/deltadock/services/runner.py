@@ -397,23 +397,20 @@ def _maybe_notify_first_dock(session: Session, job: "Job") -> None:
     )
 
 
-def _maybe_notify_watched_completed(session: Session, job: "Job") -> None:
-    """If the job's owner is on the operator's watch list, fire a Telegram
-    alert with the per-compound best scores. Unlike _maybe_notify_first_dock
-    this fires on EVERY completed job for a watched user (the operator
-    asked for a live feed of one demo user's activity). Side-effect only —
-    never raises into the runner."""
-    if not job.user_id:
-        return
+def _notify_dock_completed(session: Session, job: "Job") -> None:
+    """Fire a Telegram alert with the per-compound best scores on EVERY
+    completed dock — all users, not just watched (the operator asked for a
+    full live activity feed). A watched demo user gets a 👀 marker via the
+    is_watched flag. Side-effect only — never raises into the runner."""
     from sqlalchemy import text as _sql_text
-    user_row = session.execute(
-        _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
-        {"uid": str(job.user_id)},
-    ).first()
-    user_email = user_row[0] if user_row else None
-    from .notifications import is_watched_user, notify_watch_dock_completed
-    if not is_watched_user(user_email):
-        return
+    user_email = None
+    if job.user_id:
+        user_row = session.execute(
+            _sql_text("SELECT email FROM auth.users WHERE id = :uid"),
+            {"uid": str(job.user_id)},
+        ).first()
+        user_email = user_row[0] if user_row else None
+    from .notifications import is_watched_user, notify_dock_completed
     rows = session.execute(
         _sql_text(
             "SELECT c.name, dr.variant, dr.best_score"
@@ -431,13 +428,14 @@ def _maybe_notify_watched_completed(session: Session, job: "Job") -> None:
         results_summary = "\n".join(lines)
     else:
         results_summary = "(no result rows)"
-    notify_watch_dock_completed(
+    notify_dock_completed(
         user_email=user_email,
         pdb_id=job.pdb_id,
         mutations=job.mutations or "",
         engine=job.engine or "",
         share_id=job.share_id,
         results_summary=results_summary,
+        is_watched=is_watched_user(user_email),
     )
 
 
@@ -575,12 +573,12 @@ def run_job_in_background(job_id: int) -> None:
                         _maybe_notify_first_dock(session, job)
                     except Exception:
                         log.exception("Telegram first-dock alert failed (non-fatal)")
-                    # Watched-user live feed: per-dock result alert for a
-                    # demo user the operator is actively monitoring.
+                    # Every-dock activity feed: per-dock result alert for
+                    # ALL users (start + finish), routed to its own topic.
                     try:
-                        _maybe_notify_watched_completed(session, job)
+                        _notify_dock_completed(session, job)
                     except Exception:
-                        log.exception("Telegram watched-completed alert failed (non-fatal)")
+                        log.exception("Telegram dock-completed alert failed (non-fatal)")
                 else:
                     log.error("Job %s: COULD NOT WRITE COMPLETED STATUS (DB unreachable)", job_id)
             else:

@@ -624,26 +624,27 @@ def create_job(
     # this site again. See docs/celery_redis_migration_plan.md.
     dispatch_job(job.id, background_tasks=background)
 
-    # Watched-user live monitor: ping the operator on Telegram the moment
-    # a watched user submits a dock. Side-effect only; a Telegram blip
-    # must never fail the submission.
+    # Every-dock activity feed: ping the operator on Telegram the moment
+    # ANY user submits a dock (all users, not just watched — the operator
+    # asked for full live visibility). A watched demo user still gets a 👀
+    # marker. Side-effect only; a Telegram blip must never fail submission.
     try:
-        from ..services.notifications import is_watched_user, notify_watch_dock_started
-        _watch_email = getattr(user, "email", None)
-        if is_watched_user(_watch_email):
-            _csum = ", ".join(
-                (c.name or c.smiles or "—")[:24] for c in (payload.compounds or [])
-            ) or "—"
-            notify_watch_dock_started(
-                user_email=_watch_email,
-                pdb_id=payload.pdb_id,
-                mutations=",".join(payload.mutations or []),
-                engine=_engine,
-                compound_summary=_csum,
-                share_id=job.share_id,
-            )
+        from ..services.notifications import is_watched_user, notify_dock_started
+        _dock_email = getattr(user, "email", None)
+        _csum = ", ".join(
+            (c.name or c.smiles or "—")[:24] for c in (payload.compounds or [])
+        ) or "—"
+        notify_dock_started(
+            user_email=_dock_email,
+            pdb_id=payload.pdb_id,
+            mutations=",".join(payload.mutations or []),
+            engine=_engine,
+            compound_summary=_csum,
+            share_id=job.share_id,
+            is_watched=is_watched_user(_dock_email),
+        )
     except Exception:
-        log.exception("watch dock-started ping failed (non-fatal)")
+        log.exception("dock-started ping failed (non-fatal)")
 
     return _to_out(job)
 
