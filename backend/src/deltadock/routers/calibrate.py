@@ -136,6 +136,19 @@ def _load_esm2_cache() -> dict[tuple[str, int, str], float]:
                     continue
                 key = (ev["gene"], int(ev["position"]), ev["mutant"])
                 cache[key] = float(r["fitness"])
+        # (feature/resistance-radar) Catalog panel ESM2 — precomputed for
+        # every catalog target×mutation (esm2_t12_35M masked-LM) so live
+        # Resistance Radar scans get real ESM2 instead of the BLOSUM proxy.
+        # Flat structure keyed by (gene, position, mutant); gene = catalog id
+        # uppercased, matching the gene the Studio scan sends. setdefault so
+        # the calibration-set values stay authoritative where they overlap.
+        catalog_path = repo_root / "data" / "resistance_atlas" / "catalog_esm2.json"
+        if catalog_path.exists():
+            for r in json.loads(catalog_path.read_text()).get("results", []):
+                if r.get("fitness") is None:
+                    continue
+                key = (str(r["gene"]).upper(), int(r["position"]), str(r["mutant"]).upper())
+                cache.setdefault(key, float(r["fitness"]))
     except Exception:  # noqa: BLE001
         # Fail-soft: an unparseable cache file just means we use BLOSUM
         # for every row. Logged at the route layer instead of crashing.
