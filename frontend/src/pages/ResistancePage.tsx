@@ -16,6 +16,7 @@ import { api } from "../api";
 import {
   getResistanceScan,
   upsertResistanceScan,
+  serverScanToSaved,
   type SavedResistanceScan,
 } from "../lib/resistanceHistory";
 import { usePageMeta } from "../lib/usePageMeta";
@@ -38,8 +39,15 @@ export default function ResistancePage() {
   const navigate = useNavigate();
   // undefined = still loading; null = not found in this browser.
   const [scan, setScan] = useState<SavedResistanceScan | null | undefined>(undefined);
+  const [isOwner, setIsOwner] = useState(true);
+  const [shareable, setShareable] = useState(false);
+  const [copied, setCopied] = useState(false);
   const cancelled = useRef(false);
   const scanRef = useRef<SavedResistanceScan | null>(null);
+  // Whether this scan is backed by the server (can be PATCHed + shared) vs a
+  // local-only fallback record.
+  const isServerRef = useRef(false);
+  const isOwnerRef = useRef(true);
 
   usePageMeta({
     title: scan ? `Resistance Radar · ${scan.targetLabel.toUpperCase()}` : "Resistance Radar",
@@ -48,21 +56,47 @@ export default function ResistancePage() {
 
   useEffect(() => {
     cancelled.current = false;
-    const s = id ? getResistanceScan(id) : null;
-    if (!s) {
-      setScan(null);
-      return;
-    }
-    scanRef.current = s;
-    setScan(s);
-    if (s.status === "running") resume();
-    // Always re-score a finished scan on open (one cheap /calibrate/score
-    // call) so it reflects the current model + ESM2 cache — e.g. a scan whose
-    // probabilities were first computed via the BLOSUM proxy upgrades to real
-    // ESM2 once the catalog cache covers it.
-    else if (s.rows.some((r) => r.mutScore != null && parseMutationCode(r.code)))
-      scoreProbabilities();
+    let alive = true;
+    (async () => {
+      let s: SavedResistanceScan | null = null;
+      let owner = true;
+      let fromServer = false;
+      if (id) {
+        try {
+          // Server is the source of truth (shareable + cross-device). A shared
+          // viewer who isn't the owner gets is_owner=false and read-only.
+          const server = await api.resistanceGet(id);
+          s = serverScanToSaved(server);
+          owner = server.is_owner;
+          fromServer = true;
+          upsertResistanceScan(s); // cache locally
+        } catch {
+          // Local-only fallback (offline, or a pre-server local scan).
+          s = getResistanceScan(id);
+          owner = true;
+          fromServer = false;
+        }
+      }
+      if (!alive) return;
+      isServerRef.current = fromServer;
+      isOwnerRef.current = owner;
+      setIsOwner(owner);
+      setShareable(fromServer);
+      if (!s) {
+        setScan(null);
+        return;
+      }
+      scanRef.current = s;
+      setScan(s);
+      // The owner drives docking + scoring; a shared viewer just displays.
+      if (owner && s.status === "running") resume();
+      else if (owner && s.rows.some((r) => r.mutScore != null && parseMutationCode(r.code)))
+        // Re-score a finished scan on open (one cheap /calibrate/score call) so
+        // it reflects the current model + ESM2 cache.
+        scoreProbabilities();
+    })();
     return () => {
+      alive = false;
       cancelled.current = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,7 +108,15 @@ export default function ResistancePage() {
     const next = mut(cur);
     scanRef.current = next;
     setScan(next);
-    upsertResistanceScan(next);
+    upsertResistanceScan(next); // local cache
+    // Persist to the server so the shareable record stays current — owner +
+    // server-backed only; best-effort (a failed PATCH just leaves the last
+    // server state, and the local cache is still correct).
+    if (isServerRef.current && isOwnerRef.current && id) {
+      api
+        .resistancePatch(id, { status: next.status, wtScore: next.wtScore, rows: next.rows })
+        .catch(() => {});
+    }
   }
 
   async function pollJob(key: string) {
@@ -301,8 +343,31 @@ export default function ResistancePage() {
               </span>
             )}
             <span className="text-[10px] font-mono text-slate-500">{fmtWhen(scan.savedAt)}</span>
+            {shareable && (
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(window.location.href);
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1800);
+                  } catch {
+                    /* clipboard blocked — no-op */
+                  }
+                }}
+                className="px-2 py-1 rounded border border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60 hover:text-cyan-200 font-mono text-[10px] uppercase tracking-wider"
+                title="Copy a shareable link to this scan"
+              >
+                {copied ? "✓ copied" : "🔗 copy link"}
+              </button>
+            )}
           </div>
         </div>
+        {!isOwner && (
+          <p className="mt-2 text-[10px] font-mono text-slate-500">
+            shared view · read-only
+          </p>
+        )}
       </div>
 
       {/* Verdict */}

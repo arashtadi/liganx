@@ -7,7 +7,7 @@
 // closing the window mid-scan and reopening the URL picks up where it left
 // off. Past scans are listed here and open the same page.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import {
@@ -15,6 +15,7 @@ import {
   upsertResistanceScan,
   listResistanceScans,
   deleteResistanceScan,
+  serverScanToSaved,
   type SavedResistanceScan,
 } from "../lib/resistanceHistory";
 import { fmtWhen } from "../lib/resistanceScoring";
@@ -85,6 +86,30 @@ export default function ResistanceRadar({
   const [error, setError] = useState<string | null>(null);
   const [savedScans, setSavedScans] = useState<SavedResistanceScan[]>(() => listResistanceScans());
 
+  // Cross-device history: prefer the server list (merges any local-only scans
+  // not yet on the server; falls back to the local cache offline).
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    api
+      .resistanceList()
+      .then((list) => {
+        if (!alive) return;
+        const mapped = list.map(serverScanToSaved);
+        const ids = new Set(mapped.map((s) => s.id));
+        const localOnly = listResistanceScans().filter((s) => !ids.has(s.id));
+        setSavedScans(
+          [...mapped, ...localOnly].sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+        );
+      })
+      .catch(() => {
+        /* offline / not authed — keep the local list */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const nBatches = Math.max(1, Math.ceil(panel.length / BATCH));
@@ -118,32 +143,53 @@ export default function ResistanceRadar({
         for (const c of codes) jobKeyByCode[c] = key;
       }
 
-      // Persist the scan as "running" the moment docks are submitted, with
-      // each mutation's job id — so the results page can resume it even if
-      // the user closes this window before it finishes.
-      const scan: SavedResistanceScan = {
-        id,
-        savedAt: nowIso,
-        updatedAt: nowIso,
-        status: "running",
-        targetId,
-        targetLabel,
-        compoundName: compoundName || "Studio compound",
-        smiles,
+      const rows = panel.map((m) => ({
+        code: m.code,
+        label: m.label,
+        significance: m.significance,
+        mutScore: null,
         wtScore: null,
-        rows: panel.map((m) => ({
-          code: m.code,
-          label: m.label,
-          significance: m.significance,
-          mutScore: null,
+        jobKey: jobKeyByCode[m.code] ?? null,
+        error: null,
+      }));
+
+      // Persist server-side (shareable + durable) the moment docks are
+      // submitted, with each mutation's job id — so the results page, another
+      // device, or a shared viewer can watch/resume it. Falls back to a
+      // local-only record if the server call fails, so a scan still works.
+      let scanId = id;
+      try {
+        const server = await api.resistanceCreate({
+          targetId,
+          targetLabel,
+          gene: (targetId || "").toUpperCase(),
+          pdbId,
+          chain: chain || "A",
+          uniprotId: uniprotId || null,
+          compoundName: compoundName || "Studio compound",
+          smiles,
+          status: "running",
           wtScore: null,
-          jobKey: jobKeyByCode[m.code] ?? null,
-          error: null,
-        })),
-      };
-      upsertResistanceScan(scan);
+          rows,
+        });
+        scanId = server.share_id;
+        upsertResistanceScan(serverScanToSaved(server));
+      } catch {
+        upsertResistanceScan({
+          id,
+          savedAt: nowIso,
+          updatedAt: nowIso,
+          status: "running",
+          targetId,
+          targetLabel,
+          compoundName: compoundName || "Studio compound",
+          smiles,
+          wtScore: null,
+          rows,
+        });
+      }
       onClose();
-      navigate(`/resistance/${id}`);
+      navigate(`/resistance/${scanId}`);
     } catch (e: any) {
       setError(e?.message || "Failed to start the resistance scan.");
       setSubmitting(false);

@@ -86,6 +86,46 @@ export function newScanId(): string {
   return `rr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/** Map a server ServerScan (shape from api.ts) into the local record shape,
+ *  so the launcher + results page can treat server and local scans uniformly.
+ *  Typed structurally to avoid a runtime import cycle with api.ts. */
+export function serverScanToSaved(s: {
+  share_id: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  targetId: string;
+  targetLabel: string;
+  compoundName: string;
+  smiles: string;
+  wtScore: number | null;
+  rows: Array<Partial<SavedScanRow> & { code: string }>;
+}): SavedResistanceScan {
+  return {
+    id: s.share_id,
+    savedAt: s.created_at,
+    updatedAt: s.updated_at,
+    status: s.status === "done" ? "done" : "running",
+    targetId: s.targetId,
+    targetLabel: s.targetLabel,
+    compoundName: s.compoundName,
+    smiles: s.smiles,
+    wtScore: s.wtScore,
+    rows: s.rows.map((r) => ({
+      code: r.code,
+      label: r.label ?? "",
+      significance: r.significance ?? "",
+      mutScore: r.mutScore ?? null,
+      wtScore: r.wtScore ?? null,
+      jobKey: r.jobKey ?? null,
+      error: r.error ?? null,
+      prob: r.prob ?? null,
+      probSource: r.probSource ?? null,
+      probVerdict: r.probVerdict ?? null,
+    })),
+  };
+}
+
 export function listResistanceScans(): SavedResistanceScan[] {
   return read().scans.slice().sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }

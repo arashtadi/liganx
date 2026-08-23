@@ -884,6 +884,50 @@ export interface ResistanceScoreResponse {
   model: string;
 }
 
+// ── Resistance Radar — shareable/durable scan records (server) ──
+export interface ServerScanRow {
+  code: string;
+  label?: string;
+  significance?: string;
+  mutScore?: number | null;
+  wtScore?: number | null;
+  jobKey?: string | null;
+  error?: string | null;
+  prob?: number | null;
+  probSource?: string | null;
+  probVerdict?: string | null;
+}
+export interface ServerScanCreate {
+  targetId: string;
+  targetLabel: string;
+  gene: string;
+  pdbId: string;
+  chain: string;
+  uniprotId?: string | null;
+  compoundName: string;
+  smiles: string;
+  status: string;
+  wtScore?: number | null;
+  rows: ServerScanRow[];
+}
+export interface ServerScan {
+  share_id: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  targetId: string;
+  targetLabel: string;
+  gene: string;
+  pdbId: string;
+  chain: string;
+  uniprotId: string | null;
+  compoundName: string;
+  smiles: string;
+  wtScore: number | null;
+  rows: ServerScanRow[];
+  is_owner: boolean;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; env: string }>("/health"),
   /** Phase 2 resistance scoring — see ResistanceScoreRowIn above. */
@@ -892,6 +936,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ rows }),
     }),
+  /** Create a shareable, durable resistance scan record (returns share_id). */
+  resistanceCreate: (payload: ServerScanCreate) =>
+    request<ServerScan>("/resistance", { method: "POST", body: JSON.stringify(payload) }),
+  /** Fetch a scan by share_id — PUBLIC (anyone with the link). */
+  resistanceGet: (shareId: string) => request<ServerScan>(`/resistance/${encodeURIComponent(shareId)}`),
+  /** Update a scan's rows/status as docks resolve — owner only. */
+  resistancePatch: (
+    shareId: string,
+    patch: { status?: string; wtScore?: number | null; rows?: ServerScanRow[] }
+  ) =>
+    request<ServerScan>(`/resistance/${encodeURIComponent(shareId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  /** List the caller's own scans (cross-device history). */
+  resistanceList: () => request<ServerScan[]>("/resistance"),
   /**
    * /health → boolean. Used by PodStatusBanner to poll pod liveness
    * cheaply. Returns true when the backend AND its GPU pod proxy are
