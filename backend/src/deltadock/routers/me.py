@@ -423,6 +423,10 @@ class AccessStatusOut(BaseModel):
     # Admins always read "approved". The Studio uses this to render the
     # button vs the "Request access" CTA vs a "Pending" state.
     boltz2_access: Optional[str] = None
+    # Per-feature access for GNINA docking + Virtual Screening (migration 037).
+    # Same values as boltz2_access. Admins read "approved".
+    gnina_access: Optional[str] = None
+    screening_access: Optional[str] = None
 
 
 @router.get("/access_status", response_model=AccessStatusOut)
@@ -482,8 +486,11 @@ def get_access_status(
             """
         ), {"uid": user.id})
         session.commit()
-        # Admin always has Boltz-2 (mirrors the engine gate in routers/jobs.py).
-        return AccessStatusOut(status="approved", decided_at=None, boltz2_access="approved")
+        # Admin always has every gated feature (mirrors the gates in jobs.py /
+        # screening.py).
+        return AccessStatusOut(status="approved", decided_at=None,
+                               boltz2_access="approved", gnina_access="approved",
+                               screening_access="approved")
 
     # Watched-user live monitor: ping the operator on Telegram when a
     # watched user's app is active (this endpoint is polled on app load /
@@ -547,7 +554,7 @@ def get_access_status(
     row = session.execute(
         text(
             "SELECT COALESCE(access_status, 'pending') AS status, access_decided_at, "
-            "       boltz2_access "
+            "       boltz2_access, gnina_access, screening_access "
             "FROM public.user_profile WHERE user_id = :uid"
         ),
         {"uid": user.id},
@@ -563,6 +570,8 @@ def get_access_status(
         status=(row["status"] or "pending").lower(),
         decided_at=decided_at.isoformat() if decided_at else None,
         boltz2_access=(row["boltz2_access"] or None),
+        gnina_access=(row["gnina_access"] or None),
+        screening_access=(row["screening_access"] or None),
     )
 
 
@@ -648,3 +657,84 @@ def request_boltz2_access(
         logging.getLogger(__name__).exception("notify_admin_boltz2_request failed (non-fatal)")
 
     return Boltz2RequestOut(boltz2_access="requested")
+
+
+# Per-feature access columns on user_profile. Feature name -> column. The
+# column is interpolated into SQL below, so this MUST stay an allowlist
+# (never user input) — the endpoint 404s any feature not in this dict.
+_FEATURE_COLUMNS = {
+    "boltz2": "boltz2_access",
+    "gnina": "gnina_access",
+    "screening": "screening_access",
+}
+
+
+class FeatureRequestOut(BaseModel):
+    feature: str
+    access: str = Field(..., description="approved | requested")
+
+
+@router.post("/request-access/{feature}", response_model=FeatureRequestOut)
+def request_feature_access(
+    feature: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> FeatureRequestOut:
+    """Generic per-feature access request — the shared backend for the
+    Studio's 'Request access' modals (gnina | screening | boltz2).
+
+    Mirrors the signup approval loop: sets '<feature>_access'='requested'
+    and fires the operator's Telegram Approve/Deny ping + admin email.
+    Admins are already approved; already-approved/requested is idempotent."""
+    import logging
+    import os
+    feature = (feature or "").strip().lower()
+    col = _FEATURE_COLUMNS.get(feature)
+    if not col:
+        raise HTTPException(status_code=404, detail=f"unknown feature '{feature}'")
+
+    admin_email_env = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    user_email = getattr(user, "email", None)
+    if admin_email_env and (user_email or "").strip().lower() == admin_email_env:
+        return FeatureRequestOut(feature=feature, access="approved")
+
+    cur = session.execute(
+        text(f"SELECT {col} FROM public.user_profile WHERE user_id = :uid"),
+        {"uid": user.id},
+    ).first()
+    current = (cur[0] if cur else None) or ""
+    if current in ("approved", "requested"):
+        return FeatureRequestOut(feature=feature, access=current)
+
+    try:
+        res = session.execute(
+            text(f"UPDATE public.user_profile SET {col} = 'requested' WHERE user_id = :uid"),
+            {"uid": user.id},
+        )
+        if (res.rowcount or 0) == 0:
+            session.execute(
+                text(
+                    f"INSERT INTO public.user_profile (user_id, {col}) "
+                    f"VALUES (:uid, 'requested') "
+                    f"ON CONFLICT (user_id) DO UPDATE SET {col} = 'requested'"
+                ),
+                {"uid": user.id},
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        logging.getLogger(__name__).exception("feature %s request flip failed for %s", feature, user.id)
+        raise HTTPException(status_code=500, detail="Could not record your request. Please try again.")
+
+    try:
+        from ..services.notifications import notify_feature_request
+        notify_feature_request(feature=feature, user_email=user_email, user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_feature_request failed (non-fatal)")
+    try:
+        from ..services.email import notify_admin_feature_request
+        notify_admin_feature_request(feature=feature, user_email=user_email, user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_admin_feature_request failed (non-fatal)")
+
+    return FeatureRequestOut(feature=feature, access="requested")

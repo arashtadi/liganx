@@ -317,3 +317,83 @@ def notify_user_boltz2_denied(*, user_email: Optional[str]) -> bool:
         subject="About your AI Resistance Prediction request",
         html=html,
     )
+
+
+# Human labels for the generic feature-access emails (gnina | screening |
+# boltz2). Kept here so the email copy reads naturally.
+_FEATURE_EMAIL_LABEL = {
+    "boltz2": "AI Resistance Prediction",
+    "gnina": "GNINA docking",
+    "screening": "Virtual Screening",
+}
+
+
+def notify_admin_feature_request(
+    *,
+    feature: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    full_name: Optional[str] = None,
+) -> bool:
+    """Email the admin when a user requests access to a gated feature.
+    Backup to the Telegram Approve/Deny ping."""
+    admin_to = _admin_email()
+    if not admin_to or not _is_configured():
+        return False
+    label = _FEATURE_EMAIL_LABEL.get(feature, feature)
+    rows = [f"<tr><td><b>Feature</b></td><td>{label}</td></tr>",
+            f"<tr><td><b>Email</b></td><td><code>{user_email or '—'}</code></td></tr>"]
+    if full_name:
+        rows.append(f"<tr><td><b>Name</b></td><td>{full_name}</td></tr>")
+    if user_id:
+        rows.append(f"<tr><td><b>User ID</b></td><td><code>{user_id}</code></td></tr>")
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">🔓 {label} — access requested</h2>
+      <p style="color: #475569;">Tap Approve in Telegram for one-tap action, or open the admin page:</p>
+      <p><a href="https://liganx.com/admin" style="background: #0d8f85; color: #fff; padding: 8px 14px; border-radius: 6px; text-decoration: none;">Open admin page</a></p>
+      <table cellpadding="6" style="border-collapse: collapse; margin-top: 16px; font-size: 14px; color: #1e293b;">
+        {''.join(rows)}
+      </table>
+    </div>
+    """
+    return _send(
+        to=admin_to,
+        subject=f"[Liganx] {label} access requested · {user_email or 'unknown'}",
+        html=html,
+    )
+
+
+def notify_user_feature_approved(*, feature: str, user_email: Optional[str]) -> bool:
+    """Email the user when their access to a gated feature is approved."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    label = _FEATURE_EMAIL_LABEL.get(feature, feature)
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">🔓 {label} is unlocked</h2>
+      <p style="color: #475569; line-height:1.6;">
+        Your access to <b>{label}</b> on Liganx is approved. Open the Studio and it's ready to use.
+      </p>
+      <p><a href="https://liganx.com/studio" style="background: #0d8f85; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight:600;">Open Studio →</a></p>
+    </div>
+    """
+    return _send(to=user_email, subject=f"Your {label} access is approved 🔓", html=html)
+
+
+def notify_user_feature_denied(*, feature: str, user_email: Optional[str]) -> bool:
+    """Email the user when their access request for a gated feature is declined."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    label = _FEATURE_EMAIL_LABEL.get(feature, feature)
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
+      <h2 style="color: #0f172a;">About your {label} request</h2>
+      <p style="color: #475569; line-height:1.6;">
+        Thanks for your interest. We're not able to enable <b>{label}</b> on your account right now.
+        You can keep using AutoDock Vina docking in the meantime. Questions? Reach out via
+        <a href="https://liganx.com/contact">the contact page</a>.
+      </p>
+    </div>
+    """
+    return _send(to=user_email, subject=f"About your {label} request", html=html)

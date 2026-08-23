@@ -886,16 +886,23 @@ export const api = {
     request<{
       status: "pending" | "approved" | "denied";
       decided_at: string | null;
-      /** Per-feature access for AI Resistance Prediction (Boltz-2):
-       *  null = never requested, then 'requested' | 'approved' | 'denied'.
-       *  Admins always read 'approved'. */
+      /** Per-feature access, each null = never requested, then
+       *  'requested' | 'approved' | 'denied'. Admins always read 'approved'. */
       boltz2_access?: "requested" | "approved" | "denied" | null;
+      gnina_access?: "requested" | "approved" | "denied" | null;
+      screening_access?: "requested" | "approved" | "denied" | null;
     }>(
       "/me/access_status",
     ),
-  /** Request access to AI Resistance Prediction (Boltz-2). Fires the
+  /** Request access to a gated feature (boltz2 | gnina | screening). Fires the
    *  operator's Telegram Approve/Deny ping + admin email. Returns the new
-   *  boltz2_access state ('requested', or 'approved' for admins). */
+   *  access state ('requested', or 'approved' for admins). */
+  requestFeatureAccess: (feature: "boltz2" | "gnina" | "screening") =>
+    request<{ feature: string; access: string }>(
+      `/me/request-access/${feature}`,
+      { method: "POST" },
+    ),
+  /** @deprecated use requestFeatureAccess('boltz2'). Kept for compatibility. */
   requestBoltz2Access: () =>
     request<{ boltz2_access: string }>("/me/request-boltz2-access", {
       method: "POST",

@@ -173,15 +173,27 @@ def create_screening(
     # Pro-tier gate: Virtual Screening is Pro only. Free tier sees 402
     # with a contact-us message; the Studio UI also hides/locks the VS
     # entry point so this is defense-in-depth.
+    # Access: admins and Pro accounts always pass; everyone else can now use
+    # the in-app request/approve flow (POST /me/request-access/screening ->
+    # operator Approve/Deny -> user_profile.screening_access='approved'),
+    # matching the Boltz-2 UX. Kept ADDITIVE so existing Pro users are unaffected.
     from ..auth import is_pro_user
-    if not is_pro_user(user.id, session):
+    import os as _os_vs
+    _admin_email = _os_vs.environ.get("ADMIN_EMAIL", "").strip().lower()
+    _is_admin_vs = bool(_admin_email) and (getattr(user, "email", "") or "").strip().lower() == _admin_email
+    _vs_ok = _is_admin_vs or is_pro_user(user.id, session)
+    if not _vs_ok:
+        _srow = session.execute(text(
+            "SELECT COALESCE(screening_access, '') FROM public.user_profile WHERE user_id = :uid"
+        ), {"uid": user.id}).first()
+        _vs_ok = bool(_srow) and (_srow[0] or "").strip().lower() == "approved"
+    if not _vs_ok:
         raise HTTPException(
             status_code=402,
             detail={
                 "message": (
-                    "Virtual Screening is a Liganx Pro feature. "
-                    "Free tier supports single-compound AutoDock Vina docking. "
-                    "Contact us to upgrade your account."
+                    "Virtual Screening isn't enabled on your account yet. "
+                    "Request access from the Studio and we'll approve it."
                 ),
                 "feature": "screening",
                 "contact_url": "https://liganx.com/contact",

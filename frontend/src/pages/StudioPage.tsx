@@ -37,8 +37,7 @@ import AdmetChips from "../components/AdmetChips";
 import LiganxAIPanel from "../components/LiganxAIPanel";
 import MobileDesktopOnlyBanner from "../components/MobileDesktopOnlyBanner";
 import PodStatusBanner from "../components/PodStatusBanner";
-import ProGateModal, { type ProFeature } from "../components/ProGateModal";
-import Boltz2RequestModal from "../components/Boltz2RequestModal";
+import FeatureRequestModal, { type GatedFeature } from "../components/FeatureRequestModal";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
@@ -376,10 +375,11 @@ export default function StudioPage() {
   );
   const [ketcherReady, setKetcherReady] = useState(false);
   const [currentSmiles, setCurrentSmiles] = useState("");
-  // v1.24 — Pro tier gating. is_pro=true users see GNINA + Virtual
-  // Screening as normal; free tier sees them disabled with a 🔒 lock
-  // icon and clicking opens proGateFeature modal. Admin toggles per-user
-  // from /admin. Defaults to false until the profile fetch completes so
+  // v1.24 — Pro tier gating. is_pro=true users see Virtual Screening as
+  // normal; free tier sees it disabled with a 🔒 lock icon and clicking
+  // opens the unified FeatureRequestModal (via requestFeature). Admin
+  // toggles per-user from /admin. Defaults to false until the profile
+  // fetch completes so
   // we never *accidentally* expose Pro features to a free user during
   // the brief loading window.
   const [isPro, setIsPro] = useState(false);
@@ -388,22 +388,27 @@ export default function StudioPage() {
   // App.tsx + the backend admin_user dependency).
   const { user: _authUser } = useAuth();
   const isAdmin = isAdminEmail(_authUser?.email);
-  const [proGateFeature, setProGateFeature] = useState<ProFeature | null>(null);
-  // AI Resistance Prediction (Boltz-2) per-feature access. null = not yet
-  // known / never requested; then 'requested' | 'approved' | 'denied'.
-  // Admins read 'approved' from the backend. Drives the Boltz-2 run button's
-  // three states (run / pending / request).
+  // Per-feature access (2026-08 unified request flow). Each is null = not yet
+  // known / never requested; then 'requested' | 'approved' | 'denied'. Admins
+  // read 'approved' from the backend. Drives each gated button's three states
+  // (run / pending / request). GNINA + Virtual Screening + AI Resistance all
+  // share one FeatureRequestModal, opened via `requestFeature`.
   const [boltz2Access, setBoltz2Access] = useState<string | null>(null);
-  const [boltz2ModalOpen, setBoltz2ModalOpen] = useState(false);
+  const [gninaAccess, setGninaAccess] = useState<string | null>(null);
+  const [screeningAccess, setScreeningAccess] = useState<string | null>(null);
+  const [requestFeature, setRequestFeature] = useState<GatedFeature | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
       .getMyAccessStatus()
       .then((a) => {
-        if (!cancelled) setBoltz2Access((a as any)?.boltz2_access ?? null);
+        if (cancelled) return;
+        setBoltz2Access((a as any)?.boltz2_access ?? null);
+        setGninaAccess((a as any)?.gnina_access ?? null);
+        setScreeningAccess((a as any)?.screening_access ?? null);
       })
       .catch(() => {
-        /* anonymous / signed-out — leave null, button shows Request */
+        /* anonymous / signed-out — leave null, buttons show Request */
       });
     return () => {
       cancelled = true;
@@ -4136,6 +4141,11 @@ export default function StudioPage() {
                 const baseLabel = submittingFull ? "▶ submitting…"
                   : isCoolingOff ? "▶ docking…"
                   : "⇢ Run Dock";
+                // GNINA per-feature access mirrors the AI Resistance flow:
+                // admins + approved users run it; 'requested' shows pending;
+                // otherwise the request modal opens.
+                const gninaCanRun = isAdmin || gninaAccess === "approved";
+                const gninaPending = gninaAccess === "requested";
                 return (
                   <div className="flex w-full gap-2">
                     {/* Vina half — primary, ~65% width, emerald.
@@ -4168,20 +4178,23 @@ export default function StudioPage() {
                         CNN-rerank state on current production. */}
                     <button
                       onClick={() => {
-                        // (2026-06-03) Admin gate. Non-Vina engines are
-                        // admin-only; everyone else is steered to Contact us
-                        // (backend also enforces this with a 402). Button stays
-                        // interactable so the affordance is visible.
-                        if (!isAdmin) {
-                          navigate("/contact");
-                          return;
+                        // (2026-08) Per-feature request gate. Admins +
+                        // approved users run GNINA; everyone else opens the
+                        // unified request modal (Telegram Approve/Deny ping).
+                        // 'requested' users wait — no repeat pings.
+                        if (gninaCanRun) {
+                          if (isDisabled) return;
+                          runFullJob("gnina");
+                        } else if (!gninaPending) {
+                          setRequestFeature("gnina");
                         }
-                        runFullJob("gnina");
                       }}
-                      disabled={isAdmin && isDisabled}
+                      disabled={gninaCanRun && isDisabled}
                       className={`flex-1 px-3 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${sharedBusyClasses} ${
-                        !isAdmin
-                          ? "border-violet-700/40 bg-violet-950/15 text-violet-300/60 hover:bg-violet-950/30 hover:border-violet-600/60 cursor-pointer"
+                        !gninaCanRun
+                          ? gninaPending
+                            ? "border-violet-800/40 bg-violet-950/10 text-violet-400/50 cursor-default"
+                            : "border-violet-700/40 bg-violet-950/15 text-violet-300/60 hover:bg-violet-950/30 hover:border-violet-600/60 cursor-pointer"
                           : submittingFull
                           ? "border-violet-500/40 bg-violet-950/30 text-violet-300/70"
                           : isCoolingOff
@@ -4191,13 +4204,16 @@ export default function StudioPage() {
                           : "border-violet-600/50 bg-violet-950/25 text-violet-200 hover:bg-violet-900/40 hover:border-violet-500"
                       }`}
                       title={
-                        !isAdmin ? "Only Vina docking is available on your account. Contact us for access to GNINA and other engines."
+                        !gninaCanRun
+                          ? gninaPending
+                            ? "Your GNINA access request is pending — you'll be emailed when it's approved."
+                            : "GNINA docking — click to request access."
                         : !selectedTarget ? "Pick a target first."
                         : !hasCompound ? "Stage at least one compound first."
                         : "Dock with GNINA. CNN re-rank currently OFFLINE (Blackwell sm_120 incompatibility) — produces sampling-only differences from Vina until the planned 4090 deploy ships. Marked as engine=gnina in History."
                       }
                     >
-                      <span>{!isAdmin && <span className="mr-1">🔒</span>}{baseLabel}</span>
+                      <span>{!gninaCanRun && <span className="mr-1">{gninaPending ? "⏳" : "🔒"}</span>}{gninaCanRun ? baseLabel : gninaPending ? "pending" : "Run Dock"}</span>
                       <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
                   </div>
@@ -4220,19 +4236,29 @@ export default function StudioPage() {
                   || !ketcherReady || !hasCompound || !selectedTarget;
                 const variantCount = (includeWt ? 1 : 0) + Math.min(2, selectedMutations.length);
                 const cellCount = compoundCount * Math.max(1, variantCount);
+                // VS access: Pro users keep their existing access; admins and
+                // approved users run; 'requested' shows pending.
+                const vsCanRun = isAdmin || isPro || screeningAccess === "approved";
+                const vsPending = screeningAccess === "requested";
                 return (
                   <button
                     onClick={() => {
-                      if (!isPro) {
-                        setProGateFeature("screening");
-                        return;
+                      // (2026-08) Unified request gate. Pro users keep access;
+                      // admins + approved users run; everyone else opens the
+                      // request modal. 'requested' users wait — no repeat pings.
+                      if (vsCanRun) {
+                        if (isDisabled) return;
+                        runScreening();
+                      } else if (!vsPending) {
+                        setRequestFeature("screening");
                       }
-                      runScreening();
                     }}
-                    disabled={isPro && isDisabled}
+                    disabled={vsCanRun && isDisabled}
                     className={`mt-2 w-full px-4 py-2.5 rounded border font-mono text-xs uppercase tracking-[0.18em] transition-all ${
-                      !isPro
-                        ? "border-cyan-700/40 bg-cyan-950/15 text-cyan-300/60 hover:bg-cyan-950/30 hover:border-cyan-600/60 cursor-pointer"
+                      !vsCanRun
+                        ? vsPending
+                          ? "border-cyan-800/40 bg-cyan-950/10 text-cyan-400/50 cursor-default"
+                          : "border-cyan-700/40 bg-cyan-950/15 text-cyan-300/60 hover:bg-cyan-950/30 hover:border-cyan-600/60 cursor-pointer"
                         : submittingFull
                         ? "border-cyan-500/40 bg-cyan-950/30 text-cyan-300/70 cursor-wait animate-pulse"
                         : !ketcherReady || !hasCompound || !selectedTarget
@@ -4240,14 +4266,17 @@ export default function StudioPage() {
                         : "border-cyan-600/60 bg-cyan-950/30 text-cyan-200 hover:bg-cyan-900/40 hover:border-cyan-500"
                     }`}
                     title={
-                      !isPro ? "Virtual Screening is a Pro feature — click for details."
+                      !vsCanRun
+                        ? vsPending
+                          ? "Your Virtual Screening access request is pending — you'll be emailed when it's approved."
+                          : "Virtual Screening — click to request access."
                       : !selectedTarget ? "Pick a target first."
                       : !hasCompound ? "Stage at least one compound first."
                       : "Submit as a virtual screening run — pre-stages every (compound × variant) row, lower exhaustiveness (4), and lands you on the ranked-hit results page sorted by selectivity index (mutant tighter than WT)."
                     }
                   >
-                    <span>{!isPro && <span className="mr-1">🔒</span>}⇢ Run Virtual Screening</span>
-                    {isPro && cellCount > 0 && (
+                    <span>{!vsCanRun && <span className="mr-1">{vsPending ? "⏳" : "🔒"}</span>}{vsCanRun ? "⇢ Run Virtual Screening" : vsPending ? "Virtual Screening · pending approval" : "Virtual Screening · request access"}</span>
+                    {vsCanRun && cellCount > 0 && (
                       <span className="opacity-60 ml-1.5">
                         · {compoundCount} cmpd × {variantCount} variant{variantCount === 1 ? "" : "s"} ({cellCount} cells)
                       </span>
@@ -4279,7 +4308,7 @@ export default function StudioPage() {
                         if (isDisabled) return;
                         runFullJob("boltz2");
                       } else if (!isPending) {
-                        setBoltz2ModalOpen(true);
+                        setRequestFeature("boltz2");
                       }
                     }}
                     disabled={canRun && isDisabled}
@@ -4534,16 +4563,20 @@ export default function StudioPage() {
           so we hide the FAB to avoid a confusing empty-context chat. */}
       {fullJobKey && <LiganxAIPanel jobKey={fullJobKey} />}
 
-      {/* v1.24 — Pro gate modal. Opens when a free-tier user clicks
-          the locked GNINA or VS button. Stateless / parent-owned. */}
-      <ProGateModal
-        feature={proGateFeature}
-        onClose={() => setProGateFeature(null)}
-      />
-      <Boltz2RequestModal
-        open={boltz2ModalOpen}
-        onClose={() => setBoltz2ModalOpen(false)}
-        onRequested={(s) => setBoltz2Access(s)}
+      {/* (2026-08) Unified feature-request modal. One component for every
+          gated Studio feature (AI Resistance / GNINA / Virtual Screening):
+          fires POST /me/request-access/<feature>, pings the operator on
+          Telegram (Approve/Deny), then shows a pending confirmation. Parent
+          owns which feature is open (requestFeature) and flips the matching
+          access state to 'requested' so the button shows pending. */}
+      <FeatureRequestModal
+        feature={requestFeature}
+        onClose={() => setRequestFeature(null)}
+        onRequested={(feature, s) => {
+          if (feature === "boltz2") setBoltz2Access(s);
+          else if (feature === "gnina") setGninaAccess(s);
+          else if (feature === "screening") setScreeningAccess(s);
+        }}
       />
     </div>
   );

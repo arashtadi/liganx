@@ -131,6 +131,48 @@ def _flip_boltz2(user_id: str, target: str, actor: str) -> tuple[bool, str]:
         return False, ""
 
 
+# Generic per-feature access columns (migration 036/037). Allowlist — the
+# column is interpolated into SQL below, so it must never be caller input.
+_FEATURE_COLUMNS = {
+    "boltz2": "boltz2_access",
+    "gnina": "gnina_access",
+    "screening": "screening_access",
+}
+_FEATURE_LABELS = {
+    "boltz2": "Boltz-2",
+    "gnina": "GNINA",
+    "screening": "Virtual Screening",
+}
+
+
+def _flip_feature(feature: str, user_id: str, target: str, actor: str) -> tuple[bool, str]:
+    """Generic twin of _flip_status: set user_profile.<feature>_access. Returns
+    (changed, user_email). Idempotent via the IS DISTINCT FROM guard."""
+    target = target.lower()
+    col = _FEATURE_COLUMNS.get(feature)
+    if target not in ("approved", "denied") or not col:
+        return False, ""
+    try:
+        with Session(engine) as s:
+            row = s.execute(
+                text("SELECT email FROM auth.users WHERE id = :uid"),
+                {"uid": user_id},
+            ).first()
+            user_email = (row[0] if row else "") or ""
+            res = s.execute(
+                text(
+                    f"UPDATE public.user_profile SET {col} = :target "
+                    f" WHERE user_id = :uid AND {col} IS DISTINCT FROM :target"
+                ),
+                {"target": target, "uid": user_id},
+            )
+            s.commit()
+            return (res.rowcount or 0) > 0, user_email
+    except Exception as e:  # noqa: BLE001
+        log.exception("Telegram feature(%s) approve/deny DB error for %s: %s", feature, user_id, e)
+        return False, ""
+
+
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def telegram_webhook(
     req: Request,
@@ -174,48 +216,60 @@ async def telegram_webhook(
         _notif.answer_callback(cbq_id, "Unrecognized button.")
         return {"ok": True, "ignored": "bad_data"}
 
-    action, _, user_id = data.partition(":")
+    action, _, rest = data.partition(":")
     action = action.strip().lower()
-    user_id = user_id.strip()
-    # callback_data is "<action>:<user_id>". Account approval uses
-    # approve/deny (flips access_status); the Boltz-2 feature uses
-    # approve_bz2/deny_bz2 (flips boltz2_access). Same one-tap loop.
-    _ACTIONS = {
-        "approve":     ("account", True),
-        "deny":        ("account", False),
-        "approve_bz2": ("boltz2",  True),
-        "deny_bz2":    ("boltz2",  False),
-    }
-    if action not in _ACTIONS or not user_id:
+
+    # Resolve (feature, is_approve, user_id) from the callback_data:
+    #   account:        approve|deny : <uid>          (feature=None → access_status)
+    #   feature (new):  af|df : <feature> : <uid>     (generic, migrations 036/037)
+    #   boltz2 (legacy): approve_bz2|deny_bz2 : <uid>
+    feature: Optional[str] = None
+    is_approve: Optional[bool] = None
+    user_id = ""
+    if action in ("af", "df"):
+        is_approve = action == "af"
+        feat, _, user_id = rest.partition(":")
+        feature = feat.strip().lower()
+        user_id = user_id.strip()
+    else:
+        user_id = rest.strip()
+        _LEGACY = {
+            "approve":     (None,     True),
+            "deny":        (None,     False),
+            "approve_bz2": ("boltz2", True),
+            "deny_bz2":    ("boltz2", False),
+        }
+        if action in _LEGACY:
+            feature, is_approve = _LEGACY[action]
+
+    bad_feature = feature is not None and feature not in _FEATURE_COLUMNS
+    if is_approve is None or not user_id or bad_feature:
         _notif.answer_callback(cbq_id, "Unknown action.")
         return {"ok": True, "ignored": "bad_action"}
 
-    feature, is_approve = _ACTIONS[action]
     target_status = "approved" if is_approve else "denied"
-    if feature == "boltz2":
-        changed, user_email = _flip_boltz2(user_id, target_status, actor)
-    else:
+    if feature is None:
         changed, user_email = _flip_status(user_id, target_status, actor)
+    else:
+        changed, user_email = _flip_feature(feature, user_id, target_status, actor)
 
-    # Email the user so they know — they may have closed the tab between
-    # the request and your tap. Fail-soft inside services/email; never
-    # interferes with the Telegram acknowledgement below. Only fire when
-    # we actually changed state (re-deliveries shouldn't re-spam).
+    # Email the user so they know — fail-soft, and only on a real state change
+    # (re-deliveries shouldn't re-spam).
     if changed and user_email:
         try:
             from ..services import email as _email
-            if feature == "boltz2":
-                (_email.notify_user_boltz2_approved if is_approve
-                 else _email.notify_user_boltz2_denied)(user_email=user_email)
-            else:
+            if feature is None:
                 (_email.notify_user_approved if is_approve
                  else _email.notify_user_denied)(user_email=user_email)
+            else:
+                (_email.notify_user_feature_approved if is_approve
+                 else _email.notify_user_feature_denied)(feature=feature, user_email=user_email)
         except Exception:  # noqa: BLE001
             log.exception("user-approval email failed (non-fatal)")
 
     # Build the confirmation text that REPLACES the original notification.
     # Keep the user_id visible so the message remains a useful audit row.
-    _flabel = "Boltz-2 " if feature == "boltz2" else ""
+    _flabel = "" if feature is None else (_FEATURE_LABELS.get(feature, feature) + " ")
     pretty = (f"{_flabel}APPROVED ✅" if is_approve else f"{_flabel}DENIED ❌")
     email_line = f"\n📧 {user_email}" if user_email else ""
     note = "" if changed else "\n<i>(already in that state — no change)</i>"

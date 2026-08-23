@@ -283,6 +283,57 @@ def notify_boltz2_request(
     return _send("\n".join(parts), reply_markup=reply_markup, channel="boltz2")
 
 
+# feature -> (emoji, human label, telegram channel). boltz2 keeps its own
+# topic; gnina/screening land in the generic "access" channel (General until
+# TELEGRAM_TOPIC_ACCESS is set).
+_FEATURE_META = {
+    "boltz2":    ("🧬", "AI Resistance Prediction (Boltz-2)", "boltz2"),
+    "gnina":     ("🧪", "GNINA docking", "access"),
+    "screening": ("🔬", "Virtual Screening", "access"),
+}
+
+
+def notify_feature_request(
+    *,
+    feature: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Generic 'Request access' operator ping for a gated feature
+    (gnina | screening | boltz2). Same one-tap Approve/Deny loop as a new
+    signup, scoped to '<feature>_access'. The /telegram/webhook handler
+    parses the af:<feature>:<uid> / df:<feature>:<uid> callback_data."""
+    emoji, label, channel = _FEATURE_META.get(
+        feature, ("🔒", "%s access" % feature, "access"))
+    email_e = _escape_html(user_email or "—")
+    name_e = _escape_html(full_name or "—") if full_name else None
+    org_e = _escape_html(organization) if organization else None
+    user_id_e = _escape_html(user_id or "—")
+
+    parts = [
+        f"{emoji} <b>{_escape_html(label)} — access requested</b>",
+        "",
+        f"📧 Email: <code>{email_e}</code>",
+    ]
+    if name_e and name_e != "—":
+        parts.append(f"👤 Name: {name_e}")
+    if org_e:
+        parts.append(f"🏢 Org: {org_e}")
+    parts.append(f"🆔 <code>{user_id_e}</code>")
+
+    reply_markup: Optional[dict] = None
+    if user_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"af:{feature}:{user_id}"},
+                {"text": "❌ Deny",    "callback_data": f"df:{feature}:{user_id}"},
+            ]],
+        }
+    return _send("\n".join(parts), reply_markup=reply_markup, channel=channel)
+
+
 def notify_first_dock(
     *,
     job_id: int,
