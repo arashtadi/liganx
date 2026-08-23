@@ -62,21 +62,26 @@ function isResistance(m: Mut): boolean {
   );
 }
 
-/** Build the scan panel: prefer curated resistance mutations; fall back to
- *  the full curated list when none are explicitly tagged. De-duped, capped. */
+/** Build the scan panel from the target's FULL curated variant set — not
+ *  just mutations whose text says "resistance." For drivers like KRAS
+ *  (G12C/G12D/G13D) the clinically relevant panel IS the variant set, and
+ *  those aren't tagged "resistance." Resistance-tagged variants sort first so
+ *  the most on-point liabilities lead the map. De-duped, capped. */
 function pickPanel(muts: Mut[]): Mut[] {
-  const res = muts.filter(isResistance);
-  const base = res.length > 0 ? res : muts;
   const seen = new Set<string>();
-  const out: Mut[] = [];
-  for (const m of base) {
+  const deduped: Mut[] = [];
+  for (const m of muts) {
     const key = m.code.toUpperCase();
     if (!seen.has(key)) {
       seen.add(key);
-      out.push(m);
+      deduped.push(m);
     }
   }
-  return out.slice(0, MAX_PANEL);
+  const sorted = [
+    ...deduped.filter(isResistance),
+    ...deduped.filter((m) => !isResistance(m)),
+  ];
+  return sorted.slice(0, MAX_PANEL);
 }
 
 function chunk<T>(arr: T[], n: number): T[][] {
