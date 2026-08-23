@@ -1,5 +1,5 @@
 // ResistanceRadar — LIVE, in-Studio resistance forecast for a user's own
-// compound (feature/resistance-radar, v0.1).
+// compound (feature/resistance-radar, v0.2).
 //
 // The public /atlas forecasts resistance for approved drugs from a
 // precomputed, offline-generated model. This brings the same idea to the
@@ -9,9 +9,14 @@
 //
 // PHASE 1 (this file): the Δ-docking axis only. It reuses the EXISTING dock
 // endpoint (api.createJob / api.getJob) — no backend change, nothing in the
-// existing flow is touched. It docks WT once as a baseline, then each panel
-// mutation, and reports ΔΔ = score(mut) − score(WT). Positive ΔΔ = the
+// existing flow is touched. Each batch job co-docks WT + its mutations, so
+// every job is self-contained and each mutation's ΔΔ = score(mut) −
+// score(WT) uses a WT docked under identical conditions. Positive ΔΔ = the
 // mutant binds the compound more weakly = a resistance liability.
+//
+// Scans are saved locally (lib/resistanceHistory) so past maps reopen
+// without re-docking. Each job is titled/tagged so it's identifiable in the
+// user's History page.
 //
 // PHASE 2 (later, needs a small backend endpoint): fold in the ESM2
 // fold-stability axis + the Atlas's calibrated joint-probability model so a
@@ -19,6 +24,12 @@
 
 import { useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import {
+  listResistanceScans,
+  saveResistanceScan,
+  deleteResistanceScan,
+  type SavedResistanceScan,
+} from "../lib/resistanceHistory";
 
 type Mut = { code: string; label: string; significance: string };
 
@@ -29,6 +40,7 @@ type Row = {
   significance: string;
   status: RowStatus;
   mutScore: number | null;
+  wtScore: number | null; // WT co-docked in the same job as this mutant
   error?: string | null;
 };
 
@@ -37,9 +49,9 @@ type Phase = "confirm" | "running" | "done" | "error";
 const MAX_PANEL = 6; // cost cap — never scan more than this many mutations
 const BATCH = 2; // backend caps mutations-per-job at 2
 
-// Rough per-dock wall-time estimate for the "~N min" copy. Docks run
-// concurrently (RunPod serverless), so wall time ≈ one dock, not the sum.
-const EST_MIN_PER_WAVE = 3;
+// Rough wall-time estimate for the "~N min" copy. Docks run concurrently
+// (RunPod serverless), so wall time ≈ one wave, not the sum.
+const EST_MIN = 3;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -79,6 +91,21 @@ const fmt = (v: number | null | undefined, dp = 2) =>
 const fmtSigned = (v: number | null | undefined, dp = 2) =>
   v == null || Number.isNaN(v) ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(dp)}`;
 
+function fmtWhen(iso: string): string {
+  // Compact local date+time without pulling in a date lib.
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 /** Tier a ΔΔ (kcal/mol) into a resistance verdict + colour system. Positive
  *  ΔΔ = weaker mutant binding = resistance. Thresholds are deliberately
  *  conservative for a docking-only signal (phase 2 adds calibration). */
@@ -110,6 +137,7 @@ export default function ResistanceRadar({
   onClose,
   smiles,
   compoundName,
+  targetId,
   targetLabel,
   pdbId,
   chain,
@@ -119,27 +147,24 @@ export default function ResistanceRadar({
   const panel = useMemo(() => pickPanel(mutations), [mutations]);
   const [phase, setPhase] = useState<Phase>("confirm");
   const [rows, setRows] = useState<Row[]>([]);
-  const [wtScore, setWtScore] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savedScans, setSavedScans] = useState<SavedResistanceScan[]>(() => listResistanceScans());
+  // Non-null while the "done" view is showing a reopened historical scan
+  // rather than a fresh run.
+  const [viewingSaved, setViewingSaved] = useState<{ name: string; at: string } | null>(null);
   const cancelled = useRef(false);
 
   if (!open) return null;
 
-  const nDocks = panel.length + 1; // + WT baseline
-  const estMin = EST_MIN_PER_WAVE; // concurrent → ~one wave
+  const nBatches = Math.max(1, Math.ceil(panel.length / BATCH));
+  const nDocks = panel.length + nBatches; // one WT per batch
 
-  // ── Derived: ΔΔ per row (reactive so it fills in once WT resolves) ──
+  // ── Derived: ΔΔ per row (each mutant vs its own co-docked WT) ──
   const scored = rows.map((r) => ({
     ...r,
-    ddg: r.mutScore != null && wtScore != null ? r.mutScore - wtScore : null,
+    ddg: r.mutScore != null && r.wtScore != null ? r.mutScore - r.wtScore : null,
   }));
-  const ranked = [...scored].sort((a, b) => {
-    // Worst (highest ΔΔ) first; unresolved rows sink to the bottom.
-    const av = a.ddg ?? -Infinity;
-    const bv = b.ddg ?? -Infinity;
-    return bv - av;
-  });
-
+  const ranked = [...scored].sort((a, b) => (b.ddg ?? -Infinity) - (a.ddg ?? -Infinity));
   const resolved = scored.filter((r) => r.ddg != null);
   const worst = resolved.reduce<null | (typeof scored)[number]>(
     (acc, r) => (acc == null || (r.ddg ?? -Infinity) > (acc.ddg ?? -Infinity) ? r : acc),
@@ -149,75 +174,80 @@ export default function ResistanceRadar({
   const nCliff = resolved.filter((r) => (r.ddg ?? 0) >= 2.0).length;
   const allDone = rows.length > 0 && rows.every((r) => r.status === "done" || r.status === "failed");
 
+  // Representative WT baseline for the banner — mean of the co-docked WTs.
+  const wtScores = scored.map((r) => r.wtScore).filter((v): v is number => v != null);
+  const wtShown = wtScores.length ? wtScores.reduce((a, b) => a + b, 0) / wtScores.length : null;
+
   // ── Orchestration ──
   async function run() {
     cancelled.current = false;
     setError(null);
-    setWtScore(null);
+    setViewingSaved(null);
     setPhase("running");
-    const initial: Row[] = panel.map((m) => ({
-      code: m.code,
-      label: m.label,
-      significance: m.significance,
-      status: "running",
-      mutScore: null,
-    }));
-    setRows(initial);
+    setRows(
+      panel.map((m) => ({
+        code: m.code,
+        label: m.label,
+        significance: m.significance,
+        status: "running",
+        mutScore: null,
+        wtScore: null,
+      }))
+    );
 
     const compound = [{ name: compoundName || "Studio compound", smiles }];
     const batches = chunk(panel, BATCH);
+    // Local accumulator so the saved snapshot doesn't race React state.
+    const collected: Record<string, { mut: number | null; wt: number | null }> = {};
 
     try {
-      // Submit every wave up-front so the docks run concurrently, WT once.
-      const jobs: { key: string; codes: string[]; includeWt: boolean }[] = [];
-      for (let bi = 0; bi < batches.length; bi++) {
+      const jobs: { key: string; codes: string[] }[] = [];
+      for (const batch of batches) {
         if (cancelled.current) return;
-        const batch = batches[bi];
+        const codes = batch.map((m) => m.code);
         const job = await api.createJob({
           pdb_id: pdbId,
           chain: chain || "A",
           uniprot_id: uniprotId || undefined,
-          mutations: batch.map((m) => m.code),
+          mutations: codes,
           compounds: compound,
-          include_wt: bi === 0, // single shared WT baseline
+          include_wt: true, // co-dock WT in every job so ΔΔ is same-conditions
           engine: "quickvina2_gpu",
+          title: `Resistance Radar · ${targetLabel.toUpperCase()} · ${codes.join("+")}`,
+          tags: ["resistance-radar"],
         });
         const key = (job as any).share_id ?? String((job as any).id ?? "");
         if (!key) throw new Error("Dock submitted but no job id came back.");
-        jobs.push({ key, codes: batch.map((m) => m.code), includeWt: bi === 0 });
+        jobs.push({ key, codes });
       }
 
-      // Poll every wave concurrently; fill rows as each lands.
       await Promise.all(
         jobs.map(async (j) => {
           try {
             const done = await pollJob(j.key);
-            const results = (done.results || []) as {
-              variant: string;
-              best_score: number | null;
-            }[];
-            if (j.includeWt) {
-              const w = results.find((r) => r.variant.toUpperCase() === "WT");
-              setWtScore(w?.best_score ?? null);
+            const results = (done.results || []) as { variant: string; best_score: number | null }[];
+            const wt = results.find((r) => r.variant.toUpperCase() === "WT")?.best_score ?? null;
+            for (const code of j.codes) {
+              const hit = results.find((r) => r.variant.toUpperCase() === code.toUpperCase());
+              collected[code] = { mut: done.status === "failed" ? null : hit?.best_score ?? null, wt };
             }
             setRows((prev) =>
               prev.map((row) => {
                 if (!j.codes.includes(row.code)) return row;
-                const hit = results.find(
-                  (r) => r.variant.toUpperCase() === row.code.toUpperCase()
-                );
-                if (done.status === "failed") {
-                  return { ...row, status: "failed", error: done.error_message || "dock failed" };
-                }
+                const hit = results.find((r) => r.variant.toUpperCase() === row.code.toUpperCase());
+                const failed = done.status === "failed";
+                const mutScore = failed ? null : hit?.best_score ?? null;
                 return {
                   ...row,
-                  status: hit?.best_score != null ? "done" : "failed",
-                  mutScore: hit?.best_score ?? null,
-                  error: hit?.best_score == null ? "no pose" : null,
+                  status: mutScore != null ? "done" : "failed",
+                  mutScore,
+                  wtScore: wt,
+                  error: mutScore == null ? (failed ? done.error_message || "dock failed" : "no pose") : null,
                 };
               })
             );
           } catch (e: any) {
+            for (const code of j.codes) collected[code] = { mut: null, wt: null };
             setRows((prev) =>
               prev.map((row) =>
                 j.codes.includes(row.code)
@@ -229,7 +259,27 @@ export default function ResistanceRadar({
         })
       );
 
-      if (!cancelled.current) setPhase("done");
+      if (cancelled.current) return;
+
+      // Persist the finished scan locally so its map can be reopened.
+      const savedRows = panel.map((m) => ({
+        code: m.code,
+        label: m.label,
+        significance: m.significance,
+        mutScore: collected[m.code]?.mut ?? null,
+        wtScore: collected[m.code]?.wt ?? null,
+      }));
+      const wts = savedRows.map((r) => r.wtScore).filter((v): v is number => v != null);
+      saveResistanceScan({
+        targetId,
+        targetLabel,
+        compoundName: compoundName || "Studio compound",
+        smiles,
+        wtScore: wts.length ? wts.reduce((a, b) => a + b, 0) / wts.length : null,
+        rows: savedRows,
+      });
+      setSavedScans(listResistanceScans());
+      setPhase("done");
     } catch (e: any) {
       if (cancelled.current) return;
       setError(e?.message || "Resistance scan failed to start.");
@@ -246,6 +296,27 @@ export default function ResistanceRadar({
       await sleep(4000);
     }
     throw new Error("timed out waiting for docks");
+  }
+
+  function loadScan(s: SavedResistanceScan) {
+    setViewingSaved({ name: s.compoundName, at: s.savedAt });
+    setRows(
+      s.rows.map((r) => ({
+        code: r.code,
+        label: r.label,
+        significance: r.significance,
+        status: r.mutScore != null ? "done" : "failed",
+        mutScore: r.mutScore,
+        wtScore: r.wtScore,
+        error: r.mutScore == null ? r.error ?? "no result" : null,
+      }))
+    );
+    setPhase("done");
+  }
+
+  function removeScan(id: string) {
+    deleteResistanceScan(id);
+    setSavedScans(listResistanceScans());
   }
 
   function close() {
@@ -321,12 +392,15 @@ export default function ResistanceRadar({
                     <div className="flex items-center justify-between">
                       <span>docks to run</span>
                       <span className="text-slate-200">
-                        {nDocks} <span className="text-slate-500">({panel.length} mutants + WT)</span>
+                        {nDocks}{" "}
+                        <span className="text-slate-500">
+                          ({panel.length} mutants + {nBatches} WT)
+                        </span>
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>approx. time</span>
-                      <span className="text-slate-200">~{estMin} min (run concurrently)</span>
+                      <span className="text-slate-200">~{EST_MIN} min (run concurrently)</span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>run credits used</span>
@@ -349,6 +423,49 @@ export default function ResistanceRadar({
                       Cancel
                     </button>
                   </div>
+
+                  {/* Recent scans — reopen a past map without re-docking. */}
+                  {savedScans.length > 0 && (
+                    <div className="pt-2 border-t border-slate-800/70">
+                      <div className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-1.5">
+                        recent scans
+                      </div>
+                      <div className="space-y-1 max-h-40 overflow-y-auto">
+                        {savedScans.map((s) => (
+                          <div
+                            key={s.id}
+                            className="group flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1 hover:border-slate-700 hover:bg-slate-800/40"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => loadScan(s)}
+                              className="flex-1 min-w-0 text-left"
+                              title="Reopen this scan's map"
+                            >
+                              <span className="font-mono text-[11px] text-slate-200 truncate">
+                                {s.compoundName}
+                              </span>
+                              <span className="text-slate-600 mx-1">·</span>
+                              <span className="font-mono text-[11px] text-cyan-300">
+                                {s.targetLabel.toUpperCase()}
+                              </span>
+                              <span className="text-slate-600 mx-1">·</span>
+                              <span className="text-[10px] text-slate-500">{fmtWhen(s.savedAt)}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeScan(s.id)}
+                              className="shrink-0 text-slate-600 hover:text-rose-300 text-[12px] opacity-0 group-hover:opacity-100"
+                              title="Delete this saved scan"
+                              aria-label="Delete saved scan"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -356,6 +473,13 @@ export default function ResistanceRadar({
 
           {(phase === "running" || phase === "done") && (
             <div className="space-y-4">
+              {viewingSaved && (
+                <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
+                  <span className="px-1.5 py-0.5 rounded bg-slate-800/70 text-slate-400">saved</span>
+                  {viewingSaved.name} · {fmtWhen(viewingSaved.at)}
+                </div>
+              )}
+
               {/* Verdict banner */}
               <div
                 className={`rounded-lg border px-3 py-2.5 ${
@@ -370,28 +494,31 @@ export default function ResistanceRadar({
                   <div className="flex items-center gap-2 text-[12px] font-mono text-cyan-200">
                     <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
                     Docking {rows.filter((r) => r.status === "done" || r.status === "failed").length}/
-                    {rows.length} variants{wtScore != null ? " · WT baseline in" : " · docking WT…"}
+                    {rows.length} variants (each with its own WT)…
                   </div>
                 ) : nCliff > 0 && worst ? (
                   <div className="text-[12px] text-rose-100 leading-snug">
                     <span className="font-semibold">⚠ Resistance predicted.</span> Binding falls off
-                    hardest at{" "}
-                    <span className="font-mono text-rose-300">{worst.code}</span> (
+                    hardest at <span className="font-mono text-rose-300">{worst.code}</span> (
                     {fmtSigned(worst.ddg)} kcal/mol vs WT).{" "}
                     <span className="text-rose-200/80">
                       {nRetained}/{resolved.length} variants still hold binding.
                     </span>
                   </div>
-                ) : (
+                ) : resolved.length > 0 ? (
                   <div className="text-[12px] text-emerald-100 leading-snug">
                     <span className="font-semibold">✓ No major resistance predicted.</span> Binding is
                     retained across all {resolved.length} scanned variants
                     {worst && worst.ddg != null ? ` (worst shift ${fmtSigned(worst.ddg)} kcal/mol).` : "."}
                   </div>
+                ) : (
+                  <div className="text-[12px] text-amber-100 leading-snug">
+                    No variant produced a usable score — every dock failed or returned no pose.
+                  </div>
                 )}
-                {wtScore != null && (
+                {wtShown != null && (
                   <div className="mt-1 text-[10px] font-mono text-slate-500">
-                    WT baseline: {fmt(wtScore)} kcal/mol
+                    WT baseline: {fmt(wtShown)} kcal/mol{wtScores.length > 1 ? " (mean)" : ""}
                   </div>
                 )}
               </div>
@@ -404,15 +531,10 @@ export default function ResistanceRadar({
                 </div>
                 {ranked.map((r) => {
                   const t = ddgTier(r.ddg);
-                  // Bar length ∝ ΔΔ clamped to [0, 4] kcal (resistance side).
-                  const pct =
-                    r.ddg == null ? 0 : Math.max(0, Math.min(4, r.ddg)) / 4 * 100;
+                  const pct = r.ddg == null ? 0 : (Math.max(0, Math.min(4, r.ddg)) / 4) * 100;
                   const retained = r.ddg != null && r.ddg < 0.75;
                   return (
-                    <div
-                      key={r.code}
-                      className={`rounded border ${t.ring} bg-slate-900/40 px-2.5 py-1.5`}
-                    >
+                    <div key={r.code} className={`rounded border ${t.ring} bg-slate-900/40 px-2.5 py-1.5`}>
                       <div className="flex items-center gap-2">
                         <span
                           className="font-mono text-[12px] text-slate-200 w-16 shrink-0"
@@ -420,7 +542,6 @@ export default function ResistanceRadar({
                         >
                           {r.code}
                         </span>
-                        {/* Bar track */}
                         <div className="flex-1 h-3 rounded bg-slate-800/70 relative overflow-hidden">
                           {r.status === "running" ? (
                             <div className="absolute inset-0 flex items-center pl-2 text-[9px] font-mono text-cyan-300/80 animate-pulse">
@@ -456,16 +577,20 @@ export default function ResistanceRadar({
               </div>
 
               <p className="text-[10px] text-slate-500 leading-relaxed pt-1">
-                Phase 1 signal: Δ-docking only (score shift vs WT). A positive ΔΔ means the mutant
-                binds your compound more weakly — a resistance liability. The full Atlas-grade
-                forecast (ESM2 fold-stability + calibrated probability) comes next.
+                Phase 1 signal: Δ-docking only (score shift vs a WT co-docked in the same job). A
+                positive ΔΔ means the mutant binds your compound more weakly — a resistance
+                liability. The full Atlas-grade forecast (ESM2 fold-stability + calibrated
+                probability) comes next.
               </p>
 
               {allDone && (
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setPhase("confirm")}
+                    onClick={() => {
+                      setViewingSaved(null);
+                      setPhase("confirm");
+                    }}
                     className="px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800/50 font-mono text-[11px] uppercase tracking-wider"
                   >
                     ↺ new scan
