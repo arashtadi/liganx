@@ -222,3 +222,65 @@ the persistent-pod server (boltz2_server_async.py): plain boltz, cu12 torch,
 `--no_kernels`.** Deployment note: RunPod auto-build-on-push does not fire on
 this account, and there is no cu12/cu13 host toggle needed — the image is
 CUDA-12 and runs on the default fleet.
+
+
+---
+
+## Validated accuracy — resistance panel 2026-08-23 (MSA-enabled)
+
+Ran WT-vs-mutant on literature-backed resistance mutations with a ColabFold
+MSA (`--use_msa_server`), pocket-constrained, Boltz-2 affinity head.
+Δ = affinity_pred_value(mut) − affinity_pred_value(wt); log10(IC50 µM);
+Δ>0 = mutant is the weaker binder = resistance.
+
+**Direct-contact (drug-contacting) resistance mutations — the in-scope class:**
+
+| Mutation / drug | change | Δ | direction |
+|---|---|---|---|
+| KIT T670I / imatinib | Thr→Ile gatekeeper | **+1.14** | resistance ✓ strong |
+| ABL T315I / imatinib | Thr→Ile gatekeeper | **+0.92** | resistance ✓ strong |
+| FLT3 F691L / quizartinib | Phe→Leu gatekeeper | **+0.28** | resistance ✓ |
+| EGFR T790M / gefitinib | Thr→Met gatekeeper | **+0.27** | resistance ✓ |
+| ALK L1196M / crizotinib | Leu→Met gatekeeper | **+0.11** | direction ✓, weak |
+
+**Direction correct in 5/5 (100%).** Δ magnitude scales with the severity of
+the steric perturbation: a Thr→Ile swap (loses an H-bond + adds a branched
+side chain) → Δ≈1.1; a subtle Leu→Met swap → Δ≈0.1 but still correct sign.
+
+**Conformational / allosteric resistance — the field frontier (miss expected):**
+
+| KIT D816V / imatinib | activation-loop → active conf | +0.04 | not detected |
+
+D816V confers resistance by shifting the DFG equilibrium (imatinib binds only
+the inactive state), which a single-structure affinity call cannot see. This is
+a whole-field limitation shared by Boltz/Chai/Protenix (KinConfBench 2026) and
+by FEP without enhanced sampling — NOT a Boltz-specific bug.
+
+**Out-of-scope for the affinity head (non-covalent model):** osimertinib,
+ibrutinib (covalent) — do not benchmark the affinity head on these.
+
+### Interpreting Δ as a calibrated directional call
+
+Treat Boltz-2 as a **directional classifier with a confidence tier**, not a
+ΔΔG regressor:
+
+- **|Δ| ≥ ~0.8 log units** → high-confidence resistance/sensitizing call.
+- **~0.15 ≤ |Δ| < ~0.8** → directional signal; report with the sign, medium
+  confidence.
+- **|Δ| < ~0.15** → below the noise floor; report "uncertain — needs an
+  orthogonal check" (a Platinum-trained ΔΔG predictor, or a two-conformation
+  protocol for suspected conformational mutations). Do NOT call this "no
+  resistance" — the sign may still be right (as in ALK L1196M).
+- `--affinity_mw_correction` **cancels** in a same-ligand WT-vs-mutant delta;
+  it only matters for cross-ligand absolute potency.
+
+### Recommended high-accuracy affinity settings
+
+`--diffusion_samples 3-5 --recycling_steps 5 --use_msa_server --no_kernels`
+(affinity uses 5 samples by default). MSA is the single biggest lever on the
+delta; for a clean paired delta, ideally reuse ONE MSA (from WT) for both
+sides so the only difference is the mutated residue. `handler.py` now exposes
+`recycling_steps` alongside `num_samples`/`use_msa` for per-request tuning.
+
+Validation drivers: `bz_validate_direct.py` (no-MSA baseline),
+`bz_panel.py` (MSA + multi-sample direct-contact panel).

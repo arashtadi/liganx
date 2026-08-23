@@ -42,6 +42,11 @@ def _run(inp: dict) -> dict:
     pocket = inp.get("pocket_residues") or []
     use_msa = bool(inp.get("use_msa", False))
     n_samples = int(inp.get("num_samples", 1))
+    # Recommended affinity protocol (Boltz-2 paper): higher structure sampling +
+    # recycling sharpen the WT-vs-mutant delta. Configurable per request so the
+    # runner can trade cost for accuracy; MSA (use_msa) is the biggest lever for
+    # the delta. High-accuracy profile: num_samples=3-5, recycling_steps=5, MSA on.
+    recycling = int(inp.get("recycling_steps", 3))
 
     if not seq or not all(c.isalpha() for c in seq):
         return {"error": "invalid receptor_sequence (empty or non-alphabetic)"}
@@ -70,6 +75,7 @@ def _run(inp: dict) -> dict:
     cmd = ["boltz", "predict", str(work / "in.yaml"),
            "--out_dir", str(work / "out"), "--cache", CACHE,
            "--output_format", "pdb", "--diffusion_samples", str(n_samples),
+           "--recycling_steps", str(recycling),
            "--override", "--no_kernels"]
     if use_msa:
         cmd.append("--use_msa_server")
