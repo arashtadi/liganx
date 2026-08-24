@@ -98,12 +98,12 @@ jobs:
   backend-tests-db:
     name: Backend DB-dependent tests
     runs-on: ubuntu-latest
-    # These requires_db tests boot the full app against a plain CI Postgres,
-    # which lacks Supabase's protected `auth.users` schema — so they fail in
-    # CI by construction (not a real regression). Marked non-blocking so a
-    # known-unrunnable job doesn't red the whole workflow (and email the
-    # owner) on every push. Re-tighten once CI seeds an auth.users stub.
-    continue-on-error: true
+    # Re-tightened 2026-08-24: the "Seed CI base schema" step below now
+    # provides the Supabase auth stub + user_profile base schema that a plain
+    # CI Postgres lacks, so these tests actually run (33 pass). Dropped the
+    # continue-on-error escape hatch — a genuine regression here should now
+    # red the job and block the deploy (deploy `needs` this job), which is the
+    # whole point of the gate.
     # Brings up a throwaway Postgres alongside the runner and points the
     # `requires_db` tests at it via TEST_DATABASE_URL (which conftest.py
     # consumes — see backend/tests/conftest.py). This exercises the FULL
