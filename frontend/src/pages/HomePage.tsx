@@ -469,6 +469,9 @@ function ResistanceRadarSpotlight() {
             <h2 className="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white leading-[1.1]">
               Resistance Radar — see which mutations will break your compound
             </h2>
+            <p className="mt-3 text-base sm:text-lg font-semibold text-amber-800 dark:text-amber-300 leading-snug">
+              Forecast which mutations break your compound — in one click. No other self-serve tool does this.
+            </p>
             <p className="mt-4 text-slate-600 dark:text-slate-300 leading-relaxed">
               Bring your own molecule. In one pass, Resistance Radar docks it
               across a target's entire known resistance panel and returns a
@@ -570,20 +573,23 @@ function Comparison() {
               // differentiate (or honestly concede). Ensemble docking is a
               // true for Maestro on purpose \u2014 conceding a row Schroedinger
               // owns makes the rest of the table credible rather than 26-0.
+              // Lead with the two wedge rows — the resistance forecast (the
+              // capability nobody else packages) and browser/self-serve access
+              // (what the enterprise tier can't match) — so the table opens on
+              // Liganx's strongest, most differentiated ground.
+              // Schrödinger = "partial" on the resistance row: Residue Scanning
+              // + FEP+ give mutation-ΔΔG for affinity, but not a packaged
+              // calibrated cross-panel resistance forecast for a submitted
+              // compound. Honest, defensible call.
+              ["Compound resistance forecast across a variant panel", false, true, "partial"],
+              ["Runs in the browser, no install",               true,      true,      false],
               ["Mutation-aware WT-vs-mutant matrix",            false,     true,      "partial"],
               ["Public resistance-mutation atlas",              false,     true,      false],
-              // Resistance Radar: forecast which panel mutations break YOUR
-              // compound, calibrated probability, one pass. Schrödinger =
-              // "partial": Residue Scanning + FEP+ give mutation-ΔΔG for
-              // affinity, but not a packaged calibrated cross-panel resistance
-              // forecast for a submitted compound. Honest, defensible call.
-              ["Compound resistance forecast across a variant panel", false, true, "partial"],
               ["Pre-computed FDA-drug screenings",              false,     true,      false],
               ["Bulk virtual screening, selectivity-ranked",    false,     true,      "partial"],
               ["Inline ADMET (hERG / DILI / CYP / BBB)",        false,     true,      "partial"],
               ["Multiple scoring engines side-by-side",         false,     true,      "partial"],
               ["Ensemble / flexible-receptor docking",          false,     true,      true],
-              ["Runs in the browser, no install",               true,      true,      false],
               ["Published, reproducible validation report",     false,     true,      false],
             ].map((row, i) => (
               <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
