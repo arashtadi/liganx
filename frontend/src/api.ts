@@ -636,6 +636,20 @@ export interface AdminUserRow {
    *  not be able to click Run without an admin having reviewed
    *  their need. Toggle via PATCH /admin/users/:id/fep. */
   fep_enabled: boolean;
+  /** Per-user approval gate (migration 029). */
+  access_status?: string;
+  /** Per-feature access flags (migrations 036–039). Each is
+   *  null/"requested"/"approved"/"denied". Set from the admin page or written
+   *  by a Telegram Approve/Deny — either way it shows up here. */
+  boltz2_access?: string | null;
+  gnina_access?: string | null;
+  screening_access?: string | null;
+  resistance_access?: string | null;
+  /** Per-feature usage allowances (migration 040) — total top-up-able budgets. */
+  gnina_quota: number;
+  boltz2_quota: number;
+  resistance_quota: number;
+  screening_quota: number;
 }
 
 /** (H3) Lightweight FEP study summary for the History page tab. */
@@ -1008,6 +1022,11 @@ export const api = {
    *  Pings the Limit topic with one-tap Grant/Deny; returns {ok:true}. */
   requestMoreRuns: () =>
     request<{ ok: boolean }>("/me/request-more-runs", { method: "POST" }),
+  /** Ask the operator to top up a per-feature allowance after hitting it
+   *  (gnina | boltz2 | resistance | screening). Pings the Limit topic with
+   *  one-tap Grant/Deny; returns {ok:true}. */
+  requestFeatureQuota: (feature: "gnina" | "boltz2" | "resistance" | "screening") =>
+    request<{ ok: boolean }>(`/me/request-feature-quota/${feature}`, { method: "POST" }),
   /** @deprecated use requestFeatureAccess('boltz2'). Kept for compatibility. */
   requestBoltz2Access: () =>
     request<{ boltz2_access: string }>("/me/request-boltz2-access", {
@@ -1190,6 +1209,29 @@ export const api = {
     request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/fep`, {
       method: "PATCH",
       body: JSON.stringify({ fep_enabled: fepEnabled }),
+    }),
+  /** Admin-only: set a user's per-feature access flag (gnina | boltz2 |
+   *  screening | resistance). `access` is 'approved' | 'denied' | 'requested' |
+   *  'none' ('none' clears it). Same column a Telegram Approve/Deny writes. */
+  adminSetFeatureAccess: (
+    userId: string,
+    feature: "gnina" | "boltz2" | "screening" | "resistance",
+    access: "approved" | "denied" | "requested" | "none",
+  ) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/feature-access`, {
+      method: "PATCH",
+      body: JSON.stringify({ feature, access }),
+    }),
+  /** Admin-only: set a user's per-feature usage allowance (the total they can
+   *  spend before hitting 'Request more'). */
+  adminSetFeatureQuota: (
+    userId: string,
+    feature: "gnina" | "boltz2" | "screening" | "resistance",
+    quota: number,
+  ) =>
+    request<AdminUserRow>(`/admin/users/${encodeURIComponent(userId)}/feature-quota`, {
+      method: "PATCH",
+      body: JSON.stringify({ feature, quota }),
     }),
   /** (G7) FEP+ study endpoints — relative free-energy perturbation
    *  against a hit + ≤10 analogs. Gated per-user; the /estimate

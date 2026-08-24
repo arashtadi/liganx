@@ -17,9 +17,20 @@ interface Props {
   onClose: () => void;
   /** The backend's 402 detail message, shown as context. Optional. */
   message?: string | null;
+  /** When set, this is a per-feature allowance (GNINA / Boltz-2 / Resistance /
+   *  Screening) rather than the base free-run cap — "Request more" then tops up
+   *  that feature via api.requestFeatureQuota. Omit for the base free-run cap. */
+  feature?: string | null;
 }
 
-export default function QuotaLimitModal({ open, onClose, message }: Props) {
+const FEATURE_LABEL: Record<string, string> = {
+  gnina: "GNINA",
+  boltz2: "AI Resistance Prediction",
+  resistance: "Resistance Radar",
+  screening: "Virtual Screening",
+};
+
+export default function QuotaLimitModal({ open, onClose, message, feature }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +58,13 @@ export default function QuotaLimitModal({ open, onClose, message }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      await api.requestMoreRuns();
+      if (feature) {
+        await api.requestFeatureQuota(
+          feature as "gnina" | "boltz2" | "resistance" | "screening",
+        );
+      } else {
+        await api.requestMoreRuns();
+      }
       setDone(true);
     } catch (e: any) {
       setError(
@@ -79,7 +96,9 @@ export default function QuotaLimitModal({ open, onClose, message }: Props) {
               id="quota-gate-title"
               className="text-base font-semibold text-amber-200"
             >
-              You're out of free runs
+              {feature
+                ? `You've hit your ${FEATURE_LABEL[feature] ?? feature} limit`
+                : "You're out of free runs"}
             </h2>
           </div>
           <button
@@ -146,7 +165,7 @@ export default function QuotaLimitModal({ open, onClose, message }: Props) {
                 disabled={submitting}
                 className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-mono uppercase tracking-[0.18em] transition-colors"
               >
-                {submitting ? "Sending…" : "Request more runs →"}
+                {submitting ? "Sending…" : "Request more →"}
               </button>
             </>
           )}

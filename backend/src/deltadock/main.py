@@ -818,6 +818,9 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # Resistance Radar — per-feature request/approve access flag. Adds ONLY
     # the resistance_access column to user_profile; additive + idempotent.
     ("039_resistance_access.sql", "Migration 039 (Resistance Radar per-feature access flag)"),
+    # Per-feature usage allowances (GNINA / Boltz-2 / Resistance / Screening),
+    # mirroring job_quota. Additive columns on user_profile; idempotent.
+    ("040_feature_quotas.sql", "Migration 040 (per-feature usage quotas)"),
 ]
 
 

@@ -96,6 +96,19 @@ class AdminUserRow(BaseModel):
     access_status: str = "approved"
     access_decided_at: Optional[str] = None
     access_decided_by: Optional[str] = None
+    # Per-feature access flags (migrations 036–039). Each is
+    # None/""/"requested"/"approved"/"denied". The admin page shows a toggle
+    # per feature; a Telegram Approve/Deny writes the same columns, so an
+    # operator decision shows up here automatically.
+    boltz2_access: Optional[str] = None
+    gnina_access: Optional[str] = None
+    screening_access: Optional[str] = None
+    resistance_access: Optional[str] = None
+    # Per-feature usage allowances (migration 040). Total top-up-able budgets.
+    gnina_quota: int = 25
+    boltz2_quota: int = 5
+    resistance_quota: int = 5
+    screening_quota: int = 300
 
 
 class QuotaUpdate(BaseModel):
@@ -245,6 +258,17 @@ def list_users(
                 COALESCE(p.access_status, 'pending') AS access_status,
                 p.access_decided_at,
                 p.access_decided_by,
+                -- Per-feature access flags (migrations 036-039) + allowances
+                -- (migration 040). NULL access reads as "not requested"; NULL
+                -- quota COALESCEs to the feature default.
+                p.boltz2_access,
+                p.gnina_access,
+                p.screening_access,
+                p.resistance_access,
+                COALESCE(p.gnina_quota, 25) AS gnina_quota,
+                COALESCE(p.boltz2_quota, 5) AS boltz2_quota,
+                COALESCE(p.resistance_quota, 5) AS resistance_quota,
+                COALESCE(p.screening_quota, 300) AS screening_quota,
                 -- job.user_id is UUID; u.id is also UUID. Don't cast either
                 -- side or Postgres complains "operator does not exist:
                 -- uuid = text". The earlier quota check works with a bound
@@ -306,6 +330,14 @@ def list_users(
                     if r.get("access_decided_at") else None
                 ),
                 access_decided_by=r.get("access_decided_by"),
+                boltz2_access=(r.get("boltz2_access") or None),
+                gnina_access=(r.get("gnina_access") or None),
+                screening_access=(r.get("screening_access") or None),
+                resistance_access=(r.get("resistance_access") or None),
+                gnina_quota=int(r["gnina_quota"]),
+                boltz2_quota=int(r["boltz2_quota"]),
+                resistance_quota=int(r["resistance_quota"]),
+                screening_quota=int(r["screening_quota"]),
             ))
         except Exception as e:
             uid = (r.get("user_id") or "?") if hasattr(r, "get") else "?"
@@ -350,6 +382,93 @@ def update_user_quota(
     # state without a separate GET.
     rows = list_users(admin, session)
     for r in rows:
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+
+
+# ── Per-feature access + allowance (migrations 036-040) ──────────────────
+# Admin allowlists — column names are interpolated into SQL, so these MUST
+# stay fixed maps, never caller input.
+_ADMIN_FEATURE_ACCESS_COL = {
+    "boltz2": "boltz2_access",
+    "gnina": "gnina_access",
+    "screening": "screening_access",
+    "resistance": "resistance_access",
+}
+_ADMIN_FEATURE_QUOTA_COL = {
+    "boltz2": "boltz2_quota",
+    "gnina": "gnina_quota",
+    "screening": "screening_quota",
+    "resistance": "resistance_quota",
+}
+
+
+class FeatureAccessUpdate(BaseModel):
+    """Set a user's per-feature access flag. `access` is
+    'approved' | 'denied' | 'requested' | 'none' ('none'/'' clears to NULL =
+    never requested). Mirrors the Telegram Approve/Deny write path, so the two
+    entry points stay in sync."""
+    feature: str
+    access: str = Field(..., pattern="^(approved|denied|requested|none|)$")
+
+
+class FeatureQuotaUpdate(BaseModel):
+    """Set a user's per-feature usage allowance (total budget)."""
+    feature: str
+    quota: int = Field(..., ge=0, le=1_000_000)
+
+
+@router.patch("/users/{user_id}/feature-access", response_model=AdminUserRow)
+def update_user_feature_access(
+    payload: FeatureAccessUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Enable/disable a gated feature for a user from the admin page. Same
+    columns the request-access + Telegram Approve/Deny flow writes, so an
+    operator decision made either way is reflected here."""
+    feature = (payload.feature or "").strip().lower()
+    col = _ADMIN_FEATURE_ACCESS_COL.get(feature)
+    if not col:
+        raise HTTPException(status_code=404, detail=f"unknown feature '{feature}'")
+    val = (payload.access or "").strip().lower()
+    new_value = None if val in ("", "none") else val
+    session.execute(text(
+        f"INSERT INTO public.user_profile (user_id, {col}, marketing_opt_in) "
+        f"VALUES (:uid, :val, FALSE) "
+        f"ON CONFLICT (user_id) DO UPDATE SET {col} = EXCLUDED.{col}"
+    ), {"uid": user_id, "val": new_value})
+    session.commit()
+    log.info("Admin %s set %s.%s = %r for user %s", admin.email, feature, col, new_value, user_id)
+    for r in list_users(admin, session):
+        if r.user_id == user_id:
+            return r
+    raise HTTPException(status_code=404, detail="User not found after update")
+
+
+@router.patch("/users/{user_id}/feature-quota", response_model=AdminUserRow)
+def update_user_feature_quota(
+    payload: FeatureQuotaUpdate,
+    admin: Annotated[CurrentUser, Depends(admin_user)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: str = Path(..., min_length=10, max_length=100),
+) -> AdminUserRow:
+    """Set a user's per-feature usage allowance (the total they can spend
+    before hitting 'Request more'). UPSERTs so a fresh OAuth user works too."""
+    feature = (payload.feature or "").strip().lower()
+    col = _ADMIN_FEATURE_QUOTA_COL.get(feature)
+    if not col:
+        raise HTTPException(status_code=404, detail=f"unknown feature '{feature}'")
+    session.execute(text(
+        f"INSERT INTO public.user_profile (user_id, {col}, marketing_opt_in) "
+        f"VALUES (:uid, :val, FALSE) "
+        f"ON CONFLICT (user_id) DO UPDATE SET {col} = EXCLUDED.{col}"
+    ), {"uid": user_id, "val": payload.quota})
+    session.commit()
+    log.info("Admin %s set %s.%s = %d for user %s", admin.email, feature, col, payload.quota, user_id)
+    for r in list_users(admin, session):
         if r.user_id == user_id:
             return r
     raise HTTPException(status_code=404, detail="User not found after update")

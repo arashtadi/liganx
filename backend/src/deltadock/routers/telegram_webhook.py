@@ -222,6 +222,54 @@ def _grant_runs(user_id: str, amount: int) -> tuple[bool, str, Optional[int]]:
         return False, "", None
 
 
+def _grant_feature_quota(feature: str, user_id: str) -> tuple[bool, str, Optional[int], int]:
+    """Bump a user's <feature>_quota by that feature's grant amount. Returns
+    (changed, user_email, new_quota, granted_amount). Mirrors _grant_runs but
+    for the per-feature allowances (migration 040). Column name comes from a
+    fixed allowlist, never caller input."""
+    from ..services.feature_quota import (
+        FEATURE_QUOTA_COL, FEATURE_QUOTA_DEFAULT, FEATURE_GRANT,
+    )
+    col = FEATURE_QUOTA_COL.get(feature)
+    if not col:
+        return False, "", None, 0
+    amount = FEATURE_GRANT.get(feature, 0)
+    default = FEATURE_QUOTA_DEFAULT.get(feature, 0)
+    try:
+        with Session(engine) as s:
+            row = s.execute(
+                text("SELECT email FROM auth.users WHERE id = :uid"),
+                {"uid": user_id},
+            ).first()
+            user_email = (row[0] if row else "") or ""
+            res = s.execute(
+                text(
+                    f"UPDATE public.user_profile "
+                    f"   SET {col} = COALESCE({col}, :dflt) + :amt "
+                    f" WHERE user_id = :uid "
+                    f" RETURNING {col}"
+                ),
+                {"amt": amount, "dflt": default, "uid": user_id},
+            ).first()
+            if res is None:
+                s.execute(
+                    text(
+                        f"INSERT INTO public.user_profile (user_id, {col}) "
+                        f"VALUES (:uid, :q) "
+                        f"ON CONFLICT (user_id) DO UPDATE SET {col} = EXCLUDED.{col}"
+                    ),
+                    {"uid": user_id, "q": default + amount},
+                )
+                new_quota: Optional[int] = default + amount
+            else:
+                new_quota = int(res[0]) if res[0] is not None else None
+            s.commit()
+            return True, user_email, new_quota, amount
+    except Exception as e:  # noqa: BLE001
+        log.exception("grant_feature_quota DB error (%s) for user %s: %s", feature, user_id, e)
+        return False, "", None, 0
+
+
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def telegram_webhook(
     req: Request,
@@ -315,6 +363,54 @@ async def telegram_webhook(
         _notif.answer_callback(cbq_id, ack)
         log.info("Telegram more-runs: user=%s action=%s by=%s", runs_uid, action, actor)
         return {"ok": True, "user_id": runs_uid, "runs_action": action}
+
+    # Per-feature quota grant/deny ("Request more" on GNINA / Boltz-2 /
+    # Resistance / Screening allowances). Grant bumps the <feature>_quota
+    # column via _grant_feature_quota.
+    #   gq:<feature>:<uid>  → grant +FEATURE_GRANT[feature]
+    #   dq:<feature>:<uid>  → deny
+    if action in ("gq", "dq"):
+        q_feat, _, q_uid = rest.partition(":")
+        q_feat = q_feat.strip().lower()
+        q_uid = q_uid.strip()
+        from ..services.feature_quota import FEATURE_QUOTA_COL, FEATURE_UNIT
+        if not q_uid or q_feat not in FEATURE_QUOTA_COL:
+            _notif.answer_callback(cbq_id, "Unknown action.")
+            return {"ok": True, "ignored": "bad_feature_quota"}
+        _label = _FEATURE_LABELS.get(q_feat, q_feat)
+        _unit = FEATURE_UNIT.get(q_feat, "runs")
+        if action == "gq":
+            granted, user_email, new_quota, amount = _grant_feature_quota(q_feat, q_uid)
+            pretty = (f"➕ GRANTED +{amount} {_unit} ✅" if granted
+                      else "GRANT failed — check /admin ⚠️")
+            ack = f"Granted +{amount} {_unit}." if granted else "Grant failed."
+            quota_line = (f"\n📊 New {_label} allowance: <b>{new_quota}</b>"
+                          if granted and new_quota is not None else "")
+        else:
+            try:
+                with Session(engine) as _s:
+                    _r = _s.execute(
+                        text("SELECT email FROM auth.users WHERE id = :uid"),
+                        {"uid": q_uid},
+                    ).first()
+                user_email = (_r[0] if _r else "") or ""
+            except Exception:  # noqa: BLE001
+                user_email = ""
+            pretty = f"{_label} TOP-UP DENIED ❌"
+            ack = "Denied."
+            quota_line = ""
+        email_line = f"\n📧 {user_email}" if user_email else ""
+        new_text = (
+            f"<b>{pretty}</b> by <code>{actor}</code>"
+            f"{email_line}"
+            f"\n🆔 <code>{q_uid}</code>"
+            f"{quota_line}"
+        )
+        if chat_id is not None and message_id is not None:
+            _notif.edit_message_after_action(chat_id, message_id, new_text)
+        _notif.answer_callback(cbq_id, ack)
+        log.info("Telegram feature-quota: user=%s feature=%s action=%s by=%s", q_uid, q_feat, action, actor)
+        return {"ok": True, "user_id": q_uid, "feature": q_feat, "quota_action": action}
 
     # Resolve (feature, is_approve, user_id) from the callback_data:
     #   account:        approve|deny : <uid>          (feature=None → access_status)

@@ -123,8 +123,59 @@ export default function ResistanceRadar({
       const nowIso = new Date().toISOString();
       const compound = [{ name: compoundName || "Studio compound", smiles }];
       const batches = chunk(panel, BATCH);
-      const jobKeyByCode: Record<string, string> = {};
 
+      // Rows with no job keys yet — the scan record is created FIRST (below)
+      // so the per-feature allowance is enforced BEFORE we spend any GPU;
+      // the docks are submitted after, and the keys patched in.
+      const baseRows = panel.map((m) => ({
+        code: m.code,
+        label: m.label,
+        significance: m.significance,
+        mutScore: null,
+        wtScore: null,
+        jobKey: null as string | null,
+        error: null as string | null,
+      }));
+
+      // Create the durable/shareable scan record FIRST. This is the point the
+      // backend meters Resistance Radar (one scan = 1 unit): a 402 here means
+      // the user is over their scan allowance — surface it and STOP before any
+      // docks are submitted, so the cap actually saves GPU. Other errors
+      // (offline / not signed in) fall back to a local-only record.
+      let scanId = id;
+      let onServer = false;
+      try {
+        const server = await api.resistanceCreate({
+          targetId,
+          targetLabel,
+          gene: (targetId || "").toUpperCase(),
+          pdbId,
+          chain: chain || "A",
+          uniprotId: uniprotId || null,
+          compoundName: compoundName || "Studio compound",
+          smiles,
+          status: "running",
+          wtScore: null,
+          rows: baseRows,
+        });
+        scanId = server.share_id;
+        onServer = true;
+      } catch (e: any) {
+        const status = e?.status;
+        const detail = e && (e as any).detail;
+        if (status === 402 || (detail && detail.kind === "feature_quota")) {
+          setError(
+            e?.message ||
+              "You've hit your Resistance Radar scan limit. Request more from the Studio.",
+          );
+          setSubmitting(false);
+          return; // no docks submitted — the cap held
+        }
+        // Non-quota failure (offline / not authed): keep going local-only.
+      }
+
+      // Authorized — now submit the docks.
+      const jobKeyByCode: Record<string, string> = {};
       for (const batch of batches) {
         const codes = batch.map((m) => m.code);
         const job = await api.createJob({
@@ -143,51 +194,25 @@ export default function ResistanceRadar({
         for (const c of codes) jobKeyByCode[c] = key;
       }
 
-      const rows = panel.map((m) => ({
-        code: m.code,
-        label: m.label,
-        significance: m.significance,
-        mutScore: null,
-        wtScore: null,
-        jobKey: jobKeyByCode[m.code] ?? null,
-        error: null,
-      }));
+      const rows = baseRows.map((r) => ({ ...r, jobKey: jobKeyByCode[r.code] ?? null }));
 
-      // Persist server-side (shareable + durable) the moment docks are
-      // submitted, with each mutation's job id — so the results page, another
-      // device, or a shared viewer can watch/resume it. Falls back to a
-      // local-only record if the server call fails, so a scan still works.
-      let scanId = id;
-      try {
-        const server = await api.resistanceCreate({
-          targetId,
-          targetLabel,
-          gene: (targetId || "").toUpperCase(),
-          pdbId,
-          chain: chain || "A",
-          uniprotId: uniprotId || null,
-          compoundName: compoundName || "Studio compound",
-          smiles,
-          status: "running",
-          wtScore: null,
-          rows,
-        });
-        scanId = server.share_id;
-        upsertResistanceScan(serverScanToSaved(server));
-      } catch {
-        upsertResistanceScan({
-          id,
-          savedAt: nowIso,
-          updatedAt: nowIso,
-          status: "running",
-          targetId,
-          targetLabel,
-          compoundName: compoundName || "Studio compound",
-          smiles,
-          wtScore: null,
-          rows,
-        });
+      // Attach the job keys to the scan (server PATCH if it lives server-side)
+      // and keep the local mirror in sync so the results page can resume it.
+      if (onServer) {
+        try { await api.resistancePatch(scanId, { rows }); } catch { /* best-effort */ }
       }
+      upsertResistanceScan({
+        id: scanId,
+        savedAt: nowIso,
+        updatedAt: nowIso,
+        status: "running",
+        targetId,
+        targetLabel,
+        compoundName: compoundName || "Studio compound",
+        smiles,
+        wtScore: null,
+        rows,
+      });
       onClose();
       navigate(`/resistance/${scanId}`);
     } catch (e: any) {

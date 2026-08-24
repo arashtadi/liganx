@@ -792,3 +792,44 @@ def request_more_runs(
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("notify_more_runs_request failed (non-fatal)")
     return MoreRunsRequestOut(ok=True)
+
+
+class FeatureQuotaRequestOut(BaseModel):
+    ok: bool
+
+
+@router.post("/request-feature-quota/{feature}", response_model=FeatureQuotaRequestOut)
+def request_feature_quota(
+    feature: str,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> FeatureQuotaRequestOut:
+    """User clicked 'Request more' after hitting a per-feature allowance (GNINA
+    / Boltz-2 / Resistance / Screening). Pings the operator in the Limit topic
+    with one-tap Grant/Deny — Grant bumps the feature's quota column via the
+    webhook (gq:<feature>:<uid>). Best-effort; always returns ok so the modal
+    can show its confirmation."""
+    import logging
+    feature = (feature or "").strip().lower()
+    from ..services.feature_quota import FEATURE_QUOTA_COL, feature_quota_status
+    if feature not in FEATURE_QUOTA_COL:
+        raise HTTPException(status_code=404, detail=f"unknown feature '{feature}'")
+    try:
+        used, quota = feature_quota_status(session, str(user.id), feature)
+    except Exception:  # noqa: BLE001
+        used, quota = 0, 0
+    try:
+        from ..services.notifications import notify_feature_quota_request, user_identity
+        _, _fn, _org = user_identity(session, str(user.id))
+        notify_feature_quota_request(
+            feature=feature,
+            user_email=getattr(user, "email", None),
+            user_id=str(user.id),
+            used=used,
+            quota=quota,
+            full_name=_fn,
+            organization=_org,
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("notify_feature_quota_request failed (non-fatal)")
+    return FeatureQuotaRequestOut(ok=True)

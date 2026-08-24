@@ -503,6 +503,66 @@ def notify_more_runs_request(
     return _send("\n".join(parts), reply_markup=reply_markup, channel="limit")
 
 
+def notify_feature_quota_reached(
+    *,
+    feature: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    used: int,
+    quota: int,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Passive ping when an approved user hits a per-feature allowance (GNINA /
+    Boltz-2 / Resistance / Screening). Informational — the actionable Grant/Deny
+    buttons come with notify_feature_quota_request when the user taps 'Request
+    more'. Deduped ~1h per (user, feature) so a retry loop doesn't spam."""
+    import time as _t
+    from .feature_quota import FEATURE_UNIT
+    key = f"featquota:{feature}:{user_id or '?'}"
+    now = _t.time()
+    if now - _last_quota_ping.get(key, 0.0) < _QUOTA_PING_GAP_S:
+        return False
+    _last_quota_ping[key] = now
+    emoji, label, _ = _FEATURE_META.get(feature, ("📊", feature, "limit"))
+    unit = FEATURE_UNIT.get(feature, "runs")
+    parts = [f"{emoji} <b>{label} — allowance reached</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [f"📊 Used <b>{used}/{quota}</b> {unit}"]
+    return _send("\n".join(parts), channel="limit")
+
+
+def notify_feature_quota_request(
+    *,
+    feature: str,
+    user_email: Optional[str],
+    user_id: Optional[str],
+    used: int,
+    quota: int,
+    full_name: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> bool:
+    """Fire when a user clicks 'Request more' on a per-feature allowance. Lands
+    in the Limit topic with one-tap Grant/Deny — Grant (gq:<feature>:<uid>) bumps
+    that feature's quota column via the webhook. Not deduped: a deliberate ask."""
+    from .feature_quota import FEATURE_UNIT, FEATURE_GRANT
+    emoji, label, _ = _FEATURE_META.get(feature, ("📊", feature, "limit"))
+    unit = FEATURE_UNIT.get(feature, "runs")
+    grant = FEATURE_GRANT.get(feature, 0)
+    parts = [f"🙋 <b>User is requesting more {label}</b>", ""]
+    parts += _identity_lines(user_email, full_name, organization, user_id)
+    parts += [f"📊 Used <b>{used}/{quota}</b> {unit}"]
+    reply_markup: Optional[dict] = None
+    if user_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": f"✅ Grant +{grant}", "callback_data": f"gq:{feature}:{user_id}"},
+                {"text": "❌ Deny",             "callback_data": f"dq:{feature}:{user_id}"},
+            ]],
+        }
+    return _send("\n".join(parts), reply_markup=reply_markup, channel="limit")
+
+
 def notify_pod_down(
     *,
     reason: str,

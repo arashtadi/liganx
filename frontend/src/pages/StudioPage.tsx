@@ -41,7 +41,7 @@ import PodStatusBanner from "../components/PodStatusBanner";
 import FeatureRequestModal, { type GatedFeature } from "../components/FeatureRequestModal";
 import QuotaLimitModal from "../components/QuotaLimitModal";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, type Job } from "../api";
+import { api, type Job } from "../api";
 import { useSmilesValidity, useSmilesSaScore, type SmilesValidity } from "../components/MoleculePreview";
 import { upsertDraft, listDrafts, deleteDraft, type StudioDraft } from "../lib/drafts";
 import { appendDockHistory, listDockHistory, deleteDockHistoryEntry, clearDockHistory, type DockHistoryEntry } from "../lib/dockHistory";
@@ -403,6 +403,25 @@ export default function StudioPage() {
   // Out-of-free-runs modal (opens when a dock submit returns 402 quota).
   const [quotaModalOpen, setQuotaModalOpen] = useState(false);
   const [quotaModalMessage, setQuotaModalMessage] = useState<string | null>(null);
+  // When the 402 is a per-feature allowance (gnina/boltz2/resistance/screening)
+  // rather than the base free-run cap, the modal's "Request more" tops up THAT
+  // feature. null = base free runs.
+  const [quotaModalFeature, setQuotaModalFeature] = useState<
+    "gnina" | "boltz2" | "resistance" | "screening" | null
+  >(null);
+  // Map a per-feature-quota 402 to its feature. Prefers the structured
+  // detail.kind==="feature_quota"; falls back to the message text (the unit
+  // phrasing from feature_quota.py) when only a string survived the task wrap.
+  function featureFromQuota(err: any, msg: string):
+    "gnina" | "boltz2" | "resistance" | "screening" | null {
+    const d = err && (err as any).detail;
+    if (d && d.kind === "feature_quota" && d.feature) return d.feature;
+    if (/Resistance Radar scans/i.test(msg)) return "resistance";
+    if (/AI Resistance runs/i.test(msg)) return "boltz2";
+    if (/GNINA runs/i.test(msg)) return "gnina";
+    if (/screening compounds/i.test(msg)) return "screening";
+    return null;
+  }
   useEffect(() => {
     let cancelled = false;
     api
@@ -1825,7 +1844,13 @@ export default function StudioPage() {
         // message carries the backend's distinctive "free dockings" text.
         // Open the out-of-runs modal (one-click "request more runs") instead
         // of the dead-end inline error.
-        if (firstError && /free docking/i.test(firstError)) {
+        const _feat = featureFromQuota(null, firstError || "");
+        if (_feat) {
+          setQuotaModalFeature(_feat);
+          setQuotaModalMessage(firstError || null);
+          setQuotaModalOpen(true);
+        } else if (firstError && /free docking/i.test(firstError)) {
+          setQuotaModalFeature(null);
           setQuotaModalMessage(firstError);
           setQuotaModalOpen(true);
         } else {
@@ -1890,11 +1915,14 @@ export default function StudioPage() {
       // Detect by the backend's distinctive quota message (robust even if the
       // ApiError got re-wrapped on the way here) or an explicit 402 status.
       const _msg = e?.message || "";
-      const _isQuota =
-        /free docking/i.test(_msg) ||
-        ((e?.status === 402 || (e instanceof ApiError && e.status === 402)) &&
-          /free docking/i.test(_msg));
-      if (_isQuota) {
+      const _feat = featureFromQuota(e, _msg);
+      const _isBaseQuota = /free docking/i.test(_msg);
+      if (_feat) {
+        setQuotaModalFeature(_feat);
+        setQuotaModalMessage((e as any)?.detail?.message || _msg || null);
+        setQuotaModalOpen(true);
+      } else if (_isBaseQuota) {
+        setQuotaModalFeature(null);
         setQuotaModalMessage(_msg || null);
         setQuotaModalOpen(true);
       } else {
@@ -1990,7 +2018,19 @@ export default function StudioPage() {
       navigate(`/screening/${screeningKey}?from=studio`);
       return;
     } catch (e: any) {
-      setDockError(e?.message || "Virtual screening submission failed.");
+      const _msg = e?.message || "";
+      const _feat = featureFromQuota(e, _msg);
+      if (_feat) {
+        setQuotaModalFeature(_feat);
+        setQuotaModalMessage((e as any)?.detail?.message || _msg || null);
+        setQuotaModalOpen(true);
+      } else if (/free docking/i.test(_msg)) {
+        setQuotaModalFeature(null);
+        setQuotaModalMessage(_msg || null);
+        setQuotaModalOpen(true);
+      } else {
+        setDockError(_msg || "Virtual screening submission failed.");
+      }
     } finally {
       setSubmittingFull(false);
     }
@@ -4743,7 +4783,8 @@ export default function StudioPage() {
       <QuotaLimitModal
         open={quotaModalOpen}
         message={quotaModalMessage}
-        onClose={() => setQuotaModalOpen(false)}
+        feature={quotaModalFeature}
+        onClose={() => { setQuotaModalOpen(false); setQuotaModalFeature(null); }}
       />
       {/* (feature/resistance-radar) Live resistance-forecast modal. Resolves
           the target the same way runFullJob does (catalog first, then a bare

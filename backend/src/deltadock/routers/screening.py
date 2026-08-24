@@ -211,6 +211,18 @@ def create_screening(
             ),
         )
 
+    # Per-feature usage allowance — Virtual Screening is metered in COMPOUNDS
+    # (a 1000-compound screen is the one action that adds real GPU cost). An
+    # approved user has a finite compound budget they can top up via "Request
+    # more"; admins/Pro bypass inside the helper. This screen consumes
+    # len(compounds) units.
+    from ..services.feature_quota import enforce_feature_quota
+    from ..auth import is_pro_user as _is_pro_user
+    # Pro (and admin, handled inside the helper) keep unlimited screening — the
+    # quota only meters free/approved beta users, mirroring the access bypass.
+    if not _is_pro_user(user.id, session):
+        enforce_feature_quota(session, user, "screening", increment=len(payload.compounds))
+
     # Pre-flight SMILES validation. Reject any unparseable rows BEFORE
     # we create the ScreeningJob shell — otherwise we'd burn pod minutes
     # only to fail per-cell with cryptic ligand-prep errors, AND we'd

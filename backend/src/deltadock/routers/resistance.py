@@ -148,6 +148,11 @@ def create_scan(
     session: Session = Depends(get_session),
 ) -> ScanOut:
     _require_resistance_access(user, session)
+    # Per-feature usage allowance — one scan = 1 unit (each scan fans out into
+    # a whole panel of docks under the hood). Approved users top up via
+    # "Request more"; admins bypass inside the helper.
+    from ..services.feature_quota import enforce_feature_quota
+    enforce_feature_quota(session, user, "resistance")
     scan = ResistanceScan(
         user_id=str(user.id),
         target_id=payload.targetId[:64],

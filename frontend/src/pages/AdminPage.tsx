@@ -50,6 +50,101 @@ function fmtRelative(iso: string | null): string {
   return `${Math.floor(diffDays / 365)}y ago`;
 }
 
+// The four request-access gated features, with the AdminUserRow fields that
+// carry each one's access flag + usage allowance.
+const FEATURE_DEFS: {
+  key: "gnina" | "boltz2" | "screening" | "resistance";
+  label: string;
+  accessKey: keyof AdminUserRow;
+  quotaKey: keyof AdminUserRow;
+}[] = [
+  { key: "gnina", label: "GNINA", accessKey: "gnina_access", quotaKey: "gnina_quota" },
+  { key: "boltz2", label: "AI-Res", accessKey: "boltz2_access", quotaKey: "boltz2_quota" },
+  { key: "screening", label: "Screen", accessKey: "screening_access", quotaKey: "screening_quota" },
+  { key: "resistance", label: "Radar", accessKey: "resistance_access", quotaKey: "resistance_quota" },
+];
+
+/** Per-user feature controls shown under each row's email: one chip per gated
+ *  feature (click toggles enabled⇆off; amber = a pending request) plus a
+ *  click-to-edit usage allowance. Writes the same user_profile columns a
+ *  Telegram Approve/Deny writes, so operator decisions show up here too. */
+function FeatureControls({
+  u, busy, onAccess, onQuota,
+}: {
+  u: AdminUserRow;
+  busy: boolean;
+  onAccess: (feature: "gnina" | "boltz2" | "screening" | "resistance", access: "approved" | "none") => void;
+  onQuota: (feature: "gnina" | "boltz2" | "screening" | "resistance", quota: number) => void;
+}) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [pending, setPending] = useState<number>(0);
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+      {FEATURE_DEFS.map((f) => {
+        const access = (u[f.accessKey] as string | null) || "";
+        const on = access === "approved";
+        const requested = access === "requested";
+        const quota = Number(u[f.quotaKey] ?? 0);
+        const isEditing = editing === f.key;
+        return (
+          <span key={f.key} className="inline-flex items-center gap-1">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAccess(f.key, on ? "none" : "approved")}
+              className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider transition-colors disabled:opacity-50 ${
+                on
+                  ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-200"
+                  : requested
+                    ? "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200"
+                    : "bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-700/50 dark:text-slate-400"
+              }`}
+              title={
+                on ? `${f.label} enabled — click to disable`
+                : requested ? `${f.label} access REQUESTED — click to approve`
+                : `${f.label} off — click to enable`
+              }
+            >
+              {f.label}{requested ? " ·req" : ""}
+            </button>
+            {isEditing ? (
+              <>
+                <input
+                  type="number"
+                  min={0}
+                  value={pending}
+                  onChange={(e) => setPending(Number(e.target.value))}
+                  className="w-16 text-[10px] rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0.5 text-right outline-none focus:border-delta-500"
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => { onQuota(f.key, pending); setEditing(null); }}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-delta-600 hover:bg-delta-700 text-white font-semibold disabled:opacity-50"
+                >✓</button>
+                <button
+                  type="button"
+                  onClick={() => setEditing(null)}
+                  className="text-[10px] px-1 text-slate-400 hover:text-slate-600"
+                >×</button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setEditing(f.key); setPending(quota); }}
+                className="text-[10px] font-mono text-slate-500 hover:text-delta-600 dark:text-slate-400 dark:hover:text-delta-300"
+                title={`${f.label} allowance (total the user can spend before "Request more") — click to edit`}
+              >
+                {quota}
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AdminPage() {
   usePageMeta({
     title: "Admin · Liganx",
@@ -134,6 +229,32 @@ function AdminDashboard() {
   const setFepMut = useMutation({
     mutationFn: ({ userId, fepEnabled }: { userId: string; fepEnabled: boolean }) =>
       api.adminSetFep(userId, fepEnabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
+  // Per-feature access (gnina | boltz2 | screening | resistance). Same column
+  // a Telegram Approve/Deny writes, so an operator decision made either way is
+  // reflected on this page after the next list refetch.
+  const setFeatureAccessMut = useMutation({
+    mutationFn: ({ userId, feature, access }: {
+      userId: string;
+      feature: "gnina" | "boltz2" | "screening" | "resistance";
+      access: "approved" | "denied" | "requested" | "none";
+    }) => api.adminSetFeatureAccess(userId, feature, access),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+
+  // Per-feature usage allowance (total top-up-able budget).
+  const setFeatureQuotaMut = useMutation({
+    mutationFn: ({ userId, feature, quota }: {
+      userId: string;
+      feature: "gnina" | "boltz2" | "screening" | "resistance";
+      quota: number;
+    }) => api.adminSetFeatureQuota(userId, feature, quota),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
     },
@@ -363,6 +484,21 @@ function AdminDashboard() {
                       <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{u.email}</div>
                       {u.role && (
                         <div className="text-[10px] text-slate-400 mt-0.5">{u.role.replace(/_/g, " ")}</div>
+                      )}
+                      {/* Per-feature access + usage allowances. Admins bypass
+                          all of these server-side, so the controls only show
+                          for non-admin users. */}
+                      {!u.is_admin && (
+                        <FeatureControls
+                          u={u}
+                          busy={setFeatureAccessMut.isPending || setFeatureQuotaMut.isPending}
+                          onAccess={(feature, access) =>
+                            setFeatureAccessMut.mutate({ userId: u.user_id, feature, access })
+                          }
+                          onQuota={(feature, quota) =>
+                            setFeatureQuotaMut.mutate({ userId: u.user_id, feature, quota })
+                          }
+                        />
                       )}
                     </td>
                     <td className="px-3 py-3 align-top text-xs text-slate-700 dark:text-slate-300">

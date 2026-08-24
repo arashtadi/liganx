@@ -541,6 +541,16 @@ def create_job(
             },
         )
 
+    # Per-feature usage allowance (on top of the access gate above and the base
+    # job_quota below). GNINA and Boltz-2 are the heavier/pricier engines, so
+    # approved users get a finite allowance they can top up via "Request more".
+    # Admins bypass (handled inside enforce_feature_quota). One dock = 1 unit.
+    if _engine == "gnina" or _engine.startswith("boltz2"):
+        from ..services.feature_quota import enforce_feature_quota
+        enforce_feature_quota(
+            session, user, "boltz2" if _engine.startswith("boltz2") else "gnina"
+        )
+
     # Ensemble-docking access gate. Ensemble docking is UNGATED BY DEFAULT
     # — this rejects ONLY users an admin has explicitly switched off
     # (user_profile.ensemble_enabled = FALSE). It is NOT a Pro paywall;
