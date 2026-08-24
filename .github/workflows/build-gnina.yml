@@ -1,0 +1,67 @@
+name: Build GNINA worker
+
+# Builds a slim GNINA serverless worker image FROM SOURCE, compiled for
+# Ampere/Ada GPUs (sm_80;86;89) so it runs on the cheap RTX A5000 / 3090 / L4
+# cards — fixing the "no kernel image" crash of the arch-limited upstream
+# gnina/gnina:latest. Pushes to ghcr.io/${owner}/liganx-gnina:latest, which
+# the RunPod serverless GNINA endpoint pulls.
+#
+# Manual trigger only (the build takes ~1h and costs Actions minutes).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          echo "Before:"; df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/share/boost /usr/share/swift || true
+          sudo docker image prune -af || true
+          echo "After:"; df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runpod/gnina_worker/Dockerfile.src
+          push: true
+          tags: ghcr.io/${{ steps.owner.outputs.name }}/liganx-gnina:latest
+          provenance: false
+
+      - name: Make package public (best effort)
+        continue-on-error: true
+        run: |
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/liganx-gnina" \
+            -d '{"visibility":"public"}' || echo "visibility change needs manual step"
+
+      - name: Done
+        run: echo "Pushed ghcr.io/${{ steps.owner.outputs.name }}/liganx-gnina:latest"

@@ -1,0 +1,73 @@
+# GNINA serverless worker — built FROM SOURCE for Ampere/Ada GPUs.
+#
+# Why: the official gnina/gnina:latest image ships an arch-limited libtorch
+# and crashes on sm_86 (RTX A5000/3090) and sm_89 (L4) with
+# "CUDA error: no kernel image is available for execution on the device".
+# Building gnina ourselves against the OFFICIAL prebuilt libtorch (which
+# includes sm_80/86/89/90 SASS + PTX) and compiling gnina's own CUDA for
+# 80;86;89 produces a binary that runs on the cheap GPUs we actually use.
+#
+# Built by .github/workflows/build-gnina.yml on GitHub Actions and pushed to
+# ghcr.io/arashtadi/liganx-gnina:latest. RunPod serverless pulls it.
+#
+# Two stages so the final image ships the CUDA *runtime* (not devel) — much
+# smaller than the 23 GB upstream image, so serverless cold starts are
+# minutes-faster.
+
+# ── Stage 1: build ────────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
+# gnina's own CUDA kernels (libmolgrid etc.) — compile for Ampere + Ada.
+ENV CMAKE_CUDA_ARCHITECTURES="80;86;89"
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git cmake wget unzip ca-certificates \
+      libboost-all-dev libeigen3-dev libgoogle-glog-dev \
+      libprotobuf-dev protobuf-compiler libhdf5-dev libatlas-base-dev \
+      python3-dev python3-numpy python3-pip python3-setuptools \
+      librdkit-dev libjsoncpp-dev swig zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# OpenBabel (dkoes fork — gnina README requires it for correct bond orders)
+RUN git clone --depth 1 https://github.com/dkoes/openbabel.git /tmp/ob \
+ && cd /tmp/ob && mkdir build && cd build \
+ && cmake -DWITH_MAEPARSER=OFF -DWITH_COORDGEN=OFF -DPYTHON_BINDINGS=ON -DRUN_SWIG=ON .. \
+ && make -j"$(nproc)" && make install && ldconfig \
+ && rm -rf /tmp/ob
+
+# gnina (recursive: pulls libmolgrid + gninasrc submodules). cmake downloads
+# the official libtorch (sm_86-capable) automatically.
+RUN git clone --recursive --depth 1 https://github.com/gnina/gnina.git /opt/gnina-src \
+ && cd /opt/gnina-src && mkdir build && cd build \
+ && cmake -DCMAKE_CUDA_ARCHITECTURES="80;86;89" -DCMAKE_BUILD_TYPE=Release .. \
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig \
+ && gnina --version || true
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libboost-filesystem1.74.0 libboost-system1.74.0 libboost-program-options1.74.0 \
+      libboost-regex1.74.0 libboost-thread1.74.0 libboost-iostreams1.74.0 \
+      libboost-serialization1.74.0 libboost-timer1.74.0 \
+      libgoogle-glog0v5 libprotobuf23 libhdf5-103-1 libjsoncpp25 \
+      libatlas3-base python3 python3-pip zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+
+# gnina binary + everything installed into /usr/local (openbabel, libmolgrid,
+# gnina's downloaded libtorch, etc.)
+COPY --from=build /usr/local/ /usr/local/
+RUN ldconfig
+
+# RunPod serverless SDK + the handler
+RUN pip3 install --no-cache-dir runpod
+COPY runpod/gnina_worker/handler.py /handler.py
+
+# Sanity: the binary must at least load its libs (no GPU at build time, so
+# --version is the closest we can check without a device).
+RUN gnina --version || (echo "gnina --version failed (lib load?)" && ldd "$(command -v gnina)" | grep -i 'not found' || true)
+
+CMD ["python3", "-u", "/handler.py"]
