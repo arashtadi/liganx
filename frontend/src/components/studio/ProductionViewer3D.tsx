@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
+import { tryReloadOnChunkError, isChunkLoadError } from "../../lib/chunkReload";
 import type { QuickDockResult } from "../../types/studio";
 
 /** Production Viewer3D — unified interface using JobPage production components.
@@ -783,7 +784,22 @@ export default function ProductionViewer3D({
         }
         applyStyles(viewer);
       } catch (e) {
-        if (!cancelled) setConformerErr(`Render failed: ${(e as Error).message}`);
+        if (cancelled) return;
+        // Stale-chunk recovery: after a redeploy the hashed 3Dmol chunk is
+        // replaced, so `import("3dmol")` 404s in a tab still running the old
+        // build. Trigger a one-time hard reload to pick up the new build
+        // instead of showing a scary "Render failed" the user can't act on.
+        if (tryReloadOnChunkError(e)) {
+          setConformerErr("Updating to the latest version…");
+          return;
+        }
+        if (isChunkLoadError(e)) {
+          // Chunk error but a reload was already attempted (throttled) —
+          // don't surface the raw technical message; ask for a refresh.
+          setConformerErr("Couldn't load the 3D viewer. Please refresh the page.");
+          return;
+        }
+        setConformerErr(`Render failed: ${(e as Error).message}`);
       }
     })();
     return () => { cancelled = true; };

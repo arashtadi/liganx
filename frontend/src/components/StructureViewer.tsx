@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Spinner } from "./Icons";
+import { tryReloadOnChunkError, isChunkLoadError } from "../lib/chunkReload";
 
 interface Props {
   pdbId: string;
@@ -144,10 +145,19 @@ export default function StructureViewer({
         if (!cancelled) setLoading(false);
       } catch (e) {
         console.error("StructureViewer error:", e);
-        if (!cancelled) {
-          setError((e as Error).message);
-          setLoading(false);
+        if (cancelled) return;
+        // Stale-chunk recovery — see ProductionViewer3D / chunkReload.
+        if (tryReloadOnChunkError(e)) {
+          setError("Updating to the latest version…");
+          return;
         }
+        if (isChunkLoadError(e)) {
+          setError("Couldn't load the 3D viewer. Please refresh the page.");
+          setLoading(false);
+          return;
+        }
+        setError((e as Error).message);
+        setLoading(false);
       }
     }
 
