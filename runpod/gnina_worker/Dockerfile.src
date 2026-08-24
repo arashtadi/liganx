@@ -29,6 +29,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       librdkit-dev libjsoncpp-dev swig zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# gnina's CMakeLists needs a newer CMake than Ubuntu 22.04 ships (3.22).
+# Install a current CMake (+ Ninja) from pip; /usr/local/bin precedes /usr/bin
+# on PATH so this shadows the apt cmake for both openbabel and gnina.
+RUN pip3 install --no-cache-dir "cmake>=3.28" ninja && cmake --version
+
 # OpenBabel (dkoes fork — gnina README requires it for correct bond orders)
 RUN git clone --depth 1 https://github.com/dkoes/openbabel.git /tmp/ob \
  && cd /tmp/ob && mkdir build && cd build \
@@ -44,7 +49,7 @@ RUN git clone --recursive --depth 1 https://github.com/gnina/gnina.git /opt/gnin
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
- && gnina --version || true
+ && test -x "$(command -v gnina)"
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 AS runtime
@@ -68,6 +73,6 @@ COPY runpod/gnina_worker/handler.py /handler.py
 
 # Sanity: the binary must at least load its libs (no GPU at build time, so
 # --version is the closest we can check without a device).
-RUN gnina --version || (echo "gnina --version failed (lib load?)" && ldd "$(command -v gnina)" | grep -i 'not found' || true)
+RUN gnina --version && test -z "$(ldd "$(command -v gnina)" | grep -i 'not found')"
 
 CMD ["python3", "-u", "/handler.py"]
