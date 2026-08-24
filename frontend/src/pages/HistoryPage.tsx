@@ -150,6 +150,14 @@ const PAGE_SIZE = 25;
  *  scan). Still shown on individual row pills, where it explains job origin. */
 const HIDDEN_FILTER_TAG = "resistance-radar";
 
+/** Shared "off" chip styling for the filter bars (engine + tags). A plain
+ *  muted gray fill so an unselected chip reads as clearly off; the chip's own
+ *  colour (violet for engines, the tag's preset colour) is shown ONLY when it
+ *  is active/selected. Keeps both filter rows visually consistent. */
+const FILTER_OFF_CHIP =
+  "bg-slate-200 text-slate-500 ring-slate-300 hover:bg-slate-300 hover:text-slate-700 " +
+  "dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200";
+
 /** Canonicalise a job's engine for filtering/grouping. Null and legacy rows
  *  (predating the engine column) map to quickvina2_gpu, the historical default
  *  — matches how JobPage's EnginePill treats a missing engine. */
@@ -852,10 +860,11 @@ function FilterBar({
             key={value}
             type="button"
             onClick={() => onToggle(value)}
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-all ${chipClass} ${
-              active ? "ring-2 shadow-sm scale-[1.02]" : "opacity-80 hover:opacity-100"
+            aria-pressed={active}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-all ${
+              active ? `${chipClass} ring-2 shadow-sm scale-[1.02]` : FILTER_OFF_CHIP
             }`}
-            title={active ? "Click to remove from filter" : "Filter by this tag"}
+            title={active ? "Filtering by this tag — click to turn off" : "Filter by this tag"}
           >
             {preset && <span aria-hidden="true">{preset.icon}</span>}
             <span>{preset?.label ?? value}</span>
@@ -905,7 +914,7 @@ function EngineFilterBar({
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset transition-all ${
               active
                 ? "bg-violet-600 text-white ring-violet-400 shadow-md shadow-violet-600/40 dark:bg-violet-500 dark:text-white dark:ring-violet-300"
-                : "bg-slate-200 text-slate-500 ring-slate-300 hover:bg-slate-300 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                : FILTER_OFF_CHIP
             }`}
             title={active ? "Filtering by this engine — click to turn off" : `Show only ${engineLabel(e)} runs`}
           >
