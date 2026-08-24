@@ -37,7 +37,7 @@ RUN pip3 install --no-cache-dir "cmake>=3.28" ninja && cmake --version
 # OpenBabel (dkoes fork — gnina README requires it for correct bond orders)
 RUN git clone --depth 1 https://github.com/dkoes/openbabel.git /tmp/ob \
  && cd /tmp/ob && mkdir build && cd build \
- && cmake -DWITH_MAEPARSER=OFF -DWITH_COORDGEN=OFF -DPYTHON_BINDINGS=ON -DRUN_SWIG=ON .. \
+ && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DWITH_MAEPARSER=OFF -DWITH_COORDGEN=OFF -DPYTHON_BINDINGS=ON -DRUN_SWIG=ON .. \
  && make -j"$(nproc)" && make install && ldconfig \
  && rm -rf /tmp/ob
 
@@ -45,7 +45,7 @@ RUN git clone --depth 1 https://github.com/dkoes/openbabel.git /tmp/ob \
 # the official libtorch (sm_86-capable) automatically.
 RUN git clone --recursive --depth 1 https://github.com/gnina/gnina.git /opt/gnina-src \
  && cd /opt/gnina-src && mkdir build && cd build \
- && cmake -DCMAKE_CUDA_ARCHITECTURES="80;86;89" -DCMAKE_BUILD_TYPE=Release .. \
+ && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CUDA_ARCHITECTURES="80;86;89" -DCMAKE_BUILD_TYPE=Release .. \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
