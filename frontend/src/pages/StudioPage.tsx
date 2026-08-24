@@ -191,6 +191,15 @@ const MUTATION_OUTSIDE_POCKET_THRESHOLD_A = 12.0;
 // 70 KB of pose data — well within sessionStorage's 5 MB cap.
 const STUDIO_SESSION_KEY = "liganx-studio-session-v1";
 
+// GNINA is hidden from the engine picker until the GPU worker image is fixed.
+// The serverless GNINA workers crash on GPU with CUDA "no kernel image is
+// available for execution on the device" (broken libtorch in the worker
+// image — 0 successful jobs across all endpoints), so engine=gnina silently
+// falls back to QuickVina2 and produces Vina numbers under a GNINA label.
+// Rather than mislead users, we hide the button. Flip to true once a worker
+// image that actually runs GNINA's CNN on the endpoint GPUs is deployed.
+const GNINA_UI_ENABLED = false;
+
 interface StudioSessionSnapshot {
   // Schema-versioned so a future shape change can wipe stale snapshots
   // without surfacing a deserialise error to the user.
@@ -4311,6 +4320,7 @@ export default function StudioPage() {
                     {/* GNINA half — secondary, ~35% width, violet.
                         Same disable logic. Tooltip is honest about the
                         CNN-rerank state on current production. */}
+                    {GNINA_UI_ENABLED && (
                     <button
                       onClick={() => {
                         // (2026-08) Per-feature request gate. Admins +
@@ -4351,6 +4361,7 @@ export default function StudioPage() {
                       <span>{!gninaCanRun && <span className="mr-1">{gninaPending ? "⏳" : "🔒"}</span>}{gninaCanRun ? baseLabel : gninaPending ? "pending" : "Run Dock"}</span>
                       <span className="opacity-60 ml-1.5">· GNINA</span>
                     </button>
+                    )}
                   </div>
                 );
               })()}
