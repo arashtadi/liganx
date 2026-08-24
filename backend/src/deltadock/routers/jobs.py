@@ -789,12 +789,24 @@ def create_job_from_screening(
     # for the duration of THIS request's transaction. Two concurrent
     # promotes from the same user serialise behind it instead of both
     # reading "under quota" + inserting (the TOCTOU race called out in
-    # the May 2026 audit, #251). hashtext(uuid::text) collapses the
-    # UUID to a bigint key — collisions across users only cost a
-    # negligible amount of serialisation, never correctness.
+    # the May 2026 audit, #251).
+    #
+    # Compute the lock key in Python — NOT via SQL hashtext(:uid::text) —
+    # because the inline `::text` cast triggers a SQLAlchemy text() param
+    # parser bug (psycopg2.errors.SyntaxError "syntax error at or near :"),
+    # which crashed this endpoint with a CORS-less 5xx so the browser only
+    # saw "Failed to fetch". Mirrors the exact md5+8-byte-truncation key
+    # create_job uses (jobs.py ~L295), so both endpoints serialise on the
+    # SAME per-user key.
+    import hashlib as _hashlib
+    _lock_key = int.from_bytes(
+        _hashlib.md5(str(user.id).encode()).digest()[:8],
+        "big",
+        signed=True,
+    )
     session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:uid::text)::bigint)"),
-        {"uid": user.id},
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _lock_key},
     )
     quota_row = session.execute(
         text(
