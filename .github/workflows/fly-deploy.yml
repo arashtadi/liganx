@@ -136,7 +136,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - name: Install backend + dev deps
         run: pip install -e "backend[dev]"
-      - name: Seed CI auth stub (Supabase auth.users + auth.uid)
+      - name: Seed CI base schema (Supabase auth stub + user_profile base)
         working-directory: backend
         env:
           TEST_DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/liganx_test
@@ -145,13 +145,25 @@ jobs:
           import os, psycopg2
           # psycopg2 wants a plain postgresql:// URL (no SQLAlchemy +driver).
           url = os.environ["TEST_DATABASE_URL"].replace("+psycopg2", "")
-          sql = open("tests/ci_db_stub.sql").read()
+          # The startup migration runner deliberately skips 001-010 (hand-applied
+          # in prod), and user_profile is NOT a SQLModel model, so create_all
+          # never builds it. Seed the auth stub + the user_profile base
+          # migrations that only touch user_profile/auth (no model tables) so the
+          # registered ADD COLUMN IF NOT EXISTS migrations have a table to extend.
+          files = [
+              "tests/ci_db_stub.sql",
+              "migrations/003_user_profile.sql",
+              "migrations/007_user_job_quota.sql",
+              "migrations/008_role_other.sql",
+          ]
           conn = psycopg2.connect(url)
           conn.autocommit = True
-          with conn.cursor() as cur:
-              cur.execute(sql)
+          for f in files:
+              with conn.cursor() as cur:
+                  cur.execute(open(f).read())
+              print(f"applied {f}")
           conn.close()
-          print("Seeded CI auth stub (auth.users + auth.uid()).")
+          print("Seeded CI base schema.")
           PY
       - name: Run pytest (requires-db tests)
         working-directory: backend
