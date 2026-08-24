@@ -21,6 +21,7 @@ export default function HomePage() {
     <div className="flex flex-col">
       <Hero />
       <LogoStrip />
+      <ResistanceRadarSpotlight />
       <HowItWorks />
       <WhatsNew />
       <FeatureGrid />
@@ -427,6 +428,116 @@ function WhatsNew() {
   );
 }
 
+/* ─── Resistance Radar spotlight ────────────────────────────────────── */
+
+/** Flagship-feature band for Resistance Radar. Placed high (right after the
+ *  logo strip) because it's the clearest single differentiator: forecast which
+ *  mutations break YOUR compound, across a whole variant panel, in one pass.
+ *  Copy stays honest to match the rest of the page — the model + its
+ *  cross-validated AUC are cited as-is, the panel-coverage caveat is stated,
+ *  and the liability card is labelled illustrative rather than passed off as a
+ *  live result. Amber identity mirrors the in-app Resistance Radar button. */
+function ResistanceRadarSpotlight() {
+  // Illustrative KRAS panel for the preview card — real resistance positions,
+  // example risk levels (NOT a live scored result). Kept plausible and clearly
+  // labelled so it reads as a product preview, not a validation claim.
+  const preview: { code: string; tier: "high" | "mid" | "low"; label: string }[] = [
+    { code: "Q61H", tier: "high", label: "likely" },
+    { code: "G13D", tier: "mid", label: "borderline" },
+    { code: "G12C", tier: "mid", label: "borderline" },
+    { code: "G12V", tier: "low", label: "unlikely" },
+  ];
+  const tierChip = (t: "high" | "mid" | "low") =>
+    t === "high"
+      ? "bg-rose-100 text-rose-700 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-200 dark:ring-rose-700/50"
+      : t === "mid"
+        ? "bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:ring-amber-700/50"
+        : "bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-700/50";
+  const barPct = (t: "high" | "mid" | "low") => (t === "high" ? 90 : t === "mid" ? 55 : 18);
+  const barColor = (t: "high" | "mid" | "low") =>
+    t === "high" ? "bg-rose-500" : t === "mid" ? "bg-amber-500" : "bg-emerald-500";
+
+  return (
+    <section className="relative overflow-hidden bg-gradient-to-b from-amber-50/70 to-white dark:from-amber-950/20 dark:to-slate-950 border-b border-slate-200/80 dark:border-slate-800">
+      <Container className="py-12 sm:py-20">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-center">
+          {/* Copy */}
+          <div>
+            <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:ring-amber-700/50">
+              <span className="w-1.5 h-1.5 rounded-full bg-current" /> New · Flagship · Beta
+            </span>
+            <h2 className="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white leading-[1.1]">
+              Resistance Radar — see which mutations will break your compound
+            </h2>
+            <p className="mt-4 text-slate-600 dark:text-slate-300 leading-relaxed">
+              Bring your own molecule. In one pass, Resistance Radar docks it
+              across a target's entire known resistance panel and returns a
+              ranked liability map — per-variant Δ-vs-wild-type docking plus a
+              calibrated probability that each mutation confers resistance. It's
+              the resistance question asked <em>about your compound</em>, not a
+              generic drug: where will it hold, and where will it fail?
+            </p>
+            <ul className="mt-5 space-y-2.5">
+              {[
+                ["One pass, whole panel", "Submit once; every clinically-relevant variant is co-docked against wild-type under identical conditions."],
+                ["Calibrated probability, not just a score", "The same 2-signal model as the Atlas (docking Δ + ESM-2 fitness), cross-validated ROC-AUC 0.81."],
+                ["A shareable liability map", "Every scan gets its own page and link — hand a collaborator the resistance forecast, no re-running."],
+              ].map(([h, b]) => (
+                <li key={h} className="flex gap-2.5">
+                  <Target size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span className="text-sm text-slate-600 dark:text-slate-300">
+                    <span className="font-semibold text-ink dark:text-slate-100">{h}.</span> {b}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link to="/studio" className="btn-primary btn-lg justify-center">
+                Try it in Studio <ArrowRight size={16} className="ml-1.5" />
+              </Link>
+              <Link to="/atlas" className="btn-secondary btn-lg justify-center">
+                The science behind it
+              </Link>
+            </div>
+            <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
+              Early-access beta. Panel coverage is growing target by target; request access from the Studio.
+            </p>
+          </div>
+
+          {/* Illustrative liability card */}
+          <div className="lg:justify-self-end w-full max-w-md">
+            <div className="rounded-xl border border-amber-200/70 dark:border-amber-800/40 bg-white dark:bg-slate-900 shadow-xl shadow-amber-900/5 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Target size={16} className="text-amber-600 dark:text-amber-400" />
+                  <span className="text-sm font-semibold text-ink dark:text-slate-100">KRAS · your compound</span>
+                </div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">liability map</span>
+              </div>
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                {preview.map((r) => (
+                  <li key={r.code} className="px-5 py-3 flex items-center gap-3">
+                    <span className="font-mono text-sm font-semibold text-ink dark:text-slate-100 w-14">{r.code}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                      <div className={`h-full rounded-full ${barColor(r.tier)}`} style={{ width: `${barPct(r.tier)}%` }} />
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${tierChip(r.tier)}`}>
+                      {r.label}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="px-5 py-2.5 bg-slate-50/70 dark:bg-slate-800/40 text-[10px] text-slate-400 dark:text-slate-500 text-center">
+                Illustrative preview — run your own compound for live, scored results.
+              </div>
+            </div>
+          </div>
+        </div>
+      </Container>
+    </section>
+  );
+}
+
 /* ─── Comparison ────────────────────────────────────────────────────── */
 
 function Comparison() {
@@ -461,6 +572,12 @@ function Comparison() {
               // owns makes the rest of the table credible rather than 26-0.
               ["Mutation-aware WT-vs-mutant matrix",            false,     true,      "partial"],
               ["Public resistance-mutation atlas",              false,     true,      false],
+              // Resistance Radar: forecast which panel mutations break YOUR
+              // compound, calibrated probability, one pass. Schrödinger =
+              // "partial": Residue Scanning + FEP+ give mutation-ΔΔG for
+              // affinity, but not a packaged calibrated cross-panel resistance
+              // forecast for a submitted compound. Honest, defensible call.
+              ["Compound resistance forecast across a variant panel", false, true, "partial"],
               ["Pre-computed FDA-drug screenings",              false,     true,      false],
               ["Bulk virtual screening, selectivity-ranked",    false,     true,      "partial"],
               ["Inline ADMET (hERG / DILI / CYP / BBB)",        false,     true,      "partial"],
