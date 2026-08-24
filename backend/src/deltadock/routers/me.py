@@ -380,6 +380,17 @@ def update_my_profile(
         except Exception:
             import logging
             logging.getLogger(__name__).exception("notify_admin_new_signup failed")
+        # Warm welcome to the user (from team@liganx.com). Auto-approved,
+        # so this replaces the old on-approval welcome. Fail-soft.
+        try:
+            from ..services.email import notify_user_welcome
+            notify_user_welcome(
+                user_email=getattr(user, "email", None),
+                full_name=payload.full_name,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("notify_user_welcome failed")
 
     return get_my_profile(user, session)
 
@@ -554,6 +565,21 @@ def get_access_status(
         except Exception:  # noqa: BLE001
             import logging
             logging.getLogger(__name__).exception("notify_admin_new_signup failed (fired from access_status)")
+        # Auto-approved users get no manual Approve step, so send the warm
+        # welcome (from team@liganx.com) here instead. Fail-soft.
+        try:
+            from ..services.email import notify_user_welcome
+            _wn = session.execute(
+                text("SELECT full_name FROM public.user_profile WHERE user_id = :uid"),
+                {"uid": user.id},
+            ).first()
+            notify_user_welcome(
+                user_email=getattr(user, "email", None),
+                full_name=(_wn[0] if _wn else None),
+            )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception("notify_user_welcome failed (fired from access_status)")
 
     row = session.execute(
         text(

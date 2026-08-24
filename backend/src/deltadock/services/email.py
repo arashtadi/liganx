@@ -48,9 +48,14 @@ def _default_from() -> str:
     return os.environ.get("EMAIL_FROM", "Liganx <noreply@liganx.com>").strip()
 
 
-def _send(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -> bool:
+def _send(*, to: str, subject: str, html: str, reply_to: Optional[str] = None,
+          from_addr: Optional[str] = None) -> bool:
     """Low-level send. Returns True on 2xx, False on any failure
-    (missing key, HTTP error, network). Never raises."""
+    (missing key, HTTP error, network). Never raises.
+
+    from_addr overrides the default From: (EMAIL_FROM / noreply@liganx.com)
+    for emails that should read as coming from a team address — any
+    address on the verified liganx.com domain works."""
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     if not api_key:
         log.info("Resend skipped — RESEND_API_KEY not set (to=%s)", to)
@@ -60,7 +65,7 @@ def _send(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -
         return False
 
     payload: dict = {
-        "from": _default_from(),
+        "from": from_addr or _default_from(),
         "to": [to],
         "subject": subject,
         "html": html,
@@ -201,6 +206,73 @@ def notify_user_approved(*, user_email: Optional[str]) -> bool:
         to=user_email,
         subject="Welcome to Liganx — your account is approved 🎉",
         html=html,
+    )
+
+
+TEAM_FROM = "The Liganx Team <team@liganx.com>"
+TEAM_REPLY_TO = "team@liganx.com"
+
+
+def notify_user_welcome(*, user_email: Optional[str], full_name: Optional[str] = None) -> bool:
+    """Warm welcome email sent automatically the moment a user signs up.
+
+    Since sign-ups are auto-approved (migration 041), there's no manual
+    Approve step to trigger notify_user_approved — this is the email new
+    users get instead. Sent from team@liganx.com (not noreply@) so it
+    reads as a human welcome and replies land in the team inbox. Mirrors
+    the hand-sent welcome we've used for early users (Karim/Linda):
+    welcome + what they can do + a note on free limits and how to ask
+    for more."""
+    if not user_email or "@" not in user_email or not _is_configured():
+        return False
+    first = ""
+    if full_name:
+        first = (full_name.strip().split() or [""])[0]
+    greeting = f"Hi {first}," if first else "Hi there,"
+    html = f"""
+    <div style="background:#0b1020;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,0.25);">
+        <tr><td style="background:linear-gradient(135deg,#6d28d9 0%,#2563eb 100%);padding:28px 32px;">
+          <div style="font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:20px;font-weight:700;letter-spacing:3px;color:#ffffff;">LIGANX</div>
+          <div style="color:rgba(255,255,255,0.85);font-size:13px;margin-top:5px;">Mutation-aware molecular docking</div>
+        </td></tr>
+        <tr><td style="padding:32px;">
+          <div style="display:inline-block;background:#ecfdf5;color:#047857;font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;">&#10003; You're in</div>
+          <h1 style="color:#0f172a;font-size:24px;margin:16px 0 8px;">Welcome to Liganx &#127881;</h1>
+          <p style="color:#475569;font-size:15px;line-height:1.65;margin:0 0 20px;">
+            {greeting} thanks for signing up &mdash; your account's approved and ready. We built Liganx so serious structure-based modeling runs right in your browser: no installs, no cluster, no queue.
+          </p>
+          <div style="color:#0f172a;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:12px;">What you can do</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;">
+            <tr><td style="padding:6px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">&#9679;</b>&nbsp;&nbsp;<b>Ensemble docking</b> (Vina) across multiple receptor conformations</td></tr>
+            <tr><td style="padding:6px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">&#9679;</b>&nbsp;&nbsp;<b>GNINA</b> deep-learning (CNN) rescoring</td></tr>
+            <tr><td style="padding:6px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">&#9679;</b>&nbsp;&nbsp;<b>Virtual screening</b> &mdash; rank a whole library in one run</td></tr>
+            <tr><td style="padding:6px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">&#9679;</b>&nbsp;&nbsp;<b>AI Resistance Prediction</b> (Boltz-2) for mutant binding</td></tr>
+            <tr><td style="padding:6px 0;color:#475569;font-size:14px;line-height:1.5;"><b style="color:#6d28d9;">&#9679;</b>&nbsp;&nbsp;<b>Resistance Radar</b> &mdash; forecast which mutations break your compound across a target's variant panel. No other self-serve tool does this.</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 24px;"><tr><td style="border-radius:10px;background:linear-gradient(135deg,#6d28d9,#2563eb);">
+            <a href="https://liganx.com/studio" style="display:inline-block;padding:13px 30px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;">Open Liganx &rarr;</a>
+          </td></tr></table>
+          <div style="border-top:1px solid #e2e8f0;padding-top:18px;">
+            <p style="color:#475569;font-size:14px;line-height:1.6;margin:0;">
+              Your account comes with generous free run limits to explore everything. When you hit one, just tap <b>Request more</b> right in the app &mdash; or reply to this email &mdash; and we'll bump it for you.
+            </p>
+          </div>
+        </td></tr>
+        <tr><td style="background:#f8fafc;padding:20px 32px;border-top:1px solid #e2e8f0;">
+          <p style="color:#94a3b8;font-size:12px;line-height:1.55;margin:0;">
+            Questions, a target we don't cover yet, or anything not working? Just reply &mdash; it comes straight to us.<br/>&mdash; The Liganx Team &middot; <a href="https://liganx.com" style="color:#6d28d9;text-decoration:none;">liganx.com</a>
+          </p>
+        </td></tr>
+      </table>
+    </div>
+    """
+    return _send(
+        to=user_email,
+        subject="Welcome to Liganx — you're in 🎉",
+        html=html,
+        from_addr=TEAM_FROM,
+        reply_to=TEAM_REPLY_TO,
     )
 
 
