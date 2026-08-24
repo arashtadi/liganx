@@ -1126,6 +1126,79 @@ def update_job(
     return _to_out(job)
 
 
+# ── Bulk tag management ──────────────────────────────────────────────────
+# Rename or remove a tag across ALL of the caller's jobs in one call — the
+# backend for the History page's "Manage filters" panel. Per-job PATCH could
+# only touch the loaded page; these operate on every job the user owns via a
+# single Postgres array update, so a rename/remove is complete regardless of
+# pagination. Tags are a TEXT[] column (see models.Job.tags); we use
+# array_replace + array_agg(DISTINCT) to rename (deduping if the target tag
+# already exists on a job) and array_remove to delete.
+
+class TagRenamePayload(BaseModel):
+    from_tag: str = Field(..., min_length=1, max_length=32)
+    to_tag: str = Field(..., min_length=1, max_length=32)
+
+
+class TagRemovePayload(BaseModel):
+    tag: str = Field(..., min_length=1, max_length=32)
+
+
+class TagBulkResult(BaseModel):
+    """updated = number of the caller's jobs whose tag list changed."""
+    updated: int
+
+
+@router.post("/tags/rename", response_model=TagBulkResult)
+def rename_tag_bulk(
+    payload: TagRenamePayload,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> TagBulkResult:
+    """Rename a tag on every job the caller owns that carries it. If a job
+    already has the target tag, the result is deduped so it isn't listed
+    twice. No-op (updated=0) when from == to."""
+    frm = payload.from_tag.strip()
+    to = payload.to_tag.strip()
+    if not frm or not to:
+        raise HTTPException(status_code=400, detail="Both from_tag and to_tag are required.")
+    if frm == to:
+        return TagBulkResult(updated=0)
+    res = session.execute(
+        text(
+            "UPDATE job SET "
+            "  tags = (SELECT array_agg(DISTINCT t) "
+            "          FROM unnest(array_replace(tags, :frm, :to)) AS t), "
+            "  updated_at = NOW() "
+            "WHERE user_id = :uid AND :frm = ANY(tags)"
+        ),
+        {"frm": frm, "to": to, "uid": user.id},
+    )
+    session.commit()
+    return TagBulkResult(updated=res.rowcount or 0)
+
+
+@router.post("/tags/remove", response_model=TagBulkResult)
+def remove_tag_bulk(
+    payload: TagRemovePayload,
+    user: CurrentUser = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> TagBulkResult:
+    """Remove a tag from every job the caller owns that carries it."""
+    tag = payload.tag.strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="tag is required.")
+    res = session.execute(
+        text(
+            "UPDATE job SET tags = array_remove(tags, :tag), updated_at = NOW() "
+            "WHERE user_id = :uid AND :tag = ANY(tags)"
+        ),
+        {"tag": tag, "uid": user.id},
+    )
+    session.commit()
+    return TagBulkResult(updated=res.rowcount or 0)
+
+
 @router.delete("/{job_key}", status_code=204)
 def delete_job(
     job_key: str,

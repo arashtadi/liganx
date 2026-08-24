@@ -19,7 +19,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { api, type Job, type Screening } from "../api";
 import { useAuth } from "../lib/auth";
 import { isAdminEmail } from "../lib/admin";
-import { Close, Spinner } from "../components/Icons";
+import { Close, Spinner, Bolt } from "../components/Icons";
 import { EnginePill } from "./JobPage";
 import {
   TAG_PRESETS,
@@ -557,6 +557,8 @@ function JobsTab() {
   // are two engines of the same single-dock workflow — one unified list with
   // an engine filter beats splitting the history into per-engine tabs.
   const [filterEngines, setFilterEngines] = useState<string[]>([]);
+  // "Manage filters" panel (rename / remove a tag across all jobs).
+  const [manageOpen, setManageOpen] = useState(false);
   const queryClient = useQueryClient();
 
   // (U10) Multi-select cancel. `selected` holds job_keys (share_id or
@@ -724,6 +726,24 @@ function JobsTab() {
           selected={filterTags}
           onToggle={toggleFilterTag}
           onClear={() => setFilterTags([])}
+          onManage={() => setManageOpen(true)}
+        />
+      )}
+
+      {manageOpen && (
+        <ManageFiltersModal
+          tags={tagsInUse}
+          onClose={() => setManageOpen(false)}
+          onChanged={(removed, renamedTo) => {
+            // Keep the active filter selection consistent with the change:
+            // a removed tag drops out; a renamed tag follows to its new value.
+            setFilterTags((prev) =>
+              prev
+                .filter((t) => t !== removed)
+                .map((t) => (renamedTo && t === renamedTo.from ? renamedTo.to : t)),
+            );
+            queryClient.invalidateQueries({ queryKey: ["jobs"] });
+          }}
         />
       )}
 
@@ -839,12 +859,13 @@ function JobsTab() {
 /* -------------------------------------------------------------------------- */
 
 function FilterBar({
-  tagsInUse, selected, onToggle, onClear,
+  tagsInUse, selected, onToggle, onClear, onManage,
 }: {
   tagsInUse: string[];
   selected: string[];
   onToggle: (v: string) => void;
   onClear: () => void;
+  onManage?: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -880,7 +901,213 @@ function FilterBar({
           Clear
         </button>
       )}
+      {onManage && (
+        <button
+          type="button"
+          onClick={onManage}
+          className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
+          title="Rename or remove a tag across all your jobs"
+        >
+          <Bolt size={12} /> Manage filters
+        </button>
+      )}
     </div>
+  );
+}
+
+/** Manage-filters modal. Lists every tag currently in use and lets the user
+ *  RENAME or REMOVE it across ALL their jobs in one call (api.renameJobTag /
+ *  api.removeJobTag hit the bulk backend, so the change is complete regardless
+ *  of pagination). Removing/renaming a preset tag is allowed too — it just
+ *  retags the underlying jobs. onChanged tells the parent to refetch the job
+ *  list and reconcile the active filter selection. */
+function ManageFiltersModal({
+  tags,
+  onClose,
+  onChanged,
+}: {
+  tags: string[];
+  onClose: () => void;
+  onChanged: (removed?: string, renamedTo?: { from: string; to: string }) => void;
+}) {
+  // Local, mutable copy so the list updates instantly after each action
+  // without waiting on the (async) parent refetch.
+  const [rows, setRows] = useState<string[]>(tags);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function doRename(from: string) {
+    const to = draft.trim();
+    setError(null);
+    if (!to) { setError("Enter a new name."); return; }
+    if (to.length > 32) { setError("Tags are limited to 32 characters."); return; }
+    if (to === from) { setEditing(null); return; }
+    setBusy(from);
+    try {
+      await api.renameJobTag(from, to);
+      setRows((prev) => {
+        const next = prev.filter((t) => t !== from);
+        return next.includes(to) ? next : [...next, to];
+      });
+      setEditing(null);
+      setDraft("");
+      onChanged(undefined, { from, to });
+    } catch (e: any) {
+      setError(e?.message || "Couldn't rename that tag. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doRemove(tag: string) {
+    setError(null);
+    setBusy(tag);
+    try {
+      await api.removeJobTag(tag);
+      setRows((prev) => prev.filter((t) => t !== tag));
+      setConfirming(null);
+      onChanged(tag);
+    } catch (e: any) {
+      setError(e?.message || "Couldn't remove that tag. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-ink dark:text-slate-100">Manage filters</h2>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Rename or remove a tag across all your jobs. Changes apply everywhere, not just this page.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+            title="Close"
+          >
+            <Close size={18} />
+          </button>
+        </div>
+
+        {error && (
+          <div className="px-5 py-2 text-xs text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/20 border-b border-rose-100 dark:border-rose-900/40">
+            {error}
+          </div>
+        )}
+
+        <ul className="overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+          {rows.length === 0 ? (
+            <li className="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+              No tags left to manage.
+            </li>
+          ) : (
+            rows.map((tag) => {
+              const preset = TAG_BY_VALUE[tag];
+              const isEditing = editing === tag;
+              const isBusy = busy === tag;
+              const isConfirming = confirming === tag;
+              return (
+                <li key={tag} className="px-5 py-3 flex items-center gap-3">
+                  {isEditing ? (
+                    <>
+                      <input
+                        autoFocus
+                        className="input flex-1 !py-1 text-sm"
+                        value={draft}
+                        maxLength={32}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") doRename(tag);
+                          if (e.key === "Escape") { setEditing(null); setDraft(""); }
+                        }}
+                        disabled={isBusy}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => doRename(tag)}
+                        disabled={isBusy}
+                        className="text-xs font-semibold text-violet-700 dark:text-violet-300 hover:underline disabled:opacity-50"
+                      >
+                        {isBusy ? <Spinner size={12} /> : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setEditing(null); setDraft(""); setError(null); }}
+                        disabled={isBusy}
+                        className="text-xs text-slate-500 dark:text-slate-400 hover:underline"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex-1 min-w-0 flex items-center gap-1.5">
+                        {preset && <span aria-hidden>{preset.icon}</span>}
+                        <span className="truncate text-sm font-medium text-ink dark:text-slate-100">
+                          {preset?.label ?? tag}
+                        </span>
+                        {preset && (
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500">(preset)</span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => { setEditing(tag); setDraft(tag); setConfirming(null); setError(null); }}
+                        disabled={isBusy}
+                        className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-violet-700 dark:hover:text-violet-300 disabled:opacity-50"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => (isConfirming ? doRemove(tag) : (setConfirming(tag), setError(null)))}
+                        disabled={isBusy}
+                        className={`text-xs font-medium disabled:opacity-50 ${
+                          isConfirming
+                            ? "text-rose-700 dark:text-rose-300 font-semibold"
+                            : "text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-300"
+                        }`}
+                      >
+                        {isBusy ? <Spinner size={12} /> : isConfirming ? "Remove?" : "Remove"}
+                      </button>
+                    </>
+                  )}
+                </li>
+              );
+            })
+          )}
+        </ul>
+
+        <div className="px-5 py-3 border-t border-slate-100 dark:border-slate-800 text-right">
+          <button type="button" onClick={onClose} className="btn btn-secondary btn-sm">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

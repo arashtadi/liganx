@@ -1730,6 +1730,20 @@ export const api = {
    *  re-renders with the new tags. */
   updateJob: (key: string | number, patch: { title?: string | null; tags?: string[] }) =>
     request<Job>(`/jobs/${key}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** Rename a tag across EVERY job the caller owns (History "Manage filters").
+   *  Backend does a single array update so it's complete regardless of which
+   *  pages are loaded. Returns how many jobs changed. */
+  renameJobTag: (fromTag: string, toTag: string) =>
+    request<{ updated: number }>("/jobs/tags/rename", {
+      method: "POST",
+      body: JSON.stringify({ from_tag: fromTag, to_tag: toTag }),
+    }),
+  /** Remove a tag from EVERY job the caller owns. Returns how many changed. */
+  removeJobTag: (tag: string) =>
+    request<{ updated: number }>("/jobs/tags/remove", {
+      method: "POST",
+      body: JSON.stringify({ tag }),
+    }),
   /** Permanently delete a job and all its compounds/results. Owner-only;
    *  the backend returns 404 for non-owners (doesn't reveal existence).
    *  Returns void (the endpoint is 204 No Content on success). */
