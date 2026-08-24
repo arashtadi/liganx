@@ -136,6 +136,23 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - name: Install backend + dev deps
         run: pip install -e "backend[dev]"
+      - name: Seed CI auth stub (Supabase auth.users + auth.uid)
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/liganx_test
+        run: |
+          python - <<'PY'
+          import os, psycopg2
+          # psycopg2 wants a plain postgresql:// URL (no SQLAlchemy +driver).
+          url = os.environ["TEST_DATABASE_URL"].replace("+psycopg2", "")
+          sql = open("tests/ci_db_stub.sql").read()
+          conn = psycopg2.connect(url)
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(sql)
+          conn.close()
+          print("Seeded CI auth stub (auth.users + auth.uid()).")
+          PY
       - name: Run pytest (requires-db tests)
         working-directory: backend
         env:
