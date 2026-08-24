@@ -32,7 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # gnina's CMakeLists needs a newer CMake than Ubuntu 22.04 ships (3.22).
 # Install a current CMake (+ Ninja) from pip; /usr/local/bin precedes /usr/bin
 # on PATH so this shadows the apt cmake for both openbabel and gnina.
-RUN pip3 install --no-cache-dir "cmake>=3.28" ninja && cmake --version
+# Pin CMake to the latest 3.x — new enough for gnina, but NOT CMake 4.x, which
+# removed compatibility for the old cmake_policy/cmake_minimum_required calls in
+# the dkoes/openbabel fork (CMake Error at CMakeLists.txt:14 (cmake_policy)).
+RUN pip3 install --no-cache-dir "cmake<4" ninja && cmake --version
 
 # OpenBabel (dkoes fork — gnina README requires it for correct bond orders)
 RUN git clone --depth 1 https://github.com/dkoes/openbabel.git /tmp/ob \
