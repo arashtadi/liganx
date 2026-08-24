@@ -904,12 +904,12 @@ function EngineFilterBar({
             aria-pressed={active}
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset transition-all ${
               active
-                ? "bg-violet-600 text-white ring-violet-500 shadow-sm shadow-violet-600/30 dark:bg-violet-500 dark:text-white dark:ring-violet-400"
-                : "bg-transparent text-slate-400 ring-slate-300 hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:ring-slate-700 dark:hover:bg-slate-800/60 dark:hover:text-slate-300"
+                ? "bg-violet-600 text-white ring-violet-400 shadow-md shadow-violet-600/40 dark:bg-violet-500 dark:text-white dark:ring-violet-300"
+                : "bg-slate-200 text-slate-500 ring-slate-300 hover:bg-slate-300 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
             }`}
             title={active ? "Filtering by this engine — click to turn off" : `Show only ${engineLabel(e)} runs`}
           >
-            <span aria-hidden className={active ? "opacity-100" : "opacity-0"}>✓</span>
+            {active && <span aria-hidden>✓</span>}
             <span>{engineLabel(e)}</span>
           </button>
         );
