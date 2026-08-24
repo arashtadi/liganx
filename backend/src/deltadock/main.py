@@ -821,6 +821,7 @@ _STARTUP_MIGRATIONS: list[tuple[str, str]] = [
     # Per-feature usage allowances (GNINA / Boltz-2 / Resistance / Screening),
     # mirroring job_quota. Additive columns on user_profile; idempotent.
     ("040_feature_quotas.sql", "Migration 040 (per-feature usage quotas)"),
+    ("041_auto_approve_defaults.sql", "Migration 041 (auto-approve new sign-ups; FEP stays locked)"),
 ]
 
 

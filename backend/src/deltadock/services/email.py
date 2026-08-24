@@ -135,20 +135,20 @@ def notify_admin_new_signup(
     html = f"""
     <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
       <h2 style="color: #0f172a;">🎉 New Liganx sign-up</h2>
-      <p style="color: #475569;">Awaiting your approval. Tap Approve in Telegram for one-tap action, or open the admin page:</p>
+      <p style="color: #475569;">Auto-approved and ready to use. If this one looks wrong, tap Deny in Telegram to revoke, or open the admin page:</p>
       <p><a href="https://liganx.com/admin" style="background: #0ea5e9; color: #fff; padding: 8px 14px; border-radius: 6px; text-decoration: none;">Open admin page</a></p>
       <table cellpadding="6" style="border-collapse: collapse; margin-top: 16px; font-size: 14px; color: #1e293b;">
         {''.join(rows)}
       </table>
       <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">
         You're getting this because you're the Liganx admin (ADMIN_EMAIL).
-        The user cannot dock until you approve.
+        The user is auto-approved and can start right away (FEP+ stays locked).
       </p>
     </div>
     """
     return _send(
         to=admin_to,
-        subject=f"[Liganx] New sign-up · {user_email or 'unknown'} — awaiting approval",
+        subject=f"[Liganx] New sign-up · {user_email or 'unknown'} — auto-approved",
         html=html,
     )
 

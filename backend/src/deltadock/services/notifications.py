@@ -251,7 +251,7 @@ def notify_new_user(
     user_id_e = _escape_html(user_id or "—")
 
     parts = [
-        "🎉 <b>New user signed up — awaiting approval</b>",
+        "🎉 <b>New user signed up — auto-approved ✅</b>",
         "",
         f"📧 Email: <code>{email_e}</code>",
     ]
@@ -263,18 +263,21 @@ def notify_new_user(
         parts.append(f"💼 Role: {role_e}")
     parts.append(f"🔐 Method: <code>{method_e}</code>")
     parts.append(f"🆔 <code>{user_id_e}</code>")
+    parts.append("")
+    parts.append("<i>Approved automatically. Tap Deny to revoke access.</i>")
 
-    # Inline Approve / Deny buttons. callback_data is parsed by the
-    # /telegram/webhook handler (see routers/telegram_webhook.py) which
-    # flips user_profile.access_status. Telegram caps callback_data at
-    # 64 bytes; a UUID is 36 chars so "approve:<uuid>" fits comfortably.
-    # If user_id is missing (shouldn't happen — caller always provides
-    # one) we omit the buttons rather than sending a broken callback.
+    # Deny-only button. New sign-ups are auto-approved (migration 041 sets
+    # access_status + feature flags to 'approved' by default), so Approve
+    # is redundant — the operator only needs a one-tap way to REVOKE.
+    # callback_data is parsed by the /telegram/webhook handler
+    # (routers/telegram_webhook.py) which flips user_profile.access_status
+    # to 'denied' (bouncing the user to the /pending 'not approved' page).
+    # Telegram caps callback_data at 64 bytes; "deny:<uuid>" fits.
+    # If user_id is missing (shouldn't happen) we omit the button.
     reply_markup: Optional[dict] = None
     if user_id:
         reply_markup = {
             "inline_keyboard": [[
-                {"text": "✅ Approve", "callback_data": f"approve:{user_id}"},
                 {"text": "❌ Deny",    "callback_data": f"deny:{user_id}"},
             ]],
         }
