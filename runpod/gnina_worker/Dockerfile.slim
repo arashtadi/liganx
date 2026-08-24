@@ -1,0 +1,30 @@
+# GNINA serverless worker — TINY runtime image (~250 MB, cold-starts in seconds).
+#
+# All the heavy bits (gnina binary, libtorch, libmolgrid, openbabel, the CUDA
+# runtime libs) live on a RunPod NETWORK VOLUME mounted at /runpod-volume,
+# populated once by runpod/gnina_worker/build_to_volume.sh. This image is just
+# the Python + RunPod SDK + handler shell that calls the volume's gnina binary.
+#
+# libcuda.so.1 (the NVIDIA driver) is bind-mounted into the container by RunPod's
+# GPU runtime, so a plain ubuntu base is fine — no CUDA base image needed.
+#
+# Built by .github/workflows/build-gnina-slim.yml -> ghcr.io/arashtadi/liganx-gnina-slim:latest
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# libgomp1 + libstdc++6 are the only extra runtime bits gnina/libtorch expect
+# from the base (everything else is bundled on the volume). python3 runs the
+# RunPod handler.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip ca-certificates libgomp1 libstdc++6 zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir runpod
+
+COPY runpod/gnina_worker/handler.py /handler.py
+
+# gnina + its libs come from the mounted volume.
+ENV PATH=/runpod-volume/gnina/bin:$PATH
+ENV LD_LIBRARY_PATH=/runpod-volume/gnina/lib
+
+CMD ["python3", "-u", "/handler.py"]
