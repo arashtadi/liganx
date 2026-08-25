@@ -200,6 +200,15 @@ const STUDIO_SESSION_KEY = "liganx-studio-session-v1";
 // the mutation penalty; that's what FEP is for). Keep the copy honest.
 const GNINA_UI_ENABLED = true;
 
+// Ensemble (flexed-receptor) docking needs the always-on GPU pod's
+// /relax_ensemble route to generate MD-relaxed conformers. That pod is
+// currently offline (POD_DOCK_URL unset), and with it off the backend would
+// silently fall back to single-conformation docking — i.e. the user asks for
+// flexed-receptor and quietly gets rigid. Rather than offer a control that
+// doesn't do what it says, hide the toggle until the pod is back. Flip to true
+// (or wire to a live pod-status flag) when POD_DOCK_URL is configured again.
+const ENSEMBLE_AVAILABLE = false;
+
 interface StudioSessionSnapshot {
   // Schema-versioned so a future shape change can wipe stale snapshots
   // without surfacing a deserialise error to the user.
@@ -4210,6 +4219,7 @@ export default function StudioPage() {
                   emerald/violet RUN DOCK buttons below. Applies to the Vina
                   path; the GNINA half ignores it (ensemble v1 is
                   QuickVina-only — runFullJob sends ensemble=false for GNINA). */}
+              {ENSEMBLE_AVAILABLE && (
               <button
                 type="button"
                 disabled={!ensembleAllowed}
@@ -4258,6 +4268,7 @@ export default function StudioPage() {
                   {!ensembleAllowed ? "n/a" : ensemble ? "on" : "off"}
                 </span>
               </button>
+              )}
 
               {(() => {
                 const hasCompound = !!currentSmiles || compounds.length > 0;
@@ -4474,7 +4485,7 @@ export default function StudioPage() {
                           : "Resistance Radar — click to request access."
                         : !selectedTarget ? "Pick a target first."
                         : !hasCompound ? "Stage at least one compound first."
-                        : "Resistance Radar — dock this compound across the target's resistance panel and rank which mutations are most likely to weaken binding."
+                        : "Resistance Radar (BETA — hypotheses, not verdicts). It docks this compound across the target's resistance panel to FLAG mutations that might weaken binding. Docking (Vina) can't reliably rank resistance ΔΔG — treat the ranking as a shortlist of leads to confirm with a physics method (FEP), not as an answer. Known limitation: the current selectivity score can misrank strong-resistance cases."
                     }
                   >
                     {canRun ? (
