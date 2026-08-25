@@ -26,7 +26,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git build-essential ca-certificates libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
-# boltz pulls torch, rdkit, numpy, etc. runpod = the serverless SDK.
+# Pin torch to a CUDA 12.1 build FIRST. The default `pip install torch` (pulled
+# in transitively by boltz) grabs a cu12.9 build that fails at runtime on RunPod
+# serverless workers with older drivers:
+#   "RuntimeError: The NVIDIA driver on your system is too old (found version
+#    12080)" — i.e. torch was compiled for a newer CUDA than the GPU driver.
+# cu121 runs on essentially every RunPod GPU (driver 12.1+). boltz only needs
+# torch>=2.2, so 2.5.1+cu121 satisfies it and pip won't replace it below.
+RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+
+# boltz pulls rdkit, numpy, pytorch-lightning, etc. runpod = the serverless SDK.
 # pyyaml for the input-spec serialisation in the handler.
 RUN pip install --no-cache-dir boltz runpod pyyaml
 
