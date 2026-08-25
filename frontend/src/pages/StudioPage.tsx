@@ -191,14 +191,14 @@ const MUTATION_OUTSIDE_POCKET_THRESHOLD_A = 12.0;
 // 70 KB of pose data — well within sessionStorage's 5 MB cap.
 const STUDIO_SESSION_KEY = "liganx-studio-session-v1";
 
-// GNINA is hidden from the engine picker until the GPU worker image is fixed.
-// The serverless GNINA workers crash on GPU with CUDA "no kernel image is
-// available for execution on the device" (broken libtorch in the worker
-// image — 0 successful jobs across all endpoints), so engine=gnina silently
-// falls back to QuickVina2 and produces Vina numbers under a GNINA label.
-// Rather than mislead users, we hide the button. Flip to true once a worker
-// image that actually runs GNINA's CNN on the endpoint GPUs is deployed.
-const GNINA_UI_ENABLED = false;
+// GNINA engine picker. The serverless GNINA worker now runs its CNN on the
+// endpoint GPU end-to-end (slim image + libs on a RunPod network volume;
+// nvrtc/openbabel/CUDA runtime resolved) and returns real CNN pose scores +
+// CNN affinity through endpoint jxv5uaxbfbzu2s. Validated 2026-08-25.
+// NOTE: GNINA is a CNN pose-confidence / rescoring upgrade over Vina — it is
+// NOT a resistance-ΔΔG predictor (docking re-optimises the pose and washes out
+// the mutation penalty; that's what FEP is for). Keep the copy honest.
+const GNINA_UI_ENABLED = true;
 
 interface StudioSessionSnapshot {
   // Schema-versioned so a future shape change can wipe stale snapshots
