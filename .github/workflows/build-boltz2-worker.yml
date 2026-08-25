@@ -1,0 +1,65 @@
+name: Build Boltz-2 serverless worker
+
+# Builds the Boltz-2 serverless worker image (python + boltz + torch CUDA
+# wheel + runpod SDK + handler). Model weights are NOT baked in — they cache
+# onto a RunPod network volume at first request. Pushes to
+# ghcr.io/${owner}/liganx-boltz2-slim:latest.
+#
+# The image is large (~7-10 GB with torch), so we free up runner disk first.
+# Manual trigger only.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free up runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runpod/boltz2_worker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ steps.owner.outputs.name }}/liganx-boltz2-slim:latest
+          provenance: false
+
+      - name: Make package public (best effort)
+        continue-on-error: true
+        run: |
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/liganx-boltz2-slim" \
+            -d '{"visibility":"public"}' || echo "visibility change needs manual step"
+
+      - name: Done
+        run: echo "Pushed ghcr.io/${{ steps.owner.outputs.name }}/liganx-boltz2-slim:latest"
