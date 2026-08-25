@@ -285,10 +285,11 @@ export default function SelectivePage() {
     <div className="mx-auto max-w-5xl px-4 py-8">
       <header className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-400">Mutant-selective binder discovery</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-100">Find binders that prefer the mutant, not wild-type</h1>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-100">Rank binders by how they shift toward the mutant</h1>
         <p className="mt-2 max-w-2xl text-sm text-slate-400">
           Differential molecular docking online: dock candidates against both the wild-type and mutant
-          pocket and rank by how strongly they prefer the mutant. Start by checking where your target lives —
+          pocket and rank by how strongly their score shifts toward the mutant — a fast first pass for
+          prioritising what to test. Start by checking where your target lives —
           that decides which kinds of binders are even possible.
         </p>
       </header>

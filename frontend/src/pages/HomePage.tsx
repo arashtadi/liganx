@@ -66,17 +66,17 @@ function Hero() {
               <Sparkles size={14} /> Mutation-aware docking
             </div>
             <h1 className="mt-4 text-3xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-ink dark:text-white leading-[1.1] sm:leading-[1.05]">
-              Find compounds that
+              Find the compounds that
               <br />
               <span className="bg-gradient-to-r from-delta-600 to-accent-500 bg-clip-text text-transparent dark:from-delta-400 dark:to-accent-400">
-                prefer the mutant.
+                shift toward the mutant.
               </span>
             </h1>
             <p className="mt-5 sm:mt-6 text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed">
               Pick a clinically relevant mutation, pick your compounds, and Liganx docks
-              them against wild-type <em>and</em> the mutant in parallel — then shows you
-              exactly which compounds gain selectivity. No PyMOL, no FoldX setup, no
-              AutoDock wrangling.
+              them against wild-type <em>and</em> the mutant in parallel — then ranks the
+              shifts so you can prioritise what to test next. A fast first pass, not a
+              final verdict. No PyMOL, no FoldX setup, no AutoDock wrangling.
             </p>
             <div className="mt-6 sm:mt-8 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
               <Link to="/studio" className="btn-primary btn-lg justify-center">
@@ -184,9 +184,9 @@ function MatrixPreview() {
       </table>
       <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 space-y-1.5">
         <div>
-          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Compound X</span> is predicted to bind
-          the <strong className="dark:text-slate-200">T790M mutant</strong> 1.7 kcal/mol better than wild-type — a candidate
-          for resistance.
+          Liganx flags <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Compound X</span> — its docking
+          score shifts 1.7 kcal/mol toward the <strong className="dark:text-slate-200">T790M mutant</strong> — as a hypothesis
+          worth testing.
         </div>
         {/* Honesty note added 2026-04-30 after a medicinal-chemistry audit:
             Vina/QuickVina2 has a documented score noise floor of roughly
