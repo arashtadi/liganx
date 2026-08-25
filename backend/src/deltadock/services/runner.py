@@ -963,15 +963,34 @@ def _run_boltz2_dispatch(
     cx, cy, cz = pocket_centre
     sx, sy, sz = pocket_size
 
-    # Boltz-2 client config — picked up from the runtime settings so a
-    # restart with new env (longer timeout, MSA toggle) takes effect
-    # without code changes.
-    cfg = Boltz2DockConfig(
-        base_url=boltz2_pod_url,
-        timeout_s=settings.boltz2_timeout_s,
-        use_msa=settings.boltz2_use_msa,
-        num_samples=settings.boltz2_num_samples,
-    )
+    # Boltz-2 client selection. Prefer the RunPod serverless endpoint
+    # (scale-to-zero, no idle cost); fall back to the always-on pod client.
+    # Both expose predict_*(receptor_sequence, ligand_smiles, work_dir, cfg,
+    # *, pocket_residues, chain_id) -> Boltz2Result and both raise
+    # Boltz2DockError, so the per-cell loop below stays client-agnostic.
+    if settings.boltz2_runpod_enabled:
+        from deltadock_pipeline.boltz2_runpod import (
+            Boltz2RunpodConfig, predict_one_boltz2_runpod,
+        )
+        predict_fn = predict_one_boltz2_runpod
+        cfg = Boltz2RunpodConfig(
+            api_key=settings.runpod_api_key,
+            endpoint_id=settings.boltz2_runpod_endpoint_id,
+            use_msa=settings.boltz2_use_msa,
+            num_samples=settings.boltz2_num_samples,
+            timeout_s=max(settings.boltz2_timeout_s, 1200),
+        )
+        log.info("Boltz-2 client: RunPod serverless endpoint %s",
+                 settings.boltz2_runpod_endpoint_id)
+    else:
+        predict_fn = predict_one_boltz2
+        cfg = Boltz2DockConfig(
+            base_url=boltz2_pod_url,
+            timeout_s=settings.boltz2_timeout_s,
+            use_msa=settings.boltz2_use_msa,
+            num_samples=settings.boltz2_num_samples,
+        )
+        log.info("Boltz-2 client: pod %s", boltz2_pod_url)
 
     # Step 1: extract WT sequence + residue→index map from the cleaned PDB.
     # Failures here are catastrophic for the whole job (no sequence → no
@@ -1055,7 +1074,7 @@ def _run_boltz2_dispatch(
                 parts.append("engine=boltz2")
 
                 try:
-                    result = predict_one_boltz2(
+                    result = predict_fn(
                         receptor_sequence=seq,
                         ligand_smiles=compound.smiles,
                         work_dir=cell_dir,
@@ -1425,15 +1444,19 @@ def _run_real(session: Session, job: Job) -> None:
         and settings.boltz2_enabled
     )
     if boltz2_dispatch:
-        # Pod URL: dedicated boltz2 pod if configured, else fall back to
-        # the Vina/GNINA pod (legacy single-pod deploy).
+        # Preferred: RunPod serverless endpoint (scale-to-zero, no idle cost).
+        # Else a dedicated boltz2 pod, else the legacy single-pod deploy.
         boltz2_pod_url = settings.boltz2_pod_url or settings.pod_dock_url
-        if not boltz2_pod_url:
+        if not settings.boltz2_runpod_enabled and not boltz2_pod_url:
             raise RuntimeError(
-                "engine=boltz2 requested but neither BOLTZ2_POD_URL nor "
-                "POD_DOCK_URL is configured."
+                "engine=boltz2 requested but none of BOLTZ2_RUNPOD_ENDPOINT_ID, "
+                "BOLTZ2_POD_URL, or POD_DOCK_URL is configured."
             )
-        log.info("Boltz-2 dispatch active for this job → %s", boltz2_pod_url)
+        log.info(
+            "Boltz-2 dispatch active for this job → %s",
+            f"serverless:{settings.boltz2_runpod_endpoint_id}"
+            if settings.boltz2_runpod_enabled else boltz2_pod_url,
+        )
     elif getattr(job, "engine", None) == "boltz2":
         log.warning(
             "Job %s requested engine=boltz2 but BOLTZ2_ENABLED=%s — "

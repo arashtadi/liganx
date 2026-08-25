@@ -214,6 +214,12 @@ class Settings(BaseSettings):
     # Production setting (2026-04-30):
     #   BOLTZ2_POD_URL=https://yvdrklbbg9qlwa-7862.proxy.runpod.net
     boltz2_pod_url: str = ""
+    # Boltz-2 on RunPod **serverless** (preferred, no idle cost). When this
+    # endpoint id + RUNPOD_API_KEY are set, the runner routes engine=boltz2
+    # through pipeline/boltz2_runpod.py instead of the pod client — same
+    # sequence+SMILES contract, scale-to-zero worker. Takes precedence over
+    # boltz2_pod_url. Empty → fall back to the pod path.
+    boltz2_runpod_endpoint_id: str = ""
 
     # RunPod cost control (v0.91+). When RUNPOD_API_KEY (already
     # declared above for serverless) and RUNPOD_POD_ID are both set,
@@ -386,6 +392,13 @@ class Settings(BaseSettings):
         API key AND a dedicated GNINA endpoint ID. Either missing → GNINA
         falls back to the Pod path (if any) or to QuickVina."""
         return bool(self.runpod_api_key and self.gnina_runpod_endpoint_id)
+
+    @property
+    def boltz2_runpod_enabled(self) -> bool:
+        """Boltz-2 on RunPod GPU serverless is opt-in: needs the shared RunPod
+        API key AND a dedicated Boltz-2 endpoint ID. Either missing → boltz2
+        falls back to the Pod path (boltz2_pod_url / pod_dock_url)."""
+        return bool(self.runpod_api_key and self.boltz2_runpod_endpoint_id)
 
     @property
     def r2_enabled(self) -> bool:
