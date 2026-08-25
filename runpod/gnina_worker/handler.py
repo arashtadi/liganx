@@ -116,7 +116,17 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             return {"error": f"gnina produced no parseable modes. log tail: {(res.stdout or '')[-400:]}"}
 
         if not pose.exists() or pose.stat().st_size == 0:
-            return {"error": "gnina wrote no pose file"}
+            try:
+                listing = ", ".join(sorted(os.listdir(td)))
+            except Exception as e:
+                listing = f"(ls failed: {e})"
+            return {
+                "error": "gnina wrote no pose file",
+                "workdir": listing,
+                "stdout_tail": (res.stdout or "")[-1800:],
+                "stderr_tail": (res.stderr or "")[-1800:],
+                "gnina_returncode": res.returncode,
+            }
 
         return {
             "pose_pdbqt_b64": base64.b64encode(pose.read_bytes()).decode("ascii"),
