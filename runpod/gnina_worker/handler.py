@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -24,6 +25,14 @@ from pathlib import Path
 from typing import Any
 
 import runpod  # provided by the RunPod base layer
+
+# gnina + its libs live on the mounted network volume. Point OpenBabel at its
+# bundled format plugins / data files, and make sure nvrtc (dlopen'd by libtorch
+# at runtime, so not on the ELF NEEDED list) is on the library path.
+_GNINA_LIB = "/runpod-volume/gnina/lib"
+os.environ.setdefault("BABEL_LIBDIR", _GNINA_LIB + "/openbabel")
+os.environ.setdefault("BABEL_DATADIR", "/runpod-volume/gnina/share/openbabel")
+os.environ["LD_LIBRARY_PATH"] = _GNINA_LIB + ":" + os.environ.get("LD_LIBRARY_PATH", "")
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("liganx-gnina-worker")

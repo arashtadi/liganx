@@ -129,6 +129,21 @@ PY
 echo "== rpath so gnina finds its libs even if LD_LIBRARY_PATH is unset =="
 patchelf --set-rpath '$ORIGIN/../lib' "$DEST/bin/gnina" || true
 
+echo "== bundle OpenBabel plugins + data (loaded at runtime, not via ldd) =="
+OB_PLUGINDIR="$(dirname "$(find /usr/local/lib /usr/lib -type f -path '*openbabel*' -name '*.so' 2>/dev/null | head -1)")"
+if [ -n "$OB_PLUGINDIR" ] && [ -d "$OB_PLUGINDIR" ]; then
+  mkdir -p "$DEST/lib/openbabel"; cp -a "$OB_PLUGINDIR"/*.so "$DEST/lib/openbabel/" && echo "openbabel plugins <- $OB_PLUGINDIR"
+fi
+OB_DATADIR="$(dirname "$(find /usr/local/share /usr/share -type f -path '*openbabel*' -name 'atomtyp.txt' 2>/dev/null | head -1)")"
+if [ -n "$OB_DATADIR" ] && [ -d "$OB_DATADIR" ]; then
+  mkdir -p "$DEST/share/openbabel"; cp -a "$OB_DATADIR"/* "$DEST/share/openbabel/" && echo "openbabel data <- $OB_DATADIR"
+fi
+
+echo "== bundle nvrtc + builtins (libtorch dlopen's these; ldd misses them) =="
+for pat in 'libnvrtc.so*' 'libnvrtc-builtins.so*'; do
+  find / -name "$pat" 2>/dev/null | grep -v "$DEST/" | while read -r f; do cp -an "$f" "$DEST/lib/" 2>/dev/null && echo "nvrtc <- $f"; done
+done
+
 echo "== sanity: every gnina dep resolves against the volume =="
 miss=$(LD_LIBRARY_PATH="$DEST/lib" ldd "$DEST/bin/gnina" | grep -i "not found" || true)
 if [ -n "$miss" ]; then echo "!! MISSING:"; echo "$miss"; else echo "OK: all libs resolve"; fi
