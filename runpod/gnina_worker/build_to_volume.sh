@@ -88,7 +88,7 @@ for base in ("/usr/local/lib", "/usr/local/lib64"):
 
 EXCLUDE = re.compile(
     r'^(linux-vdso|ld-linux|libc\.so|libm\.so|libpthread|libdl\.so|librt\.so'
-    r'|libresolv|libnsl|libutil|libcuda|libnvidia)')
+    r'|libresolv|libnsl|libutil|libcuda\.so|libnvidia-)')
 
 def ldd(path):
     out = {}
