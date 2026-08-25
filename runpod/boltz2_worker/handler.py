@@ -104,9 +104,18 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
+        # Boltz 2.2.x requires the protein MSA to be resolved: either an MSA
+        # file, `--use_msa_server` (fetch one), or the literal `msa: empty`
+        # for single-sequence mode. Default is single-sequence (fair WT vs
+        # mutant comparison), so set `msa: empty` unless the caller asked for
+        # the MSA server. Without this, boltz skips the input with
+        # "Missing MSA's in input and --use_msa_server flag not set".
+        protein: dict[str, Any] = {"id": chain, "sequence": seq}
+        if not use_msa:
+            protein["msa"] = "empty"
         spec: dict[str, Any] = {
             "sequences": [
-                {"protein": {"id": chain, "sequence": seq}},
+                {"protein": protein},
                 {"ligand": {"id": "L", "smiles": smiles}},
             ],
             "properties": [{"affinity": {"binder": "L"}}],
