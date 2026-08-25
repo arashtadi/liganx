@@ -141,6 +141,11 @@ fi
 
 echo "== bundle nvrtc + builtins (libtorch dlopen's these; ldd misses them) =="
 find / \( -name 'libnvrtc.so*' -o -name 'libnvrtc-builtins.so*' \) 2>/dev/null | grep -v "$DEST/" | while read -r f; do cp -a "$f" "$DEST/lib/" 2>/dev/null && echo "nvrtc <- $f"; done
+# libtorch here is a cu121 build: its JIT dlopens libnvrtc-builtins.so.12.1
+# specifically. The CUDA 12.6 base only ships 12.6, so fetch the matching 12.1
+# nvrtc from pip and bundle it (covers whatever minor libtorch actually needs).
+for ver in 12.1.105 12.1.55 12.1; do pip3 install --no-cache-dir "nvidia-cuda-nvrtc-cu12==$ver" >/dev/null 2>&1 && break; done
+find / -path '*cuda_nvrtc/lib*' \( -name 'libnvrtc.so*' -o -name 'libnvrtc-builtins.so*' \) 2>/dev/null | while read -r f; do cp -a "$f" "$DEST/lib/" 2>/dev/null && echo "pip-nvrtc <- $f"; done
 # ensure the exact soname the loader dlopen's (e.g. libnvrtc-builtins.so.12.6) exists
 ( cd "$DEST/lib" || exit 0
   for real in libnvrtc-builtins.so.*.* libnvrtc.so.*.*; do
