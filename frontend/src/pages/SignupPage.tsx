@@ -12,7 +12,7 @@ import { usePageMeta } from "../lib/usePageMeta";
 export default function SignupPage() {
   usePageMeta({
     title: "Create account · Liganx",
-    description: "Create a free Liganx account — mutation-aware molecular docking with AutoDock Vina, GNINA, and Boltz-2 ML. No install.",
+    description: "Create a free Liganx account — mutation-aware molecular docking with AutoDock Vina. GNINA and Boltz-2 ML coming soon. No install.",
   });
   const { signUpWithPassword, signInWithGoogle } = useAuth();
   const [search] = useSearchParams();

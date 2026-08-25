@@ -104,7 +104,7 @@ function Hero() {
                 reads as confident; six reads as a feature dump. */}
             <div className="mt-6 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
               <span className="flex items-center gap-1.5"><Check /> No install</span>
-              <span className="flex items-center gap-1.5"><Check /> Free GPU Vina · GNINA + Boltz-2 on Pro</span>
+              <span className="flex items-center gap-1.5"><Check /> Free GPU AutoDock Vina · GNINA & Boltz-2 coming soon</span>
               <span className="flex items-center gap-1.5"><Check /> Mutation-aware virtual screening</span>
               <span className="flex items-center gap-1.5"><Check /> Free for academic use</span>
             </div>

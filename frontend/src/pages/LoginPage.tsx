@@ -25,7 +25,7 @@ export default function LoginPage() {
   // helps when a user has multiple Liganx tabs open.
   usePageMeta({
     title: "Sign in · Liganx",
-    description: "Sign in to Liganx — free mutation-aware molecular docking with Vina, GNINA, and Boltz-2.",
+    description: "Sign in to Liganx — free mutation-aware molecular docking with AutoDock Vina.",
   });
   const { signInWithPassword, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
