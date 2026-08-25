@@ -136,6 +136,14 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             "--cache", CACHE,
             "--output_format", "pdb",
             "--diffusion_samples", str(n_samples),
+            # Use the pure-PyTorch path instead of the optional cuequivariance
+            # CUDA triangle-multiplication kernels. Those live in boltz's
+            # [cuda] extra (cuequivariance_ops_cu12), are compiled for specific
+            # CUDA versions, and would reintroduce driver-mismatch fragility;
+            # without --no_kernels boltz hard-imports cuequivariance_torch and
+            # dies with ModuleNotFoundError. Slower per prediction, but correct
+            # and portable across every RunPod GPU.
+            "--no_kernels",
         ]
         # --use_msa_server is a Click flag (default off = single-sequence
         # mode, which we want for fair WT/mutant comparison). Append only
