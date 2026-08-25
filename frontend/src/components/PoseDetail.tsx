@@ -764,7 +764,7 @@ function interpret(name: string, variant: string, score: number, delta: number |
     return `${name} docks to ${variant} with a Vina score of ${score.toFixed(2)} kcal/mol. WT comparison unavailable.`;
   }
   if (delta < -0.5) {
-    return `${name} is predicted to bind ${variant} ${Math.abs(delta).toFixed(2)} kcal/mol better than wild-type — a candidate for mutant-selective activity. Worth flagging for follow-up.`;
+    return `${name}'s score shifts ${Math.abs(delta).toFixed(2)} kcal/mol toward ${variant} vs wild-type — a hypothesis worth testing for mutant-selective activity.`;
   }
   if (delta < -0.2) {
     return `${name} shows a modest preference for ${variant} (${Math.abs(delta).toFixed(2)} kcal/mol better than WT). Preference is small enough to be within docking noise — confirm with the Vinardo column above before drawing conclusions.`;

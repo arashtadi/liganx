@@ -250,7 +250,7 @@ function HowItWorks() {
       n: 3,
       icon: <Grid />,
       title: "Read the matrix",
-      body: "We dock every compound against WT and each mutant. The Δ-score shows you which compounds prefer which.",
+      body: "We dock every compound against WT and each mutant. The Δ-score highlights how each compound's binding shifts between variants.",
     },
   ];
   return (
@@ -354,9 +354,9 @@ function WhatsNew() {
   const items = [
     {
       tag: "Just shipped",
-      title: "Resistance Atlas — predict the next mutation that breaks a drug",
+      title: "Resistance Atlas — rank the mutations most likely to break a drug",
       body:
-        "For every FDA-approved targeted cancer drug, the Atlas ranks which mutations will most likely emerge as clinical resistance — before patients hit them. Triangulates docking Δ + ESM-2 protein-language-model fitness, calibrated on 50 published clinical-resistance events (ROC-AUC 0.90 in-sample, 0.81 cross-validated). 15 drugs covered today. Novel (gene, position, mutant) lookups now run real ESM-2 on our GPU pod on demand.",
+        "For every FDA-approved targeted cancer drug, the Atlas ranks which mutations are most likely to emerge as clinical resistance. Triangulates docking Δ + ESM-2 protein-language-model fitness, calibrated on 50 published clinical-resistance events (ROC-AUC 0.90 in-sample, 0.81 cross-validated). 15 drugs covered today. Novel (gene, position, mutant) lookups now run real ESM-2 on our GPU pod on demand.",
       tone: "delta" as const,
       href: "/atlas",
       cta: "Open the Atlas",
@@ -467,10 +467,10 @@ function ResistanceRadarSpotlight() {
               <span className="w-1.5 h-1.5 rounded-full bg-current" /> New · Flagship · Beta
             </span>
             <h2 className="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white leading-[1.1]">
-              Resistance Radar — see which mutations will break your compound
+              Resistance Radar — flag which mutations are most likely to weaken your compound
             </h2>
             <p className="mt-3 text-base sm:text-lg font-semibold text-amber-800 dark:text-amber-300 leading-snug">
-              Forecast which mutations break your compound — in one click. No other self-serve tool does this.
+              Rank a target's known mutations by how likely each is to weaken your compound — in one click. No other self-serve tool packages this.
             </p>
             <p className="mt-4 text-slate-600 dark:text-slate-300 leading-relaxed">
               Bring your own molecule. In one pass, Resistance Radar docks it

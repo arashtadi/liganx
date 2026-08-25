@@ -4474,7 +4474,7 @@ export default function StudioPage() {
                           : "Resistance Radar — click to request access."
                         : !selectedTarget ? "Pick a target first."
                         : !hasCompound ? "Stage at least one compound first."
-                        : "Resistance Radar — dock this compound across the target's resistance panel and forecast which mutations break binding."
+                        : "Resistance Radar — dock this compound across the target's resistance panel and rank which mutations are most likely to weaken binding."
                     }
                   >
                     {canRun ? (

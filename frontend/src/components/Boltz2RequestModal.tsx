@@ -117,7 +117,7 @@ export default function Boltz2RequestModal({ open, onClose, onRequested }: Props
                   {[
                     "Wild-type vs. mutant binding-affinity prediction",
                     "A predicted 3D complex for each run",
-                    "A calibrated resistance signal, strongest on gatekeeper mutations",
+                    "An early resistance signal to help prioritise, strongest on gatekeeper mutations",
                   ].map((line) => (
                     <li
                       key={line}

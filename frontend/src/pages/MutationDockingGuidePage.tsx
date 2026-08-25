@@ -155,8 +155,9 @@ export default function MutationDockingGuidePage() {
         <p>
           Liganx applies PDBFixer for the basic mutation step, then
           OpenMM-minimises the receptor before running the docking
-          engine. This consistently produces literature-aligned Δ
-          scores across our published validation suite.
+          engine. In our published validation suite this reproduces the
+          literature direction on the cases rigid-receptor docking can
+          resolve, with noise-floor and method-limit cases flagged.
         </p>
       </section>
 

@@ -108,7 +108,7 @@ export default function AtlasPage() {
 
 function AtlasListView() {
   usePageMeta({
-    title: "Resistance Atlas — predict which mutation breaks each cancer drug · Liganx",
+    title: "Resistance Atlas — rank the resistance mutations most likely to break each cancer drug · Liganx",
     description:
       "Calibrated forecasts of clinical resistance mutations for every FDA-approved targeted cancer drug. Δ-from-docking + ESM2 fitness + codon accessibility, triangulated. Every prediction is timestamped, citation-backed, and publicly re-derivable.",
   });
@@ -144,7 +144,7 @@ function AtlasListView() {
       <header>
         <div className="eyebrow">Resistance Atlas</div>
         <h1 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-ink dark:text-white">
-          Predict the next mutation, before patients hit it.
+          Rank the mutations most likely to break each drug.
         </h1>
         <p className="mt-3 text-slate-600 dark:text-slate-300 max-w-3xl leading-relaxed">
           Every FDA-approved targeted cancer drug has a resistance landscape — the

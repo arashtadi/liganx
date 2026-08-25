@@ -83,7 +83,7 @@ function suggestCompounds(
 export default function NewFepStudyPage() {
   usePageMeta({
     title: "Run FEP+ study · Liganx",
-    description: "Relative free-energy perturbation against a hit + analogs. Sub-1 kcal/mol RMSE on ΔΔG for synthesis prioritisation.",
+    description: "Relative free-energy perturbation against a hit + analogs — the FEP tier for synthesis prioritisation, convergence flagged per row.",
   });
   const navigate = useNavigate();
 
@@ -467,8 +467,8 @@ export default function NewFepStudyPage() {
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
           Relative free-energy perturbation against a hit + up to 10 analogs.
-          ΔΔG predictions at sub-1 kcal/mol RMSE — the same calibration teams pay
-          Schrödinger six figures for. Cost: ~$100 per study, gated per-user.
+          ΔΔG estimates — the FEP tier of analysis, self-serve, with
+          convergence flagged per row. Cost: ~$100 per study, gated per-user.
         </p>
         <p className="text-xs text-violet-700/80 dark:text-violet-300/80 mt-1 italic">
           Pre-filled below: Osimertinib + 3 illustrative analogs against EGFR T790M

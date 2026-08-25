@@ -421,7 +421,7 @@ export default function ResistancePage() {
           )
         ) : nCliff > 0 && worst ? (
           <div className="text-[13px] text-rose-100 leading-snug">
-            <span className="font-semibold">⚠ Resistance predicted.</span> Binding falls off hardest
+            <span className="font-semibold">⚠ Possible resistance.</span> Binding falls off hardest
             at <span className="font-mono text-rose-300">{worst.code}</span> ({fmtSigned(worst.ddg)}{" "}
             kcal/mol vs WT).{" "}
             <span className="text-rose-200/80">
@@ -430,7 +430,7 @@ export default function ResistancePage() {
           </div>
         ) : resolved.length > 0 ? (
           <div className="text-[13px] text-emerald-100 leading-snug">
-            <span className="font-semibold">✓ No major resistance predicted.</span> Binding is
+            <span className="font-semibold">✓ No major resistance flagged.</span> Binding is
             retained across all {resolved.length} scanned variants
             {worst && worst.ddg != null ? ` (worst shift ${fmtSigned(worst.ddg)} kcal/mol).` : "."}
           </div>
