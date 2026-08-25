@@ -130,7 +130,7 @@ echo "== rpath so gnina finds its libs even if LD_LIBRARY_PATH is unset =="
 patchelf --set-rpath '$ORIGIN/../lib' "$DEST/bin/gnina" || true
 
 echo "== bundle OpenBabel plugins + data (loaded at runtime, not via ldd) =="
-OB_PLUGINDIR="$(dirname "$(find /usr/local/lib /usr/lib -type f -path '*openbabel*' -name '*.so' 2>/dev/null | head -1)")"
+OB_PLUGINDIR="$(ls -d /usr/local/lib/openbabel/*/ 2>/dev/null | head -1)"
 if [ -n "$OB_PLUGINDIR" ] && [ -d "$OB_PLUGINDIR" ]; then
   mkdir -p "$DEST/lib/openbabel"; cp -a "$OB_PLUGINDIR"/*.so "$DEST/lib/openbabel/" && echo "openbabel plugins <- $OB_PLUGINDIR"
 fi
@@ -140,9 +140,14 @@ if [ -n "$OB_DATADIR" ] && [ -d "$OB_DATADIR" ]; then
 fi
 
 echo "== bundle nvrtc + builtins (libtorch dlopen's these; ldd misses them) =="
-for pat in 'libnvrtc.so*' 'libnvrtc-builtins.so*'; do
-  find / -name "$pat" 2>/dev/null | grep -v "$DEST/" | while read -r f; do cp -an "$f" "$DEST/lib/" 2>/dev/null && echo "nvrtc <- $f"; done
-done
+find / \( -name 'libnvrtc.so*' -o -name 'libnvrtc-builtins.so*' \) 2>/dev/null | grep -v "$DEST/" | while read -r f; do cp -a "$f" "$DEST/lib/" 2>/dev/null && echo "nvrtc <- $f"; done
+# ensure the exact soname the loader dlopen's (e.g. libnvrtc-builtins.so.12.6) exists
+( cd "$DEST/lib" || exit 0
+  for real in libnvrtc-builtins.so.*.* libnvrtc.so.*.*; do
+    [ -e "$real" ] || continue; so="${real%.*}"; [ -e "$so" ] || ln -sf "$real" "$so"
+  done ) || true
+# gnina/openbabel bindings sometimes pull libpython at plugin-load; bundle it too
+find / -name 'libpython3*.so*' 2>/dev/null | grep -v "$DEST/" | while read -r f; do cp -a "$f" "$DEST/lib/" 2>/dev/null && echo "libpython <- $f"; done
 
 echo "== sanity: every gnina dep resolves against the volume =="
 miss=$(LD_LIBRARY_PATH="$DEST/lib" ldd "$DEST/bin/gnina" | grep -i "not found" || true)
