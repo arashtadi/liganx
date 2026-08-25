@@ -586,7 +586,12 @@ def prepare_ligand(smiles: str, out_pdbqt: Path | str, *, name: str | None = Non
         )
     mol = Chem.AddHs(mol)
     if AllChem.EmbedMolecule(mol, AllChem.ETKDGv3()) != 0:
-        raise PrepError(f"RDKit could not embed 3D conformer for SMILES: {smiles!r}")
+        # Fallback: retry with random starting coordinates, which rescues
+        # flexible molecules ETKDG's default init occasionally can't seed.
+        params = AllChem.ETKDGv3()
+        params.useRandomCoords = True
+        if AllChem.EmbedMolecule(mol, params) != 0:
+            raise PrepError(f"RDKit could not embed 3D conformer for SMILES: {smiles!r}")
     AllChem.UFFOptimizeMolecule(mol, maxIters=200)
     if name:
         mol.SetProp("_Name", name)

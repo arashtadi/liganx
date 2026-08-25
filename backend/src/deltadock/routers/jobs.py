@@ -443,7 +443,15 @@ def create_job(
             # per compound for typical drug-like molecules.
             try:
                 mol_h = Chem.AddHs(mol)
-                rc = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+                # maxAttempts=10 was too tight — it false-rejected flexible but
+                # perfectly dockable drugs (e.g. imatinib) with "can't generate
+                # a 3D conformer". Give ETKDG more attempts, then fall back to
+                # random starting coords, which reliably embeds those cases.
+                rc = AllChem.EmbedMolecule(mol_h, maxAttempts=50, randomSeed=0xF00D)
+                if rc < 0:
+                    rc = AllChem.EmbedMolecule(
+                        mol_h, maxAttempts=50, randomSeed=0xF00D, useRandomCoords=True,
+                    )
                 if rc < 0:
                     invalid.append({
                         **row_base,

@@ -662,7 +662,13 @@ def _inspect_cached(
         # users are waiting.
         try:
             mol_h = Chem.AddHs(mol)
-            r = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+            # 50 attempts + random-coords fallback so flexible-but-dockable
+            # drugs (imatinib etc.) aren't false-rejected.
+            r = AllChem.EmbedMolecule(mol_h, maxAttempts=50, randomSeed=0xF00D)
+            if r < 0:
+                r = AllChem.EmbedMolecule(
+                    mol_h, maxAttempts=50, randomSeed=0xF00D, useRandomCoords=True,
+                )
             out["embed_ok"] = (r >= 0)
             if r < 0:
                 out["embed_error"] = (
@@ -792,7 +798,11 @@ def _embed_cached(smiles: str, minimise: bool) -> dict:
     # is stable across calls. maxAttempts=10 matches the inspect-smiles
     # embed sanity check — same threshold the docking pipeline uses.
     try:
-        result = AllChem.EmbedMolecule(mol_h, maxAttempts=10, randomSeed=0xF00D)
+        result = AllChem.EmbedMolecule(mol_h, maxAttempts=50, randomSeed=0xF00D)
+        if result < 0:
+            result = AllChem.EmbedMolecule(
+                mol_h, maxAttempts=50, randomSeed=0xF00D, useRandomCoords=True,
+            )
         if result < 0:
             out["error"] = (
                 "RDKit couldn't embed this molecule in 3D. Most common causes: "
